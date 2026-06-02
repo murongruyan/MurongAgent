@@ -2213,7 +2213,12 @@ private fun MessageBubble(
             ) {
                 val reasoningContent = msg.reasoning
                 if (reasoningContent != null && reasoningContent.isNotBlank()) {
-                    var expanded by remember { mutableStateOf(false) }
+                    var expanded by remember(msg.id) { mutableStateOf(msg.isStreaming) }
+                    LaunchedEffect(msg.id, msg.isStreaming, reasoningContent) {
+                        if (msg.isStreaming) {
+                            expanded = true
+                        }
+                    }
                     Surface(
                         shape = MaterialTheme.shapes.large,
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),

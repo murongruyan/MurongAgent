@@ -140,6 +140,49 @@ fun SettingsScreen(
             }
         }
 
+        Text(
+            text = "界面与调试",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "显示调试细节",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "关闭时隐藏工具调用 ID 等内部字段；开启后会额外显示调用 ID 和等待中的工具细节。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Switch(
+                    checked = config.showDebugToolDetails,
+                    onCheckedChange = { checked ->
+                        onConfigChanged(config.copy(showDebugToolDetails = checked))
+                    }
+                )
+            }
+        }
+
         // ═══════════════════════════════════════
         // AI 模型提供商
         // ═══════════════════════════════════════

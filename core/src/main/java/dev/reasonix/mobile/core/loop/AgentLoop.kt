@@ -13,7 +13,12 @@ import kotlinx.coroutines.delay
 sealed class AgentEvent {
     data class ContentDelta(val text: String) : AgentEvent()
     data class ReasoningDelta(val text: String) : AgentEvent()
-    data class ToolExecution(val toolName: String, val args: String) : AgentEvent()
+    data class ToolExecution(
+        val toolName: String,
+        val args: String? = null,
+        val callId: String? = null,
+        val isPartial: Boolean = false
+    ) : AgentEvent()
     data class ToolResult(
         val toolName: String,
         val args: String,
@@ -97,7 +102,13 @@ class AgentLoop(
                     when (delta) {
                         is StreamDelta.Content -> onEvent(AgentEvent.ContentDelta(delta.text))
                         is StreamDelta.Reasoning -> onEvent(AgentEvent.ReasoningDelta(delta.text))
-                        is StreamDelta.ToolCallStart -> onEvent(AgentEvent.ToolExecution(delta.name, delta.id))
+                        is StreamDelta.ToolCallStart -> onEvent(
+                            AgentEvent.ToolExecution(
+                                toolName = delta.name,
+                                callId = delta.id,
+                                isPartial = true
+                            )
+                        )
                         is StreamDelta.ToolCallDelta -> { /* ignore partial args */ }
                         is StreamDelta.Error -> onEvent(AgentEvent.Error(delta.message))
                         is StreamDelta.Done -> { }
@@ -142,7 +153,14 @@ class AgentLoop(
             // ── 执行 Tool Calls ─────────────────────
             state = AgentState.EXECUTING_TOOLS
             for (tc in toolCalls) {
-                onEvent(AgentEvent.ToolExecution(tc.function.name, tc.function.arguments))
+                onEvent(
+                    AgentEvent.ToolExecution(
+                        toolName = tc.function.name,
+                        args = tc.function.arguments,
+                        callId = tc.id,
+                        isPartial = false
+                    )
+                )
 
                 val tool = toolRegistry.getTool(tc.function.name)
                 val result = if (tool != null) {

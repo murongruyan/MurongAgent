@@ -2534,10 +2534,18 @@ class ChatSessionManager(
                         is AgentEvent.ContentDelta -> appendToStreaming(event.text)
                         is AgentEvent.ReasoningDelta -> appendToStreamingReasoning(event.text)
                         is AgentEvent.ToolExecution -> {
+                            if (event.isPartial && !config.showDebugToolDetails) {
+                                return@processMessage
+                            }
                             finalizeStreaming()
                             val toolMsg = ChatMessageUi(
                                 id = nextId(), role = "tool_exec",
-                                content = "🔧 正在执行: **${event.toolName}**\n```json\n${event.args}\n```"
+                                content = buildToolExecutionMessage(
+                                    toolName = event.toolName,
+                                    args = event.args,
+                                    callId = event.callId,
+                                    showDebugDetails = config.showDebugToolDetails
+                                )
                             )
                             appendMessage(toolMsg)
                         }
@@ -6593,6 +6601,32 @@ class ChatSessionManager(
             else -> 4_000
         }
         return "📦 **$toolName** 执行结果:\n```\n${result.take(previewLimit)}${if (result.length > previewLimit) "\n...(截断)" else ""}\n```$changeSummary"
+    }
+
+    private fun buildToolExecutionMessage(
+        toolName: String,
+        args: String?,
+        callId: String?,
+        showDebugDetails: Boolean
+    ): String {
+        val trimmedArgs = args?.trim().orEmpty()
+        return buildString {
+            append("🔧 正在执行: **")
+            append(toolName)
+            append("**")
+            if (showDebugDetails && !callId.isNullOrBlank()) {
+                append("\n调用 ID: `")
+                append(callId)
+                append("`")
+            }
+            if (trimmedArgs.isNotBlank()) {
+                append("\n```json\n")
+                append(trimmedArgs)
+                append("\n```")
+            } else if (showDebugDetails) {
+                append("\n等待工具参数返回…")
+            }
+        }
     }
 
     private fun summarizeToolResultForHistory(message: String): String? {

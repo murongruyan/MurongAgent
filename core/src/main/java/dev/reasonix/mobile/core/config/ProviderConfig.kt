@@ -100,6 +100,7 @@ data class ProviderConfig(
     val allowedMcpTools: List<String> = emptyList(),
     val allowedShellCommandPrefixes: List<String> = emptyList(),
     val allowedPathPrefixes: List<String> = emptyList(),
+    val showDebugToolDetails: Boolean = false,
     val temperature: Double = 0.7,
     val maxTokens: Int = 8192
 ) {
