@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Reasonix Mobile</string>
+    <string name="chat_hint">输入你的问题或需求…</string>
+    <string name="settings_title">设置</string>
+    <string name="provider_title">AI 模型提供商</string>
+    <string name="api_key_label">API Key</string>
+    <string name="base_url_label">Base URL（可选）</string>
+    <string name="model_label">模型名称</string>
+    <string name="root_check_title">Root 权限检测</string>
+    <string name="root_available">Root 可用</string>
+    <string name="root_unavailable">Root 不可用</string>
+    <string name="send">发送</string>
+    <string name="clear_chat">清空对话</string>
+    <string name="no_provider_configured">请先在设置中配置 API</string>
+</resources>

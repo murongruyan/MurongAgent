@@ -1,0 +1,14 @@
+# Reasonix Mobile — local.properties 模板
+# 复制此文件为 local.properties 并填入你的 SDK/NDK 路径
+
+# Windows
+# sdk.dir=C:\\Users\\<用户名>\\AppData\\Local\\Android\\Sdk
+# ndk.dir=C:\\Users\\<用户名>\\AppData\\Local\\Android\\Sdk\\ndk\\27.3.13750724
+
+# macOS
+# sdk.dir=/Users/<用户名>/Library/Android/sdk
+# ndk.dir=/Users/<用户名>/Library/Android/sdk/ndk/27.3.13750724
+
+# Linux
+# sdk.dir=/home/<用户名>/Android/Sdk
+# ndk.dir=/home/<用户名>/Android/Sdk/ndk/27.3.13750724
