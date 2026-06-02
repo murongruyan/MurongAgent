@@ -258,6 +258,7 @@ fun SettingsScreen(
                             val reasoningEffort = when (provider.id) {
                                 "deepseek" -> config.deepseekReasoningEffort
                                 "openai-compatible" -> config.openaiReasoningEffort
+                                "claude" -> config.claudeReasoningEffort
                                 else -> ""
                             }
                             val promptPricePer1M = when (provider.id) {
@@ -406,7 +407,7 @@ fun SettingsScreen(
                                 )
                             )
 
-                            if (provider.id == "deepseek" || provider.id == "openai-compatible") {
+                            if (provider.id == "deepseek" || provider.id == "openai-compatible" || provider.id == "claude") {
                                 Text(
                                     text = "推理深度",
                                     style = MaterialTheme.typography.bodyMedium,
@@ -416,7 +417,12 @@ fun SettingsScreen(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    listOf("low", "medium", "high").forEach { effort ->
+                                    val effortOptions = when (provider.id) {
+                                        "deepseek" -> listOf("low", "medium", "high", "max")
+                                        "claude", "openai-compatible" -> listOf("low", "medium", "high", "xhigh", "max")
+                                        else -> listOf("low", "medium", "high")
+                                    }
+                                    effortOptions.forEach { effort ->
                                         FilterChip(
                                             selected = reasoningEffort == effort,
                                             onClick = {
@@ -424,6 +430,7 @@ fun SettingsScreen(
                                                     when (provider.id) {
                                                         "deepseek" -> config.copy(deepseekReasoningEffort = effort)
                                                         "openai-compatible" -> config.copy(openaiReasoningEffort = effort)
+                                                        "claude" -> config.copy(claudeReasoningEffort = effort)
                                                         else -> config
                                                     }
                                                 )
@@ -431,21 +438,13 @@ fun SettingsScreen(
                                             label = { Text(effort, fontSize = 12.sp) }
                                         )
                                     }
-                                    if (provider.id == "deepseek") {
-                                        FilterChip(
-                                            selected = reasoningEffort == "max",
-                                            onClick = {
-                                                onConfigChanged(config.copy(deepseekReasoningEffort = "max"))
-                                            },
-                                            label = { Text("max", fontSize = 12.sp) }
-                                        )
-                                    }
                                 }
                                 Text(
-                                    text = if (provider.id == "deepseek")
-                                        "当前请求: model=$resolvedModel, effort=$reasoningEffort"
-                                    else
-                                        "当前请求: model=$resolvedModel, effort=$reasoningEffort。`max` 仅在 DeepSeek 档位显示。",
+                                    text = when (provider.id) {
+                                        "deepseek" -> "当前请求: model=$resolvedModel, effort=$reasoningEffort"
+                                        "claude" -> "当前请求: model=$resolvedModel, effort=$reasoningEffort。Claude 4.8 支持自适应 thinking + effort。"
+                                        else -> "当前请求: model=$resolvedModel, effort=$reasoningEffort。GPT-5.5 推荐从 `medium` 起步，复杂任务再升到 `xhigh`。"
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontSize = 11.sp

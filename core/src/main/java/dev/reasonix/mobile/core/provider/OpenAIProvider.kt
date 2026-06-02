@@ -30,7 +30,7 @@ class OpenAIProvider : ModelProvider {
     override val name = "OpenAI Compatible"
     override val id = "openai-compatible"
     override val defaultBaseUrl = "https://api.openai.com"
-    override val defaultModel = "gpt-4o"
+    override val defaultModel = "gpt-5.5"
     override val supportsReasoning = true
 
     private val client = OkHttpClient.Builder()

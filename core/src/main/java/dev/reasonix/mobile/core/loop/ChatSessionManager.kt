@@ -4757,15 +4757,19 @@ class ChatSessionManager(
         val complexTask = isComplexTask(goal, mentionedFiles)
         val discoveryRequest = isAutoDiscoveryRequest(goal)
         val requestedModel = matchedSkill?.preferredModel?.trim().orEmpty().ifBlank {
-            if (complexTask && baseConfig.activeProviderId == "deepseek") {
-                "deepseek-v4-pro"
-            } else {
-                ""
+            when (baseConfig.activeProviderId) {
+                "deepseek" -> if (complexTask) "deepseek-v4-pro" else ""
+                "claude" -> if (complexTask) "claude-opus-4-8" else ""
+                "openai-compatible" -> if (complexTask && shouldPreferLatestOpenAiProfile(baseConfig)) "gpt-5.5" else ""
+                else -> ""
             }
         }
         val requestedReasoning = when {
-            complexTask -> "max"
-            else -> null
+            !complexTask -> null
+            baseConfig.activeProviderId == "deepseek" -> "max"
+            baseConfig.activeProviderId == "claude" -> "xhigh"
+            baseConfig.activeProviderId == "openai-compatible" -> "xhigh"
+            else -> "high"
         }
         val targetBuiltinTools = if (discoveryRequest) {
             (baseConfig.enabledBuiltinTools + listOf("web_search", "web_fetch")).distinct()
@@ -4792,9 +4796,22 @@ class ChatSessionManager(
                 openaiReasoningEffort = requestedReasoning ?: baseConfig.openaiReasoningEffort
             )
 
+            "claude" -> baseConfig.copy(
+                claudeModel = requestedModel.ifBlank { baseConfig.claudeModel },
+                claudeReasoningEffort = requestedReasoning ?: baseConfig.claudeReasoningEffort
+            )
+
             else -> baseConfig
         }
         return resolvedConfig.copy(enabledBuiltinTools = targetBuiltinTools)
+    }
+
+    private fun shouldPreferLatestOpenAiProfile(config: ProviderConfig): Boolean {
+        val baseUrl = config.getActiveBaseUrl()?.trimEnd('/')?.lowercase().orEmpty()
+        if (baseUrl.isBlank()) return true
+        return baseUrl == "https://api.openai.com" ||
+            baseUrl.startsWith("https://api.openai.com/") ||
+            baseUrl.contains(".openai.azure.com")
     }
 
     private fun buildExecutionProfileContext(

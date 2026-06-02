@@ -75,12 +75,12 @@ data class ProviderConfig(
     val deepseekBalanceUsd: Double = 0.0, val deepseekBalanceCurrency: String = "USD",
     val deepseekBalanceSyncedAt: Long? = null,
     val openaiApiKey: String = "", val openaiBaseUrl: String = "",
-    val openaiModel: String = "gpt-4o", val openaiReasoningEffort: String = "high",
+    val openaiModel: String = "gpt-5.5", val openaiReasoningEffort: String = "medium",
     val openaiPromptPricePer1M: Double = 0.0, val openaiCompletionPricePer1M: Double = 0.0,
     val openaiBalanceUsd: Double = 0.0, val openaiBalanceCurrency: String = "USD",
     val openaiBalanceSyncedAt: Long? = null, val openaiBalanceApiPath: String = "",
     val claudeApiKey: String = "", val claudeBaseUrl: String = "",
-    val claudeModel: String = "claude-sonnet-4-20250514",
+    val claudeModel: String = "claude-opus-4-8", val claudeReasoningEffort: String = "high",
     val claudePromptPricePer1M: Double = 0.0, val claudeCompletionPricePer1M: Double = 0.0,
     val claudeBalanceUsd: Double = 0.0, val claudeBalanceCurrency: String = "USD",
     val claudeBalanceSyncedAt: Long? = null, val claudeBalanceApiPath: String = "",
@@ -142,7 +142,10 @@ data class ProviderConfig(
         "deepseek" -> deepseekModel; "openai-compatible" -> openaiModel; "claude" -> claudeModel; else -> ""
     }
     fun getActiveReasoningEffort(): String? = when (activeProviderId) {
-        "deepseek" -> deepseekReasoningEffort; "openai-compatible" -> openaiReasoningEffort; else -> null
+        "deepseek" -> deepseekReasoningEffort
+        "openai-compatible" -> openaiReasoningEffort
+        "claude" -> claudeReasoningEffort
+        else -> null
     }
     fun getActiveThinkingMode(): String? {
         val effort = getActiveReasoningEffort(); return if (effort.isNullOrBlank()) null else "reasoning/$effort"

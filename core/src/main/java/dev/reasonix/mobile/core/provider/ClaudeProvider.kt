@@ -22,8 +22,8 @@ class ClaudeProvider : ModelProvider {
     override val name = "Claude (Anthropic)"
     override val id = "claude"
     override val defaultBaseUrl = "https://api.anthropic.com"
-    override val defaultModel = "claude-sonnet-4-20250514"
-    override val supportsReasoning = true // Claude 通过 extended thinking 支持
+    override val defaultModel = "claude-opus-4-8"
+    override val supportsReasoning = true
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
@@ -56,6 +56,10 @@ class ClaudeProvider : ModelProvider {
             put("max_tokens", request.maxTokens)
             put("stream", true)
             put("temperature", request.temperature)
+            buildClaudeReasoningConfig(request.reasoningEffort)?.let { (thinking, outputConfig) ->
+                put("thinking", thinking)
+                put("output_config", outputConfig)
+            }
             if (systemPrompt.isNotBlank()) {
                 putJsonArray("system") {
                     addJsonObject {
@@ -122,6 +126,10 @@ class ClaudeProvider : ModelProvider {
             put("max_tokens", request.maxTokens)
             put("stream", false)
             put("temperature", request.temperature)
+            buildClaudeReasoningConfig(request.reasoningEffort)?.let { (thinking, outputConfig) ->
+                put("thinking", thinking)
+                put("output_config", outputConfig)
+            }
             if (systemPrompt.isNotBlank()) {
                 putJsonArray("system") {
                     addJsonObject {
@@ -191,6 +199,15 @@ class ClaudeProvider : ModelProvider {
      */
     private fun convertMessages(messages: List<ChatMessage>): List<JsonObject> {
         return convertMessagesToAnthropic(json, messages)
+    }
+
+    private fun buildClaudeReasoningConfig(reasoningEffort: String?): Pair<JsonObject, JsonObject>? {
+        val effort = reasoningEffort?.trim()?.lowercase()?.takeIf { it.isNotBlank() } ?: return null
+        return buildJsonObject {
+            put("type", "adaptive")
+        } to buildJsonObject {
+            put("effort", effort)
+        }
     }
 
     /**

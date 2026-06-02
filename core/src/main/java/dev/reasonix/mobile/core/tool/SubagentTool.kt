@@ -216,7 +216,7 @@ class SubagentTool(
             ),
             "reasoningEffort" to mapOf(
                 "type" to "string",
-                "enum" to listOf("low", "medium", "high", "max"),
+                "enum" to listOf("low", "medium", "high", "xhigh", "max"),
                 "description" to "可选。指定子代理推理深度"
             ),
             "allowedTools" to mapOf(
@@ -1380,6 +1380,11 @@ class SubagentTool(
             "openai-compatible" -> baseConfig.copy(
                 openaiModel = modelOverride ?: baseConfig.getActiveModel(),
                 openaiReasoningEffort = resolvedEffort ?: baseConfig.openaiReasoningEffort
+            )
+
+            "claude" -> baseConfig.copy(
+                claudeModel = modelOverride ?: baseConfig.getActiveModel(),
+                claudeReasoningEffort = resolvedEffort ?: baseConfig.claudeReasoningEffort
             )
 
             else -> baseConfig
