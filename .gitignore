@@ -14,6 +14,7 @@ build/
 # Android
 local.properties
 *.jks
+*.jks.b64
 *.keystore
 
 # OS
