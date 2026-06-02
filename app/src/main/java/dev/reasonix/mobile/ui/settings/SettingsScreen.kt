@@ -26,6 +26,7 @@ import dev.reasonix.mobile.core.config.GlobalMemory
 import dev.reasonix.mobile.core.config.GlobalRule
 import dev.reasonix.mobile.core.config.GlobalSkill
 import dev.reasonix.mobile.core.config.ProviderConfig
+import dev.reasonix.mobile.core.config.ResponseVerbosity
 import dev.reasonix.mobile.core.config.SkillRunAs
 import dev.reasonix.mobile.core.loop.SessionSummary
 import dev.reasonix.mobile.core.mcp.McpServerConfig
@@ -785,6 +786,42 @@ fun SettingsScreen(
             text = "高级设置",
             style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onBackground
+        )
+
+        Text(
+            text = "回答风格",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf(
+                ResponseVerbosity.CONCISE to "简洁",
+                ResponseVerbosity.BALANCED to "平衡",
+                ResponseVerbosity.DETAILED to "详细"
+            ).forEach { (verbosity, label) ->
+                FilterChip(
+                    selected = config.responseVerbosity == verbosity,
+                    onClick = {
+                        onConfigChanged(config.copy(responseVerbosity = verbosity))
+                    },
+                    label = { Text(label, fontSize = 12.sp) }
+                )
+            }
+        }
+        Text(
+            text = when (config.responseVerbosity) {
+                ResponseVerbosity.CONCISE ->
+                    "更像命令式助手，默认少说废话，工具执行后只做简短总结。"
+                ResponseVerbosity.BALANCED ->
+                    "结论、关键点和下一步都会说，但不会展开得太长。"
+                ResponseVerbosity.DETAILED ->
+                    "更像桌面端长说明风格，会更主动解释过程、结果和后续建议。"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
         // 系统提示词

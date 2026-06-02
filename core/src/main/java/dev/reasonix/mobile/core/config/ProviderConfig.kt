@@ -32,6 +32,9 @@ data class ProjectSubagentTemplate(
 enum class ToolApprovalMode { READ_ONLY, ALL_APPROVAL, WHITELIST_AUTO, ALL_AUTO }
 
 @Serializable
+enum class ResponseVerbosity { CONCISE, BALANCED, DETAILED }
+
+@Serializable
 enum class WorkflowExecutionMode { SINGLE_PASS }
 
 @Serializable
@@ -85,7 +88,17 @@ data class ProviderConfig(
     val githubClientId: String = "", val githubClientSecret: String = "",
     val githubBackendSessionToken: String = "", val githubViewerLogin: String = "",
     val githubViewerName: String = "", val githubViewerAvatarUrl: String = "",
-    val systemPrompt: String = "You are Reasonix Mobile, a coding assistant running on an Android device with root access. You have shell access and file system access.",
+    val systemPrompt: String = """
+        You are Reasonix Mobile, a coding assistant running on an Android device with root access. You have shell access and file system access.
+
+        Default to a detailed, explanatory, highly communicative style.
+        Do not be overly brief unless the user explicitly asks for a short answer.
+        Explain what you are doing, why you are doing it, what you found, and what the result means.
+        For coding and debugging tasks, prefer a short conclusion first, then key findings, then concrete changes or next steps, and finally any important risks or follow-up notes.
+        When using tools, briefly narrate important intent and summarize the outcome in natural language after the tool result arrives.
+        If a result is complex, break it into clear sections and keep it easy to scan.
+        Be proactive, specific, and helpful. Prefer slightly verbose explanations over terse replies.
+    """.trimIndent(),
     val globalRules: List<GlobalRule> = emptyList(),
     val globalMemories: List<GlobalMemory> = emptyList(),
     val globalSkills: List<GlobalSkill> = emptyList(),
@@ -100,6 +113,7 @@ data class ProviderConfig(
     val allowedMcpTools: List<String> = emptyList(),
     val allowedShellCommandPrefixes: List<String> = emptyList(),
     val allowedPathPrefixes: List<String> = emptyList(),
+    val responseVerbosity: ResponseVerbosity = ResponseVerbosity.DETAILED,
     val showDebugToolDetails: Boolean = false,
     val temperature: Double = 0.7,
     val maxTokens: Int = 8192
@@ -198,6 +212,8 @@ data class ProviderConfig(
             append(systemPrompt.trim())
             val wfInstr = buildWorkflowInstruction()
             if (wfInstr.isNotEmpty()) append("\n\n$wfInstr")
+            val verbosityInstr = buildResponseVerbosityInstruction()
+            if (verbosityInstr.isNotEmpty()) append("\n\n$verbosityInstr")
             if (enabledRules.isNotEmpty()) append("\n\nActive Global Rules:\n$rulesText")
             if (enabledMemories.isNotEmpty()) append("\n\nActive Global Memories:\n$memoriesText")
             if (enabledSkills.isNotEmpty()) append("\n\n$enabledSkills")
@@ -235,10 +251,29 @@ data class ProviderConfig(
     fun buildWorkflowInstruction(): String = """
         Prefer completing the whole workflow in as few assistant turns as practical.
         Plan internally first, then batch related analysis and execution together.
-        Keep intermediate narration compact.
+        Keep the workflow efficient, but narrate meaningful progress in a user-friendly way.
         Only interrupt for user confirmation when information is missing, a decision is required, or an approval gate blocks execution.
-        When a task is long or complex, aim to finish the full chain in one continuous run and return a concise result summary at the end.
+        When a task is long or complex, aim to finish the full chain in one continuous run while still providing richer progress updates and a detailed final summary.
+        After tool execution, do not stop abruptly. Explain what changed, what was learned, and what should happen next.
     """.trimIndent()
+
+    fun buildResponseVerbosityInstruction(): String = when (responseVerbosity) {
+        ResponseVerbosity.CONCISE -> """
+            Response style: concise.
+            Prefer short, direct answers and compact progress updates.
+            Summarize tool results briefly and avoid extended explanation unless the user asks for more detail.
+        """.trimIndent()
+        ResponseVerbosity.BALANCED -> """
+            Response style: balanced.
+            Give a clear conclusion, the key findings, and the next step without being too terse or too verbose.
+            Summarize tool results naturally and expand only where the extra context is useful.
+        """.trimIndent()
+        ResponseVerbosity.DETAILED -> """
+            Response style: detailed.
+            Prefer rich explanations, clearer progress narration, and a more complete final summary.
+            After tool use, explain what was done, what changed, what was learned, and what should happen next.
+        """.trimIndent()
+    }
 
     fun shouldAutoRouteBeforeExecution(): Boolean = autoRouteBeforeExecution
 
