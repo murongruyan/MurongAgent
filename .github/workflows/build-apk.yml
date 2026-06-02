@@ -73,7 +73,7 @@ jobs:
 
           read_gradle_default() {
             local key="$1"
-            python3 -c 'import pathlib,re,sys; key=sys.argv[1]; text=pathlib.Path("app/build.gradle.kts").read_text(encoding="utf-8"); patterns={"versionName":[r"versionName\s*=\s*\"([^\"]+)\""], "versionCode":[r"versionCode\s*=\s*([0-9]+)"]}; match=next((m for pattern in patterns[key] for m in [re.search(pattern, text)] if m), None); print(match.group(1)) if match else (print(f"Failed to read default {key}", file=sys.stderr), sys.exit(1))' "${key}"
+            python3 -c 'import pathlib,re,sys; key=sys.argv[1]; text=pathlib.Path("app/build.gradle.kts").read_text(encoding="utf-8"); patterns={"versionName":[r"versionName\s*=\s*\"([^\"]+)\"", r"val\s+appVersionName\s*=.*?\?:\s*\"([^\"]+)\""], "versionCode":[r"versionCode\s*=\s*([0-9]+)", r"val\s+appVersionCode\s*=.*?\?:\s*([0-9]+)"]}; match=next((m for pattern in patterns[key] for m in [re.search(pattern, text, re.S)] if m), None); print(match.group(1)) if match else (print(f"Failed to read default {key}", file=sys.stderr), sys.exit(1))' "${key}"
           }
 
           DEFAULT_APP_VERSION="$(read_gradle_default versionName)"
