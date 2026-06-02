@@ -32,6 +32,16 @@ class OpenAIProvider : ModelProvider {
     override val defaultBaseUrl = "https://api.openai.com"
     override val defaultModel = "gpt-5.5"
     override val supportsReasoning = true
+    override val supportedReasoningEfforts = listOf("low", "medium", "high", "xhigh", "max")
+
+    override fun formatModelDisplayName(modelId: String): String = when (modelId.trim()) {
+        "gpt-5.5" -> "GPT-5.5"
+        else -> super.formatModelDisplayName(modelId)
+    }
+
+    override fun buildReasoningHint(modelId: String, reasoningEffort: String?): String {
+        return "当前请求: model=$modelId, effort=$reasoningEffort。GPT-5.5 推荐从 medium 起步，复杂任务再升到 xhigh。"
+    }
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)

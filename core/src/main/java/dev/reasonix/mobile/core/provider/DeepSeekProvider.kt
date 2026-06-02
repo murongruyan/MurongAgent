@@ -31,6 +31,17 @@ class DeepSeekProvider : ModelProvider {
     override val defaultBaseUrl = "https://api.deepseek.com"
     override val defaultModel = "deepseek-v4-flash"
     override val supportsReasoning = true
+    override val supportedReasoningEfforts = listOf("low", "medium", "high", "max")
+
+    override fun formatModelDisplayName(modelId: String): String = when (modelId.trim()) {
+        "deepseek-v4-flash" -> "DeepSeek V4 Flash"
+        "deepseek-v4-pro" -> "DeepSeek V4 Pro"
+        else -> super.formatModelDisplayName(modelId)
+    }
+
+    override fun buildReasoningHint(modelId: String, reasoningEffort: String?): String {
+        return "当前请求: model=$modelId, effort=$reasoningEffort"
+    }
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)

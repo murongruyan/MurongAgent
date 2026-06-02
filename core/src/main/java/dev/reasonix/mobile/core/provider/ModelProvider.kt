@@ -21,6 +21,33 @@ interface ModelProvider {
     /** 是否支持 Reasoning/Thinking */
     val supportsReasoning: Boolean
 
+    /** 当前 Provider 支持的推理档位 */
+    val supportedReasoningEfforts: List<String>
+        get() = emptyList()
+
+    /** 把模型 ID 转成更适合给用户展示的名称 */
+    fun formatModelDisplayName(modelId: String): String = modelId.trim().ifBlank { defaultModel }
+
+    /** 把推理档位转成更适合给用户展示的名称 */
+    fun formatReasoningDisplayName(reasoningEffort: String?): String? = when (reasoningEffort?.trim()?.lowercase()) {
+        "low" -> "低推理"
+        "medium" -> "中推理"
+        "high" -> "高推理"
+        "xhigh" -> "超高推理"
+        "max" -> "最大推理"
+        else -> null
+    }
+
+    /** 统一生成“模型 + 推理档位”的展示标签 */
+    fun buildExecutionProfileLabel(modelId: String, reasoningEffort: String?): String {
+        val modelLabel = formatModelDisplayName(modelId)
+        val reasoningLabel = formatReasoningDisplayName(reasoningEffort)
+        return if (reasoningLabel == null) modelLabel else "$modelLabel $reasoningLabel"
+    }
+
+    /** 设置页里用于解释当前请求配置的说明文本 */
+    fun buildReasoningHint(modelId: String, reasoningEffort: String?): String? = null
+
     /** 流式聊天 */
     suspend fun chatStream(
         request: ChatRequest,

@@ -4768,64 +4768,16 @@ class ChatSessionManager(
         mentionedFiles: List<FileMentionUi> = emptyList(),
         matchedSkill: GlobalSkill? = null
     ): ProviderConfig {
-        val complexTask = baseConfig.autoUpgradeExecutionProfile && isComplexTask(goal, mentionedFiles)
-        val discoveryRequest = isAutoDiscoveryRequest(goal)
-        val requestedModel = matchedSkill?.preferredModel?.trim().orEmpty().ifBlank {
-            when (baseConfig.activeProviderId) {
-                "deepseek" -> if (complexTask) "deepseek-v4-pro" else ""
-                "claude" -> if (complexTask) "claude-opus-4-8" else ""
-                "openai-compatible" -> if (complexTask && shouldPreferLatestOpenAiProfile(baseConfig)) "gpt-5.5" else ""
-                else -> ""
-            }
-        }
-        val requestedReasoning = when {
-            !complexTask -> null
-            baseConfig.activeProviderId == "deepseek" -> "max"
-            baseConfig.activeProviderId == "claude" -> "xhigh"
-            baseConfig.activeProviderId == "openai-compatible" -> "xhigh"
-            else -> "high"
-        }
-        val targetBuiltinTools = if (discoveryRequest) {
-            (baseConfig.enabledBuiltinTools + listOf("web_search", "web_fetch")).distinct()
-        } else {
-            baseConfig.enabledBuiltinTools
-        }
-        val resolvedConfig = when (baseConfig.activeProviderId) {
-            "deepseek" -> {
-                val targetModel = requestedModel.ifBlank { baseConfig.getActiveModel() }
-                val preset = when (targetModel) {
-                    "deepseek-v4-flash" -> "flash"
-                    "deepseek-v4-pro" -> "pro"
-                    else -> "custom"
-                }
-                baseConfig.copy(
-                    deepseekModelPreset = preset,
-                    deepseekModel = targetModel,
-                    deepseekReasoningEffort = requestedReasoning ?: baseConfig.deepseekReasoningEffort
-                )
-            }
-
-            "openai-compatible" -> baseConfig.copy(
-                openaiModel = requestedModel.ifBlank { baseConfig.openaiModel },
-                openaiReasoningEffort = requestedReasoning ?: baseConfig.openaiReasoningEffort
-            )
-
-            "claude" -> baseConfig.copy(
-                claudeModel = requestedModel.ifBlank { baseConfig.claudeModel },
-                claudeReasoningEffort = requestedReasoning ?: baseConfig.claudeReasoningEffort
-            )
-
-            else -> baseConfig
-        }
-        return resolvedConfig.copy(enabledBuiltinTools = targetBuiltinTools)
+        return ExecutionProfileDecider.resolveExecutionConfig(
+            baseConfig = baseConfig,
+            goal = goal,
+            mentionedFileCount = mentionedFiles.size,
+            matchedSkillPreferredModel = matchedSkill?.preferredModel
+        )
     }
 
     private fun shouldPreferLatestOpenAiProfile(config: ProviderConfig): Boolean {
-        val baseUrl = config.getActiveBaseUrl()?.trimEnd('/')?.lowercase().orEmpty()
-        if (baseUrl.isBlank()) return true
-        return baseUrl == "https://api.openai.com" ||
-            baseUrl.startsWith("https://api.openai.com/") ||
-            baseUrl.contains(".openai.azure.com")
+        return ExecutionProfileDecider.shouldPreferLatestOpenAiProfile(config)
     }
 
     private fun buildExecutionProfileContext(
@@ -4875,59 +4827,23 @@ class ChatSessionManager(
         baseConfig: ProviderConfig,
         executionConfig: ProviderConfig
     ): String? {
-        val modelChanged = executionConfig.getActiveModel() != baseConfig.getActiveModel()
-        val reasoningChanged = executionConfig.getActiveReasoningEffort() != baseConfig.getActiveReasoningEffort()
-        if (!modelChanged && !reasoningChanged) return null
-        val profileLabel = buildExecutionProfileLabel(
-            model = executionConfig.getActiveModel(),
-            reasoning = executionConfig.getActiveReasoningEffort()
-        )
-        return when {
-            modelChanged && reasoningChanged ->
-                "复杂任务，已自动升档到 $profileLabel"
-            modelChanged ->
-                "复杂任务，已自动切换到 $profileLabel"
-            else ->
-                "复杂任务，已自动提升到 $profileLabel"
-        }
+        return ExecutionProfileDecider.buildExecutionProfileToast(baseConfig, executionConfig)
     }
 
-    private fun buildExecutionProfileLabel(model: String, reasoning: String?): String {
-        val modelLabel = when (model.trim()) {
-            "claude-opus-4-8" -> "Claude 4.8"
-            "gpt-5.5" -> "GPT-5.5"
-            "deepseek-v4-pro" -> "DeepSeek V4 Pro"
-            "deepseek-v4-flash" -> "DeepSeek V4 Flash"
-            else -> model.trim().ifBlank { "当前模型" }
-        }
-        val reasoningLabel = when (reasoning?.trim()?.lowercase()) {
-            "low" -> "低推理"
-            "medium" -> "中推理"
-            "high" -> "高推理"
-            "xhigh" -> "超高推理"
-            "max" -> "最大推理"
-            else -> null
-        }
-        return if (reasoningLabel == null) modelLabel else "$modelLabel $reasoningLabel"
+    private fun buildExecutionProfileLabel(
+        providerId: String,
+        model: String,
+        reasoning: String?
+    ): String {
+        return ExecutionProfileDecider.buildExecutionProfileLabel(providerId, model, reasoning)
     }
 
     private fun isAutoDiscoveryRequest(goal: String): Boolean {
-        val normalized = goal.trim().lowercase()
-        if (normalized.isBlank()) return false
-        val actionHit = AUTO_DISCOVERY_ACTION_KEYWORDS.any { keyword -> keyword in normalized }
-        val targetHit = AUTO_DISCOVERY_TARGET_KEYWORDS.any { keyword -> keyword in normalized }
-        return actionHit && targetHit
+        return ExecutionProfileDecider.isAutoDiscoveryRequest(goal)
     }
 
     private fun isComplexTask(goal: String, mentionedFiles: List<FileMentionUi> = emptyList()): Boolean {
-        val normalized = goal.trim().lowercase()
-        if (normalized.isBlank()) return false
-        val keywordHits = AUTO_COMPLEXITY_KEYWORDS.count { keyword -> keyword in normalized }
-        val lineCount = goal.lines().count { it.isNotBlank() }
-        return goal.length >= 90 ||
-            lineCount >= 3 ||
-            mentionedFiles.size >= 2 ||
-            keywordHits >= 2
+        return ExecutionProfileDecider.isComplexTask(goal, mentionedFiles.size)
     }
 
     private fun normalizeAutoMatchingText(value: String): String {

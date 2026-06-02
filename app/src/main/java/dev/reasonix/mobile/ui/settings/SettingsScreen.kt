@@ -407,7 +407,7 @@ fun SettingsScreen(
                                 )
                             )
 
-                            if (provider.id == "deepseek" || provider.id == "openai-compatible" || provider.id == "claude") {
+                            if (provider.supportsReasoning && provider.supportedReasoningEfforts.isNotEmpty()) {
                                 Text(
                                     text = "推理深度",
                                     style = MaterialTheme.typography.bodyMedium,
@@ -417,12 +417,7 @@ fun SettingsScreen(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    val effortOptions = when (provider.id) {
-                                        "deepseek" -> listOf("low", "medium", "high", "max")
-                                        "claude", "openai-compatible" -> listOf("low", "medium", "high", "xhigh", "max")
-                                        else -> listOf("low", "medium", "high")
-                                    }
-                                    effortOptions.forEach { effort ->
+                                    provider.supportedReasoningEfforts.forEach { effort ->
                                         FilterChip(
                                             selected = reasoningEffort == effort,
                                             onClick = {
@@ -440,11 +435,8 @@ fun SettingsScreen(
                                     }
                                 }
                                 Text(
-                                    text = when (provider.id) {
-                                        "deepseek" -> "当前请求: model=$resolvedModel, effort=$reasoningEffort"
-                                        "claude" -> "当前请求: model=$resolvedModel, effort=$reasoningEffort。Claude 4.8 支持自适应 thinking + effort。"
-                                        else -> "当前请求: model=$resolvedModel, effort=$reasoningEffort。GPT-5.5 推荐从 `medium` 起步，复杂任务再升到 `xhigh`。"
-                                    },
+                                    text = provider.buildReasoningHint(resolvedModel, reasoningEffort)
+                                        ?: "当前请求: model=$resolvedModel, effort=$reasoningEffort",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontSize = 11.sp

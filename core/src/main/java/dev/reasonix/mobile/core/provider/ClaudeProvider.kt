@@ -24,6 +24,16 @@ class ClaudeProvider : ModelProvider {
     override val defaultBaseUrl = "https://api.anthropic.com"
     override val defaultModel = "claude-opus-4-8"
     override val supportsReasoning = true
+    override val supportedReasoningEfforts = listOf("low", "medium", "high", "xhigh", "max")
+
+    override fun formatModelDisplayName(modelId: String): String = when (modelId.trim()) {
+        "claude-opus-4-8" -> "Claude 4.8"
+        else -> super.formatModelDisplayName(modelId)
+    }
+
+    override fun buildReasoningHint(modelId: String, reasoningEffort: String?): String {
+        return "当前请求: model=$modelId, effort=$reasoningEffort。Claude 4.8 支持自适应 thinking + effort。"
+    }
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
