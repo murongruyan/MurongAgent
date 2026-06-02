@@ -4768,7 +4768,7 @@ class ChatSessionManager(
         mentionedFiles: List<FileMentionUi> = emptyList(),
         matchedSkill: GlobalSkill? = null
     ): ProviderConfig {
-        val complexTask = isComplexTask(goal, mentionedFiles)
+        val complexTask = baseConfig.autoUpgradeExecutionProfile && isComplexTask(goal, mentionedFiles)
         val discoveryRequest = isAutoDiscoveryRequest(goal)
         val requestedModel = matchedSkill?.preferredModel?.trim().orEmpty().ifBlank {
             when (baseConfig.activeProviderId) {
@@ -4878,14 +4878,37 @@ class ChatSessionManager(
         val modelChanged = executionConfig.getActiveModel() != baseConfig.getActiveModel()
         val reasoningChanged = executionConfig.getActiveReasoningEffort() != baseConfig.getActiveReasoningEffort()
         if (!modelChanged && !reasoningChanged) return null
+        val profileLabel = buildExecutionProfileLabel(
+            model = executionConfig.getActiveModel(),
+            reasoning = executionConfig.getActiveReasoningEffort()
+        )
         return when {
             modelChanged && reasoningChanged ->
-                "已自动升档到 ${executionConfig.getActiveModel()} (${executionConfig.getActiveReasoningEffort().orEmpty()})"
+                "复杂任务，已自动升档到 $profileLabel"
             modelChanged ->
-                "已自动切换到 ${executionConfig.getActiveModel()}"
+                "复杂任务，已自动切换到 $profileLabel"
             else ->
-                "已自动提升推理强度到 ${executionConfig.getActiveReasoningEffort().orEmpty()}"
+                "复杂任务，已自动提升到 $profileLabel"
         }
+    }
+
+    private fun buildExecutionProfileLabel(model: String, reasoning: String?): String {
+        val modelLabel = when (model.trim()) {
+            "claude-opus-4-8" -> "Claude 4.8"
+            "gpt-5.5" -> "GPT-5.5"
+            "deepseek-v4-pro" -> "DeepSeek V4 Pro"
+            "deepseek-v4-flash" -> "DeepSeek V4 Flash"
+            else -> model.trim().ifBlank { "当前模型" }
+        }
+        val reasoningLabel = when (reasoning?.trim()?.lowercase()) {
+            "low" -> "低推理"
+            "medium" -> "中推理"
+            "high" -> "高推理"
+            "xhigh" -> "超高推理"
+            "max" -> "最大推理"
+            else -> null
+        }
+        return if (reasoningLabel == null) modelLabel else "$modelLabel $reasoningLabel"
     }
 
     private fun isAutoDiscoveryRequest(goal: String): Boolean {

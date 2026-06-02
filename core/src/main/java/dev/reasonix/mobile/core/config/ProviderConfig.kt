@@ -113,6 +113,7 @@ data class ProviderConfig(
     val allowedMcpTools: List<String> = emptyList(),
     val allowedShellCommandPrefixes: List<String> = emptyList(),
     val allowedPathPrefixes: List<String> = emptyList(),
+    val autoUpgradeExecutionProfile: Boolean = true,
     val responseVerbosity: ResponseVerbosity = ResponseVerbosity.DETAILED,
     val showDebugToolDetails: Boolean = false,
     val temperature: Double = 0.7,

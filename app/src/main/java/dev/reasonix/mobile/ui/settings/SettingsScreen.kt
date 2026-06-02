@@ -823,6 +823,47 @@ fun SettingsScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "复杂任务自动升档",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = if (config.autoUpgradeExecutionProfile) {
+                            "复杂任务会自动切到更强模型或更高推理档位，并用 Toast 提示。"
+                        } else {
+                            "关闭后保持当前手动选择的模型与推理档位，不再按复杂度自动升档。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Switch(
+                    checked = config.autoUpgradeExecutionProfile,
+                    onCheckedChange = { checked ->
+                        onConfigChanged(config.copy(autoUpgradeExecutionProfile = checked))
+                    }
+                )
+            }
+        }
+
         // 系统提示词
         OutlinedTextField(
             value = config.systemPrompt,
