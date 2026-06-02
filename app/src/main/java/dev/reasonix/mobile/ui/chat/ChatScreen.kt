@@ -2096,6 +2096,12 @@ private fun MessageBubble(
                 }
             }
         } else if (isToolExec) {
+            val toolExecution = remember(msg.content) {
+                parseToolExecutionMessage(msg.content)
+            }
+            val toolResult = remember(msg.content) {
+                parseToolResultMessage(msg.content)
+            }
             val webFetchResult = remember(msg.content) {
                 parseWebFetchToolMessage(msg.content)
             }
@@ -2111,15 +2117,19 @@ private fun MessageBubble(
                     )
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        text = "工具输出",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    if (webFetchResult != null) {
+                    if (toolExecution != null) {
+                        ToolExecutionCard(tool = toolExecution)
+                    } else if (toolResult != null) {
+                        ToolResultCard(tool = toolResult)
+                    } else if (webFetchResult != null) {
                         WebFetchResultCard(result = webFetchResult)
                     } else {
+                        Text(
+                            text = "工具输出",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
                         SelectionContainer {
                             MarkdownText(
                                 text = msg.content,
@@ -2219,43 +2229,12 @@ private fun MessageBubble(
                             expanded = true
                         }
                     }
-                    Surface(
-                        shape = MaterialTheme.shapes.large,
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
-                        tonalElevation = 1.dp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { expanded = !expanded }
-                    ) {
-                        Column(modifier = Modifier.padding(8.dp)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "思考过程",
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontSize = 11.sp
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = if (expanded) "▲" else "▼",
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontSize = 10.sp
-                                )
-                            }
-                            AnimatedVisibility(visible = expanded) {
-                                Text(
-                                    text = reasoningContent,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 12.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    maxLines = 100,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.padding(top = 4.dp)
-                                )
-                            }
-                        }
-                    }
+                    ReasoningCard(
+                        content = reasoningContent,
+                        expanded = expanded,
+                        isStreaming = msg.isStreaming,
+                        onToggle = { expanded = !expanded }
+                    )
                     Spacer(modifier = Modifier.height(4.dp))
                 }
 
@@ -4004,6 +3983,207 @@ private data class WebFetchResultUi(
     val totalChars: Int
 )
 
+private data class ToolExecutionMessageUi(
+    val toolName: String,
+    val args: String,
+    val callId: String?,
+    val waitingForArgs: Boolean
+)
+
+private data class ToolResultMessageUi(
+    val toolName: String,
+    val result: String,
+    val fileChanges: List<String>,
+    val truncated: Boolean
+)
+
+@Composable
+private fun ReasoningCard(
+    content: String,
+    expanded: Boolean,
+    isStreaming: Boolean,
+    onToggle: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.88f),
+        tonalElevation = 1.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                    ) {
+                        Text(
+                            text = "思考过程",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    }
+                    if (isStreaming) {
+                        Text(
+                            text = "生成中",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Text(
+                    text = if (expanded) "收起" else "展开",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            AnimatedVisibility(visible = expanded) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    SelectionContainer {
+                        Text(
+                            text = content,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolExecutionCard(tool: ToolExecutionMessageUi) {
+    var showArgs by remember(tool) { mutableStateOf(tool.args.isNotBlank()) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = tool.toolName,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "工具执行中",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+            ) {
+                Text(
+                    text = "运行中",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                )
+            }
+        }
+        tool.callId?.takeIf { it.isNotBlank() }?.let { callId ->
+            DetailRow("调用 ID", callId)
+        }
+        when {
+            tool.waitingForArgs -> {
+                Text(
+                    text = "正在等待工具参数返回…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            tool.args.isNotBlank() -> {
+                TextButton(
+                    onClick = { showArgs = !showArgs },
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Text(if (showArgs) "隐藏参数" else "查看参数")
+                }
+                AnimatedVisibility(visible = showArgs) {
+                    DetailBlock("参数", tool.args)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolResultCard(tool: ToolResultMessageUi) {
+    var showResult by remember(tool) { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = tool.toolName,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "工具执行结果",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f)
+            ) {
+                Text(
+                    text = "已完成",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                )
+            }
+        }
+        TextButton(
+            onClick = { showResult = !showResult },
+            contentPadding = PaddingValues(0.dp)
+        ) {
+            Text(if (showResult) "隐藏输出" else "查看输出")
+        }
+        AnimatedVisibility(visible = showResult) {
+            DetailBlock(
+                label = if (tool.truncated) "输出（已截断）" else "输出",
+                value = tool.result
+            )
+        }
+        if (tool.fileChanges.isNotEmpty()) {
+            DetailBlock(
+                label = "本次文件变更",
+                value = tool.fileChanges.joinToString("\n")
+            )
+        }
+    }
+}
+
 private fun parseWebFetchToolMessage(content: String): WebFetchResultUi? {
     if (!content.startsWith(WEB_FETCH_RESULT_PREFIX)) return null
     return runCatching {
@@ -4019,6 +4199,50 @@ private fun parseWebFetchToolMessage(content: String): WebFetchResultUi? {
             totalChars = jsonIntOrNull(root, "totalChars") ?: 0
         )
     }.getOrNull()
+}
+
+private fun parseToolExecutionMessage(content: String): ToolExecutionMessageUi? {
+    val headerMatch = Regex("""^🔧 正在执行: \*\*(.+?)\*\*""").find(content) ?: return null
+    val toolName = headerMatch.groupValues.getOrNull(1).orEmpty()
+    val callId = Regex("""调用 ID: `([^`]+)`""")
+        .find(content)
+        ?.groupValues
+        ?.getOrNull(1)
+    val args = Regex("""```(?:json)?\n([\s\S]*?)\n```""")
+        .find(content)
+        ?.groupValues
+        ?.getOrNull(1)
+        .orEmpty()
+    return ToolExecutionMessageUi(
+        toolName = toolName,
+        args = args,
+        callId = callId,
+        waitingForArgs = content.contains("等待工具参数返回")
+    )
+}
+
+private fun parseToolResultMessage(content: String): ToolResultMessageUi? {
+    val headerMatch = Regex("""^📦 \*\*(.+?)\*\* 执行结果:""").find(content) ?: return null
+    val toolName = headerMatch.groupValues.getOrNull(1).orEmpty()
+    val rawPayload = Regex("""```(?:\w+)?\n([\s\S]*?)\n```""")
+        .find(content)
+        ?.groupValues
+        ?.getOrNull(1)
+        .orEmpty()
+    val truncated = rawPayload.endsWith("\n...(截断)") || rawPayload == "...(截断)"
+    val normalizedPayload = rawPayload.removeSuffix("\n...(截断)").removeSuffix("...(截断)")
+    val fileChanges = content.substringAfter("本次文件变更:\n", "")
+        .lineSequence()
+        .map { it.trim() }
+        .filter { it.startsWith("- ") }
+        .map { it.removePrefix("- ").trim() }
+        .toList()
+    return ToolResultMessageUi(
+        toolName = toolName,
+        result = normalizedPayload,
+        fileChanges = fileChanges,
+        truncated = truncated
+    )
 }
 
 private fun copyTextToClipboard(context: android.content.Context, text: String) {
