@@ -552,101 +552,37 @@ fun SettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "这里的 GitHub Token 会给项目页的 push / pull、workflow 列表和手动触发使用。默认已经内置一套 GitHub OAuth 配置，直接点“浏览器授权”就能自动写入 Token；下面两项仅在你想覆盖成自己的 OAuth App 时再填写。",
+                    text = "这里的 GitHub 登录会给项目页的 push / pull、workflow 列表和手动触发使用。现在不再需要手动填写 OAuth 参数，直接点按钮就会跳浏览器登录。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                OutlinedTextField(
-                    value = config.githubToken,
-                    onValueChange = { token ->
-                        onConfigChanged(config.copy(githubToken = token))
-                    },
-                    label = { Text("GitHub Token") },
-                    modifier = Modifier.fillMaxWidth(),
-                    visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
-                    trailingIcon = {
-                        TextButton(onClick = { showApiKey = !showApiKey }) {
-                            Text(if (showApiKey) "隐藏" else "显示", fontSize = 12.sp)
-                        }
-                    },
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodySmall
-                )
-                OutlinedTextField(
-                    value = config.githubApiBaseUrl,
-                    onValueChange = { url ->
-                        onConfigChanged(config.copy(githubApiBaseUrl = url))
-                    },
-                    label = { Text("GitHub API Base URL") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodySmall,
-                    placeholder = { Text("https://api.github.com", fontSize = 12.sp) },
-                    supportingText = {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
                         Text(
-                            "默认官方 API；如果以后接 GitHub Enterprise 或代理，可以在这里覆盖。",
-                            fontSize = 10.sp
+                            text = "登录状态",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.secondary
                         )
-                    }
-                )
-                OutlinedTextField(
-                    value = config.githubClientId,
-                    onValueChange = { clientId ->
-                        onConfigChanged(config.copy(githubClientId = clientId))
-                    },
-                    label = { Text("GitHub Client ID") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodySmall,
-                    placeholder = { Text("留空使用内置 Client ID", fontSize = 12.sp) },
-                    supportingText = {
                         Text(
-                            "可选覆盖。留空时会使用应用内置的 GitHub OAuth Client ID；只有你想切到自己的 OAuth App 时才需要填写。",
-                            fontSize = 10.sp
+                            text = if (config.isGitHubSignedIn()) "已连接 GitHub" else "未连接 GitHub",
+                            style = MaterialTheme.typography.bodyMedium
                         )
-                    }
-                )
-                OutlinedTextField(
-                    value = config.githubClientSecret,
-                    onValueChange = { clientSecret ->
-                        onConfigChanged(config.copy(githubClientSecret = clientSecret))
-                    },
-                    label = { Text("GitHub Client Secret") },
-                    modifier = Modifier.fillMaxWidth(),
-                    visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodySmall,
-                    supportingText = {
-                        Text(
-                            "可选覆盖。留空时会使用应用内置的 Client Secret；只有你想改成自己的 OAuth App 时才需要填写。",
-                            fontSize = 10.sp
-                        )
-                    }
-                )
-                OutlinedTextField(
-                    value = config.getGitHubOAuthRedirectUri(),
-                    onValueChange = {},
-                    label = { Text("Authorization Callback URL") },
-                    modifier = Modifier.fillMaxWidth(),
-                    readOnly = true,
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodySmall,
-                    supportingText = {
-                        Text(
-                            "把这个地址原样填到 GitHub OAuth App 的 Authorization callback URL 里。",
-                            fontSize = 10.sp
-                        )
-                    },
-                    trailingIcon = {
-                        TextButton(
-                            onClick = {
-                                clipboardManager.setText(AnnotatedString(config.getGitHubOAuthRedirectUri()))
-                            }
-                        ) {
-                            Text("复制", fontSize = 12.sp)
+                        if (config.githubToken.isNotBlank()) {
+                            Text(
+                                text = "GitHub Token 已同步到应用内，可直接用于仓库与工作流功能。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
-                )
+                }
                 gitHubAuthState.viewerLogin?.let { login ->
                     Surface(
                         shape = RoundedCornerShape(10.dp),
@@ -681,22 +617,22 @@ fun SettingsScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     FilledTonalButton(
-                        onClick = onRefreshGitHubAuthStatus,
-                        enabled = !gitHubAuthState.isLoading
-                    ) {
-                        Text("校验登录", fontSize = 12.sp)
-                    }
-                    FilledTonalButton(
                         onClick = onStartGitHubOAuthLogin,
                         enabled = !gitHubAuthState.isLoading
                     ) {
-                        Text("浏览器授权", fontSize = 12.sp)
+                        Text(if (config.isGitHubSignedIn()) "重新登录" else "GitHub 登录", fontSize = 12.sp)
+                    }
+                    FilledTonalButton(
+                        onClick = onRefreshGitHubAuthStatus,
+                        enabled = !gitHubAuthState.isLoading
+                    ) {
+                        Text("查看状态", fontSize = 12.sp)
                     }
                     OutlinedButton(
                         onClick = onClearGitHubToken,
-                        enabled = config.githubToken.isNotBlank() && !gitHubAuthState.isLoading
+                        enabled = config.isGitHubSignedIn() && !gitHubAuthState.isLoading
                     ) {
-                        Text("清空 Token", fontSize = 12.sp)
+                        Text("退出登录", fontSize = 12.sp)
                     }
                 }
                 if (gitHubAuthState.isLoading) {
@@ -713,46 +649,6 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                    }
-                }
-                gitHubAuthState.callbackUri?.takeIf { it.isNotBlank() }?.let { callbackUri ->
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.35f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text(
-                                text = "回调地址已固定",
-                                style = MaterialTheme.typography.titleSmall
-                            )
-                            Text(
-                                text = callbackUri,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                TextButton(
-                                    onClick = {
-                                        clipboardManager.setText(AnnotatedString(callbackUri))
-                                    }
-                                ) {
-                                    Text("复制回调地址")
-                                }
-                                gitHubAuthState.authorizationUrl?.takeIf { it.isNotBlank() }?.let { uri ->
-                                    TextButton(
-                                        onClick = { uriHandler.openUri(uri) }
-                                    ) {
-                                        Text("重新打开授权页")
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
                 gitHubAuthState.message?.takeIf { it.isNotBlank() && !gitHubAuthState.isLoading }?.let {

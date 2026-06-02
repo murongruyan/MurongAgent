@@ -24,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import dagger.hilt.android.AndroidEntryPoint
@@ -38,6 +39,8 @@ import dev.reasonix.mobile.ui.chat.ChatViewModel
 import dev.reasonix.mobile.ui.chat.ChatScreen
 import dev.reasonix.mobile.ui.chat.SessionDrawerContent
 import dev.reasonix.mobile.ui.chat.buildConversationText
+import dev.reasonix.mobile.ui.auth.AuthViewModel
+import dev.reasonix.mobile.ui.auth.GitHubLoginScreen
 import dev.reasonix.mobile.ui.project.ProjectScreen
 import dev.reasonix.mobile.ui.settings.SettingsScreen
 import dev.reasonix.mobile.ui.settings.SettingsViewModel
@@ -75,7 +78,13 @@ class MainActivity : ComponentActivity() {
 
     private fun dispatchGitHubOAuthCallback(intent: Intent?) {
         val callbackUri = intent?.data ?: return
-        if (callbackUri.scheme != "reasonix" || callbackUri.host != "github") return
+        val isLegacyGitHubCallback =
+            callbackUri.scheme == "reasonix" && callbackUri.host == "github"
+        val isBackendGitHubCallback =
+            callbackUri.scheme == "reasonix" &&
+                callbackUri.host == "auth" &&
+                callbackUri.path?.startsWith("/github") == true
+        if (!isLegacyGitHubCallback && !isBackendGitHubCallback) return
         gitHubOAuthCallbackFlow.tryEmit(callbackUri.toString())
     }
 }
@@ -95,8 +104,10 @@ fun MainScreen() {
     var taskProjectPath by remember { mutableStateOf("") }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val authVm: AuthViewModel = hiltViewModel()
     val chatVm: ChatViewModel = hiltViewModel()
     val settingsVm: SettingsViewModel = hiltViewModel()
+    val authState by authVm.uiState.collectAsState()
     val chatState by chatVm.state.collectAsState()
     val chatConfig by chatVm.config.collectAsState()
     val chatSessions by chatVm.sessions.collectAsState()
@@ -113,6 +124,7 @@ fun MainScreen() {
         settingsConfig.applyProjectToolPreferences(chatState.projectToolPreferences)
     }
     val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
     var showChatMenu by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     var renameSessionTargetId by remember { mutableStateOf<String?>(null) }
@@ -123,14 +135,29 @@ fun MainScreen() {
 
     LaunchedEffect(Unit) {
         MainActivity.gitHubOAuthCallbackFlow.collect { callbackUri ->
+            authVm.handleGitHubCallback(callbackUri)
             settingsVm.handleGitHubOAuthCallback(callbackUri)
         }
+    }
+
+    LaunchedEffect(authState.authorizationUrl) {
+        val authorizationUrl = authState.authorizationUrl?.trim().orEmpty()
+        if (authorizationUrl.isBlank()) return@LaunchedEffect
+        runCatching { uriHandler.openUri(authorizationUrl) }
     }
 
     LaunchedEffect(currentScreen) {
         if (currentScreen !is Screen.Chat && drawerState.isOpen) {
             drawerState.close()
         }
+    }
+
+    if (!authState.isAuthenticated) {
+        GitHubLoginScreen(
+            uiState = authState,
+            onStartGitHubLogin = { authVm.startGitHubLogin() }
+        )
+        return
     }
 
     val importConversationLauncher = rememberLauncherForActivityResult(

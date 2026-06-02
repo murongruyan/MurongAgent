@@ -14,6 +14,7 @@ import dev.reasonix.mobile.core.mcp.McpRegistry
 import dev.reasonix.mobile.core.mcp.McpServerConfig
 import dev.reasonix.mobile.core.mcp.McpServerStatus
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,7 +29,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
-import java.util.UUID
 import javax.inject.Inject
 
 data class BalanceSyncUiState(
@@ -97,6 +97,14 @@ class SettingsViewModel @Inject constructor(
         // 加载已保存的 MCP 配置
         _mcpServers.value = mcpRegistry.loadConfigs()
         _sessions.value = chatSessionManager.listSessions()
+        viewModelScope.launch {
+            configRepository.configFlow.collect { currentConfig ->
+                _gitHubAuthState.value = _gitHubAuthState.value.copy(
+                    viewerLogin = currentConfig.githubViewerLogin.ifBlank { null },
+                    viewerName = currentConfig.githubViewerName.ifBlank { null }
+                )
+            }
+        }
     }
 
     fun updateConfig(newConfig: ProviderConfig) {
@@ -220,71 +228,50 @@ class SettingsViewModel @Inject constructor(
     fun refreshGitHubAuthStatus() {
         viewModelScope.launch(Dispatchers.IO) {
             val currentConfig = configRepository.getConfig()
-            val token = currentConfig.githubToken.trim()
-            if (token.isBlank()) {
+            if (!currentConfig.isGitHubSignedIn()) {
                 _gitHubAuthState.value = GitHubAuthUiState(
-                    error = "请先填写 GitHub Token，或使用浏览器授权登录。"
+                    error = "当前还没有登录 GitHub。"
                 )
                 return@launch
             }
-            _gitHubAuthState.value = _gitHubAuthState.value.copy(isLoading = true, error = null, message = null)
-            val result = fetchGitHubViewer(
-                apiBaseUrl = currentConfig.getGitHubApiBaseUrl(),
-                token = token
+            _gitHubAuthState.value = _gitHubAuthState.value.copy(
+                isLoading = false,
+                viewerLogin = currentConfig.githubViewerLogin.ifBlank { null },
+                viewerName = currentConfig.githubViewerName.ifBlank { null },
+                message = "当前已登录 GitHub",
+                error = null
             )
-            _gitHubAuthState.value = if (result.success) {
-                _gitHubAuthState.value.copy(
-                    isLoading = false,
-                    viewerLogin = result.viewerLogin,
-                    viewerName = result.viewerName,
-                    message = "GitHub 账号校验成功",
-                    error = null
-                )
-            } else {
-                GitHubAuthUiState(
-                    isLoading = false,
-                    error = result.error ?: "GitHub 账号校验失败"
-                )
-            }
         }
     }
 
     fun clearGitHubToken() {
         viewModelScope.launch {
             val current = configRepository.getConfig()
-            configRepository.saveConfig(current.copy(githubToken = ""))
-            _gitHubAuthState.value = GitHubAuthUiState(message = "已清除 GitHub Token")
+            configRepository.saveConfig(
+                current.copy(
+                    githubBackendSessionToken = "",
+                    githubToken = "",
+                    githubViewerLogin = "",
+                    githubViewerName = "",
+                    githubViewerAvatarUrl = ""
+                )
+            )
+            _gitHubAuthState.value = GitHubAuthUiState(message = "已退出 GitHub 登录")
         }
     }
 
     fun startGitHubOAuthLogin() {
         viewModelScope.launch(Dispatchers.IO) {
             val currentConfig = configRepository.getConfig()
-            val clientId = currentConfig.getGitHubClientId().trim()
-            val clientSecret = currentConfig.getGitHubClientSecret().trim()
-            if (clientId.isBlank()) {
-                _gitHubAuthState.value = GitHubAuthUiState(
-                    error = "请先填写 GitHub Client ID。"
-                )
-                return@launch
-            }
-            if (clientSecret.isBlank()) {
-                _gitHubAuthState.value = GitHubAuthUiState(
-                    error = "请先填写 GitHub Client Secret。"
-                )
-                return@launch
-            }
-            val redirectUri = currentConfig.getGitHubOAuthRedirectUri()
-            val state = UUID.randomUUID().toString()
             _gitHubAuthState.value = GitHubAuthUiState(
                 isLoading = true,
-                authorizationUrl = buildGitHubOAuthAuthorizeUrl(
-                    clientId = clientId,
-                    redirectUri = redirectUri,
-                    state = state
-                ),
-                callbackUri = redirectUri,
-                pendingState = state,
+                authorizationUrl = Uri.parse(currentConfig.getReasonixBackendAuthApiUrl())
+                    .buildUpon()
+                    .appendQueryParameter("action", "start")
+                    .appendQueryParameter("client_redirect_uri", currentConfig.getReasonixGitHubRedirectUri())
+                    .build()
+                    .toString(),
+                callbackUri = currentConfig.getReasonixGitHubRedirectUri(),
                 message = "正在打开 GitHub 授权页，授权完成后会自动回到应用。"
             )
         }
@@ -296,15 +283,6 @@ class SettingsViewModel @Inject constructor(
         lastHandledGitHubCallback = trimmedUri
         viewModelScope.launch(Dispatchers.IO) {
             val currentConfig = configRepository.getConfig()
-            val clientId = currentConfig.getGitHubClientId().trim()
-            val clientSecret = currentConfig.getGitHubClientSecret().trim()
-            val expectedState = _gitHubAuthState.value.pendingState
-            if (clientId.isBlank() || clientSecret.isBlank()) {
-                _gitHubAuthState.value = GitHubAuthUiState(
-                    error = "请先补全 GitHub Client ID 和 Client Secret。"
-                )
-                return@launch
-            }
             val callbackUri = runCatching { Uri.parse(trimmedUri) }.getOrNull()
             if (callbackUri == null) {
                 _gitHubAuthState.value = GitHubAuthUiState(
@@ -312,7 +290,6 @@ class SettingsViewModel @Inject constructor(
                 )
                 return@launch
             }
-            val returnedState = callbackUri.getQueryParameter("state")
             val errorCode = callbackUri.getQueryParameter("error")
             val errorDescription = callbackUri.getQueryParameter("error_description")
             if (!errorCode.isNullOrBlank()) {
@@ -322,45 +299,39 @@ class SettingsViewModel @Inject constructor(
                 )
                 return@launch
             }
-            if (!expectedState.isNullOrBlank() && returnedState != expectedState) {
+            val exchangeCode = callbackUri.getQueryParameter("exchange_code").orEmpty()
+            if (exchangeCode.isBlank()) {
                 _gitHubAuthState.value = GitHubAuthUiState(
                     callbackUri = trimmedUri,
-                    error = "GitHub 登录状态校验失败，请重新发起授权。"
-                )
-                return@launch
-            }
-            val code = callbackUri.getQueryParameter("code").orEmpty()
-            if (code.isBlank()) {
-                _gitHubAuthState.value = GitHubAuthUiState(
-                    callbackUri = trimmedUri,
-                    error = "GitHub 回调里没有拿到授权码。"
+                    error = "GitHub 回调里没有拿到登录票据。"
                 )
                 return@launch
             }
             _gitHubAuthState.value = GitHubAuthUiState(
                 isLoading = true,
                 callbackUri = trimmedUri,
-                message = "正在交换 GitHub Token..."
+                message = "正在完成 GitHub 登录..."
             )
-            val tokenResult = exchangeGitHubOAuthCode(
-                clientId = clientId,
-                clientSecret = clientSecret,
-                redirectUri = currentConfig.getGitHubOAuthRedirectUri(),
-                code = code
+            val tokenResult = exchangeReasonixLoginCode(
+                apiUrl = currentConfig.getReasonixBackendAuthApiUrl(),
+                exchangeCode = exchangeCode
             )
             if (tokenResult.success && !tokenResult.accessToken.isNullOrBlank()) {
-                configRepository.saveConfig(currentConfig.copy(githubToken = tokenResult.accessToken))
-                val viewer = fetchGitHubViewer(
-                    apiBaseUrl = currentConfig.getGitHubApiBaseUrl(),
-                    token = tokenResult.accessToken
+                configRepository.saveConfig(
+                    currentConfig.copy(
+                        githubBackendSessionToken = tokenResult.sessionToken.orEmpty(),
+                        githubToken = tokenResult.accessToken,
+                        githubViewerLogin = tokenResult.viewerLogin.orEmpty(),
+                        githubViewerName = tokenResult.viewerName.orEmpty()
+                    )
                 )
                 _gitHubAuthState.value = GitHubAuthUiState(
                     isLoading = false,
-                    viewerLogin = viewer.viewerLogin,
-                    viewerName = viewer.viewerName,
+                    viewerLogin = tokenResult.viewerLogin,
+                    viewerName = tokenResult.viewerName,
                     callbackUri = trimmedUri,
                     message = "GitHub 登录成功",
-                    error = viewer.error
+                    error = null
                 )
             } else {
                 _gitHubAuthState.value = GitHubAuthUiState(
@@ -405,36 +376,21 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    private fun buildGitHubOAuthAuthorizeUrl(
-        clientId: String,
-        redirectUri: String,
-        state: String
-    ): String {
-        return Uri.parse("https://github.com/login/oauth/authorize")
-            .buildUpon()
-            .appendQueryParameter("client_id", clientId)
-            .appendQueryParameter("redirect_uri", redirectUri)
-            .appendQueryParameter("scope", "repo read:user")
-            .appendQueryParameter("state", state)
-            .appendQueryParameter("allow_signup", "true")
-            .build()
-            .toString()
-    }
-
-    private fun exchangeGitHubOAuthCode(
-        clientId: String,
-        clientSecret: String,
-        redirectUri: String,
-        code: String
+    private fun exchangeReasonixLoginCode(
+        apiUrl: String,
+        exchangeCode: String
     ): GitHubOAuthTokenResult {
         val requestBody = buildFormBody(
-            "client_id" to clientId,
-            "client_secret" to clientSecret,
-            "code" to code,
-            "redirect_uri" to redirectUri
+            "exchange_code" to exchangeCode
         ).toRequestBody("application/x-www-form-urlencoded".toMediaType())
         val request = Request.Builder()
-            .url("https://github.com/login/oauth/access_token")
+            .url(
+                Uri.parse(apiUrl)
+                    .buildUpon()
+                    .appendQueryParameter("action", "exchange")
+                    .build()
+                    .toString()
+            )
             .addHeader("Accept", "application/json")
             .addHeader("User-Agent", "Reasonix-Mobile/1.0")
             .post(requestBody)
@@ -446,21 +402,29 @@ class SettingsViewModel @Inject constructor(
                     return GitHubOAuthTokenResult(
                         success = false,
                         accessToken = null,
-                        error = parseGitHubJsonMessage(body) ?: "交换 GitHub Token 失败，HTTP ${response.code}"
+                        error = parseGitHubJsonMessage(body) ?: "完成 GitHub 登录失败，HTTP ${response.code}"
                     )
                 }
-                val obj = githubJson.parseToJsonElement(body).jsonObject
-                val accessToken = obj["access_token"]?.jsonPrimitive?.contentOrNull
+                val obj = githubJson.parseToJsonElement(body).jsonObject["data"]?.jsonObject
+                    ?: return GitHubOAuthTokenResult(
+                        success = false,
+                        accessToken = null,
+                        error = "服务器没有返回登录结果"
+                    )
+                val accessToken = obj["github_token"]?.jsonPrimitive?.contentOrNull
                 if (accessToken.isNullOrBlank()) {
                     return GitHubOAuthTokenResult(
                         success = false,
                         accessToken = null,
-                        error = parseGitHubJsonMessage(body) ?: "GitHub 没有返回 access token"
+                        error = parseGitHubJsonMessage(body) ?: "服务器没有返回 GitHub Token"
                     )
                 }
                 GitHubOAuthTokenResult(
                     success = true,
                     accessToken = accessToken,
+                    sessionToken = obj["session_token"]?.jsonPrimitive?.contentOrNull,
+                    viewerLogin = obj["github_login"]?.jsonPrimitive?.contentOrNull,
+                    viewerName = obj["github_name"]?.jsonPrimitive?.contentOrNull,
                     error = null
                 )
             }
@@ -468,7 +432,7 @@ class SettingsViewModel @Inject constructor(
             GitHubOAuthTokenResult(
                 success = false,
                 accessToken = null,
-                error = error.message ?: "交换 GitHub Token 失败"
+                error = error.message ?: "完成 GitHub 登录失败"
             )
         }
     }
@@ -498,5 +462,8 @@ private data class GitHubViewerResult(
 private data class GitHubOAuthTokenResult(
     val success: Boolean,
     val accessToken: String?,
+    val sessionToken: String? = null,
+    val viewerLogin: String? = null,
+    val viewerName: String? = null,
     val error: String?
 )
