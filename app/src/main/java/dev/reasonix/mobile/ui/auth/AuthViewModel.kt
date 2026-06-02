@@ -156,8 +156,14 @@ class AuthViewModel @Inject constructor(
     }
 
     fun logout() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val current = configRepository.getConfig()
+            if (current.githubBackendSessionToken.isNotBlank()) {
+                notifyBackendLogout(
+                    apiUrl = current.getReasonixBackendAuthApiUrl(),
+                    sessionToken = current.githubBackendSessionToken
+                )
+            }
             configRepository.saveConfig(
                 current.copy(
                     githubBackendSessionToken = "",
@@ -223,6 +229,26 @@ class AuthViewModel @Inject constructor(
         return runCatching {
             json.parseToJsonElement(raw).jsonObject[field]?.jsonPrimitive?.contentOrNull
         }.getOrNull()
+    }
+
+    private fun notifyBackendLogout(apiUrl: String, sessionToken: String) {
+        val request = Request.Builder()
+            .url(
+                Uri.parse(apiUrl)
+                    .buildUpon()
+                    .appendQueryParameter("action", "logout")
+                    .build()
+                    .toString()
+            )
+            .addHeader("Accept", "application/json")
+            .addHeader("Authorization", "Bearer $sessionToken")
+            .addHeader("User-Agent", "Reasonix-Mobile/1.0")
+            .post(ByteArray(0).toRequestBody("application/x-www-form-urlencoded".toMediaType()))
+            .build()
+
+        runCatching {
+            client.newCall(request).execute().use { }
+        }
     }
 }
 
