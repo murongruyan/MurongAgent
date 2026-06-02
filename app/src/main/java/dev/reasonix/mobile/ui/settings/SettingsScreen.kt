@@ -552,7 +552,7 @@ fun SettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "这里的 GitHub Token 会给项目页的 push / pull、workflow 列表和手动触发使用。也可以用下方 OAuth App 走浏览器授权后自动写入。",
+                    text = "这里的 GitHub Token 会给项目页的 push / pull、workflow 列表和手动触发使用。默认已经内置一套 GitHub OAuth 配置，直接点“浏览器授权”就能自动写入 Token；下面两项仅在你想覆盖成自己的 OAuth App 时再填写。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -598,10 +598,10 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     textStyle = MaterialTheme.typography.bodySmall,
-                    placeholder = { Text("用于浏览器回跳授权", fontSize = 12.sp) },
+                    placeholder = { Text("留空使用内置 Client ID", fontSize = 12.sp) },
                     supportingText = {
                         Text(
-                            "配置 GitHub OAuth App 的 Client ID，点击“浏览器授权”后会跳到 GitHub 并在授权完成后自动回到 App。",
+                            "可选覆盖。留空时会使用应用内置的 GitHub OAuth Client ID；只有你想切到自己的 OAuth App 时才需要填写。",
                             fontSize = 10.sp
                         )
                     }
@@ -618,7 +618,7 @@ fun SettingsScreen(
                     textStyle = MaterialTheme.typography.bodySmall,
                     supportingText = {
                         Text(
-                            "授权码回跳换取 Token 时会用到，仅建议你自己的自用 OAuth App 这样配。",
+                            "可选覆盖。留空时会使用应用内置的 Client Secret；只有你想改成自己的 OAuth App 时才需要填写。",
                             fontSize = 10.sp
                         )
                     }

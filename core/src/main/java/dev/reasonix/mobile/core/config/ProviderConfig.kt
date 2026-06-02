@@ -153,8 +153,8 @@ data class ProviderConfig(
         "deepseek" -> ""; "openai-compatible" -> openaiBalanceApiPath; "claude" -> claudeBalanceApiPath; else -> ""
     }
     fun getGitHubApiBaseUrl(): String = githubApiBaseUrl
-    fun getGitHubClientId(): String = githubClientId
-    fun getGitHubClientSecret(): String = githubClientSecret
+    fun getGitHubClientId(): String = githubClientId.trim().ifBlank { GITHUB_OAUTH_DEFAULT_CLIENT_ID }
+    fun getGitHubClientSecret(): String = githubClientSecret.trim().ifBlank { GITHUB_OAUTH_DEFAULT_CLIENT_SECRET }
     fun getGitHubOAuthRedirectUri(): String = GITHUB_OAUTH_REDIRECT_URI
     private fun normalizeBaseUrl(raw: String?): String? {
         val trimmed = raw?.trim().orEmpty()
@@ -391,4 +391,6 @@ fun ProjectToolPreferences?.isUsingGlobalToolPreferences(): Boolean {
 val DEFAULT_ENABLED_BUILTIN_TOOLS = listOf("shell", "file", "code_edit", "web_fetch", "web_search", "subagent_launch")
 val DEFAULT_ENABLED_FILE_TOOL_OPERATIONS = listOf("read", "list", "exists", "write", "delete", "chmod")
 val DEFAULT_SUBAGENT_FILE_TOOL_OPERATIONS = listOf("read", "list", "exists", "write", "delete")
+const val GITHUB_OAUTH_DEFAULT_CLIENT_ID = "Ov23liLslAc3qsSxTTVW"
+const val GITHUB_OAUTH_DEFAULT_CLIENT_SECRET = "39a8c2b2df5a4d5c4746acc4315cec7d40b3bfcb"
 const val GITHUB_OAUTH_REDIRECT_URI = "reasonix://github/callback"
