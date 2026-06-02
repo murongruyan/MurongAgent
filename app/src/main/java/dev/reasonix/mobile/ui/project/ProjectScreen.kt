@@ -36,7 +36,6 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -102,6 +101,8 @@ import dev.reasonix.mobile.core.provider.ChatRequest
 import dev.reasonix.mobile.core.provider.ProviderRegistry
 import dev.reasonix.mobile.common.shell.KeepShellPublic
 import dev.reasonix.mobile.common.utils.RootFile
+import dev.reasonix.mobile.ui.ReasonixAlertDialog
+import dev.reasonix.mobile.ui.ReasonixGlassSurface
 import dev.reasonix.mobile.ui.SkillDraftImportCard
 import dev.reasonix.mobile.ui.highlightSyntax
 import kotlinx.coroutines.Dispatchers
@@ -300,7 +301,11 @@ private fun ProjectEditorSection(
                     editorValue = initialValue
                     aiCompletionCandidate = null
                     showAiCompletionDialog = false
-                    editorMode = ProjectEditorMode.EDIT
+                    editorMode = if (isJsonLikeProjectFile(path)) {
+                        ProjectEditorMode.RAW_JSON
+                    } else {
+                        ProjectEditorMode.EDIT
+                    }
                     focusedSearchLine = focusLine ?: currentLineNumber(content, initialValue.selection.start)
                     focusedSearchQuery = focusQuery?.takeIf { it.isNotBlank() }
                     currentSearchMatch = initialValue.selection.takeIf { !it.collapsed }
@@ -902,8 +907,11 @@ private fun ProjectEditorSection(
     } else {
         val editorVerticalScroll = rememberScrollState()
         val editorHorizontalScroll = rememberScrollState()
-        val quickInsertActions = remember {
-            PROJECT_EDITOR_SYMBOL_ACTIONS
+        val isRawJsonFile = remember(selectedFilePath, language) {
+            isJsonLikeProjectFile(selectedFilePath, language)
+        }
+        val quickInsertActions = remember(isRawJsonFile) {
+            if (isRawJsonFile) PROJECT_EDITOR_JSON_SYMBOL_ACTIONS else PROJECT_EDITOR_SYMBOL_ACTIONS
         }
 
         fun insertQuickAction(action: ProjectQuickInsertAction) {
@@ -954,6 +962,28 @@ private fun ProjectEditorSection(
                     )
                     OutlinedButton(onClick = {}, enabled = false) {
                         Text("第 $currentLine 行")
+                    }
+                    if (isRawJsonFile) {
+                        ProjectEditorMode.entries.forEach { mode ->
+                            if (mode == ProjectEditorMode.RAW_JSON || mode != ProjectEditorMode.RAW_JSON) {
+                                FilterChip(
+                                    selected = editorMode == mode,
+                                    onClick = { editorMode = mode },
+                                    label = { Text(mode.label) },
+                                    enabled = mode != ProjectEditorMode.RAW_JSON || isRawJsonFile
+                                )
+                            }
+                        }
+                    } else {
+                        ProjectEditorMode.entries
+                            .filterNot { it == ProjectEditorMode.RAW_JSON }
+                            .forEach { mode ->
+                                FilterChip(
+                                    selected = editorMode == mode,
+                                    onClick = { editorMode = mode },
+                                    label = { Text(mode.label) }
+                                )
+                            }
                     }
                     IconButton(onClick = { showSearchReplaceDialog = true }) {
                         Icon(Icons.Outlined.Search, contentDescription = "搜索替换")
@@ -1104,22 +1134,61 @@ private fun ProjectEditorSection(
                     .weight(1f)
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 8.dp)
-                    .background(Color(0xFF1E1E1E), RoundedCornerShape(12.dp))
             ) {
                 if (isFileLoading) {
                     EmptyEditorState("正在读取文件", "请稍候，正在加载当前文件内容。")
+                } else if (editorMode == ProjectEditorMode.RAW_JSON && isRawJsonFile) {
+                    ReasonixGlassSurface(
+                        modifier = Modifier.fillMaxSize(),
+                        shape = RoundedCornerShape(18.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp)
+                    ) {
+                        Text(
+                            text = "原始 JSON",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "参考 fas.json 原始页，保持简单直接的文本编辑体验，适合快速粘贴、校正和整体替换。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                        ) {
+                            OutlinedTextField(
+                                value = editorValue,
+                                onValueChange = { updateEditorValue(it) },
+                                modifier = Modifier.fillMaxSize(),
+                                label = { Text("JSON 原文") },
+                                textStyle = MaterialTheme.typography.bodySmall.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    lineHeight = 18.sp
+                                )
+                            )
+                        }
                 } else {
-                    ProjectCodeEditorPane(
-                        editorValue = editorValue,
-                        onValueChange = { updateEditorValue(it) },
-                        language = language,
-                        searchQuery = editorSearchQuery,
-                        currentMatch = currentSearchMatch,
-                        diagnostics = editorDiagnostics,
-                        verticalScrollState = editorVerticalScroll,
-                        horizontalScrollState = editorHorizontalScroll,
-                        modifier = Modifier.fillMaxSize()
-                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color(0xFF1E1E1E), RoundedCornerShape(12.dp))
+                    ) {
+                        ProjectCodeEditorPane(
+                            editorValue = editorValue,
+                            onValueChange = { updateEditorValue(it) },
+                            language = language,
+                            searchQuery = editorSearchQuery,
+                            currentMatch = currentSearchMatch,
+                            diagnostics = editorDiagnostics,
+                            verticalScrollState = editorVerticalScroll,
+                            horizontalScrollState = editorHorizontalScroll,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
                 }
             }
 
@@ -1147,7 +1216,7 @@ private fun ProjectEditorSection(
     }
 
     if (showSearchReplaceDialog) {
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = { showSearchReplaceDialog = false },
             title = { Text("搜索与替换") },
             text = {
@@ -1182,7 +1251,7 @@ private fun ProjectEditorSection(
     }
 
     if (showLineReplaceDialog) {
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = { showLineReplaceDialog = false },
             title = { Text("替换当前行") },
             text = {
@@ -1222,7 +1291,7 @@ private fun ProjectEditorSection(
 
     if (showAiCompletionDialog) {
         val candidate = aiCompletionCandidate
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = { showAiCompletionDialog = false },
             title = { Text("AI 自动补全") },
             text = {
@@ -1278,7 +1347,7 @@ private fun ProjectEditorSection(
     }
 
     if (showOutlineDialog) {
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = { showOutlineDialog = false },
             title = { Text("代码大纲") },
             text = {
@@ -1336,7 +1405,7 @@ private fun ProjectEditorSection(
     }
 
     if (showLanguageDialog) {
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = { showLanguageDialog = false },
             title = { Text("切换语法高亮") },
             text = {
@@ -1362,7 +1431,7 @@ private fun ProjectEditorSection(
     }
 
     if (showDiagnosticsDialog) {
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = { showDiagnosticsDialog = false },
             title = { Text("错误列表") },
             text = {
@@ -1415,7 +1484,7 @@ private fun ProjectEditorSection(
     }
 
     if (showConflictResolverDialog) {
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = { showConflictResolverDialog = false },
             title = {
                 Text(
@@ -2702,7 +2771,7 @@ private fun ProjectGitSection(
     }
 
     if (showInitGitDialog) {
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = { showInitGitDialog = false },
             confirmButton = {
                 Button(
@@ -2746,7 +2815,7 @@ private fun ProjectGitSection(
     }
 
     if (showCreateGitHubRepoDialog) {
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = { showCreateGitHubRepoDialog = false },
             confirmButton = {
                 Button(
@@ -2867,7 +2936,7 @@ private fun ProjectGitSection(
 
     if (showCommitDialog) {
         val finalCommitMessage = buildGitCommitMessage(commitTitleDraft, commitDetailDraft)
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = { showCommitDialog = false },
             confirmButton = {
                 Button(
@@ -3005,7 +3074,7 @@ private fun ProjectGitSection(
     }
 
     if (showBranchDialog) {
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = { showBranchDialog = false },
             confirmButton = {
                 Button(
@@ -3156,7 +3225,7 @@ private fun ProjectGitSection(
     }
 
     workflowDispatchTarget?.let { workflow ->
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = { workflowDispatchTarget = null },
             confirmButton = {
                 Button(
@@ -3219,7 +3288,7 @@ private fun ProjectGitSection(
     }
 
     artifactDialogState?.let { dialog ->
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = { artifactDialogState = null },
             confirmButton = {
                 TextButton(onClick = { artifactDialogState = null }) {
@@ -3351,7 +3420,7 @@ private fun ProjectGitSection(
     }
 
     workflowRunDetailDialogState?.let { detail ->
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = { workflowRunDetailDialogState = null },
             confirmButton = {
                 TextButton(onClick = { workflowRunDetailDialogState = null }) {
@@ -3525,7 +3594,7 @@ private fun ProjectGitSection(
     }
 
     releaseEditTarget?.let { release ->
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = { releaseEditTarget = null },
             confirmButton = {
                 Button(
@@ -3625,7 +3694,7 @@ private fun ProjectGitSection(
     }
 
     if (showCreateReleaseDialog) {
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = {
                 showCreateReleaseDialog = false
                 resetReleaseDraft()
@@ -3734,7 +3803,7 @@ private fun ProjectGitSection(
     }
 
     releaseAssetDialogState?.let { dialog ->
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = { releaseAssetDialogState = null },
             confirmButton = {
                 TextButton(onClick = { releaseAssetDialogState = null }) {
@@ -3839,7 +3908,7 @@ private fun ProjectGitSection(
     }
 
     diffPreview?.let { preview ->
-        AlertDialog(
+        ReasonixAlertDialog(
             onDismissRequest = { diffPreview = null },
             confirmButton = {
                 TextButton(onClick = { diffPreview = null }) {
@@ -5634,7 +5703,17 @@ private enum class ProjectPrimaryTab(val label: String) {
 
 private enum class ProjectEditorMode(val label: String) {
     PREVIEW("高亮预览"),
-    EDIT("编辑")
+    EDIT("编辑"),
+    RAW_JSON("原始 JSON")
+}
+
+private fun isJsonLikeProjectFile(path: String?, language: String? = null): Boolean {
+    val normalizedPath = path?.lowercase().orEmpty()
+    val normalizedLanguage = language?.lowercase().orEmpty()
+    return normalizedPath.endsWith(".json") ||
+        normalizedPath.endsWith(".jsonc") ||
+        normalizedPath.endsWith(".geojson") ||
+        normalizedLanguage == "json"
 }
 
 private data class ProjectTreeEntry(
@@ -7284,6 +7363,15 @@ private val PROJECT_EDITOR_SYMBOL_ACTIONS = listOf(
     ProjectQuickInsertAction("#", "#"),
     ProjectQuickInsertAction("&", "&"),
     ProjectQuickInsertAction("|", "|")
+)
+private val PROJECT_EDITOR_JSON_SYMBOL_ACTIONS = listOf(
+    ProjectQuickInsertAction("{ }", "{\n  \n}"),
+    ProjectQuickInsertAction("[ ]", "[\n  \n]"),
+    ProjectQuickInsertAction("\"key\"", "\"key\": "),
+    ProjectQuickInsertAction(",", ","),
+    ProjectQuickInsertAction("true", "true"),
+    ProjectQuickInsertAction("false", "false"),
+    ProjectQuickInsertAction("null", "null")
 )
 private val PROJECT_LANGUAGE_CHOICES = listOf(
     ProjectLanguageOption("自动", null),

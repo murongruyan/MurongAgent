@@ -9,21 +9,30 @@ import android.widget.Toast
 import android.provider.OpenableColumns
 import android.provider.DocumentsContract
 import android.net.Uri
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
@@ -44,12 +53,15 @@ import dev.reasonix.mobile.ui.auth.AuthViewModel
 import dev.reasonix.mobile.ui.auth.GitHubAuthFlow
 import dev.reasonix.mobile.ui.auth.GitHubLoginScreen
 import dev.reasonix.mobile.ui.project.ProjectScreen
+import dev.reasonix.mobile.ui.settings.AboutPage
 import dev.reasonix.mobile.ui.settings.SettingsScreen
+import dev.reasonix.mobile.ui.settings.ThemeSettingsPage
 import dev.reasonix.mobile.ui.settings.SettingsViewModel
 import dev.reasonix.mobile.ui.tools.ToolsScreen
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -92,14 +104,29 @@ sealed class Screen(val route: String, val title: String) {
     data object Settings : Screen("settings", "设置")
 }
 
+private sealed interface SettingsSubpage {
+    data object Main : SettingsSubpage
+    data object Theme : SettingsSubpage
+    data object About : SettingsSubpage
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen() {
+    val shellScreens = remember {
+        listOf(Screen.Chat, Screen.Projects, Screen.Tools, Screen.Settings)
+    }
     var currentScreen: Screen by remember { mutableStateOf(Screen.Chat) }
+    var settingsSubpage by remember { mutableStateOf<SettingsSubpage>(SettingsSubpage.Main) }
+    var settingsBackProgress by remember { mutableFloatStateOf(0f) }
     var showTaskDialog by remember { mutableStateOf(false) }
     var taskProjectPath by remember { mutableStateOf("") }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val pagerState = rememberPagerState(
+        initialPage = shellScreens.indexOfFirst { it.route == currentScreen.route }.coerceAtLeast(0),
+        pageCount = { shellScreens.size }
+    )
     val authVm: AuthViewModel = hiltViewModel()
     val chatVm: ChatViewModel = hiltViewModel()
     val settingsVm: SettingsViewModel = hiltViewModel()
@@ -128,11 +155,23 @@ fun MainScreen() {
     var showExportDialog by remember { mutableStateOf(false) }
     var exportFormat by remember { mutableStateOf(ConversationExportFormat.MARKDOWN) }
     var pendingExportData by remember { mutableStateOf<ConversationExportData?>(null) }
+    val uiController = LocalReasonixUiController.current
 
     LaunchedEffect(Unit) {
         MainActivity.gitHubOAuthCallbackFlow.collect { callbackUri ->
             authVm.handleGitHubCallback(callbackUri)
             settingsVm.handleGitHubOAuthCallback(callbackUri)
+        }
+    }
+
+    LaunchedEffect(pagerState.currentPage) {
+        currentScreen = shellScreens[pagerState.currentPage]
+    }
+
+    LaunchedEffect(currentScreen) {
+        val targetIndex = shellScreens.indexOfFirst { it.route == currentScreen.route }
+        if (targetIndex >= 0 && targetIndex != pagerState.currentPage) {
+            pagerState.animateScrollToPage(targetIndex)
         }
     }
 
@@ -151,6 +190,24 @@ fun MainScreen() {
     LaunchedEffect(currentScreen) {
         if (currentScreen !is Screen.Chat && drawerState.isOpen) {
             drawerState.close()
+        }
+    }
+
+    BackHandler(enabled = settingsSubpage != SettingsSubpage.Main) {
+        settingsSubpage = SettingsSubpage.Main
+    }
+
+    PredictiveBackHandler(enabled = settingsSubpage != SettingsSubpage.Main) { progress ->
+        try {
+            progress.collect { backEvent ->
+                settingsBackProgress = backEvent.progress
+            }
+            settingsBackProgress = 1f
+            settingsSubpage = SettingsSubpage.Main
+        } catch (_: CancellationException) {
+            settingsBackProgress = 0f
+        } finally {
+            settingsBackProgress = 0f
         }
     }
 
@@ -249,9 +306,24 @@ fun MainScreen() {
         }
     }
 
+    val topBarTitle = when (settingsSubpage) {
+        SettingsSubpage.Theme -> "主题界面"
+        SettingsSubpage.About -> "关于"
+        SettingsSubpage.Main -> when (currentScreen) {
+            is Screen.Chat -> chatState.sessionTitle.ifBlank { "新对话" }
+            is Screen.Projects -> Screen.Projects.title
+            is Screen.Tools -> Screen.Tools.title
+            is Screen.Settings -> Screen.Settings.title
+        }
+    }
+    val pagerVisualIndex = (
+        pagerState.currentPage.toFloat() + pagerState.currentPageOffsetFraction
+        ).coerceIn(0f, shellScreens.lastIndex.toFloat())
+    val showBottomBar = settingsSubpage == SettingsSubpage.Main
+
     ModalNavigationDrawer(
         drawerState = drawerState,
-        gesturesEnabled = currentScreen is Screen.Chat,
+        gesturesEnabled = currentScreen is Screen.Chat && showBottomBar,
         drawerContent = {
             if (currentScreen is Screen.Chat) {
                 ModalDrawerSheet {
@@ -285,472 +357,514 @@ fun MainScreen() {
             }
         },
     ) {
-        Scaffold(
-            snackbarHost = {
-                SnackbarHost(hostState = snackbarHostState)
-            },
-            containerColor = MaterialTheme.colorScheme.background,
-            topBar = {
-                TopAppBar(
-                    navigationIcon = {
-                        if (currentScreen is Screen.Chat) {
-                            IconButton(
-                                onClick = {
-                                    scope.launch {
-                                        drawerState.open()
-                                    }
-                                }
+        Box(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .reasonixGlassSource(LocalReasonixHazeState.current)
+            ) {
+                ReasonixGradientBackground(
+                    modifier = Modifier.fillMaxSize(),
+                    darkMode = uiController.themeMode == ReasonixThemeMode.DARK ||
+                        (uiController.themeMode == ReasonixThemeMode.SYSTEM &&
+                            MaterialTheme.colorScheme.background.luminance() < 0.5f)
+                )
+            }
+            Scaffold(
+                snackbarHost = {
+                    SnackbarHost(hostState = snackbarHostState)
+                },
+                containerColor = Color.Transparent,
+                topBar = {
+                    ReasonixGlassSurface(
+                        modifier = Modifier
+                            .statusBarsPadding()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        shape = RoundedCornerShape(26.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier.width(48.dp),
+                                contentAlignment = Alignment.CenterStart
                             ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Menu,
-                                    contentDescription = "打开会话列表"
-                                )
-                            }
-                        }
-                    },
-                    title = {
-                        Text(
-                            text = when (currentScreen) {
-                                is Screen.Chat -> chatState.sessionTitle.ifBlank { "新对话" }
-                                is Screen.Projects -> Screen.Projects.title
-                                is Screen.Tools -> Screen.Tools.title
-                                is Screen.Settings -> Screen.Settings.title
-                            },
-                            color = MaterialTheme.colorScheme.onBackground
-                        )
-                    },
-                    actions = {
-                        if (currentScreen is Screen.Chat) {
-                            buildPromptCacheSummary(chatState.usageSummary)?.let { cacheSummary ->
-                                Surface(
-                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
-                                    shape = MaterialTheme.shapes.large
-                                ) {
-                                    Text(
-                                        text = cacheSummary,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(8.dp))
-                            }
-                            Box {
-                                IconButton(onClick = { showChatMenu = true }) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.MoreVert,
-                                        contentDescription = "聊天操作"
-                                    )
-                                }
-                                DropdownMenu(
-                                    expanded = showChatMenu,
-                                    onDismissRequest = { showChatMenu = false }
-                                ) {
-                                    DropdownMenuItem(
-                                        text = { Text("新对话") },
-                                        onClick = {
-                                            chatVm.newSession()
-                                            showChatMenu = false
+                                when {
+                                    settingsSubpage != SettingsSubpage.Main -> {
+                                        IconButton(onClick = { settingsSubpage = SettingsSubpage.Main }) {
+                                            Text("←", style = MaterialTheme.typography.titleLarge)
                                         }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("新任务") },
-                                        onClick = {
-                                            taskProjectPath = ""
-                                            showTaskDialog = true
-                                            showChatMenu = false
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("重命名会话") },
-                                        onClick = {
-                                            openRenameDialog(
-                                                chatState.sessionId,
-                                                chatState.sessionTitle
-                                            )
-                                            showChatMenu = false
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("导出会话") },
-                                        onClick = {
-                                            exportFormat = ConversationExportFormat.MARKDOWN
-                                            showExportDialog = true
-                                            showChatMenu = false
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                if (chatState.compressionSnapshot == null) {
-                                                    "压缩上下文"
-                                                } else if (chatState.compressionSnapshot?.active == true) {
-                                                    "停用压缩"
-                                                } else {
-                                                    "启用压缩"
-                                                }
-                                            )
-                                        },
-                                        onClick = {
-                                            scope.launch {
-                                                val message = when {
-                                                    chatState.compressionSnapshot == null -> {
-                                                        chatVm.compressCurrentContext()
-                                                            .fold(
-                                                                onSuccess = {
-                                                                    "已压缩 ${it.sourceMessageCount} 条历史消息，生成摘要 V${it.version} 后续将基于摘要续聊"
-                                                                },
-                                                                onFailure = { error ->
-                                                                    error.message ?: "上下文压缩失败"
-                                                                }
-                                                            )
-                                                    }
-
-                                                    chatState.compressionSnapshot?.active == true -> {
-                                                        if (chatVm.disableContextCompression()) {
-                                                            "已停用上下文压缩，将恢复使用完整历史"
-                                                        } else {
-                                                            "停用上下文压缩失败"
-                                                        }
-                                                    }
-
-                                                    else -> {
-                                                        if (chatVm.enableContextCompression()) {
-                                                            "已重新启用上下文压缩"
-                                                        } else {
-                                                            "启用上下文压缩失败"
-                                                        }
-                                                    }
-                                                }
-                                                snackbarHostState.showSnackbar(message)
-                                            }
-                                            showChatMenu = false
-                                        }
-                                    )
-                                    if (chatState.compressionSnapshot != null) {
-                                        DropdownMenuItem(
-                                            text = { Text("重新压缩摘要") },
+                                    }
+                                    currentScreen is Screen.Chat -> {
+                                        IconButton(
                                             onClick = {
                                                 scope.launch {
-                                                    val message = chatVm.compressCurrentContext()
-                                                        .fold(
-                                                            onSuccess = {
-                                                                "已生成摘要 V${it.version}，压缩 ${it.sourceMessageCount} 条历史消息"
-                                                            },
-                                                            onFailure = { error ->
-                                                                error.message ?: "重新压缩摘要失败"
-                                                            }
-                                                        )
-                                                    snackbarHostState.showSnackbar(message)
+                                                    drawerState.open()
                                                 }
-                                                showChatMenu = false
                                             }
-                                        )
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.Menu,
+                                                contentDescription = "打开会话列表"
+                                            )
+                                        }
                                     }
-                                    DropdownMenuItem(
-                                        text = { Text("导入对话") },
-                                        onClick = {
-                                            importConversationLauncher.launch(
-                                                arrayOf("text/*", "application/json")
+                                }
+                            }
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    text = topBarTitle,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1
+                                )
+                                Text(
+                                    text = when (currentScreen) {
+                                        is Screen.Chat -> "会话与执行流"
+                                        is Screen.Projects -> "项目、编辑与 Git"
+                                        is Screen.Tools -> "工具状态与审批"
+                                        is Screen.Settings -> if (settingsSubpage == SettingsSubpage.Main) "账号、模型与外观" else "设置二级页"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.widthIn(min = 48.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                if (currentScreen is Screen.Chat && settingsSubpage == SettingsSubpage.Main) {
+                                    buildPromptCacheSummary(chatState.usageSummary)?.let { cacheSummary ->
+                                        ReasonixTagButton(text = cacheSummary, onClick = {})
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                    }
+                                    Box {
+                                        IconButton(onClick = { showChatMenu = true }) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.MoreVert,
+                                                contentDescription = "聊天操作"
                                             )
-                                            showChatMenu = false
                                         }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("复制全部") },
-                                        onClick = {
-                                            copyTextToClipboard(
-                                                context = context,
-                                                text = buildConversationText(chatState.messages)
+                                        DropdownMenu(
+                                            expanded = showChatMenu,
+                                            onDismissRequest = { showChatMenu = false }
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = { Text("新对话") },
+                                                onClick = {
+                                                    chatVm.newSession()
+                                                    showChatMenu = false
+                                                }
                                             )
-                                            showChatMenu = false
-                                        }
-                                    )
-                                    if (chatState.messages.any { it.role == "user" }) {
-                                        DropdownMenuItem(
-                                            text = { Text("回退最近一轮") },
-                                            onClick = {
-                                                chatVm.rollbackLastTurn()
-                                                showChatMenu = false
+                                            DropdownMenuItem(
+                                                text = { Text("新任务") },
+                                                onClick = {
+                                                    taskProjectPath = ""
+                                                    showTaskDialog = true
+                                                    showChatMenu = false
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("重命名会话") },
+                                                onClick = {
+                                                    openRenameDialog(
+                                                        chatState.sessionId,
+                                                        chatState.sessionTitle
+                                                    )
+                                                    showChatMenu = false
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("导出会话") },
+                                                onClick = {
+                                                    exportFormat = ConversationExportFormat.MARKDOWN
+                                                    showExportDialog = true
+                                                    showChatMenu = false
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        if (chatState.compressionSnapshot == null) {
+                                                            "压缩上下文"
+                                                        } else if (chatState.compressionSnapshot?.active == true) {
+                                                            "停用压缩"
+                                                        } else {
+                                                            "启用压缩"
+                                                        }
+                                                    )
+                                                },
+                                                onClick = {
+                                                    scope.launch {
+                                                        val message = when {
+                                                            chatState.compressionSnapshot == null -> {
+                                                                chatVm.compressCurrentContext()
+                                                                    .fold(
+                                                                        onSuccess = {
+                                                                            "已压缩 ${it.sourceMessageCount} 条历史消息，生成摘要 V${it.version} 后续将基于摘要续聊"
+                                                                        },
+                                                                        onFailure = { error ->
+                                                                            error.message ?: "上下文压缩失败"
+                                                                        }
+                                                                    )
+                                                            }
+
+                                                            chatState.compressionSnapshot?.active == true -> {
+                                                                if (chatVm.disableContextCompression()) {
+                                                                    "已停用上下文压缩，将恢复使用完整历史"
+                                                                } else {
+                                                                    "停用上下文压缩失败"
+                                                                }
+                                                            }
+
+                                                            else -> {
+                                                                if (chatVm.enableContextCompression()) {
+                                                                    "已重新启用上下文压缩"
+                                                                } else {
+                                                                    "启用上下文压缩失败"
+                                                                }
+                                                            }
+                                                        }
+                                                        snackbarHostState.showSnackbar(message)
+                                                    }
+                                                    showChatMenu = false
+                                                }
+                                            )
+                                            if (chatState.compressionSnapshot != null) {
+                                                DropdownMenuItem(
+                                                    text = { Text("重新压缩摘要") },
+                                                    onClick = {
+                                                        scope.launch {
+                                                            val message = chatVm.compressCurrentContext()
+                                                                .fold(
+                                                                    onSuccess = {
+                                                                        "已生成摘要 V${it.version}，压缩 ${it.sourceMessageCount} 条历史消息"
+                                                                    },
+                                                                    onFailure = { error ->
+                                                                        error.message ?: "重新压缩摘要失败"
+                                                                    }
+                                                                )
+                                                            snackbarHostState.showSnackbar(message)
+                                                        }
+                                                        showChatMenu = false
+                                                    }
+                                                )
                                             }
-                                        )
+                                            DropdownMenuItem(
+                                                text = { Text("导入对话") },
+                                                onClick = {
+                                                    importConversationLauncher.launch(
+                                                        arrayOf("text/*", "application/json")
+                                                    )
+                                                    showChatMenu = false
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("复制全部") },
+                                                onClick = {
+                                                    copyTextToClipboard(
+                                                        context = context,
+                                                        text = buildConversationText(chatState.messages)
+                                                    )
+                                                    showChatMenu = false
+                                                }
+                                            )
+                                            if (chatState.messages.any { it.role == "user" }) {
+                                                DropdownMenuItem(
+                                                    text = { Text("回退最近一轮") },
+                                                    onClick = {
+                                                        chatVm.rollbackLastTurn()
+                                                        showChatMenu = false
+                                                    }
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.background,
-                        titleContentColor = MaterialTheme.colorScheme.onBackground,
-                        actionIconContentColor = MaterialTheme.colorScheme.primary,
-                        navigationIconContentColor = MaterialTheme.colorScheme.primary
-                    )
-                )
-            },
-            bottomBar = {
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-                    tonalElevation = 6.dp,
-                    shadowElevation = 2.dp
-                ) {
-                    NavigationBar(
-                        containerColor = Color.Transparent,
-                        tonalElevation = 0.dp
-                    ) {
-                        NavigationBarItem(
-                            selected = currentScreen is Screen.Chat,
-                            onClick = { currentScreen = Screen.Chat },
-                            icon = { Text("💬", style = MaterialTheme.typography.titleLarge) },
-                            label = { Text("聊天") },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = MaterialTheme.colorScheme.primary,
-                                selectedTextColor = MaterialTheme.colorScheme.primary,
-                                indicatorColor = MaterialTheme.colorScheme.primaryContainer
-                            )
-                        )
-                        NavigationBarItem(
-                            selected = currentScreen is Screen.Projects,
-                            onClick = { currentScreen = Screen.Projects },
-                            icon = { Text("📁", style = MaterialTheme.typography.titleLarge) },
-                            label = { Text("项目") },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = MaterialTheme.colorScheme.primary,
-                                selectedTextColor = MaterialTheme.colorScheme.primary,
-                                indicatorColor = MaterialTheme.colorScheme.primaryContainer
-                            )
-                        )
-                        NavigationBarItem(
-                            selected = currentScreen is Screen.Tools,
-                            onClick = { currentScreen = Screen.Tools },
-                            icon = { Text("🧰", style = MaterialTheme.typography.titleLarge) },
-                            label = { Text("工具") },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = MaterialTheme.colorScheme.primary,
-                                selectedTextColor = MaterialTheme.colorScheme.primary,
-                                indicatorColor = MaterialTheme.colorScheme.primaryContainer
-                            )
-                        )
-                        NavigationBarItem(
-                            selected = currentScreen is Screen.Settings,
-                            onClick = { currentScreen = Screen.Settings },
-                            icon = { Text("⚙️", style = MaterialTheme.typography.titleLarge) },
-                            label = { Text("设置") },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = MaterialTheme.colorScheme.primary,
-                                selectedTextColor = MaterialTheme.colorScheme.primary,
-                                indicatorColor = MaterialTheme.colorScheme.primaryContainer
-                            )
+                    }
+                },
+                bottomBar = {
+                    if (showBottomBar) {
+                        ReasonixFloatingBottomBar(
+                            items = listOf(
+                                ReasonixBottomBarItem("聊天", Icons.Outlined.MoreVert),
+                                ReasonixBottomBarItem("项目", Icons.Outlined.Info),
+                                ReasonixBottomBarItem("工具", Icons.Outlined.Palette),
+                                ReasonixBottomBarItem("设置", Icons.Outlined.Settings)
+                            ),
+                            selectedIndex = pagerState.currentPage,
+                            visualIndex = pagerVisualIndex,
+                            onSelect = { index ->
+                                scope.launch {
+                                    pagerState.animateScrollToPage(index)
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 8.dp)
                         )
                     }
                 }
-            }
-        ) { innerPadding ->
-            Box(modifier = Modifier.padding(innerPadding)) {
-                when (currentScreen) {
-                    is Screen.Chat -> {
-                        ChatScreen(
-                            state = chatState,
-                            projectKnowledgePaths = chatState.projectKnowledgePaths,
-                            onSend = { text, mentions, images ->
-                                chatVm.sendMessage(text, mentions, images)
-                            },
-                            onStopSending = {
-                                val message = if (chatVm.stopSending()) {
-                                    "已终止当前处理"
-                                } else {
-                                    "当前没有可终止的处理"
-                                }
-                                scope.launch {
-                                    snackbarHostState.showSnackbar(message)
-                                }
-                            },
-                            onClear = { chatVm.clear() },
-                            onNewSession = { chatVm.newSession() },
-                            title = chatState.sessionTitle,
-                            hasApiKey = chatVm.hasActiveApiKey(chatConfig),
-                            workflowExecutionMode = effectiveChatConfig.workflowExecutionMode,
-                            autoRouteBeforeExecution = false,
-                            onNavigateToSettings = { currentScreen = Screen.Settings },
-                            onEditMessage = { messageId ->
-                                chatVm.rollbackToUserMessage(messageId)
-                            },
-                            onCompressContext = {
-                                scope.launch {
-                                    val message = chatVm.compressCurrentContext()
-                                        .fold(
-                                            onSuccess = {
-                                                "已压缩 ${it.sourceMessageCount} 条历史消息，生成摘要 V${it.version} 后续将基于摘要续聊"
-                                            },
-                                            onFailure = { error ->
-                                                error.message ?: "上下文压缩失败"
+            ) { innerPadding ->
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                    userScrollEnabled = settingsSubpage == SettingsSubpage.Main
+                ) { page ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(bottom = if (showBottomBar) 92.dp else 12.dp)
+                    ) {
+                        when (shellScreens[page]) {
+                            is Screen.Chat -> {
+                                ChatScreen(
+                                    state = chatState,
+                                    projectKnowledgePaths = chatState.projectKnowledgePaths,
+                                    onSend = { text, mentions, images ->
+                                        chatVm.sendMessage(text, mentions, images)
+                                    },
+                                    onStopSending = {
+                                        val message = if (chatVm.stopSending()) {
+                                            "已终止当前处理"
+                                        } else {
+                                            "当前没有可终止的处理"
+                                        }
+                                        scope.launch {
+                                            snackbarHostState.showSnackbar(message)
+                                        }
+                                    },
+                                    onClear = { chatVm.clear() },
+                                    onNewSession = { chatVm.newSession() },
+                                    title = chatState.sessionTitle,
+                                    hasApiKey = chatVm.hasActiveApiKey(chatConfig),
+                                    workflowExecutionMode = effectiveChatConfig.workflowExecutionMode,
+                                    autoRouteBeforeExecution = false,
+                                    onNavigateToSettings = {
+                                        scope.launch {
+                                            pagerState.animateScrollToPage(shellScreens.indexOf(Screen.Settings))
+                                        }
+                                    },
+                                    onEditMessage = { messageId ->
+                                        chatVm.rollbackToUserMessage(messageId)
+                                    },
+                                    onCompressContext = {
+                                        scope.launch {
+                                            val message = chatVm.compressCurrentContext()
+                                                .fold(
+                                                    onSuccess = {
+                                                        "已压缩 ${it.sourceMessageCount} 条历史消息，生成摘要 V${it.version} 后续将基于摘要续聊"
+                                                    },
+                                                    onFailure = { error ->
+                                                        error.message ?: "上下文压缩失败"
+                                                    }
+                                                )
+                                            snackbarHostState.showSnackbar(message)
+                                        }
+                                    },
+                                    onGeneratePlan = { input, mentions ->
+                                        chatVm.generateWorkflowPlan(input, mentions)
+                                    },
+                                    onExecutePlan = {
+                                        chatVm.executePendingWorkflowPlan()
+                                    },
+                                    onDismissPlan = {
+                                        chatVm.dismissPendingWorkflowPlan()
+                                    },
+                                    onSubmitClarificationAnswer = { answer ->
+                                        chatVm.submitClarificationAnswer(answer)
+                                    },
+                                    onDismissClarification = {
+                                        chatVm.dismissPendingClarification()
+                                    },
+                                    onSearchFiles = { query ->
+                                        chatVm.searchProjectFiles(query)
+                                    },
+                                    onRetrySubagent = { runId ->
+                                        chatVm.retrySubagentRun(runId)
+                                        scope.launch {
+                                            snackbarHostState.showSnackbar("已重新发起子代理")
+                                        }
+                                    },
+                                    onCancelSubagent = { runId ->
+                                        val message = if (chatVm.cancelSubagentRun(runId)) {
+                                            "已请求终止子代理"
+                                        } else {
+                                            "当前子代理无法终止"
+                                        }
+                                        scope.launch {
+                                            snackbarHostState.showSnackbar(message)
+                                        }
+                                    },
+                                    onRollbackFileCheckpoint = { checkpointId ->
+                                        val message = chatVm.rollbackFileCheckpoint(checkpointId)
+                                            .fold(
+                                                onSuccess = { count ->
+                                                    "已按该对话前状态回滚这一批修改，恢复 $count 个文件"
+                                                },
+                                                onFailure = { error ->
+                                                    error.message ?: "回滚文件修改失败"
+                                                }
+                                            )
+                                        scope.launch {
+                                            snackbarHostState.showSnackbar(message)
+                                        }
+                                    }
+                                )
+                            }
+
+                            is Screen.Projects -> {
+                                ProjectScreen(
+                                    config = settingsConfig,
+                                    currentProjectPath = chatState.projectPath,
+                                    projectKnowledgeDraftPaths = chatState.projectKnowledgePaths,
+                                    projectKnowledgeSnapshots = chatState.projectKnowledgeSnapshots,
+                                    projectRules = chatState.projectRules,
+                                    projectMemories = chatState.projectMemories,
+                                    projectSkills = chatState.projectSkills,
+                                    projectToolPreferences = chatState.projectToolPreferences,
+                                    mcpToolNames = mcpStatuses.flatMap { status ->
+                                        status.toolNames.map { "mcp_$it" }
+                                    }.distinct().sorted(),
+                                    sessions = chatSessions,
+                                    onNewTask = {
+                                        taskProjectPath = chatState.projectPath.orEmpty()
+                                        showTaskDialog = true
+                                    },
+                                    onOpenChat = {
+                                        scope.launch {
+                                            pagerState.animateScrollToPage(shellScreens.indexOf(Screen.Chat))
+                                        }
+                                    },
+                                    onUpdateProjectConfig = { rules, memories, skills ->
+                                        chatVm.updateProjectConfig(rules, memories, skills)
+                                    },
+                                    onUpdateProjectToolPreferences = { preferences ->
+                                        chatVm.updateProjectToolPreferences(preferences)
+                                    },
+                                    onUpdateProjectKnowledgeDraftPaths = { paths ->
+                                        chatVm.updateProjectKnowledgePaths(paths)
+                                    },
+                                    onSaveProjectKnowledgeSnapshot = { name, paths ->
+                                        chatVm.saveProjectKnowledgeSnapshot(name, paths)
+                                    },
+                                    onRenameProjectKnowledgeSnapshot = { snapshotId, newName ->
+                                        chatVm.renameProjectKnowledgeSnapshot(snapshotId, newName)
+                                    },
+                                    onApplyProjectKnowledgeSnapshot = { snapshotId ->
+                                        chatVm.applyProjectKnowledgeSnapshot(snapshotId)
+                                    },
+                                    onDeleteProjectKnowledgeSnapshot = { snapshotId ->
+                                        chatVm.deleteProjectKnowledgeSnapshot(snapshotId)
+                                    }
+                                )
+                            }
+
+                            is Screen.Tools -> {
+                                ToolsScreen(
+                                    config = settingsConfig,
+                                    currentProjectPath = chatState.projectPath,
+                                    projectRuleCount = chatState.projectRules.count { it.enabled },
+                                    projectMemoryCount = chatState.projectMemories.count { it.enabled },
+                                    projectSkillCount = chatState.projectSkills.count { it.enabled },
+                                    rootStatus = rootStatus,
+                                    isCheckingRoot = isCheckingRoot,
+                                    onCheckRoot = { settingsVm.checkRoot() },
+                                    pendingApproval = chatState.pendingApproval,
+                                    recentApprovals = chatState.recentApprovals,
+                                    recentErrors = chatState.recentErrors,
+                                    recentToolCalls = chatState.recentToolCalls,
+                                    checkpoints = chatState.checkpoints,
+                                    fileChanges = chatState.fileChanges,
+                                    onOpenChat = {
+                                        scope.launch {
+                                            pagerState.animateScrollToPage(shellScreens.indexOf(Screen.Chat))
+                                        }
+                                    },
+                                    onApprovePendingTool = {
+                                        chatVm.approvePendingTool()
+                                    },
+                                    onRejectPendingTool = {
+                                        chatVm.rejectPendingTool()
+                                    },
+                                    onRollbackFileCheckpoint = { checkpointId ->
+                                        val message = chatVm.rollbackFileCheckpoint(checkpointId)
+                                            .fold(
+                                                onSuccess = { count ->
+                                                    "已按该对话前状态回滚这一批修改，恢复 $count 个文件"
+                                                },
+                                                onFailure = { error ->
+                                                    error.message ?: "回滚文件修改失败"
+                                                }
+                                            )
+                                        scope.launch {
+                                            snackbarHostState.showSnackbar(message)
+                                        }
+                                    },
+                                    mcpStatuses = mcpStatuses,
+                                    mcpConnectError = mcpConnectError,
+                                    onConnectMcpServers = { settingsVm.connectMcpServers() },
+                                    onRefreshMcpStatus = { settingsVm.refreshMcpStatus() },
+                                    onUpdateConfig = { settingsVm.updateConfig(it) }
+                                )
+                            }
+
+                            is Screen.Settings -> {
+                                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                                    SettingsScreen(
+                                        config = settingsConfig,
+                                        onConfigChanged = { settingsVm.updateConfig(it) },
+                                        gitHubAuthState = gitHubAuthState,
+                                        rootStatus = rootStatus,
+                                        isCheckingRoot = isCheckingRoot,
+                                        onCheckRoot = { settingsVm.checkRoot() },
+                                        sessions = settingsSessions,
+                                        balanceSyncStates = balanceSyncStates,
+                                        mcpServers = mcpServers,
+                                        mcpStatuses = mcpStatuses,
+                                        mcpConnectError = mcpConnectError,
+                                        onRefreshProviderBalance = { settingsVm.refreshProviderBalance(it) },
+                                        supportsBalanceFetch = { settingsVm.supportsBalanceFetch(it) },
+                                        onAddMcpServer = { settingsVm.addMcpServer(it) },
+                                        onRemoveMcpServer = { settingsVm.removeMcpServer(it) },
+                                        onConnectMcpServers = { settingsVm.connectMcpServers() },
+                                        onRefreshMcpStatus = { settingsVm.refreshMcpStatus() },
+                                        onRefreshGitHubAuthStatus = { settingsVm.refreshGitHubAuthStatus() },
+                                        onStartGitHubOAuthLogin = { settingsVm.startGitHubOAuthLogin() },
+                                        onClearGitHubToken = { settingsVm.clearGitHubToken() },
+                                        onOpenThemePage = { settingsSubpage = SettingsSubpage.Theme },
+                                        onOpenAboutPage = { settingsSubpage = SettingsSubpage.About }
+                                    )
+                                    if (settingsSubpage != SettingsSubpage.Main) {
+                                        val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .graphicsLayer {
+                                                    translationX = widthPx * settingsBackProgress
+                                                    alpha = 1f - (settingsBackProgress * 0.08f)
+                                                }
+                                        ) {
+                                            when (settingsSubpage) {
+                                                SettingsSubpage.Main -> Unit
+                                                SettingsSubpage.Theme -> ThemeSettingsPage()
+                                                SettingsSubpage.About -> AboutPage()
                                             }
-                                        )
-                                    snackbarHostState.showSnackbar(message)
-                                }
-                            },
-                            onGeneratePlan = { input, mentions ->
-                                chatVm.generateWorkflowPlan(input, mentions)
-                            },
-                            onExecutePlan = {
-                                chatVm.executePendingWorkflowPlan()
-                            },
-                            onDismissPlan = {
-                                chatVm.dismissPendingWorkflowPlan()
-                            },
-                            onSubmitClarificationAnswer = { answer ->
-                                chatVm.submitClarificationAnswer(answer)
-                            },
-                            onDismissClarification = {
-                                chatVm.dismissPendingClarification()
-                            },
-                            onSearchFiles = { query ->
-                                chatVm.searchProjectFiles(query)
-                            },
-                            onRetrySubagent = { runId ->
-                                chatVm.retrySubagentRun(runId)
-                                scope.launch {
-                                    snackbarHostState.showSnackbar("已重新发起子代理")
-                                }
-                            },
-                            onCancelSubagent = { runId ->
-                                val message = if (chatVm.cancelSubagentRun(runId)) {
-                                    "已请求终止子代理"
-                                } else {
-                                    "当前子代理无法终止"
-                                }
-                                scope.launch {
-                                    snackbarHostState.showSnackbar(message)
-                                }
-                            },
-                            onRollbackFileCheckpoint = { checkpointId ->
-                                val message = chatVm.rollbackFileCheckpoint(checkpointId)
-                                    .fold(
-                                        onSuccess = { count ->
-                                            "已按该对话前状态回滚这一批修改，恢复 $count 个文件"
-                                        },
-                                        onFailure = { error ->
-                                            error.message ?: "回滚文件修改失败"
                                         }
-                                    )
-                                scope.launch {
-                                    snackbarHostState.showSnackbar(message)
+                                    }
                                 }
                             }
-                        )
-                    }
-                    is Screen.Projects -> {
-                        ProjectScreen(
-                            config = settingsConfig,
-                            currentProjectPath = chatState.projectPath,
-                            projectKnowledgeDraftPaths = chatState.projectKnowledgePaths,
-                            projectKnowledgeSnapshots = chatState.projectKnowledgeSnapshots,
-                            projectRules = chatState.projectRules,
-                            projectMemories = chatState.projectMemories,
-                            projectSkills = chatState.projectSkills,
-                            projectToolPreferences = chatState.projectToolPreferences,
-                            mcpToolNames = mcpStatuses.flatMap { status ->
-                                status.toolNames.map { "mcp_$it" }
-                            }.distinct().sorted(),
-                            sessions = chatSessions,
-                            onNewTask = {
-                                taskProjectPath = chatState.projectPath.orEmpty()
-                                showTaskDialog = true
-                            },
-                            onOpenChat = { currentScreen = Screen.Chat },
-                            onUpdateProjectConfig = { rules, memories, skills ->
-                                chatVm.updateProjectConfig(rules, memories, skills)
-                            },
-                            onUpdateProjectToolPreferences = { preferences ->
-                                chatVm.updateProjectToolPreferences(preferences)
-                            },
-                            onUpdateProjectKnowledgeDraftPaths = { paths ->
-                                chatVm.updateProjectKnowledgePaths(paths)
-                            },
-                            onSaveProjectKnowledgeSnapshot = { name, paths ->
-                                chatVm.saveProjectKnowledgeSnapshot(name, paths)
-                            },
-                            onRenameProjectKnowledgeSnapshot = { snapshotId, newName ->
-                                chatVm.renameProjectKnowledgeSnapshot(snapshotId, newName)
-                            },
-                            onApplyProjectKnowledgeSnapshot = { snapshotId ->
-                                chatVm.applyProjectKnowledgeSnapshot(snapshotId)
-                            },
-                            onDeleteProjectKnowledgeSnapshot = { snapshotId ->
-                                chatVm.deleteProjectKnowledgeSnapshot(snapshotId)
-                            }
-                        )
-                    }
-                    is Screen.Tools -> {
-                        ToolsScreen(
-                            config = settingsConfig,
-                            currentProjectPath = chatState.projectPath,
-                            projectRuleCount = chatState.projectRules.count { it.enabled },
-                            projectMemoryCount = chatState.projectMemories.count { it.enabled },
-                            projectSkillCount = chatState.projectSkills.count { it.enabled },
-                            rootStatus = rootStatus,
-                            isCheckingRoot = isCheckingRoot,
-                            onCheckRoot = { settingsVm.checkRoot() },
-                            pendingApproval = chatState.pendingApproval,
-                            recentApprovals = chatState.recentApprovals,
-                            recentErrors = chatState.recentErrors,
-                            recentToolCalls = chatState.recentToolCalls,
-                            checkpoints = chatState.checkpoints,
-                            fileChanges = chatState.fileChanges,
-                            onOpenChat = { currentScreen = Screen.Chat },
-                            onApprovePendingTool = {
-                                chatVm.approvePendingTool()
-                            },
-                            onRejectPendingTool = {
-                                chatVm.rejectPendingTool()
-                            },
-                            onRollbackFileCheckpoint = { checkpointId ->
-                                val message = chatVm.rollbackFileCheckpoint(checkpointId)
-                                    .fold(
-                                        onSuccess = { count ->
-                                            "已按该对话前状态回滚这一批修改，恢复 $count 个文件"
-                                        },
-                                        onFailure = { error ->
-                                            error.message ?: "回滚文件修改失败"
-                                        }
-                                    )
-                                scope.launch {
-                                    snackbarHostState.showSnackbar(message)
-                                }
-                            },
-                            mcpStatuses = mcpStatuses,
-                            mcpConnectError = mcpConnectError,
-                            onConnectMcpServers = { settingsVm.connectMcpServers() },
-                            onRefreshMcpStatus = { settingsVm.refreshMcpStatus() },
-                            onUpdateConfig = { settingsVm.updateConfig(it) }
-                        )
-                    }
-                    is Screen.Settings -> {
-                        SettingsScreen(
-                            config = settingsConfig,
-                            onConfigChanged = { settingsVm.updateConfig(it) },
-                            gitHubAuthState = gitHubAuthState,
-                            rootStatus = rootStatus,
-                            isCheckingRoot = isCheckingRoot,
-                            onCheckRoot = { settingsVm.checkRoot() },
-                            sessions = settingsSessions,
-                            balanceSyncStates = balanceSyncStates,
-                            mcpServers = mcpServers,
-                            mcpStatuses = mcpStatuses,
-                            mcpConnectError = mcpConnectError,
-                            onRefreshProviderBalance = { settingsVm.refreshProviderBalance(it) },
-                            supportsBalanceFetch = { settingsVm.supportsBalanceFetch(it) },
-                            onAddMcpServer = { settingsVm.addMcpServer(it) },
-                            onRemoveMcpServer = { settingsVm.removeMcpServer(it) },
-                            onConnectMcpServers = { settingsVm.connectMcpServers() },
-                            onRefreshMcpStatus = { settingsVm.refreshMcpStatus() },
-                            onRefreshGitHubAuthStatus = { settingsVm.refreshGitHubAuthStatus() },
-                            onStartGitHubOAuthLogin = { settingsVm.startGitHubOAuthLogin() },
-                            onClearGitHubToken = { settingsVm.clearGitHubToken() }
-                        )
+                        }
                     }
                 }
             }
@@ -845,7 +959,7 @@ private fun RenameSessionDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    AlertDialog(
+    ReasonixAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("重命名会话") },
         text = {
@@ -880,7 +994,7 @@ private fun ExportConversationDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    AlertDialog(
+    ReasonixAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("导出会话") },
         text = {
@@ -935,7 +1049,7 @@ private fun CreateTaskDialog(
     onPickFolder: () -> Unit,
     onCreateTask: (String) -> Unit
 ) {
-    AlertDialog(
+    ReasonixAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("新建任务") },
         text = {
@@ -1037,7 +1151,7 @@ private fun ApprovalDialog(
     onApprove: () -> Unit,
     onReject: () -> Unit
 ) {
-    AlertDialog(
+    ReasonixAlertDialog(
         onDismissRequest = {},
         title = { Text("审批请求") },
         text = {

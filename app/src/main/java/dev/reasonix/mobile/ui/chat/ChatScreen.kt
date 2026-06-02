@@ -79,9 +79,11 @@ import dev.reasonix.mobile.core.loop.MIN_MESSAGES_TO_COMPRESS
 import dev.reasonix.mobile.core.loop.RECENT_MESSAGES_TO_KEEP
 import dev.reasonix.mobile.core.loop.WEB_FETCH_RESULT_PREFIX
 import dev.reasonix.mobile.core.config.WorkflowExecutionMode
+import dev.reasonix.mobile.ui.ReasonixGlassSurface
 import dev.reasonix.mobile.ui.MarkdownText
 import dev.reasonix.mobile.ui.ProjectKnowledgeOutlineUi
 import dev.reasonix.mobile.ui.buildProjectKnowledgeOutlines
+import dev.reasonix.mobile.ui.rememberReasonixAccentColor
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -2022,6 +2024,7 @@ private fun MessageBubble(
     val isToolExec = msg.role == "tool_exec"
     val isSubagent = msg.role == "subagent"
     val isSystem = msg.role == "system"
+    val accent = rememberReasonixAccentColor()
 
     Column(
         modifier = Modifier
@@ -2030,40 +2033,43 @@ private fun MessageBubble(
         horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
     ) {
         if (isUser) {
-            Surface(
-                shape = RoundedCornerShape(
-                    topStart = 16.dp,
-                    topEnd = 4.dp,
-                    bottomStart = 16.dp,
-                    bottomEnd = 16.dp
-                ),
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f),
-                tonalElevation = 2.dp,
+            ReasonixGlassSurface(
                 modifier = Modifier
                     .widthIn(max = 320.dp)
                     .combinedClickable(
                         onClick = {},
                         onLongClick = onLongPress
-                    )
+                    ),
+                shape = RoundedCornerShape(
+                    topStart = 20.dp,
+                    topEnd = 8.dp,
+                    bottomStart = 20.dp,
+                    bottomEnd = 20.dp
+                ),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    if (msg.imageAttachments.isNotEmpty()) {
-                        MessageImageAttachmentGallery(
-                            attachments = msg.imageAttachments,
-                            onOpenPreview = onOpenImagePreview
-                        )
-                        if (msg.content.isNotBlank()) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                        }
-                    }
+                Text(
+                    text = "你",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = accent
+                )
+                if (msg.imageAttachments.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    MessageImageAttachmentGallery(
+                        attachments = msg.imageAttachments,
+                        onOpenPreview = onOpenImagePreview
+                    )
                     if (msg.content.isNotBlank()) {
-                        SelectionContainer {
-                            Text(
-                                text = msg.content,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                fontSize = 14.sp
-                            )
-                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                }
+                if (msg.content.isNotBlank()) {
+                    SelectionContainer {
+                        Text(
+                            text = msg.content,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = 14.sp
+                        )
                     }
                 }
             }
@@ -2217,56 +2223,54 @@ private fun MessageBubble(
                     Spacer(modifier = Modifier.height(4.dp))
                 }
 
-                Surface(
+                ReasonixGlassSurface(
+                    modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(
-                        topStart = 4.dp,
-                        topEnd = 16.dp,
-                        bottomStart = 16.dp,
-                        bottomEnd = 16.dp
+                        topStart = 8.dp,
+                        topEnd = 20.dp,
+                        bottomStart = 20.dp,
+                        bottomEnd = 20.dp
                     ),
-                    color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 2.dp,
-                    modifier = Modifier.fillMaxWidth()
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(
-                            text = "助手",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        if (msg.content.isNotBlank()) {
-                            if (multimodalAnalysis != null) {
-                                MultimodalAnalysisCard(
-                                    analysis = multimodalAnalysis,
-                                    onApplyPrompt = onApplyPrompt
-                                )
-                                multimodalAnalysis.detail.takeIf { it.isNotBlank() }?.let { detail ->
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    SelectionContainer {
-                                        MarkdownText(
-                                            text = detail,
-                                            modifier = Modifier.fillMaxWidth(),
-                                            fontSize = 14
-                                        )
-                                    }
-                                }
-                            } else {
+                    Text(
+                        text = "助手",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = accent
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    if (msg.content.isNotBlank()) {
+                        if (multimodalAnalysis != null) {
+                            MultimodalAnalysisCard(
+                                analysis = multimodalAnalysis,
+                                onApplyPrompt = onApplyPrompt
+                            )
+                            multimodalAnalysis.detail.takeIf { it.isNotBlank() }?.let { detail ->
+                                Spacer(modifier = Modifier.height(8.dp))
                                 SelectionContainer {
                                     MarkdownText(
-                                        text = msg.content,
+                                        text = detail,
                                         modifier = Modifier.fillMaxWidth(),
                                         fontSize = 14
                                     )
                                 }
                             }
-                            if (!msg.isStreaming) {
-                                val proposals = remember(msg.content) {
-                                    detectDraftProposals(msg.content)
-                                }
-                                proposals.forEach { proposal ->
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    DraftProposalCard(
+                        } else {
+                            SelectionContainer {
+                                MarkdownText(
+                                    text = msg.content,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    fontSize = 14
+                                )
+                            }
+                        }
+                        if (!msg.isStreaming) {
+                            val proposals = remember(msg.content) {
+                                detectDraftProposals(msg.content)
+                            }
+                            proposals.forEach { proposal ->
+                                Spacer(modifier = Modifier.height(8.dp))
+                                DraftProposalCard(
                                         proposal = proposal,
                                         onDismiss = { }
                                     )

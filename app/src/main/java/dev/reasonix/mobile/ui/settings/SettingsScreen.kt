@@ -33,6 +33,9 @@ import dev.reasonix.mobile.core.mcp.McpServerConfig
 import dev.reasonix.mobile.core.mcp.McpServerStatus
 import dev.reasonix.mobile.core.provider.ProviderRegistry
 import dev.reasonix.mobile.ui.McpDraftImportCard
+import dev.reasonix.mobile.ui.ReasonixInfoCard
+import dev.reasonix.mobile.ui.ReasonixOutlinedActionButton
+import dev.reasonix.mobile.ui.ReasonixSectionCard
 import dev.reasonix.mobile.ui.normalizeSkillAllowedTools
 import dev.reasonix.mobile.ui.sanitizeSkillAllowedTools
 import dev.reasonix.mobile.ui.SkillAllowedToolsBudgetView
@@ -60,7 +63,9 @@ fun SettingsScreen(
     onRefreshMcpStatus: () -> Unit = {},
     onRefreshGitHubAuthStatus: () -> Unit = {},
     onStartGitHubOAuthLogin: () -> Unit = {},
-    onClearGitHubToken: () -> Unit = {}
+    onClearGitHubToken: () -> Unit = {},
+    onOpenThemePage: () -> Unit = {},
+    onOpenAboutPage: () -> Unit = {}
 ) {
     val providers = remember { ProviderRegistry.getAllProviders() }
     var showApiKey by remember { mutableStateOf(false) }
@@ -83,6 +88,32 @@ fun SettingsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        ReasonixInfoCard(title = "界面收口") {
+            Text(
+                text = "这里保留核心设置，同时把外观和关于拆成单独页面，方便后续继续做现代玻璃风的产品化 UI。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        ReasonixSectionCard(title = "外观与关于") {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                ReasonixOutlinedActionButton(
+                    text = "主题界面",
+                    onClick = onOpenThemePage,
+                    modifier = Modifier.weight(1f)
+                )
+                ReasonixOutlinedActionButton(
+                    text = "关于界面",
+                    onClick = onOpenAboutPage,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
         // ═══════════════════════════════════════
         // Root 权限检测
         // ═══════════════════════════════════════
