@@ -1,5 +1,6 @@
 package dev.reasonix.mobile.ui.settings
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -13,7 +14,6 @@ import dev.reasonix.mobile.core.mcp.McpRegistry
 import dev.reasonix.mobile.core.mcp.McpServerConfig
 import dev.reasonix.mobile.core.mcp.McpServerStatus
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,7 +21,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
@@ -29,6 +28,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
+import java.util.UUID
 import javax.inject.Inject
 
 data class BalanceSyncUiState(
@@ -41,9 +41,9 @@ data class GitHubAuthUiState(
     val isLoading: Boolean = false,
     val viewerLogin: String? = null,
     val viewerName: String? = null,
-    val deviceUserCode: String? = null,
-    val verificationUri: String? = null,
-    val expiresInSeconds: Int? = null,
+    val authorizationUrl: String? = null,
+    val callbackUri: String? = null,
+    val pendingState: String? = null,
     val message: String? = null,
     val error: String? = null
 )
@@ -91,6 +91,7 @@ class SettingsViewModel @Inject constructor(
 
     private val _gitHubAuthState = MutableStateFlow(GitHubAuthUiState())
     val gitHubAuthState: StateFlow<GitHubAuthUiState> = _gitHubAuthState.asStateFlow()
+    private var lastHandledGitHubCallback: String? = null
 
     init {
         // 加载已保存的 MCP 配置
@@ -222,7 +223,7 @@ class SettingsViewModel @Inject constructor(
             val token = currentConfig.githubToken.trim()
             if (token.isBlank()) {
                 _gitHubAuthState.value = GitHubAuthUiState(
-                    error = "请先填写 GitHub Token，或使用设备码登录。"
+                    error = "请先填写 GitHub Token，或使用浏览器授权登录。"
                 )
                 return@launch
             }
@@ -256,77 +257,118 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun startGitHubDeviceLogin() {
+    fun startGitHubOAuthLogin() {
         viewModelScope.launch(Dispatchers.IO) {
             val currentConfig = configRepository.getConfig()
             val clientId = currentConfig.getGitHubClientId().trim()
+            val clientSecret = currentConfig.getGitHubClientSecret().trim()
             if (clientId.isBlank()) {
                 _gitHubAuthState.value = GitHubAuthUiState(
                     error = "请先填写 GitHub Client ID。"
                 )
                 return@launch
             }
-            _gitHubAuthState.value = GitHubAuthUiState(isLoading = true, message = "正在申请设备码...")
-            val deviceCodeResult = requestGitHubDeviceCode(clientId)
-            if (!deviceCodeResult.success) {
+            if (clientSecret.isBlank()) {
                 _gitHubAuthState.value = GitHubAuthUiState(
-                    error = deviceCodeResult.error ?: "申请设备码失败"
+                    error = "请先填写 GitHub Client Secret。"
+                )
+                return@launch
+            }
+            val redirectUri = currentConfig.getGitHubOAuthRedirectUri()
+            val state = UUID.randomUUID().toString()
+            _gitHubAuthState.value = GitHubAuthUiState(
+                isLoading = true,
+                authorizationUrl = buildGitHubOAuthAuthorizeUrl(
+                    clientId = clientId,
+                    redirectUri = redirectUri,
+                    state = state
+                ),
+                callbackUri = redirectUri,
+                pendingState = state,
+                message = "正在打开 GitHub 授权页，授权完成后会自动回到应用。"
+            )
+        }
+    }
+
+    fun handleGitHubOAuthCallback(rawCallbackUri: String) {
+        val trimmedUri = rawCallbackUri.trim()
+        if (trimmedUri.isBlank() || lastHandledGitHubCallback == trimmedUri) return
+        lastHandledGitHubCallback = trimmedUri
+        viewModelScope.launch(Dispatchers.IO) {
+            val currentConfig = configRepository.getConfig()
+            val clientId = currentConfig.getGitHubClientId().trim()
+            val clientSecret = currentConfig.getGitHubClientSecret().trim()
+            val expectedState = _gitHubAuthState.value.pendingState
+            if (clientId.isBlank() || clientSecret.isBlank()) {
+                _gitHubAuthState.value = GitHubAuthUiState(
+                    error = "请先补全 GitHub Client ID 和 Client Secret。"
+                )
+                return@launch
+            }
+            val callbackUri = runCatching { Uri.parse(trimmedUri) }.getOrNull()
+            if (callbackUri == null) {
+                _gitHubAuthState.value = GitHubAuthUiState(
+                    error = "GitHub 回调地址无效。"
+                )
+                return@launch
+            }
+            val returnedState = callbackUri.getQueryParameter("state")
+            val errorCode = callbackUri.getQueryParameter("error")
+            val errorDescription = callbackUri.getQueryParameter("error_description")
+            if (!errorCode.isNullOrBlank()) {
+                _gitHubAuthState.value = GitHubAuthUiState(
+                    callbackUri = trimmedUri,
+                    error = errorDescription ?: errorCode
+                )
+                return@launch
+            }
+            if (!expectedState.isNullOrBlank() && returnedState != expectedState) {
+                _gitHubAuthState.value = GitHubAuthUiState(
+                    callbackUri = trimmedUri,
+                    error = "GitHub 登录状态校验失败，请重新发起授权。"
+                )
+                return@launch
+            }
+            val code = callbackUri.getQueryParameter("code").orEmpty()
+            if (code.isBlank()) {
+                _gitHubAuthState.value = GitHubAuthUiState(
+                    callbackUri = trimmedUri,
+                    error = "GitHub 回调里没有拿到授权码。"
                 )
                 return@launch
             }
             _gitHubAuthState.value = GitHubAuthUiState(
                 isLoading = true,
-                deviceUserCode = deviceCodeResult.userCode,
-                verificationUri = deviceCodeResult.verificationUri,
-                expiresInSeconds = deviceCodeResult.expiresInSeconds,
-                message = "请复制设备码并在浏览器完成授权，应用会自动轮询。"
+                callbackUri = trimmedUri,
+                message = "正在交换 GitHub Token..."
             )
-            val deadline = System.currentTimeMillis() + deviceCodeResult.expiresInSeconds * 1000L
-            var pollIntervalSeconds = deviceCodeResult.intervalSeconds.coerceAtLeast(5)
-            while (System.currentTimeMillis() < deadline) {
-                delay(pollIntervalSeconds * 1000L)
-                val tokenResult = pollGitHubDeviceToken(
-                    clientId = clientId,
-                    deviceCode = deviceCodeResult.deviceCode
+            val tokenResult = exchangeGitHubOAuthCode(
+                clientId = clientId,
+                clientSecret = clientSecret,
+                redirectUri = currentConfig.getGitHubOAuthRedirectUri(),
+                code = code
+            )
+            if (tokenResult.success && !tokenResult.accessToken.isNullOrBlank()) {
+                configRepository.saveConfig(currentConfig.copy(githubToken = tokenResult.accessToken))
+                val viewer = fetchGitHubViewer(
+                    apiBaseUrl = currentConfig.getGitHubApiBaseUrl(),
+                    token = tokenResult.accessToken
                 )
-                when {
-                    tokenResult.success && !tokenResult.accessToken.isNullOrBlank() -> {
-                        configRepository.saveConfig(currentConfig.copy(githubToken = tokenResult.accessToken))
-                        val viewer = fetchGitHubViewer(
-                            apiBaseUrl = currentConfig.getGitHubApiBaseUrl(),
-                            token = tokenResult.accessToken
-                        )
-                        _gitHubAuthState.value = GitHubAuthUiState(
-                            isLoading = false,
-                            viewerLogin = viewer.viewerLogin,
-                            viewerName = viewer.viewerName,
-                            message = "GitHub 登录成功",
-                            error = viewer.error
-                        )
-                        return@launch
-                    }
-                    tokenResult.pollPending -> {
-                        _gitHubAuthState.value = _gitHubAuthState.value.copy(
-                            isLoading = true,
-                            message = "等待 GitHub 授权中..."
-                        )
-                    }
-                    tokenResult.shouldSlowDown -> {
-                        pollIntervalSeconds += 5
-                    }
-                    else -> {
-                        _gitHubAuthState.value = GitHubAuthUiState(
-                            isLoading = false,
-                            error = tokenResult.error ?: "GitHub 登录失败"
-                        )
-                        return@launch
-                    }
-                }
+                _gitHubAuthState.value = GitHubAuthUiState(
+                    isLoading = false,
+                    viewerLogin = viewer.viewerLogin,
+                    viewerName = viewer.viewerName,
+                    callbackUri = trimmedUri,
+                    message = "GitHub 登录成功",
+                    error = viewer.error
+                )
+            } else {
+                _gitHubAuthState.value = GitHubAuthUiState(
+                    isLoading = false,
+                    callbackUri = trimmedUri,
+                    error = tokenResult.error ?: "GitHub 登录失败"
+                )
             }
-            _gitHubAuthState.value = GitHubAuthUiState(
-                isLoading = false,
-                error = "设备码已过期，请重新发起登录。"
-            )
         }
     }
 
@@ -363,53 +405,34 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    private fun requestGitHubDeviceCode(clientId: String): GitHubDeviceCodeResult {
-        val requestBody = "client_id=$clientId&scope=repo%20read:user"
-            .toRequestBody("application/x-www-form-urlencoded".toMediaType())
-        val request = Request.Builder()
-            .url("https://github.com/login/device/code")
-            .addHeader("Accept", "application/json")
-            .addHeader("User-Agent", "Reasonix-Mobile/1.0")
-            .post(requestBody)
+    private fun buildGitHubOAuthAuthorizeUrl(
+        clientId: String,
+        redirectUri: String,
+        state: String
+    ): String {
+        return Uri.parse("https://github.com/login/oauth/authorize")
+            .buildUpon()
+            .appendQueryParameter("client_id", clientId)
+            .appendQueryParameter("redirect_uri", redirectUri)
+            .appendQueryParameter("scope", "repo read:user")
+            .appendQueryParameter("state", state)
+            .appendQueryParameter("allow_signup", "true")
             .build()
-        return runCatching {
-            githubClient.newCall(request).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    return GitHubDeviceCodeResult(
-                        success = false,
-                        deviceCode = "",
-                        userCode = "",
-                        verificationUri = "",
-                        expiresInSeconds = 0,
-                        intervalSeconds = 5,
-                        error = parseGitHubJsonMessage(body) ?: "申请设备码失败，HTTP ${response.code}"
-                    )
-                }
-                val obj = githubJson.parseToJsonElement(body).jsonObject
-                GitHubDeviceCodeResult(
-                    success = true,
-                    deviceCode = obj["device_code"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-                    userCode = obj["user_code"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-                    verificationUri = obj["verification_uri"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-                    expiresInSeconds = obj["expires_in"]?.jsonPrimitive?.intOrNull ?: 900,
-                    intervalSeconds = obj["interval"]?.jsonPrimitive?.intOrNull ?: 5,
-                    error = null
-                )
-            }
-        }.getOrElse { error ->
-            GitHubDeviceCodeResult(false, "", "", "", 0, 5, error.message ?: "申请设备码失败")
-        }
+            .toString()
     }
 
-    private fun pollGitHubDeviceToken(clientId: String, deviceCode: String): GitHubDeviceTokenResult {
-        val requestBody = buildString {
-            append("client_id=")
-            append(clientId)
-            append("&device_code=")
-            append(deviceCode)
-            append("&grant_type=urn:ietf:params:oauth:grant-type:device_code")
-        }.toRequestBody("application/x-www-form-urlencoded".toMediaType())
+    private fun exchangeGitHubOAuthCode(
+        clientId: String,
+        clientSecret: String,
+        redirectUri: String,
+        code: String
+    ): GitHubOAuthTokenResult {
+        val requestBody = buildFormBody(
+            "client_id" to clientId,
+            "client_secret" to clientSecret,
+            "code" to code,
+            "redirect_uri" to redirectUri
+        ).toRequestBody("application/x-www-form-urlencoded".toMediaType())
         val request = Request.Builder()
             .url("https://github.com/login/oauth/access_token")
             .addHeader("Accept", "application/json")
@@ -420,56 +443,39 @@ class SettingsViewModel @Inject constructor(
             githubClient.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    return GitHubDeviceTokenResult(
+                    return GitHubOAuthTokenResult(
                         success = false,
                         accessToken = null,
-                        pollPending = false,
-                        shouldSlowDown = false,
-                        error = parseGitHubJsonMessage(body) ?: "轮询 GitHub Token 失败，HTTP ${response.code}"
+                        error = parseGitHubJsonMessage(body) ?: "交换 GitHub Token 失败，HTTP ${response.code}"
                     )
                 }
                 val obj = githubJson.parseToJsonElement(body).jsonObject
                 val accessToken = obj["access_token"]?.jsonPrimitive?.contentOrNull
-                val errorCode = obj["error"]?.jsonPrimitive?.contentOrNull
-                when {
-                    !accessToken.isNullOrBlank() -> GitHubDeviceTokenResult(
-                        success = true,
-                        accessToken = accessToken,
-                        pollPending = false,
-                        shouldSlowDown = false,
-                        error = null
-                    )
-                    errorCode == "authorization_pending" -> GitHubDeviceTokenResult(
+                if (accessToken.isNullOrBlank()) {
+                    return GitHubOAuthTokenResult(
                         success = false,
                         accessToken = null,
-                        pollPending = true,
-                        shouldSlowDown = false,
-                        error = null
-                    )
-                    errorCode == "slow_down" -> GitHubDeviceTokenResult(
-                        success = false,
-                        accessToken = null,
-                        pollPending = true,
-                        shouldSlowDown = true,
-                        error = null
-                    )
-                    else -> GitHubDeviceTokenResult(
-                        success = false,
-                        accessToken = null,
-                        pollPending = false,
-                        shouldSlowDown = false,
-                        error = errorCode ?: parseGitHubJsonMessage(body) ?: "GitHub 登录失败"
+                        error = parseGitHubJsonMessage(body) ?: "GitHub 没有返回 access token"
                     )
                 }
+                GitHubOAuthTokenResult(
+                    success = true,
+                    accessToken = accessToken,
+                    error = null
+                )
             }
         }.getOrElse { error ->
-            GitHubDeviceTokenResult(
+            GitHubOAuthTokenResult(
                 success = false,
                 accessToken = null,
-                pollPending = false,
-                shouldSlowDown = false,
-                error = error.message ?: "GitHub 登录失败"
+                error = error.message ?: "交换 GitHub Token 失败"
             )
+        }
+    }
+
+    private fun buildFormBody(vararg pairs: Pair<String, String>): String {
+        return pairs.joinToString("&") { (key, value) ->
+            "${Uri.encode(key)}=${Uri.encode(value)}"
         }
     }
 
@@ -489,20 +495,8 @@ private data class GitHubViewerResult(
     val error: String?
 )
 
-private data class GitHubDeviceCodeResult(
-    val success: Boolean,
-    val deviceCode: String,
-    val userCode: String,
-    val verificationUri: String,
-    val expiresInSeconds: Int,
-    val intervalSeconds: Int,
-    val error: String?
-)
-
-private data class GitHubDeviceTokenResult(
+private data class GitHubOAuthTokenResult(
     val success: Boolean,
     val accessToken: String?,
-    val pollPending: Boolean,
-    val shouldSlowDown: Boolean,
     val error: String?
 )

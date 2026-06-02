@@ -42,18 +42,41 @@ import dev.reasonix.mobile.ui.project.ProjectScreen
 import dev.reasonix.mobile.ui.settings.SettingsScreen
 import dev.reasonix.mobile.ui.settings.SettingsViewModel
 import dev.reasonix.mobile.ui.tools.ToolsScreen
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    companion object {
+        val gitHubOAuthCallbackFlow = MutableSharedFlow<String>(
+            replay = 1,
+            extraBufferCapacity = 1,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        dispatchGitHubOAuthCallback(intent)
         enableEdgeToEdge()
         setContent {
             ReasonixTheme {
                 MainScreen()
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        dispatchGitHubOAuthCallback(intent)
+    }
+
+    private fun dispatchGitHubOAuthCallback(intent: Intent?) {
+        val callbackUri = intent?.data ?: return
+        if (callbackUri.scheme != "reasonix" || callbackUri.host != "github") return
+        gitHubOAuthCallbackFlow.tryEmit(callbackUri.toString())
     }
 }
 
@@ -97,6 +120,12 @@ fun MainScreen() {
     var showExportDialog by remember { mutableStateOf(false) }
     var exportFormat by remember { mutableStateOf(ConversationExportFormat.MARKDOWN) }
     var pendingExportData by remember { mutableStateOf<ConversationExportData?>(null) }
+
+    LaunchedEffect(Unit) {
+        MainActivity.gitHubOAuthCallbackFlow.collect { callbackUri ->
+            settingsVm.handleGitHubOAuthCallback(callbackUri)
+        }
+    }
 
     LaunchedEffect(currentScreen) {
         if (currentScreen !is Screen.Chat && drawerState.isOpen) {
@@ -690,7 +719,7 @@ fun MainScreen() {
                             onConnectMcpServers = { settingsVm.connectMcpServers() },
                             onRefreshMcpStatus = { settingsVm.refreshMcpStatus() },
                             onRefreshGitHubAuthStatus = { settingsVm.refreshGitHubAuthStatus() },
-                            onStartGitHubDeviceLogin = { settingsVm.startGitHubDeviceLogin() },
+                            onStartGitHubOAuthLogin = { settingsVm.startGitHubOAuthLogin() },
                             onClearGitHubToken = { settingsVm.clearGitHubToken() }
                         )
                     }

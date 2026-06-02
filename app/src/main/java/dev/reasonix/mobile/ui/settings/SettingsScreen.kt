@@ -58,23 +58,20 @@ fun SettingsScreen(
     onConnectMcpServers: () -> Unit = {},
     onRefreshMcpStatus: () -> Unit = {},
     onRefreshGitHubAuthStatus: () -> Unit = {},
-    onStartGitHubDeviceLogin: () -> Unit = {},
+    onStartGitHubOAuthLogin: () -> Unit = {},
     onClearGitHubToken: () -> Unit = {}
 ) {
     val providers = remember { ProviderRegistry.getAllProviders() }
     var showApiKey by remember { mutableStateOf(false) }
     val uriHandler = LocalUriHandler.current
     val clipboardManager = LocalClipboardManager.current
-    var lastOpenedGitHubAuthKey by remember { mutableStateOf<String?>(null) }
+    var lastOpenedGitHubAuthUrl by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(gitHubAuthState.verificationUri, gitHubAuthState.deviceUserCode) {
-        val uri = gitHubAuthState.verificationUri?.trim().orEmpty()
-        val code = gitHubAuthState.deviceUserCode?.trim().orEmpty()
-        val authKey = "$uri|$code"
-        if (uri.isBlank() || code.isBlank() || lastOpenedGitHubAuthKey == authKey) return@LaunchedEffect
-        clipboardManager.setText(AnnotatedString(code))
+    LaunchedEffect(gitHubAuthState.authorizationUrl) {
+        val uri = gitHubAuthState.authorizationUrl?.trim().orEmpty()
+        if (uri.isBlank() || lastOpenedGitHubAuthUrl == uri) return@LaunchedEffect
         runCatching { uriHandler.openUri(uri) }
-        lastOpenedGitHubAuthKey = authKey
+        lastOpenedGitHubAuthUrl = uri
     }
 
     Column(
@@ -555,7 +552,7 @@ fun SettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "这里的 GitHub Token 会给项目页的 push / pull、workflow 列表和手动触发使用。第一版默认按 GitHub PAT 处理。",
+                    text = "这里的 GitHub Token 会给项目页的 push / pull、workflow 列表和手动触发使用。也可以用下方 OAuth App 走浏览器授权后自动写入。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -601,12 +598,53 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     textStyle = MaterialTheme.typography.bodySmall,
-                    placeholder = { Text("用于设备码登录", fontSize = 12.sp) },
+                    placeholder = { Text("用于浏览器回跳授权", fontSize = 12.sp) },
                     supportingText = {
                         Text(
-                            "不想手填 Token 时，可配置 GitHub OAuth App 的 Client ID，然后用设备码登录。",
+                            "配置 GitHub OAuth App 的 Client ID，点击“浏览器授权”后会跳到 GitHub 并在授权完成后自动回到 App。",
                             fontSize = 10.sp
                         )
+                    }
+                )
+                OutlinedTextField(
+                    value = config.githubClientSecret,
+                    onValueChange = { clientSecret ->
+                        onConfigChanged(config.copy(githubClientSecret = clientSecret))
+                    },
+                    label = { Text("GitHub Client Secret") },
+                    modifier = Modifier.fillMaxWidth(),
+                    visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodySmall,
+                    supportingText = {
+                        Text(
+                            "授权码回跳换取 Token 时会用到，仅建议你自己的自用 OAuth App 这样配。",
+                            fontSize = 10.sp
+                        )
+                    }
+                )
+                OutlinedTextField(
+                    value = config.getGitHubOAuthRedirectUri(),
+                    onValueChange = {},
+                    label = { Text("Authorization Callback URL") },
+                    modifier = Modifier.fillMaxWidth(),
+                    readOnly = true,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodySmall,
+                    supportingText = {
+                        Text(
+                            "把这个地址原样填到 GitHub OAuth App 的 Authorization callback URL 里。",
+                            fontSize = 10.sp
+                        )
+                    },
+                    trailingIcon = {
+                        TextButton(
+                            onClick = {
+                                clipboardManager.setText(AnnotatedString(config.getGitHubOAuthRedirectUri()))
+                            }
+                        ) {
+                            Text("复制", fontSize = 12.sp)
+                        }
                     }
                 )
                 gitHubAuthState.viewerLogin?.let { login ->
@@ -649,7 +687,7 @@ fun SettingsScreen(
                         Text("校验登录", fontSize = 12.sp)
                     }
                     FilledTonalButton(
-                        onClick = onStartGitHubDeviceLogin,
+                        onClick = onStartGitHubOAuthLogin,
                         enabled = !gitHubAuthState.isLoading
                     ) {
                         Text("浏览器授权", fontSize = 12.sp)
@@ -677,7 +715,7 @@ fun SettingsScreen(
                         )
                     }
                 }
-                gitHubAuthState.deviceUserCode?.let { code ->
+                gitHubAuthState.callbackUri?.takeIf { it.isNotBlank() }?.let { callbackUri ->
                     Surface(
                         shape = RoundedCornerShape(10.dp),
                         color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.35f),
@@ -688,27 +726,31 @@ fun SettingsScreen(
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Text(
-                                text = "设备码: $code",
+                                text = "回调地址已固定",
                                 style = MaterialTheme.typography.titleSmall
                             )
                             Text(
-                                text = "授权码已自动复制，并会尝试直接打开 GitHub 浏览器授权页。",
+                                text = callbackUri,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            gitHubAuthState.verificationUri?.takeIf { it.isNotBlank() }?.let { uri ->
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
                                 TextButton(
-                                    onClick = { uriHandler.openUri(uri) }
+                                    onClick = {
+                                        clipboardManager.setText(AnnotatedString(callbackUri))
+                                    }
                                 ) {
-                                    Text("重新打开授权页")
+                                    Text("复制回调地址")
                                 }
-                            }
-                            gitHubAuthState.expiresInSeconds?.let { seconds ->
-                                Text(
-                                    text = "有效期约 ${seconds / 60} 分钟，授权完成后会自动轮询写入 Token。",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                gitHubAuthState.authorizationUrl?.takeIf { it.isNotBlank() }?.let { uri ->
+                                    TextButton(
+                                        onClick = { uriHandler.openUri(uri) }
+                                    ) {
+                                        Text("重新打开授权页")
+                                    }
+                                }
                             }
                         }
                     }
