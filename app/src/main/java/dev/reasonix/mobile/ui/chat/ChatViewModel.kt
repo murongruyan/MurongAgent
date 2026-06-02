@@ -13,8 +13,10 @@ import dev.reasonix.mobile.core.loop.*
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -37,6 +39,8 @@ class ChatViewModel @Inject constructor(
 
     private val _sessions = MutableStateFlow<List<SessionSummary>>(emptyList())
     val sessions: StateFlow<List<SessionSummary>> = _sessions.asStateFlow()
+    private val _toastMessages = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val toastMessages = _toastMessages.asSharedFlow()
 
     init {
         refreshSessions()
@@ -57,18 +61,20 @@ class ChatViewModel @Inject constructor(
     ) {
         launchSendingOperation {
             sessionManager.clearLastAutoRouteDecision()
-            withContext(Dispatchers.IO) {
+            val toastMessage = withContext(Dispatchers.IO) {
                 sessionManager.sendMessage(text, mentionedFiles, pendingImages)
             }
+            toastMessage?.let { _toastMessages.tryEmit(it) }
             refreshSessions()
         }
     }
 
     fun autoRouteMessage(text: String, mentionedFiles: List<FileMentionUi> = emptyList()) {
         launchSendingOperation {
-            withContext(Dispatchers.IO) {
+            val toastMessage = withContext(Dispatchers.IO) {
                 sessionManager.autoRouteMessage(text, mentionedFiles)
             }
+            toastMessage?.let { _toastMessages.tryEmit(it) }
             refreshSessions()
         }
     }

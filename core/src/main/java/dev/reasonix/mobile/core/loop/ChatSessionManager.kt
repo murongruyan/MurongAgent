@@ -1810,9 +1810,9 @@ class ChatSessionManager(
         text: String,
         mentionedFiles: List<FileMentionUi> = emptyList(),
         pendingImages: List<PendingImageAttachmentUi> = emptyList()
-    ) {
+    ): String? {
         val normalizedText = text.trim()
-        if ((normalizedText.isBlank() && pendingImages.isEmpty()) || _state.value.isProcessing) return
+        if ((normalizedText.isBlank() && pendingImages.isEmpty()) || _state.value.isProcessing) return null
         val globalConfig = configRepository.getConfig()
         val config = globalConfig.applyProjectToolPreferences(_state.value.projectToolPreferences)
         val matchedSkill = if (pendingImages.isEmpty()) {
@@ -1821,18 +1821,21 @@ class ChatSessionManager(
             null
         }
         if (matchedSkill != null) {
-            executeAutoMatchedSkill(
+            return executeAutoMatchedSkill(
                 goal = normalizedText,
                 mentionedFiles = mentionedFiles,
                 skill = matchedSkill,
                 baseConfig = config
             )
-            return
         }
         val executionConfig = resolveExecutionConfig(
             baseConfig = config,
             goal = normalizedText,
             mentionedFiles = mentionedFiles
+        )
+        val executionToast = buildExecutionProfileToast(
+            baseConfig = config,
+            executionConfig = executionConfig
         )
         sendMessageInternal(
             userVisibleText = normalizedText,
@@ -1846,26 +1849,26 @@ class ChatSessionManager(
                 executionConfig = executionConfig
             )
         )
+        return executionToast
     }
 
     suspend fun autoRouteMessage(
         text: String,
         mentionedFiles: List<FileMentionUi> = emptyList()
-    ) {
+    ): String? {
         val normalizedText = text.trim()
-        if (normalizedText.isBlank() || _state.value.isProcessing) return
+        if (normalizedText.isBlank() || _state.value.isProcessing) return null
 
         val globalConfig = configRepository.getConfig()
         val config = globalConfig.applyProjectToolPreferences(_state.value.projectToolPreferences)
         val matchedSkill = matchAutoSkill(normalizedText, config)
         if (matchedSkill != null) {
-            executeAutoMatchedSkill(
+            return executeAutoMatchedSkill(
                 goal = normalizedText,
                 mentionedFiles = mentionedFiles,
                 skill = matchedSkill,
                 baseConfig = config
             )
-            return
         }
         val executionConfig = resolveExecutionConfig(
             baseConfig = config,
@@ -1878,7 +1881,7 @@ class ChatSessionManager(
             _state.value = _state.value.copy(
                 error = "⚠️ 未配置 API Key。请先到设置页完成模型配置。"
             )
-            return
+            return null
         }
 
         val provider = ProviderRegistry.getActiveProvider(executionConfig.activeProviderId)
@@ -1929,6 +1932,10 @@ class ChatSessionManager(
                 )
             ) {
                 WorkflowFailureFallbackMode.DIRECT_EXECUTION -> {
+                    val executionToast = buildExecutionProfileToast(
+                        baseConfig = config,
+                        executionConfig = executionConfig
+                    )
                     sendMessageInternal(
                         userVisibleText = normalizedText,
                         modelInput = normalizedText,
@@ -1945,6 +1952,7 @@ class ChatSessionManager(
                         message = "发送前自动分流失败，已按配置回退为直接执行。",
                         config = executionConfig
                     )
+                    return executionToast
                 }
                 WorkflowFailureFallbackMode.LOCAL_CLARIFICATION -> {
                     _state.value = _state.value.copy(
@@ -1962,10 +1970,10 @@ class ChatSessionManager(
                         message = "发送前自动分流失败，已按配置回退为本地通用澄清问题。",
                         config = executionConfig
                     )
+                    return null
                 }
-                WorkflowFailureFallbackMode.FOLLOW_SCENARIO_DEFAULT -> Unit
+                WorkflowFailureFallbackMode.FOLLOW_SCENARIO_DEFAULT -> return null
             }
-            return
         }
 
         _state.value = _state.value.copy(
@@ -1974,7 +1982,7 @@ class ChatSessionManager(
         )
         saveCurrentSession(executionConfig)
         when (decision.action) {
-            AutoRouteAction.DIRECT -> sendMessage(normalizedText, mentionedFiles)
+            AutoRouteAction.DIRECT -> return sendMessage(normalizedText, mentionedFiles)
             AutoRouteAction.PLAN -> generateWorkflowPlan(normalizedText, mentionedFiles)
             AutoRouteAction.CLARIFY -> generateClarificationQuestion(
                 goal = normalizedText,
@@ -1982,6 +1990,7 @@ class ChatSessionManager(
                 source = ClarificationSource.AUTO_ROUTE
             )
         }
+        return null
     }
 
     suspend fun generateWorkflowPlan(goal: String, mentionedFiles: List<FileMentionUi> = emptyList()) {
@@ -4621,12 +4630,16 @@ class ChatSessionManager(
         mentionedFiles: List<FileMentionUi>,
         skill: GlobalSkill,
         baseConfig: ProviderConfig
-    ) {
+    ): String? {
         val executionConfig = resolveExecutionConfig(
             baseConfig = baseConfig,
             goal = goal,
             mentionedFiles = mentionedFiles,
             matchedSkill = skill
+        )
+        val executionToast = buildExecutionProfileToast(
+            baseConfig = baseConfig,
+            executionConfig = executionConfig
         )
         val skillLabel = skill.title.ifBlank { "未命名 Skill" }
         appendMessage(
@@ -4650,7 +4663,7 @@ class ChatSessionManager(
             val apiKey = executionConfig.getActiveApiKey().trim()
             if (apiKey.isBlank()) {
                 _state.value = _state.value.copy(error = "⚠️ 未配置 API Key。请先到设置页完成模型配置。")
-                return
+                return null
             }
             lastSessionConfig = executionConfig
             val provider = ProviderRegistry.getActiveProvider(executionConfig.activeProviderId)
@@ -4678,7 +4691,7 @@ class ChatSessionManager(
             _state.value = _state.value.copy(error = null)
             tool.execute(args)
             saveCurrentSession(executionConfig)
-            return
+            return executionToast
         }
         sendMessageInternal(
             userVisibleText = goal,
@@ -4710,6 +4723,7 @@ class ChatSessionManager(
                 }
             }
         )
+        return executionToast
     }
 
     private fun matchAutoSkill(goal: String, config: ProviderConfig): GlobalSkill? {
@@ -4855,6 +4869,23 @@ class ChatSessionManager(
                 appendLine("- If the source requires manual secrets, explicitly leave placeholders instead of fabricating values.")
             }
         }.trim()
+    }
+
+    private fun buildExecutionProfileToast(
+        baseConfig: ProviderConfig,
+        executionConfig: ProviderConfig
+    ): String? {
+        val modelChanged = executionConfig.getActiveModel() != baseConfig.getActiveModel()
+        val reasoningChanged = executionConfig.getActiveReasoningEffort() != baseConfig.getActiveReasoningEffort()
+        if (!modelChanged && !reasoningChanged) return null
+        return when {
+            modelChanged && reasoningChanged ->
+                "已自动升档到 ${executionConfig.getActiveModel()} (${executionConfig.getActiveReasoningEffort().orEmpty()})"
+            modelChanged ->
+                "已自动切换到 ${executionConfig.getActiveModel()}"
+            else ->
+                "已自动提升推理强度到 ${executionConfig.getActiveReasoningEffort().orEmpty()}"
+        }
     }
 
     private fun isAutoDiscoveryRequest(goal: String): Boolean {

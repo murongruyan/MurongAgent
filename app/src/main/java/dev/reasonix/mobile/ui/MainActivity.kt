@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.ClipData
 import android.os.Environment
 import android.os.Bundle
+import android.widget.Toast
 import android.provider.OpenableColumns
 import android.provider.DocumentsContract
 import android.net.Uri
@@ -137,6 +138,12 @@ fun MainScreen() {
         MainActivity.gitHubOAuthCallbackFlow.collect { callbackUri ->
             authVm.handleGitHubCallback(callbackUri)
             settingsVm.handleGitHubOAuthCallback(callbackUri)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        chatVm.toastMessages.collect { message ->
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         }
     }
 
