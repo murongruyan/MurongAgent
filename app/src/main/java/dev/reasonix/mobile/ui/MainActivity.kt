@@ -41,6 +41,7 @@ import dev.reasonix.mobile.ui.chat.ChatScreen
 import dev.reasonix.mobile.ui.chat.SessionDrawerContent
 import dev.reasonix.mobile.ui.chat.buildConversationText
 import dev.reasonix.mobile.ui.auth.AuthViewModel
+import dev.reasonix.mobile.ui.auth.GitHubAuthFlow
 import dev.reasonix.mobile.ui.auth.GitHubLoginScreen
 import dev.reasonix.mobile.ui.project.ProjectScreen
 import dev.reasonix.mobile.ui.settings.SettingsScreen
@@ -78,15 +79,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun dispatchGitHubOAuthCallback(intent: Intent?) {
-        val callbackUri = intent?.data ?: return
-        val isLegacyGitHubCallback =
-            callbackUri.scheme == "reasonix" && callbackUri.host == "github"
-        val isBackendGitHubCallback =
-            callbackUri.scheme == "reasonix" &&
-                callbackUri.host == "auth" &&
-                callbackUri.path?.startsWith("/github") == true
-        if (!isLegacyGitHubCallback && !isBackendGitHubCallback) return
-        gitHubOAuthCallbackFlow.tryEmit(callbackUri.toString())
+        val callbackUri = intent?.data?.toString().orEmpty()
+        if (!GitHubAuthFlow.isGitHubOAuthCallback(callbackUri)) return
+        gitHubOAuthCallbackFlow.tryEmit(callbackUri)
     }
 }
 

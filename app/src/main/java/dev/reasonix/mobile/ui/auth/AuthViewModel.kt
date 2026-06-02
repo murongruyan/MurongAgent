@@ -69,13 +69,10 @@ class AuthViewModel @Inject constructor(
     fun startGitHubLogin() {
         viewModelScope.launch {
             val current = configRepository.getConfig()
-            val authorizationUrl = Uri.parse(current.getReasonixBackendAuthApiUrl())
-                .buildUpon()
-                .appendQueryParameter("action", "start")
-                .appendQueryParameter("client_redirect_uri", current.getReasonixGitHubRedirectUri())
-                .appendQueryParameter("client_state", UUID.randomUUID().toString())
-                .build()
-                .toString()
+            val authorizationUrl = GitHubAuthFlow.buildAuthorizationUrl(
+                config = current,
+                clientState = UUID.randomUUID().toString()
+            )
 
             _uiState.value = _uiState.value.copy(
                 isLoading = true,
@@ -87,36 +84,44 @@ class AuthViewModel @Inject constructor(
     }
 
     fun handleGitHubCallback(rawCallbackUri: String) {
-        val trimmed = rawCallbackUri.trim()
-        if (trimmed.isBlank() || lastHandledCallback == trimmed) return
-        lastHandledCallback = trimmed
+        val resolution = GitHubAuthFlow.resolveCallback(rawCallbackUri, lastHandledCallback)
+        when (resolution) {
+            GitHubCallbackResolution.IgnoreBlank,
+            GitHubCallbackResolution.IgnoreDuplicate -> return
+            is GitHubCallbackResolution.Invalid -> lastHandledCallback = resolution.normalizedCallback
+            is GitHubCallbackResolution.Error -> lastHandledCallback = resolution.normalizedCallback
+            is GitHubCallbackResolution.MissingExchangeCode -> {
+                lastHandledCallback = resolution.normalizedCallback
+            }
+            is GitHubCallbackResolution.ExchangeCode -> lastHandledCallback = resolution.normalizedCallback
+        }
 
         viewModelScope.launch(Dispatchers.IO) {
-            val callbackUri = runCatching { Uri.parse(trimmed) }.getOrNull()
-            if (callbackUri == null) {
-                _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    error = "GitHub 登录回调地址无效。"
-                )
-                return@launch
-            }
-
-            val error = callbackUri.getQueryParameter("error")
-            if (!error.isNullOrBlank()) {
-                _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    error = callbackUri.getQueryParameter("error_description") ?: error
-                )
-                return@launch
-            }
-
-            val exchangeCode = callbackUri.getQueryParameter("exchange_code").orEmpty()
-            if (exchangeCode.isBlank()) {
-                _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    error = "回调里没有拿到登录票据。"
-                )
-                return@launch
+            when (resolution) {
+                is GitHubCallbackResolution.Invalid -> {
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        error = resolution.message
+                    )
+                    return@launch
+                }
+                is GitHubCallbackResolution.Error -> {
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        error = resolution.message
+                    )
+                    return@launch
+                }
+                is GitHubCallbackResolution.MissingExchangeCode -> {
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        error = resolution.message
+                    )
+                    return@launch
+                }
+                GitHubCallbackResolution.IgnoreBlank,
+                GitHubCallbackResolution.IgnoreDuplicate -> return@launch
+                is GitHubCallbackResolution.ExchangeCode -> Unit
             }
 
             _uiState.value = _uiState.value.copy(
@@ -125,7 +130,7 @@ class AuthViewModel @Inject constructor(
                 error = null
             )
 
-            val result = exchangeLoginCode(exchangeCode)
+            val result = exchangeLoginCode(resolution.exchangeCode)
             if (result.success) {
                 val current = configRepository.getConfig()
                 configRepository.saveConfig(

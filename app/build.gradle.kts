@@ -157,4 +157,6 @@ dependencies {
     // UI
     implementation(libs.haze)
     implementation(libs.jgit)
+
+    testImplementation(kotlin("test"))
 }
