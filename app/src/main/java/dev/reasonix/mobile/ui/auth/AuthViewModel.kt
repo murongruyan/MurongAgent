@@ -177,7 +177,7 @@ class AuthViewModel @Inject constructor(
         }
     }
 
-    private fun exchangeLoginCode(exchangeCode: String): AuthExchangeResult {
+    private suspend fun exchangeLoginCode(exchangeCode: String): AuthExchangeResult {
         val current = runCatching { configRepository.getConfig() }.getOrElse {
             return AuthExchangeResult(success = false, error = it.message ?: "读取配置失败")
         }
