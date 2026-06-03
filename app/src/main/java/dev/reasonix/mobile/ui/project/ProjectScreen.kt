@@ -39,6 +39,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Refresh
@@ -116,6 +118,7 @@ import dev.reasonix.mobile.ui.ReasonixTagButton
 import dev.reasonix.mobile.ui.SkillDraftImportCard
 import dev.reasonix.mobile.ui.highlightSyntax
 import dev.reasonix.mobile.ui.rememberReasonixAccentColor
+import dev.reasonix.mobile.ui.rememberReasonixBackgroundColor
 import dev.reasonix.mobile.ui.rememberReasonixChromeColor
 import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
 import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
@@ -166,7 +169,9 @@ fun ProjectScreen(
     onApplyProjectKnowledgeSnapshot: (String) -> Unit,
     onDeleteProjectKnowledgeSnapshot: (String) -> Unit,
     onEditorPageChanged: (Boolean, String?, String?) -> Unit = { _, _, _ -> },
-    closeEditorRequestSignal: Int = 0
+    closeEditorRequestSignal: Int = 0,
+    editorMenuActionSignal: Int = 0,
+    editorMenuAction: ProjectEditorMenuAction? = null
 ) {
     var selectedTab by remember(currentProjectPath) { mutableStateOf(ProjectPrimaryTab.EDITOR) }
     var editorPageActive by remember(currentProjectPath) { mutableStateOf(false) }
@@ -196,7 +201,9 @@ fun ProjectScreen(
                         editorPageActive = active
                         onEditorPageChanged(active, fileName, relativePath)
                     },
-                    closeEditorRequestSignal = closeEditorRequestSignal
+                    closeEditorRequestSignal = closeEditorRequestSignal,
+                    editorMenuActionSignal = editorMenuActionSignal,
+                    editorMenuAction = editorMenuAction
                 )
 
                 ProjectPrimaryTab.CONFIG -> ProjectConfigSection(
@@ -229,7 +236,9 @@ private fun ProjectEditorSection(
     onOpenChat: () -> Unit,
     onNewTask: () -> Unit,
     onEditorPageChanged: (Boolean, String?, String?) -> Unit,
-    closeEditorRequestSignal: Int
+    closeEditorRequestSignal: Int,
+    editorMenuActionSignal: Int,
+    editorMenuAction: ProjectEditorMenuAction?
 ) {
     val scope = rememberCoroutineScope()
     val projectRoot = remember(currentProjectPath) {
@@ -261,8 +270,6 @@ private fun ProjectEditorSection(
     var showSearchReplaceDialog by remember(currentProjectPath) { mutableStateOf(false) }
     var showLineReplaceDialog by remember(currentProjectPath) { mutableStateOf(false) }
     var lineReplaceDraft by remember(currentProjectPath) { mutableStateOf("") }
-    var showEditorMenu by remember(currentProjectPath) { mutableStateOf(false) }
-    var showMoreMenu by remember(currentProjectPath) { mutableStateOf(false) }
     var showLanguageDialog by remember(currentProjectPath) { mutableStateOf(false) }
     var showOutlineDialog by remember(currentProjectPath) { mutableStateOf(false) }
     var showDiagnosticsDialog by remember(currentProjectPath) { mutableStateOf(false) }
@@ -984,10 +991,12 @@ private fun ProjectEditorSection(
         }
     } else {
         val editorVerticalScroll = rememberScrollState()
-        val editorHorizontalScroll = rememberScrollState()
         val isRawJsonFile = remember(selectedFilePath, language) {
             isJsonLikeProjectFile(selectedFilePath, language)
         }
+        val editorBackgroundColor = rememberReasonixBackgroundColor()
+        val editorSurfaceColor = rememberReasonixSurfaceColor()
+        val editorMutedTextColor = rememberReasonixMutedTextColor()
         val editorLanguageLabel = remember(language, languageOverride, isRawJsonFile) {
             when {
                 isRawJsonFile -> "json"
@@ -1014,6 +1023,30 @@ private fun ProjectEditorSection(
             )
         }
 
+        fun handleEditorMenuAction(action: ProjectEditorMenuAction) {
+            when (action) {
+                ProjectEditorMenuAction.SEARCH_REPLACE -> showSearchReplaceDialog = true
+                ProjectEditorMenuAction.LANGUAGE -> showLanguageDialog = true
+                ProjectEditorMenuAction.DIAGNOSTICS -> showDiagnosticsDialog = true
+                ProjectEditorMenuAction.CONFLICTS -> {
+                    if (conflictBlocks.isEmpty()) {
+                        editorError = "当前文件没有检测到 Git 冲突块"
+                    } else {
+                        showConflictResolverDialog = true
+                    }
+                }
+                ProjectEditorMenuAction.OUTLINE -> showOutlineDialog = true
+                ProjectEditorMenuAction.AI_COMPLETION -> requestAiCompletion()
+                else -> action.toLineAction()?.let(::applyLineAction)
+            }
+        }
+
+        LaunchedEffect(editorMenuActionSignal) {
+            if (selectedFilePath != null && editorMenuActionSignal != 0) {
+                editorMenuAction?.let(::handleEditorMenuAction)
+            }
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -1033,17 +1066,24 @@ private fun ProjectEditorSection(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     ReasonixTagButton(text = editorLanguageLabel, onClick = {})
-                    ReasonixTagButton(text = "第 $currentLine 行", onClick = {})
-                    ReasonixOutlinedActionButton(
-                        text = "后退",
+                    IconButton(
                         onClick = { navigateEditorHistory(backward = true) },
                         enabled = undoStack.isNotEmpty()
-                    )
-                    ReasonixOutlinedActionButton(
-                        text = "前进",
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.ArrowBack,
+                            contentDescription = "后退"
+                        )
+                    }
+                    IconButton(
                         onClick = { navigateEditorHistory(backward = false) },
                         enabled = redoStack.isNotEmpty()
-                    )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.ArrowForward,
+                            contentDescription = "前进"
+                        )
+                    }
                     Button(
                         onClick = {
                             scope.launch {
@@ -1063,71 +1103,6 @@ private fun ProjectEditorSection(
                         Text(if (isSaving) "保存中" else "保存")
                     }
                     Spacer(modifier = Modifier.weight(1f))
-                    Box {
-                        IconButton(onClick = { showMoreMenu = true }) {
-                            Icon(
-                                imageVector = Icons.Outlined.MoreVert,
-                                contentDescription = "更多编辑操作"
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = showMoreMenu,
-                            onDismissRequest = { showMoreMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("搜索与替换") },
-                                onClick = {
-                                    showMoreMenu = false
-                                    showSearchReplaceDialog = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("切换语法高亮") },
-                                onClick = {
-                                    showMoreMenu = false
-                                    showLanguageDialog = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("错误列表") },
-                                onClick = {
-                                    showMoreMenu = false
-                                    showDiagnosticsDialog = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("处理冲突") },
-                                enabled = conflictBlocks.isNotEmpty(),
-                                onClick = {
-                                    showMoreMenu = false
-                                    showConflictResolverDialog = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("代码大纲") },
-                                onClick = {
-                                    showMoreMenu = false
-                                    showOutlineDialog = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("AI 补全") },
-                                onClick = {
-                                    showMoreMenu = false
-                                    requestAiCompletion()
-                                }
-                            )
-                            ProjectLineAction.entries.forEach { action ->
-                                DropdownMenuItem(
-                                    text = { Text(action.label) },
-                                    onClick = {
-                                        showMoreMenu = false
-                                        applyLineAction(action)
-                                    }
-                                )
-                            }
-                        }
-                    }
                 }
             }
 
@@ -1171,13 +1146,14 @@ private fun ProjectEditorSection(
                             textStyle = MaterialTheme.typography.bodySmall.copy(
                                 fontFamily = FontFamily.Monospace,
                                 lineHeight = 18.sp
-                            )
+                            ),
+                            shape = RoundedCornerShape(18.dp)
                         )
                     } else {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(Color(0xFF1E1E1E), RoundedCornerShape(18.dp))
+                                .background(editorBackgroundColor.copy(alpha = 0.88f), RoundedCornerShape(18.dp))
                         ) {
                             ProjectCodeEditorPane(
                                 editorValue = editorValue,
@@ -1187,7 +1163,9 @@ private fun ProjectEditorSection(
                                 currentMatch = currentSearchMatch,
                                 diagnostics = editorDiagnostics,
                                 verticalScrollState = editorVerticalScroll,
-                                horizontalScrollState = editorHorizontalScroll,
+                                backgroundColor = editorBackgroundColor,
+                                surfaceColor = editorSurfaceColor,
+                                mutedTextColor = editorMutedTextColor,
                                 modifier = Modifier.fillMaxSize()
                             )
                         }
@@ -1307,8 +1285,7 @@ private fun ProjectEditorSection(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(Color(0xFF1E1E1E))
-                            .horizontalScroll(rememberScrollState())
+                            .background(editorSurfaceColor.copy(alpha = 0.56f), RoundedCornerShape(16.dp))
                             .padding(12.dp)
                     ) {
                         Text(
@@ -1316,7 +1293,7 @@ private fun ProjectEditorSection(
                             fontFamily = FontFamily.Monospace,
                             fontSize = 12.sp,
                             lineHeight = 18.sp,
-                            color = Color(0xFFD4D4D4)
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }
@@ -1661,14 +1638,14 @@ private fun ProjectFoldableCodePreview(
     collapsedStartLines: Set<Int>,
     onToggleFold: (Int) -> Unit
 ) {
+    val surfaceColor = rememberReasonixSurfaceColor()
     val lines = remember(content) { content.lines() }
     val lineNumberWidth = lines.size.toString().length.coerceAtLeast(2)
     val regionsByStart = remember(foldRegions) { foldRegions.associateBy { it.startLine } }
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFF1E1E1E))
-            .horizontalScroll(rememberScrollState())
+            .background(surfaceColor.copy(alpha = 0.58f), RoundedCornerShape(16.dp))
             .padding(12.dp)
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -1709,6 +1686,7 @@ private fun PreviewCodeLine(
     query: String?,
     onClick: (() -> Unit)?
 ) {
+    val onSurfaceColor = MaterialTheme.colorScheme.onSurface
     val annotated = remember(lineNumber, lineText, lineNumberWidth, language, query) {
         buildPreviewCodeLine(
             lineNumber = lineNumber,
@@ -1733,7 +1711,7 @@ private fun PreviewCodeLine(
         fontFamily = FontFamily.Monospace,
         fontSize = 12.sp,
         lineHeight = 18.sp,
-        color = Color(0xFFD4D4D4)
+        color = onSurfaceColor
     )
 }
 
@@ -1745,6 +1723,8 @@ private fun FoldedPreviewRow(
     query: String?,
     onToggle: () -> Unit
 ) {
+    val onSurfaceColor = MaterialTheme.colorScheme.onSurface
+    val mutedTextColor = rememberReasonixMutedTextColor()
     val annotated = remember(region, lineNumberWidth, language, query) {
         buildPreviewCodeLine(
             lineNumber = region.startLine,
@@ -1765,14 +1745,14 @@ private fun FoldedPreviewRow(
             fontFamily = FontFamily.Monospace,
             fontSize = 12.sp,
             lineHeight = 18.sp,
-            color = Color(0xFFD4D4D4)
+            color = onSurfaceColor
         )
         Text(
             text = " ".repeat(lineNumberWidth + 3) + "... 已折叠 ${region.endLine - region.startLine} 行，点击展开",
             fontFamily = FontFamily.Monospace,
             fontSize = 12.sp,
             lineHeight = 18.sp,
-            color = Color(0xFF9CDCFE)
+            color = mutedTextColor
         )
     }
 }
@@ -6113,14 +6093,17 @@ private fun ProjectCodeEditorPane(
     currentMatch: TextRange?,
     diagnostics: List<ProjectEditorDiagnostic>,
     verticalScrollState: androidx.compose.foundation.ScrollState,
-    horizontalScrollState: androidx.compose.foundation.ScrollState,
+    backgroundColor: Color,
+    surfaceColor: Color,
+    mutedTextColor: Color,
     modifier: Modifier = Modifier
 ) {
+    val onSurfaceColor = MaterialTheme.colorScheme.onSurface
     val visibleTextStyle = TextStyle(
         fontFamily = FontFamily.Monospace,
         fontSize = 13.sp,
         lineHeight = 20.sp,
-        color = Color(0xFFD4D4D4)
+        color = onSurfaceColor
     )
     val annotatedText = remember(editorValue.text, language, searchQuery, currentMatch, diagnostics) {
         buildHighlightedEditorText(
@@ -6140,7 +6123,7 @@ private fun ProjectCodeEditorPane(
             modifier = Modifier
                 .width(56.dp)
                 .fillMaxHeight()
-                .background(Color(0xFF252526))
+                .background(surfaceColor.copy(alpha = 0.72f))
         ) {
             Text(
                 text = lineNumbersText,
@@ -6149,7 +6132,7 @@ private fun ProjectCodeEditorPane(
                     .verticalScroll(verticalScrollState)
                     .padding(horizontal = 8.dp, vertical = 10.dp),
                 style = visibleTextStyle.copy(
-                    color = Color(0xFF6A9955)
+                    color = mutedTextColor
                 )
             )
         }
@@ -6157,33 +6140,41 @@ private fun ProjectCodeEditorPane(
             modifier = Modifier
                 .width(1.dp)
                 .fillMaxHeight()
-                .background(Color(0xFF333333))
+                .background(mutedTextColor.copy(alpha = 0.25f))
         )
         Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxHeight()
-                .horizontalScroll(horizontalScrollState)
         ) {
             Box(
                 modifier = Modifier
                     .verticalScroll(verticalScrollState)
                     .padding(horizontal = 12.dp, vertical = 10.dp)
-                    .defaultMinSize(minWidth = 320.dp, minHeight = 420.dp)
+                    .defaultMinSize(minHeight = 420.dp)
             ) {
                 Text(
                     text = annotatedText,
-                    style = visibleTextStyle
+                    style = visibleTextStyle,
+                    modifier = Modifier.fillMaxWidth()
                 )
                 BasicTextField(
                     value = editorValue,
                     onValueChange = onValueChange,
                     modifier = Modifier
                         .matchParentSize()
-                        .widthIn(min = 320.dp)
                         .heightIn(min = 420.dp),
                     textStyle = visibleTextStyle.copy(color = Color.Transparent),
-                    cursorBrush = SolidColor(Color(0xFFD4D4D4))
+                    cursorBrush = SolidColor(onSurfaceColor),
+                    decorationBox = { innerTextField ->
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(backgroundColor.copy(alpha = 0.01f))
+                        ) {
+                            innerTextField()
+                        }
+                    }
                 )
             }
         }
@@ -7683,6 +7674,43 @@ private fun buildProjectGitHubStatusLabel(status: String, conclusion: String?): 
     conclusion?.takeIf { it.isNotBlank() }?.let {
         append(" / ")
         append(it)
+    }
+}
+
+enum class ProjectEditorMenuAction(val label: String) {
+    SEARCH_REPLACE("搜索与替换"),
+    LANGUAGE("切换语法高亮"),
+    DIAGNOSTICS("错误列表"),
+    CONFLICTS("处理冲突"),
+    OUTLINE("代码大纲"),
+    AI_COMPLETION("AI 补全"),
+    LINE_COPY(ProjectLineAction.COPY.label),
+    LINE_CUT(ProjectLineAction.CUT.label),
+    LINE_DELETE(ProjectLineAction.DELETE.label),
+    LINE_CLEAR(ProjectLineAction.CLEAR.label),
+    LINE_REPLACE(ProjectLineAction.REPLACE.label),
+    LINE_DUPLICATE(ProjectLineAction.DUPLICATE.label),
+    LINE_UPPERCASE(ProjectLineAction.UPPERCASE.label),
+    LINE_LOWERCASE(ProjectLineAction.LOWERCASE.label),
+    LINE_INDENT_MORE(ProjectLineAction.INDENT_MORE.label),
+    LINE_INDENT_LESS(ProjectLineAction.INDENT_LESS.label),
+    LINE_TOGGLE_COMMENT(ProjectLineAction.TOGGLE_COMMENT.label);
+
+    fun toLineAction(): ProjectLineAction? {
+        return when (this) {
+            LINE_COPY -> ProjectLineAction.COPY
+            LINE_CUT -> ProjectLineAction.CUT
+            LINE_DELETE -> ProjectLineAction.DELETE
+            LINE_CLEAR -> ProjectLineAction.CLEAR
+            LINE_REPLACE -> ProjectLineAction.REPLACE
+            LINE_DUPLICATE -> ProjectLineAction.DUPLICATE
+            LINE_UPPERCASE -> ProjectLineAction.UPPERCASE
+            LINE_LOWERCASE -> ProjectLineAction.LOWERCASE
+            LINE_INDENT_MORE -> ProjectLineAction.INDENT_MORE
+            LINE_INDENT_LESS -> ProjectLineAction.INDENT_LESS
+            LINE_TOGGLE_COMMENT -> ProjectLineAction.TOGGLE_COMMENT
+            else -> null
+        }
     }
 }
 

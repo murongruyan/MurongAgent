@@ -345,10 +345,26 @@ class OpenAIProvider : ModelProvider {
     }
 
     private fun parseUsage(obj: JsonObject): Usage {
+        val promptTokens = obj["prompt_tokens"]?.jsonPrimitive?.int ?: 0
+        val promptTokensDetails = obj["prompt_tokens_details"]?.jsonObject
+        val topLevelCacheHit = obj["prompt_cache_hit_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+        val topLevelCacheMiss = obj["prompt_cache_miss_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+        val nestedCacheHit = promptTokensDetails
+            ?.get("cached_tokens")
+            ?.jsonPrimitive
+            ?.intOrNull ?: 0
+        val cacheHit = if (topLevelCacheHit > 0) topLevelCacheHit else nestedCacheHit
+        val cacheMiss = when {
+            topLevelCacheMiss > 0 -> topLevelCacheMiss
+            cacheHit > 0 && promptTokens > cacheHit -> promptTokens - cacheHit
+            else -> 0
+        }
         return Usage(
-            promptTokens = obj["prompt_tokens"]?.jsonPrimitive?.int ?: 0,
+            promptTokens = promptTokens,
             completionTokens = obj["completion_tokens"]?.jsonPrimitive?.int ?: 0,
-            totalTokens = obj["total_tokens"]?.jsonPrimitive?.int ?: 0
+            totalTokens = obj["total_tokens"]?.jsonPrimitive?.int ?: 0,
+            promptCacheHitTokens = cacheHit.takeIf { it > 0 },
+            promptCacheMissTokens = cacheMiss.takeIf { it > 0 }
         )
     }
 

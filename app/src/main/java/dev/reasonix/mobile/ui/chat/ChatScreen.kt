@@ -101,6 +101,7 @@ import java.util.UUID
 @Composable
 fun ChatScreen(
     state: SessionState,
+    isScreenActive: Boolean = true,
     projectKnowledgePaths: List<String> = emptyList(),
     onSend: (String, List<FileMentionUi>, List<PendingImageAttachmentUi>) -> Unit,
     onStopSending: () -> Unit = {},
@@ -219,6 +220,19 @@ fun ChatScreen(
             selectedImages.add(attachment)
         }
     }
+    fun dismissTransientOverlays() {
+        messageActionTarget = null
+        selectedSubagentRun = null
+        selectedSubagentBatch = null
+        showSubagentHistory = false
+        showCompressionHistory = false
+        showFileChangeHistory = false
+        selectedCheckpoint = null
+        selectedFileChange = null
+        previewImages = emptyList()
+        previewImageIndex = 0
+        showMentionPicker = false
+    }
 
     val itemCount = state.messages.size
     suspend fun scrollMessagesToBottom() {
@@ -239,6 +253,12 @@ fun ChatScreen(
     ) {
         if (inputHasFocus) {
             scrollMessagesToBottom()
+        }
+    }
+
+    LaunchedEffect(isScreenActive) {
+        if (!isScreenActive) {
+            dismissTransientOverlays()
         }
     }
 
@@ -4004,6 +4024,8 @@ private data class ToolResultMessageUi(
     val toolName: String,
     val summary: String?,
     val result: String,
+    val resultLanguage: String,
+    val resultWasFenced: Boolean,
     val fileChanges: List<String>,
     val truncated: Boolean,
     val isQuiet: Boolean
@@ -4070,12 +4092,13 @@ private fun ReasoningCard(
                     color = surfaceColor.copy(alpha = 0.82f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
+                    val normalizedContent = remember(content) {
+                        normalizeReasoningMarkdown(content)
+                    }
                     SelectionContainer {
-                        Text(
-                            text = content,
-                            color = mutedTextColor,
-                            fontSize = 12.sp,
-                            fontFamily = FontFamily.Monospace,
+                        MarkdownText(
+                            text = normalizedContent,
+                            fontSize = 12,
                             modifier = Modifier.padding(10.dp)
                         )
                     }
@@ -4141,7 +4164,9 @@ private fun ToolResultCard(tool: ToolResultMessageUi) {
                 if (tool.result.isNotBlank()) {
                     DetailBlock(
                         label = if (tool.truncated) "输出（已截断）" else "输出",
-                        value = tool.result
+                        value = tool.result,
+                        renderMarkdown = tool.resultWasFenced,
+                        codeLanguage = tool.resultLanguage
                     )
                 }
                 if (tool.fileChanges.isNotEmpty()) {
@@ -4272,11 +4297,10 @@ private fun parseToolExecutionMessage(content: String): ToolExecutionMessageUi? 
 private fun parseToolResultMessage(content: String): ToolResultMessageUi? {
     val headerMatch = Regex("""^📦 \*\*(.+?)\*\* 执行结果:""").find(content) ?: return null
     val toolName = headerMatch.groupValues.getOrNull(1).orEmpty()
-    val rawPayload = Regex("""```(?:\w+)?\n([\s\S]*?)\n```""")
+    val fencedMatch = Regex("""```([\w#+.-]+)?\n([\s\S]*?)\n```""")
         .find(content)
-        ?.groupValues
-        ?.getOrNull(1)
-        .orEmpty()
+    val resultLanguage = fencedMatch?.groupValues?.getOrNull(1).orEmpty()
+    val rawPayload = fencedMatch?.groupValues?.getOrNull(2).orEmpty()
     val truncated = rawPayload.endsWith("\n...(截断)") || rawPayload == "...(截断)"
     val normalizedPayload = rawPayload.removeSuffix("\n...(截断)").removeSuffix("...(截断)")
     val fileChanges = content.substringAfter("本次文件变更:\n", "")
@@ -4293,6 +4317,8 @@ private fun parseToolResultMessage(content: String): ToolResultMessageUi? {
             fileChanges = fileChanges
         ),
         result = normalizedPayload,
+        resultLanguage = resultLanguage,
+        resultWasFenced = fencedMatch != null,
         fileChanges = fileChanges,
         truncated = truncated,
         isQuiet = isQuietTool(toolName)
@@ -4439,11 +4465,29 @@ private fun formatMessageForCopy(msg: ChatMessageUi): String {
     }
     val parts = buildList {
         add("[$roleLabel]")
+        msg.reasoning
+            ?.takeIf { it.isNotBlank() }
+            ?.let { reasoning ->
+                add("[思考过程]")
+                add(normalizeReasoningMarkdown(reasoning))
+            }
         if (msg.content.isNotBlank()) {
             add(msg.content)
         }
     }
     return parts.joinToString("\n")
+}
+
+private fun normalizeReasoningMarkdown(text: String): String {
+    val bulletPattern = Regex("""^(\s*)[•·▪●◦]\s+""")
+    return text
+        .replace("\r\n", "\n")
+        .lineSequence()
+        .joinToString("\n") { line ->
+            bulletPattern.replace(line) { match ->
+                "${match.groupValues[1]}- "
+            }
+        }
 }
 
 private fun shouldIncludeSystemMessageInCopiedConversation(content: String): Boolean {
@@ -4470,7 +4514,12 @@ private fun DetailRow(label: String, value: String) {
 }
 
 @Composable
-private fun DetailBlock(label: String, value: String) {
+private fun DetailBlock(
+    label: String,
+    value: String,
+    renderMarkdown: Boolean = false,
+    codeLanguage: String = ""
+) {
     val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -4485,12 +4534,26 @@ private fun DetailBlock(label: String, value: String) {
             modifier = Modifier.fillMaxWidth()
         ) {
             SelectionContainer {
-                Text(
-                    text = value,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(12.dp)
-                )
+                if (renderMarkdown) {
+                    MarkdownText(
+                        text = buildString {
+                            append("```")
+                            append(codeLanguage)
+                            append('\n')
+                            append(value)
+                            append("\n```")
+                        },
+                        modifier = Modifier.padding(12.dp).fillMaxWidth(),
+                        fontSize = 12
+                    )
+                } else {
+                    Text(
+                        text = value,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
             }
         }
     }

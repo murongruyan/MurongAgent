@@ -73,13 +73,19 @@ class AgentLoop(
     suspend fun processMessage(
         userMessage: ChatMessage,
         history: List<ChatMessage>,
-        additionalSystemContext: String? = null,
+        stableSystemContext: String? = null,
+        turnScopedSystemContext: String? = null,
         onEvent: (AgentEvent) -> Unit,
         requestApproval: suspend (ToolApprovalRequest) -> Boolean = { true }
     ) {
         state = AgentState.THINKING
 
-        val messages = buildMessages(userMessage, history, additionalSystemContext)
+        val messages = buildMessages(
+            userMessage = userMessage,
+            history = history,
+            stableSystemContext = stableSystemContext,
+            turnScopedSystemContext = turnScopedSystemContext
+        )
         val currentMessages = messages.toMutableList()
         var toolIteration = 0
 
@@ -305,7 +311,8 @@ class AgentLoop(
     private fun buildMessages(
         userMessage: ChatMessage,
         history: List<ChatMessage>,
-        additionalSystemContext: String?
+        stableSystemContext: String?,
+        turnScopedSystemContext: String?
     ): List<ChatMessage> {
         val messages = mutableListOf<ChatMessage>()
 
@@ -335,7 +342,7 @@ class AgentLoop(
             )
         )
 
-        additionalSystemContext?.takeIf { it.isNotBlank() }?.let {
+        stableSystemContext?.takeIf { it.isNotBlank() }?.let {
             messages.add(
                 ChatMessage(
                     role = "system",
@@ -347,6 +354,16 @@ class AgentLoop(
         // Conversation History（保留更长一点的窗口，避免多轮工具调用把关键上下文挤掉）
         val recentHistory = history.takeLast(32)
         messages.addAll(recentHistory)
+
+        // 本轮动态上下文放在历史之后，避免每轮都打碎前缀缓存。
+        turnScopedSystemContext?.takeIf { it.isNotBlank() }?.let {
+            messages.add(
+                ChatMessage(
+                    role = "system",
+                    content = it
+                )
+            )
+        }
 
         // 当前用户输入
         messages.add(

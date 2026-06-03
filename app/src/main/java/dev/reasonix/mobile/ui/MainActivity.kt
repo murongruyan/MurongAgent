@@ -24,6 +24,7 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
@@ -36,6 +37,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -54,6 +56,7 @@ import dev.reasonix.mobile.ui.chat.buildConversationText
 import dev.reasonix.mobile.ui.auth.AuthViewModel
 import dev.reasonix.mobile.ui.auth.GitHubAuthFlow
 import dev.reasonix.mobile.ui.auth.GitHubLoginScreen
+import dev.reasonix.mobile.ui.project.ProjectEditorMenuAction
 import dev.reasonix.mobile.ui.project.ProjectScreen
 import dev.reasonix.mobile.ui.settings.AboutPage
 import dev.reasonix.mobile.ui.settings.SettingsScreen
@@ -170,6 +173,8 @@ fun MainScreen() {
     val uiController = LocalReasonixUiController.current
     var projectEditorChromeState by remember { mutableStateOf(ProjectEditorChromeState()) }
     var projectEditorCloseRequestSignal by remember { mutableIntStateOf(0) }
+    var projectEditorMenuAction by remember { mutableStateOf<ProjectEditorMenuAction?>(null) }
+    var projectEditorMenuActionSignal by remember { mutableIntStateOf(0) }
     var showProjectEditorMenu by remember { mutableStateOf(false) }
     val currentScreen = shellScreens[selectedTopLevelPage]
     val darkMode = uiController.themeMode == ReasonixThemeMode.DARK ||
@@ -182,6 +187,12 @@ fun MainScreen() {
         if (targetIndex < 0) return
         settingsSubpage = SettingsSubpage.Main
         selectedTopLevelPage = targetIndex
+    }
+
+    fun dispatchProjectEditorMenuAction(action: ProjectEditorMenuAction) {
+        projectEditorMenuAction = action
+        projectEditorMenuActionSignal += 1
+        showProjectEditorMenu = false
     }
 
     LaunchedEffect(Unit) {
@@ -226,6 +237,7 @@ fun MainScreen() {
         drawerState.close()
         if (currentScreen !is Screen.Projects) {
             projectEditorChromeState = ProjectEditorChromeState()
+            projectEditorMenuAction = null
         }
     }
 
@@ -390,7 +402,7 @@ fun MainScreen() {
         SettingsSubpage.Theme -> "风格、模式与强调色"
         SettingsSubpage.About -> "应用信息与产品方向"
         SettingsSubpage.Main -> when (currentScreen) {
-            is Screen.Chat -> "会话列表、消息流与上下文控制"
+            is Screen.Chat -> ""
             is Screen.Projects -> if (isProjectSecondaryPage) "" else "项目浏览、文件编辑与 Git 工作流"
             is Screen.Tools -> "工具状态、审批与执行记录"
             is Screen.Settings -> "账号、模型与全局偏好"
@@ -500,14 +512,18 @@ fun MainScreen() {
                                         )
                                     }
                                     currentScreen is Screen.Chat -> {
-                                        ReasonixOutlinedActionButton(
-                                            text = "会话",
+                                        IconButton(
                                             onClick = {
                                                 scope.launch {
                                                     drawerState.open()
                                                 }
                                             }
-                                        )
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.Menu,
+                                                contentDescription = "打开会话列表"
+                                            )
+                                        }
                                     }
                                     topLevelHistory.isNotEmpty() -> {
                                         ReasonixOutlinedActionButton(
@@ -595,11 +611,71 @@ fun MainScreen() {
                                                         }
                                                     )
                                                 }
+                                            HorizontalDivider()
+                                            DropdownMenuItem(
+                                                text = { Text(ProjectEditorMenuAction.SEARCH_REPLACE.label) },
+                                                onClick = {
+                                                    dispatchProjectEditorMenuAction(ProjectEditorMenuAction.SEARCH_REPLACE)
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text(ProjectEditorMenuAction.LANGUAGE.label) },
+                                                onClick = {
+                                                    dispatchProjectEditorMenuAction(ProjectEditorMenuAction.LANGUAGE)
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text(ProjectEditorMenuAction.DIAGNOSTICS.label) },
+                                                onClick = {
+                                                    dispatchProjectEditorMenuAction(ProjectEditorMenuAction.DIAGNOSTICS)
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text(ProjectEditorMenuAction.CONFLICTS.label) },
+                                                onClick = {
+                                                    dispatchProjectEditorMenuAction(ProjectEditorMenuAction.CONFLICTS)
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text(ProjectEditorMenuAction.OUTLINE.label) },
+                                                onClick = {
+                                                    dispatchProjectEditorMenuAction(ProjectEditorMenuAction.OUTLINE)
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text(ProjectEditorMenuAction.AI_COMPLETION.label) },
+                                                onClick = {
+                                                    dispatchProjectEditorMenuAction(ProjectEditorMenuAction.AI_COMPLETION)
+                                                }
+                                            )
+                                            HorizontalDivider()
+                                            listOf(
+                                                ProjectEditorMenuAction.LINE_COPY,
+                                                ProjectEditorMenuAction.LINE_CUT,
+                                                ProjectEditorMenuAction.LINE_DELETE,
+                                                ProjectEditorMenuAction.LINE_CLEAR,
+                                                ProjectEditorMenuAction.LINE_REPLACE,
+                                                ProjectEditorMenuAction.LINE_DUPLICATE,
+                                                ProjectEditorMenuAction.LINE_UPPERCASE,
+                                                ProjectEditorMenuAction.LINE_LOWERCASE,
+                                                ProjectEditorMenuAction.LINE_INDENT_MORE,
+                                                ProjectEditorMenuAction.LINE_INDENT_LESS,
+                                                ProjectEditorMenuAction.LINE_TOGGLE_COMMENT
+                                            ).forEach { action ->
+                                                DropdownMenuItem(
+                                                    text = { Text(action.label) },
+                                                    onClick = {
+                                                        dispatchProjectEditorMenuAction(action)
+                                                    }
+                                                )
+                                            }
                                         }
                                     }
                                 } else if (currentScreen is Screen.Chat && settingsSubpage == SettingsSubpage.Main) {
-                                    buildPromptCacheSummary(chatState.usageSummary)?.let { cacheSummary ->
-                                        ReasonixTagButton(text = cacheSummary, onClick = {})
+                                    chatState.usageSummary
+                                        .takeIf { it.totalTokens > 0 || it.promptTokens > 0 }
+                                        ?.let { usageSummary ->
+                                            ChatUsageSummaryBadge(usageSummary = usageSummary)
                                         Spacer(modifier = Modifier.width(6.dp))
                                     }
                                 } else {
@@ -778,6 +854,7 @@ fun MainScreen() {
                             is Screen.Chat -> {
                                 ChatScreen(
                                     state = chatState,
+                                    isScreenActive = selectedTopLevelPage == page && settingsSubpage == SettingsSubpage.Main,
                                     projectKnowledgePaths = chatState.projectKnowledgePaths,
                                     onSend = { text, mentions, images ->
                                         chatVm.sendMessage(text, mentions, images)
@@ -918,7 +995,9 @@ fun MainScreen() {
                                             relativePath = relativePath.orEmpty()
                                         )
                                     },
-                                    closeEditorRequestSignal = projectEditorCloseRequestSignal
+                                    closeEditorRequestSignal = projectEditorCloseRequestSignal,
+                                    editorMenuActionSignal = projectEditorMenuActionSignal,
+                                    editorMenuAction = projectEditorMenuAction
                                 )
                             }
 
@@ -1115,11 +1194,63 @@ private fun copyTextToClipboard(context: Context, text: String) {
     clipboard.setPrimaryClip(ClipData.newPlainText(null, text))
 }
 
-private fun buildPromptCacheSummary(usage: UsageSummarySnapshot): String? {
-    val cacheTotal = usage.promptCacheHitTokens + usage.promptCacheMissTokens
-    if (cacheTotal <= 0) return null
-    val hitRate = usage.promptCacheHitTokens * 100.0 / cacheTotal.toDouble()
-    return "缓存 ${"%.0f".format(hitRate)}% · 命中 ${usage.promptCacheHitTokens}"
+private data class PromptCacheMetrics(
+    val hitRatePercent: Int
+)
+
+private fun buildPromptCacheMetrics(usage: UsageSummarySnapshot): PromptCacheMetrics? {
+    val explicitTotal = usage.promptCacheHitTokens + usage.promptCacheMissTokens
+    val promptTotal = usage.promptTokens
+    val denominator = maxOf(explicitTotal, promptTotal)
+    if (denominator <= 0) return null
+    val hitRatePercent = ((usage.promptCacheHitTokens * 100.0) / denominator.toDouble()).toInt()
+        .coerceIn(0, 100)
+    return PromptCacheMetrics(hitRatePercent = hitRatePercent)
+}
+
+private fun formatCompactTokenCount(tokens: Int): String {
+    return when {
+        tokens >= 1_000_000 -> {
+            val value = tokens / 1_000_000.0
+            "${"%.1f".format(value).removeSuffix(".0")}M"
+        }
+        tokens >= 1_000 -> {
+            val value = tokens / 1_000.0
+            "${"%.1f".format(value).removeSuffix(".0")}k"
+        }
+        else -> tokens.toString()
+    }
+}
+
+@Composable
+private fun ChatUsageSummaryBadge(usageSummary: UsageSummarySnapshot) {
+    val accent = rememberReasonixAccentColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    val metrics = remember(usageSummary) { buildPromptCacheMetrics(usageSummary) }
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = accent.copy(alpha = 0.12f),
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.38f))
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(1.dp)
+        ) {
+            Text(
+                text = metrics?.let { "缓存 ${it.hitRatePercent}%" } ?: "缓存 --",
+                color = accent,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = "消耗 ${formatCompactTokenCount(usageSummary.totalTokens)} token",
+                color = mutedTextColor,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1
+            )
+        }
+    }
 }
 
 @Composable

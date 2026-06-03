@@ -13,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
@@ -54,6 +55,15 @@ fun MarkdownText(
 
     val segments = parseMarkdown(text)
     val textColor = MaterialTheme.colorScheme.onSurface
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    val inlineCodeBackground = lerp(Color(0xFF2E2E3E), surfaceColor, 0.22f)
+    val inlineCodeTextColor = Color(0xFFE4E6F6)
+    val codeBlockBackground = lerp(Color(CODE_BG), surfaceColor, 0.18f)
+    val codeBlockHeaderBackground = lerp(Color(CODE_LANG_BG), chromeColor, 0.24f)
+    val codeBlockLanguageColor = lerp(Color(0xFF8A8AA0), mutedTextColor, 0.18f)
+    val codeBlockTextColor = Color(0xFFD4D4D4)
 
     Column(
         modifier = modifier,
@@ -62,7 +72,13 @@ fun MarkdownText(
         for (segment in segments) {
             when (segment) {
                 is MarkdownSegment.Paragraph -> {
-                    val annotatedString = buildParagraphAnnotatedString(segment.text, textColor, fontSize)
+                    val annotatedString = buildParagraphAnnotatedString(
+                        text = segment.text,
+                        baseColor = textColor,
+                        baseFontSize = fontSize,
+                        inlineCodeBackground = inlineCodeBackground,
+                        inlineCodeTextColor = inlineCodeTextColor
+                    )
                     Text(
                         text = annotatedString,
                         fontSize = fontSize.sp,
@@ -78,7 +94,11 @@ fun MarkdownText(
                         else -> (fontSize + 2).sp
                     }
                     val annotatedString = buildParagraphAnnotatedString(
-                        segment.text, textColor, fontSize + (4 - segment.level) * 2
+                        text = segment.text,
+                        baseColor = textColor,
+                        baseFontSize = fontSize + (4 - segment.level) * 2,
+                        inlineCodeBackground = inlineCodeBackground,
+                        inlineCodeTextColor = inlineCodeTextColor
                     )
                     Text(
                         text = annotatedString,
@@ -89,13 +109,23 @@ fun MarkdownText(
                     )
                 }
                 is MarkdownSegment.CodeBlock -> {
-                    CodeBlockView(segment)
+                    CodeBlockView(
+                        block = segment,
+                        backgroundColor = codeBlockBackground,
+                        languageBarColor = codeBlockHeaderBackground,
+                        languageTextColor = codeBlockLanguageColor,
+                        codeTextColor = codeBlockTextColor
+                    )
                 }
                 is MarkdownSegment.UnorderedListItem -> {
                     Row(modifier = Modifier.padding(start = 8.dp)) {
-                        Text("�? ", fontSize = fontSize.sp, color = textColor)
+                        Text("- ", fontSize = fontSize.sp, color = textColor)
                         val annotatedString = buildParagraphAnnotatedString(
-                            segment.text, textColor, fontSize
+                            text = segment.text,
+                            baseColor = textColor,
+                            baseFontSize = fontSize,
+                            inlineCodeBackground = inlineCodeBackground,
+                            inlineCodeTextColor = inlineCodeTextColor
                         )
                         Text(
                             text = annotatedString,
@@ -109,7 +139,11 @@ fun MarkdownText(
                     Row(modifier = Modifier.padding(start = 8.dp)) {
                         Text("${segment.number}.  ", fontSize = fontSize.sp, color = textColor)
                         val annotatedString = buildParagraphAnnotatedString(
-                            segment.text, textColor, fontSize
+                            text = segment.text,
+                            baseColor = textColor,
+                            baseFontSize = fontSize,
+                            inlineCodeBackground = inlineCodeBackground,
+                            inlineCodeTextColor = inlineCodeTextColor
                         )
                         Text(
                             text = annotatedString,
@@ -129,7 +163,11 @@ fun MarkdownText(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         val annotatedString = buildParagraphAnnotatedString(
-                            segment.text, textColor.copy(alpha = 0.8f), fontSize
+                            text = segment.text,
+                            baseColor = textColor.copy(alpha = 0.8f),
+                            baseFontSize = fontSize,
+                            inlineCodeBackground = inlineCodeBackground,
+                            inlineCodeTextColor = inlineCodeTextColor
                         )
                         Text(
                             text = annotatedString,
@@ -153,24 +191,30 @@ fun MarkdownText(
 // ─── Code Block View ────────────────────────────────────────────
 
 @Composable
-private fun CodeBlockView(block: MarkdownSegment.CodeBlock) {
+private fun CodeBlockView(
+    block: MarkdownSegment.CodeBlock,
+    backgroundColor: Color,
+    languageBarColor: Color,
+    languageTextColor: Color,
+    codeTextColor: Color
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
-            .background(Color(CODE_BG))
+            .background(backgroundColor)
     ) {
         // Language tag bar
         if (block.language.isNotBlank()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color(CODE_LANG_BG))
+                    .background(languageBarColor)
                     .padding(horizontal = 12.dp, vertical = 4.dp)
             ) {
                 Text(
                     text = block.language,
-                    color = Color(0xFF8A8AA0),
+                    color = languageTextColor,
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace
                 )
@@ -191,7 +235,7 @@ private fun CodeBlockView(block: MarkdownSegment.CodeBlock) {
                 fontFamily = FontFamily.Monospace,
                 fontSize = 12.sp,
                 lineHeight = 18.sp,
-                color = Color(0xFFD4D4D4)
+                color = codeTextColor
             )
         }
     }
@@ -213,7 +257,9 @@ private fun HorizontalDividerView() {
 private fun buildParagraphAnnotatedString(
     text: String,
     baseColor: Color,
-    baseFontSize: Int
+    baseFontSize: Int,
+    inlineCodeBackground: Color,
+    inlineCodeTextColor: Color
 ): AnnotatedString {
     val builder = AnnotatedString.Builder()
 
@@ -239,8 +285,8 @@ private fun buildParagraphAnnotatedString(
                 val code = matcher.group(1)?.removeSurrounding("`").orEmpty()
                 builder.pushStyle(SpanStyle(
                     fontFamily = FontFamily.Monospace,
-                    background = Color(0xFF2E2E3E),
-                    color = Color(0xFFD4D4D4),
+                    background = inlineCodeBackground,
+                    color = inlineCodeTextColor,
                     fontSize = (baseFontSize - 1).sp
                 ))
                 builder.append(code)

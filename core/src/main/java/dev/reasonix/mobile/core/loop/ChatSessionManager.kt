@@ -2489,11 +2489,15 @@ class ChatSessionManager(
         } else {
             null
         }
-        val additionalContext = listOfNotNull(
+        val stableSystemContext = listOfNotNull(
             compressionContext,
             projectContext,
             projectSkillsContext,
-            mcpToolsContext,
+            mcpToolsContext
+        )
+            .takeIf { it.isNotEmpty() }
+            ?.joinToString("\n\n")
+        val turnScopedSystemContext = listOfNotNull(
             fileMentionContext,
             executionInterruptContext,
             multimodalContext,
@@ -2541,7 +2545,8 @@ class ChatSessionManager(
             agentLoop?.processMessage(
                 userMessage = userModelMessage,
                 history = history,
-                additionalSystemContext = additionalContext,
+                stableSystemContext = stableSystemContext,
+                turnScopedSystemContext = turnScopedSystemContext,
                 onEvent = { event ->
                     when (event) {
                         is AgentEvent.ContentDelta -> appendToStreaming(event.text)
@@ -5478,6 +5483,42 @@ class ChatSessionManager(
         }.trim()
     }
 
+    private fun buildStableAuxiliarySystemMessages(
+        instruction: String,
+        compressionContext: String?
+    ): List<ChatMessage> {
+        return buildList {
+            add(ChatMessage(role = "system", content = lastSessionConfig.buildEffectiveSystemPrompt()))
+            compressionContext?.takeIf { it.isNotBlank() }?.let {
+                add(ChatMessage(role = "system", content = it))
+            }
+            buildCurrentProjectContext()?.let {
+                add(ChatMessage(role = "system", content = it))
+            }
+            buildProjectSkillsContext()?.let {
+                add(ChatMessage(role = "system", content = it))
+            }
+            buildEnabledMcpToolsContext()?.let {
+                add(ChatMessage(role = "system", content = it))
+            }
+            add(ChatMessage(role = "system", content = instruction))
+        }
+    }
+
+    private fun buildTurnScopedAuxiliarySystemMessages(
+        mentionedFiles: List<FileMentionUi>,
+        extraContext: String? = null
+    ): List<ChatMessage> {
+        return buildList {
+            buildMentionedFilesContext(mentionedFiles)?.let {
+                add(ChatMessage(role = "system", content = it))
+            }
+            extraContext?.takeIf { it.isNotBlank() }?.let {
+                add(ChatMessage(role = "system", content = it))
+            }
+        }
+    }
+
     private fun buildWorkflowPlanPrompt(
         goal: String,
         history: List<ChatMessage>,
@@ -5501,24 +5542,9 @@ class ChatSessionManager(
         """.trimIndent()
 
         return buildList {
-            add(ChatMessage(role = "system", content = lastSessionConfig.buildEffectiveSystemPrompt()))
-            compressionContext?.takeIf { it.isNotBlank() }?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            buildCurrentProjectContext()?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            buildProjectSkillsContext()?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            buildEnabledMcpToolsContext()?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            buildMentionedFilesContext(mentionedFiles)?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            add(ChatMessage(role = "system", content = planInstruction))
+            addAll(buildStableAuxiliarySystemMessages(planInstruction, compressionContext))
             addAll(history.takeLast(12))
+            addAll(buildTurnScopedAuxiliarySystemMessages(mentionedFiles))
             add(
                 ChatMessage(
                     role = "user",
@@ -5549,24 +5575,9 @@ class ChatSessionManager(
         """.trimIndent()
 
         return buildList {
-            add(ChatMessage(role = "system", content = lastSessionConfig.buildEffectiveSystemPrompt()))
-            compressionContext?.takeIf { it.isNotBlank() }?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            buildCurrentProjectContext()?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            buildProjectSkillsContext()?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            buildEnabledMcpToolsContext()?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            buildMentionedFilesContext(mentionedFiles)?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            add(ChatMessage(role = "system", content = routerInstruction))
+            addAll(buildStableAuxiliarySystemMessages(routerInstruction, compressionContext))
             addAll(history.takeLast(10))
+            addAll(buildTurnScopedAuxiliarySystemMessages(mentionedFiles))
             add(
                 ChatMessage(
                     role = "user",
@@ -5777,27 +5788,14 @@ class ChatSessionManager(
         """.trimIndent()
 
         return buildList {
-            add(ChatMessage(role = "system", content = lastSessionConfig.buildEffectiveSystemPrompt()))
-            compressionContext?.takeIf { it.isNotBlank() }?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            buildCurrentProjectContext()?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            buildProjectSkillsContext()?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            buildEnabledMcpToolsContext()?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            buildMentionedFilesContext(mentionedFiles)?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            add(ChatMessage(role = "system", content = clarifyInstruction))
+            addAll(buildStableAuxiliarySystemMessages(clarifyInstruction, compressionContext))
             addAll(history.takeLast(12))
-            buildClarificationAnswersContext(previousAnswers)?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
+            addAll(
+                buildTurnScopedAuxiliarySystemMessages(
+                    mentionedFiles = mentionedFiles,
+                    extraContext = buildClarificationAnswersContext(previousAnswers)
+                )
+            )
             add(
                 ChatMessage(
                     role = "user",
@@ -5869,24 +5867,9 @@ class ChatSessionManager(
         """.trimIndent()
 
         return buildList {
-            add(ChatMessage(role = "system", content = lastSessionConfig.buildEffectiveSystemPrompt()))
-            compressionContext?.takeIf { it.isNotBlank() }?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            buildCurrentProjectContext()?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            buildProjectSkillsContext()?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            buildEnabledMcpToolsContext()?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            buildMentionedFilesContext(mentionedFiles)?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            add(ChatMessage(role = "system", content = followUpInstruction))
+            addAll(buildStableAuxiliarySystemMessages(followUpInstruction, compressionContext))
             addAll(history.takeLast(12))
+            addAll(buildTurnScopedAuxiliarySystemMessages(mentionedFiles))
             add(
                 ChatMessage(
                     role = "user",

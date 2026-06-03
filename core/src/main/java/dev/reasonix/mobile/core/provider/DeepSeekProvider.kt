@@ -378,12 +378,20 @@ class DeepSeekProvider : ModelProvider {
     }
 
     private fun parseUsage(obj: JsonObject): Usage {
+        val promptTokens = obj["prompt_tokens"]?.jsonPrimitive?.int ?: 0
+        val cacheHit = obj["prompt_cache_hit_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+        val explicitCacheMiss = obj["prompt_cache_miss_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+        val cacheMiss = when {
+            explicitCacheMiss > 0 -> explicitCacheMiss
+            cacheHit > 0 && promptTokens > cacheHit -> promptTokens - cacheHit
+            else -> 0
+        }
         return Usage(
-            promptTokens = obj["prompt_tokens"]?.jsonPrimitive?.int ?: 0,
+            promptTokens = promptTokens,
             completionTokens = obj["completion_tokens"]?.jsonPrimitive?.int ?: 0,
             totalTokens = obj["total_tokens"]?.jsonPrimitive?.int ?: 0,
-            promptCacheHitTokens = obj["prompt_cache_hit_tokens"]?.jsonPrimitive?.intOrNull,
-            promptCacheMissTokens = obj["prompt_cache_miss_tokens"]?.jsonPrimitive?.intOrNull
+            promptCacheHitTokens = cacheHit.takeIf { it > 0 },
+            promptCacheMissTokens = cacheMiss.takeIf { it > 0 }
         )
     }
 

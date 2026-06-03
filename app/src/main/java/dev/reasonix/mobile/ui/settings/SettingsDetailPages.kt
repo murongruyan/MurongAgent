@@ -1,6 +1,7 @@
 package dev.reasonix.mobile.ui.settings
 
 import android.content.Intent
+import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,6 +27,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -63,6 +65,7 @@ import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
 fun ThemeSettingsPage() {
     val ui = LocalReasonixUiController.current
     val context = LocalContext.current
+    val activity = context.findActivity()
     val accent = rememberReasonixAccentColor()
     val surfaceColor = rememberReasonixSurfaceColor()
     val chromeColor = rememberReasonixChromeColor()
@@ -70,13 +73,48 @@ fun ThemeSettingsPage() {
     var showModeDialog by remember { mutableStateOf(false) }
     var showStyleDialog by remember { mutableStateOf(false) }
     var showBackgroundDialog by remember { mutableStateOf(false) }
+    var showWallpaperAccessDialog by remember { mutableStateOf(false) }
+    var pendingWallpaperAction by remember { mutableStateOf<ReasonixBackgroundMode?>(null) }
     var colorDialogMode by remember { mutableStateOf<String?>(null) }
     var fontScaleDraft by remember(ui.fontScale) { mutableFloatStateOf(ui.fontScale) }
     var uiScaleDraft by remember(ui.uiScale) { mutableFloatStateOf(ui.uiScale) }
     var blurRadiusDraft by remember(ui.backgroundBlurRadius) { mutableFloatStateOf(ui.backgroundBlurRadius.toFloat()) }
+    val permissionRequester = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted || ReasonixWallpaperAccess.hasAccess(context)) {
+            pendingWallpaperAction?.let { mode ->
+                if (mode == ReasonixBackgroundMode.CUSTOM_IMAGE) {
+                    backgroundPicker.launch(arrayOf("image/*"))
+                } else {
+                    ui.updateBackgroundMode(mode)
+                }
+            }
+        } else {
+            Toast.makeText(context, "未授予背景图访问权限", Toast.LENGTH_SHORT).show()
+        }
+        pendingWallpaperAction = null
+    }
+    val allFilesAccessLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        if (ReasonixWallpaperAccess.hasAccess(context)) {
+            pendingWallpaperAction?.let { mode ->
+                if (mode == ReasonixBackgroundMode.CUSTOM_IMAGE) {
+                    backgroundPicker.launch(arrayOf("image/*"))
+                } else {
+                    ui.updateBackgroundMode(mode)
+                }
+            }
+        } else {
+            Toast.makeText(context, "未授予所有文件访问权限", Toast.LENGTH_SHORT).show()
+        }
+        pendingWallpaperAction = null
+    }
     val backgroundPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
+        pendingWallpaperAction = null
         if (uri == null) return@rememberLauncherForActivityResult
         runCatching {
             context.contentResolver.takePersistableUriPermission(
@@ -87,6 +125,19 @@ fun ThemeSettingsPage() {
         ui.updateCustomBackgroundUri(uri.toString())
         ui.updateBackgroundMode(ReasonixBackgroundMode.CUSTOM_IMAGE)
         Toast.makeText(context, "已应用自定义背景图", Toast.LENGTH_SHORT).show()
+    }
+    val runWallpaperAction: (ReasonixBackgroundMode) -> Unit = { mode ->
+        pendingWallpaperAction = mode
+        if (ReasonixWallpaperAccess.hasAccess(context)) {
+            if (mode == ReasonixBackgroundMode.CUSTOM_IMAGE) {
+                backgroundPicker.launch(arrayOf("image/*"))
+            } else {
+                ui.updateBackgroundMode(mode)
+            }
+            pendingWallpaperAction = null
+        } else {
+            showWallpaperAccessDialog = true
+        }
     }
     val styleLabel = when (ui.themeStyle) {
         ReasonixThemeStyle.CLASSIC -> "经典纯色"
@@ -218,12 +269,12 @@ fun ThemeSettingsPage() {
                     ) {
                         ReasonixOutlinedActionButton(
                             text = "选择背景图",
-                            onClick = { backgroundPicker.launch(arrayOf("image/*")) },
+                            onClick = { runWallpaperAction(ReasonixBackgroundMode.CUSTOM_IMAGE) },
                             modifier = Modifier.weight(1f)
                         )
                         ReasonixOutlinedActionButton(
                             text = "桌面壁纸",
-                            onClick = { ui.updateBackgroundMode(ReasonixBackgroundMode.WALLPAPER) },
+                            onClick = { runWallpaperAction(ReasonixBackgroundMode.WALLPAPER) },
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -514,6 +565,63 @@ fun ThemeSettingsPage() {
         )
     }
 
+    if (showWallpaperAccessDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showWallpaperAccessDialog = false
+                pendingWallpaperAction = null
+            },
+            title = { Text("需要背景访问权限") },
+            text = {
+                Text(
+                    text = ReasonixWallpaperAccess.explanation(),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showWallpaperAccessDialog = false
+                        when {
+                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> {
+                                allFilesAccessLauncher.launch(
+                                    ReasonixWallpaperAccess.allFilesAccessIntent(context)
+                                )
+                            }
+                            activity != null -> {
+                                ReasonixWallpaperAccess.permissionToRequest()?.let { permission ->
+                                    permissionRequester.launch(permission)
+                                } ?: run { pendingWallpaperAction = null }
+                            }
+                            else -> {
+                                pendingWallpaperAction = null
+                                Toast.makeText(context, "当前页面无法发起权限请求", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                ) {
+                    Text(
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            "去授权"
+                        } else {
+                            "授予权限"
+                        }
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showWallpaperAccessDialog = false
+                        pendingWallpaperAction = null
+                    }
+                ) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
     if (showStyleDialog) {
         ThemeChoiceDialog(
             title = "UI 风格",
@@ -542,8 +650,12 @@ fun ThemeSettingsPage() {
             currentValue = ui.backgroundMode,
             onDismiss = { showBackgroundDialog = false },
             onSelect = {
-                ui.updateBackgroundMode(it)
                 showBackgroundDialog = false
+                if (it == ReasonixBackgroundMode.WALLPAPER || it == ReasonixBackgroundMode.CUSTOM_IMAGE) {
+                    runWallpaperAction(it)
+                } else {
+                    ui.updateBackgroundMode(it)
+                }
             }
         )
     }
