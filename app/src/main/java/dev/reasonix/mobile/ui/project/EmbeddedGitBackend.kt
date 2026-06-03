@@ -608,7 +608,7 @@ private fun embeddedConflictLabel(state: org.eclipse.jgit.lib.IndexDiff.StageSta
         org.eclipse.jgit.lib.IndexDiff.StageState.DELETED_BY_US -> "当前分支删除"
         org.eclipse.jgit.lib.IndexDiff.StageState.ADDED_BY_THEM -> "对方新增"
         org.eclipse.jgit.lib.IndexDiff.StageState.ADDED_BY_US -> "当前分支新增"
-        org.eclipse.jgit.lib.IndexDiff.StageState.BOTH_CHANGED -> "双方都变更"
+        else -> "双方都变更"
     }
 }
 

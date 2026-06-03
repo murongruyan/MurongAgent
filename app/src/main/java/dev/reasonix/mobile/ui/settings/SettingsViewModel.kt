@@ -116,7 +116,7 @@ class SettingsViewModel @Inject constructor(
                     refreshGitHubAuthStatus()
                 }
                 val activeProviderId = currentConfig.activeProviderId
-                val lastSyncedAt = currentConfig.getBalanceSyncedAt(activeProviderId)
+                val lastSyncedAt = currentConfig.getBalanceSyncedAt(activeProviderId) ?: 0L
                 val shouldAutoSyncBalance = providerBalanceService.supportsBalanceFetch(activeProviderId, currentConfig) &&
                     (_balanceSyncStates.value[activeProviderId]?.isSyncing != true) &&
                     (lastSyncedAt <= 0L || System.currentTimeMillis() - lastSyncedAt >= AUTO_BALANCE_SYNC_INTERVAL_MS)
