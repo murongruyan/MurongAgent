@@ -2,8 +2,12 @@ package dev.reasonix.mobile.ui
 
 import android.app.WallpaperManager
 import android.content.Context
+import android.content.res.Resources
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.RenderEffect as AndroidRenderEffect
+import android.graphics.Shader
+import android.os.Build
 import android.graphics.Color as AndroidColor
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -12,7 +16,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.blur
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -56,11 +59,12 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.consume
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.ContentScale
@@ -351,6 +355,18 @@ internal fun reasonixIsDarkColor(color: Color): Boolean {
     return luminance < 0.5f
 }
 
+private fun Modifier.reasonixBackgroundBlur(radiusDp: Int): Modifier {
+    if (radiusDp <= 0 || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+        return this
+    }
+    val radiusPx = radiusDp * Resources.getSystem().displayMetrics.density
+    return graphicsLayer {
+        renderEffect = AndroidRenderEffect
+            .createBlurEffect(radiusPx, radiusPx, Shader.TileMode.DECAL)
+            .asComposeRenderEffect()
+    }
+}
+
 val LocalReasonixUiController = compositionLocalOf<ReasonixUiController> {
     error("ReasonixUiController not provided")
 }
@@ -420,7 +436,7 @@ fun ReasonixBackgroundLayer(
                     ReasonixBackgroundMode.CUSTOM_IMAGE
                 )
             ) {
-                Modifier.blur(ui.backgroundBlurRadius.dp)
+                Modifier.reasonixBackgroundBlur(ui.backgroundBlurRadius)
             } else {
                 Modifier
             }

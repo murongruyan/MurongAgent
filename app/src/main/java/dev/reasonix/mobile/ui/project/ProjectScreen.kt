@@ -4296,6 +4296,8 @@ private fun ProjectGitHubDownloadHistorySection(
     onOpenSystemDownloads: () -> Unit,
     onOpenSource: (ProjectGitHubDownloadRecordUi) -> Unit
 ) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),

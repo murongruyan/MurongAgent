@@ -3944,6 +3944,7 @@ private fun DraftProposalCard(
     onDismiss: () -> Unit
 ) {
     val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = chromeColor.copy(alpha = 0.68f),
