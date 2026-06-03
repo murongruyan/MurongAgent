@@ -5155,12 +5155,95 @@ private fun loadProjectGitStatus(projectPath: String): ProjectGitStatusUi {
             errorMessage = null
         )
     }.getOrElse { error ->
-        ProjectGitStatusUi.empty(projectPath).copy(
+        loadProjectGitMetadataFallback(repoRoot)?.copy(
+            projectPath = projectPath,
+            errorMessage = error.message ?: "当前目录的 Git 元数据已识别，但完整状态读取失败"
+        ) ?: ProjectGitStatusUi.empty(projectPath).copy(
             repoRoot = repoRoot,
-            hasGitCommand = true,
+            hasGitCommand = false,
             errorMessage = error.message ?: "读取 Git 状态失败"
         )
     }
+}
+
+private fun loadProjectGitMetadataFallback(repoRoot: String): ProjectGitStatusUi? {
+    val headContent = readProjectGitMetadataFile("$repoRoot/.git/HEAD") ?: return null
+    val configContent = readProjectGitMetadataFile("$repoRoot/.git/config").orEmpty()
+    val currentBranch = parseProjectGitHeadBranch(headContent)
+    val config = parseProjectGitConfig(configContent)
+    val remoteUrl = config["remote \"origin\""]?.get("url")?.takeIf { it.isNotBlank() }
+    val upstreamBranch = currentBranch?.let { branch ->
+        val branchSection = config["branch \"$branch\""].orEmpty()
+        val remoteName = branchSection["remote"].orEmpty().ifBlank { "origin" }
+        val mergeRef = branchSection["merge"].orEmpty()
+        mergeRef
+            .substringAfter("refs/heads/", "")
+            .takeIf { it.isNotBlank() }
+            ?.let { "$remoteName/$it" }
+    }
+    val branchSummary = buildProjectGitBranchSummary(currentBranch, upstreamBranch)
+    val localBranches = currentBranch?.let { branch ->
+        listOf(ProjectGitBranchUi(name = branch, isCurrent = true, trackInfo = upstreamBranch))
+    }.orEmpty()
+    return ProjectGitStatusUi.empty(repoRoot).copy(
+        projectPath = repoRoot,
+        repoRoot = repoRoot,
+        hasGitCommand = false,
+        branchSummary = branchSummary,
+        currentBranch = currentBranch,
+        remoteUrl = remoteUrl,
+        upstreamBranch = upstreamBranch,
+        localBranches = localBranches,
+        errorMessage = "已识别 Git 元数据，但当前目录暂未启用完整 Git 操作。"
+    )
+}
+
+private fun readProjectGitMetadataFile(path: String): String? {
+    val direct = runCatching {
+        val file = File(path)
+        if (file.exists() && file.isFile) file.readText() else null
+    }.getOrNull()
+    if (!direct.isNullOrBlank()) return direct
+    val content = RootFile.readFile(path)
+    if (content.startsWith("error:")) return null
+    return content
+}
+
+private fun parseProjectGitHeadBranch(content: String): String? {
+    val trimmed = content.trim()
+    if (trimmed.startsWith("ref:", ignoreCase = true).not()) return null
+    return trimmed
+        .substringAfter("ref:", "")
+        .trim()
+        .substringAfterLast('/')
+        .takeIf { it.isNotBlank() }
+}
+
+private fun parseProjectGitConfig(content: String): Map<String, Map<String, String>> {
+    val sections = linkedMapOf<String, MutableMap<String, String>>()
+    var currentSection: String? = null
+    content.lineSequence().forEach { rawLine ->
+        val line = rawLine.trim()
+        if (line.isBlank() || line.startsWith("#") || line.startsWith(";")) return@forEach
+        if (line.startsWith("[") && line.endsWith("]")) {
+            currentSection = line.removePrefix("[").removeSuffix("]").trim()
+            sections.getOrPut(currentSection!!) { linkedMapOf() }
+            return@forEach
+        }
+        val section = currentSection ?: return@forEach
+        val separator = line.indexOf('=')
+        if (separator <= 0) return@forEach
+        val key = line.substring(0, separator).trim()
+        val value = line.substring(separator + 1).trim()
+        sections.getOrPut(section) { linkedMapOf() }[key] = value
+    }
+    return sections
+}
+
+private fun buildProjectGitBranchSummary(currentBranch: String?, upstreamBranch: String?): String {
+    val current = currentBranch.orEmpty()
+    if (current.isBlank()) return ""
+    return if (upstreamBranch.isNullOrBlank()) current else "$current -> $upstreamBranch"
 }
 
 private fun loadProjectGitCommitPreview(
