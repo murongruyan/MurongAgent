@@ -79,7 +79,10 @@ import dev.reasonix.mobile.core.loop.MIN_MESSAGES_TO_COMPRESS
 import dev.reasonix.mobile.core.loop.RECENT_MESSAGES_TO_KEEP
 import dev.reasonix.mobile.core.loop.WEB_FETCH_RESULT_PREFIX
 import dev.reasonix.mobile.core.config.WorkflowExecutionMode
+import dev.reasonix.mobile.ui.ReasonixAlertDialog
 import dev.reasonix.mobile.ui.ReasonixGlassSurface
+import dev.reasonix.mobile.ui.ReasonixOutlinedActionButton
+import dev.reasonix.mobile.ui.ReasonixTagButton
 import dev.reasonix.mobile.ui.MarkdownText
 import dev.reasonix.mobile.ui.ProjectKnowledgeOutlineUi
 import dev.reasonix.mobile.ui.buildProjectKnowledgeOutlines
@@ -727,94 +730,79 @@ fun ChatScreen(
 
 @Composable
 private fun WorkflowExecutionStatusBar(autoRouteBeforeExecution: Boolean) {
-    Surface(
-        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Text(
-            text = if (autoRouteBeforeExecution) {
-                "当前执行偏好: 单次工作流优先，发送前会自动判断直执、计划或澄清，尽量减少上下文污染。"
-            } else {
-                "当前执行偏好: 单次工作流优先，但已关闭发送前自动分流，发送后会直接执行。"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onPrimaryContainer,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-        )
-    }
+    WorkflowStatusStrip(
+        title = "执行偏好",
+        message = if (autoRouteBeforeExecution) {
+            "单次工作流优先，发送前会自动判断直执、计划或澄清，尽量减少上下文污染。"
+        } else {
+            "单次工作流优先，但已关闭发送前自动分流，发送后会直接执行。"
+        }
+    )
 }
 
 @Composable
 private fun WorkflowPlanningStatusBar() {
-    Surface(
-        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Text(
-            text = "正在生成执行计划，稍后可确认后一次性执行。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSecondaryContainer,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-        )
-    }
+    WorkflowStatusStrip(
+        title = "执行计划",
+        message = "正在生成执行计划，稍后可确认后一次性执行。"
+    )
 }
 
 @Composable
 private fun AutoRoutingStatusBar() {
-    Surface(
-        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Text(
-            text = "正在自动判断本次输入更适合直接执行、先出计划，还是先澄清。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSecondaryContainer,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-        )
-    }
+    WorkflowStatusStrip(
+        title = "自动分流",
+        message = "正在自动判断本次输入更适合直接执行、先出计划，还是先澄清。"
+    )
 }
 
 @Composable
 private fun AutoRouteDecisionStatusBar(decision: AutoRouteDecisionUi) {
-    Surface(
-        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Text(
-            text = "本次自动选择: ${formatAutoRouteAction(decision.action)}。${decision.reason}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSecondaryContainer,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-        )
-    }
+    WorkflowStatusStrip(
+        title = "自动选择",
+        message = "${formatAutoRouteAction(decision.action)}。${decision.reason}"
+    )
 }
 
 @Composable
 private fun WorkflowFallbackStatusBar(message: String) {
-    Surface(
-        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.42f),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Text(
-            text = "本次已触发兜底策略: $message",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onTertiaryContainer,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-        )
-    }
+    WorkflowStatusStrip(
+        title = "兜底策略",
+        message = "本次已触发兜底策略: $message"
+    )
 }
 
 @Composable
 private fun ClarificationStatusBar() {
-    Surface(
-        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f),
-        modifier = Modifier.fillMaxWidth()
+    WorkflowStatusStrip(
+        title = "澄清问题",
+        message = "正在生成澄清问题，回答后会继续执行。"
+    )
+}
+
+@Composable
+private fun WorkflowStatusStrip(
+    title: String,
+    message: String
+) {
+    val accent = rememberReasonixAccentColor()
+    ReasonixGlassSurface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(20.dp),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
     ) {
         Text(
-            text = "正在生成澄清问题，回答后会继续执行。",
+            text = title,
+            style = MaterialTheme.typography.labelMedium,
+            color = accent
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = message,
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onTertiaryContainer,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
@@ -827,20 +815,18 @@ private fun WorkflowPlanCard(
     onDismiss: () -> Unit
 ) {
     var showRawPlan by remember(plan.id) { mutableStateOf(false) }
+    val accent = rememberReasonixAccentColor()
     val progress = remember(plan.steps.size, plan.currentStepIndex) {
         if (plan.steps.isEmpty()) 0f else plan.currentStepIndex.toFloat() / plan.steps.size.toFloat()
     }
-    Surface(
-        shape = MaterialTheme.shapes.large,
-        tonalElevation = 2.dp,
+    ReasonixGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        shape = MaterialTheme.shapes.large,
+        contentPadding = PaddingValues(14.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -852,7 +838,8 @@ private fun WorkflowPlanCard(
                 ) {
                     Text(
                         text = "执行计划",
-                        style = MaterialTheme.typography.titleMedium
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
                         text = plan.goal,
@@ -914,19 +901,16 @@ private fun WorkflowPlanCard(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
-            Surface(
+            ReasonixGlassSurface(
+                modifier = Modifier.fillMaxWidth(),
                 shape = MaterialTheme.shapes.medium,
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-                modifier = Modifier.fillMaxWidth()
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
             ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
                         text = "下一步提示",
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
+                        color = accent
                     )
                     Text(
                         text = plan.nextStepHint.ifBlank { "先确认目标与边界，再继续执行。" },
@@ -975,25 +959,22 @@ private fun WorkflowPlanCard(
             }
             if (plan.rawPlan.isNotBlank()) {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    TextButton(
-                        onClick = { showRawPlan = !showRawPlan },
-                        contentPadding = PaddingValues(0.dp)
-                    ) {
-                        Text(if (showRawPlan) "收起原始计划" else "展开原始计划")
-                    }
+                    ReasonixTagButton(
+                        text = if (showRawPlan) "收起原始计划" else "展开原始计划",
+                        onClick = { showRawPlan = !showRawPlan }
+                    )
                     AnimatedVisibility(visible = showRawPlan) {
-                        Surface(
+                        ReasonixGlassSurface(
+                            modifier = Modifier.fillMaxWidth(),
                             shape = MaterialTheme.shapes.medium,
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f),
-                            modifier = Modifier.fillMaxWidth()
+                            contentPadding = PaddingValues(12.dp)
                         ) {
                             SelectionContainer {
                                 Text(
                                     text = plan.rawPlan,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurface,
-                                    fontFamily = FontFamily.Monospace,
-                                    modifier = Modifier.padding(12.dp)
+                                    fontFamily = FontFamily.Monospace
                                 )
                             }
                         }
@@ -1004,13 +985,12 @@ private fun WorkflowPlanCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedButton(
+                ReasonixOutlinedActionButton(
+                    text = "关闭",
                     onClick = onDismiss,
                     enabled = !isProcessing,
                     modifier = Modifier.weight(1f)
-                ) {
-                    Text("关闭")
-                }
+                )
                 Button(
                     onClick = onExecute,
                     enabled = !isProcessing,
@@ -1177,20 +1157,19 @@ private fun ClarificationCard(
     onDismiss: () -> Unit
 ) {
     var answer by remember(request.id) { mutableStateOf("") }
-    Surface(
-        shape = MaterialTheme.shapes.large,
-        tonalElevation = 2.dp,
+    val accent = rememberReasonixAccentColor()
+    ReasonixGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        shape = MaterialTheme.shapes.large,
+        contentPadding = PaddingValues(14.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(
                 text = clarificationTitle(request.source),
-                style = MaterialTheme.typography.titleMedium
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface
             )
             clarificationSubtitle(request.source)?.let { subtitle ->
                 Text(
@@ -1202,19 +1181,18 @@ private fun ClarificationCard(
             Text(
                 text = "第 ${request.turnIndex} 轮 / 最多 ${request.maxTurns} 轮",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.tertiary
+                color = accent
             )
             if (request.previousAnswers.isNotEmpty()) {
-                Surface(
+                ReasonixGlassSurface(
+                    modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.medium,
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                    modifier = Modifier.fillMaxWidth()
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
                 ) {
                     Text(
                         text = "已确认 ${request.previousAnswers.size} 条澄清信息，本轮会在此基础上继续追问最关键的缺口。",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -1235,13 +1213,12 @@ private fun ClarificationCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedButton(
+                ReasonixOutlinedActionButton(
+                    text = "关闭",
                     onClick = onDismiss,
                     enabled = !isProcessing,
                     modifier = Modifier.weight(1f)
-                ) {
-                    Text("关闭")
-                }
+                )
                 Button(
                     onClick = { onSubmit(answer.trim()) },
                     enabled = !isProcessing && answer.isNotBlank(),
@@ -1261,20 +1238,19 @@ private fun MentionedFilesBar(
     snapshotNamesByPath: Map<String, List<String>>,
     onRemove: (FileMentionUi) -> Unit
 ) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+    val accent = rememberReasonixAccentColor()
+    ReasonixGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        shape = MaterialTheme.shapes.large,
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
                 text = "已引用文件",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary
+                color = accent
             )
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1337,21 +1313,19 @@ private fun InlineMentionSuggestionsCard(
     val quickConfirmMention = remember(query, results) {
         resolveQuickConfirmMention(query, results)
     }
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-        shape = MaterialTheme.shapes.large,
+    val accent = rememberReasonixAccentColor()
+    ReasonixGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        shape = MaterialTheme.shapes.large,
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
                 text = if (query.isBlank()) "最近引用文件" else "@文件候选",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary
+                color = accent
             )
             if (quickConfirmMention != null) {
                 val quickConfirmReason = remember(quickConfirmMention, query) {
@@ -1363,15 +1337,14 @@ private fun InlineMentionSuggestionsCard(
                 val quickConfirmSnapshots = remember(quickConfirmMention, snapshotNamesByPath) {
                     snapshotNamesByPath[quickConfirmMention.path].orEmpty()
                 }
-                Surface(
+                ReasonixGlassSurface(
+                    modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.medium,
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
-                    modifier = Modifier.fillMaxWidth()
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -1515,17 +1488,16 @@ private fun MentionInputHintBar(
     matchCount: Int,
     onOpenPicker: () -> Unit
 ) {
-    Surface(
-        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f),
-        shape = MaterialTheme.shapes.large,
+    val accent = rememberReasonixAccentColor()
+    ReasonixGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        shape = MaterialTheme.shapes.large,
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -1536,7 +1508,7 @@ private fun MentionInputHintBar(
                 Text(
                     text = if (query.isBlank()) "正在准备引用文件" else "正在识别 @${query}",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
+                    color = accent
                 )
                 Text(
                     text = if (query.isBlank()) {
@@ -1549,9 +1521,7 @@ private fun MentionInputHintBar(
                 )
             }
             Spacer(modifier = Modifier.width(8.dp))
-            TextButton(onClick = onOpenPicker) {
-                Text("完整搜索")
-            }
+            ReasonixOutlinedActionButton(text = "完整搜索", onClick = onOpenPicker)
         }
     }
 }
@@ -1579,7 +1549,7 @@ private fun MentionFilePickerDialog(
     val regularResults = remember(localQuery, results, knowledgePaths) {
         if (localQuery.isBlank()) results else results.filterNot { it.path in knowledgePaths }
     }
-    AlertDialog(
+    ReasonixAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("@文件") },
         text = {
@@ -1682,9 +1652,7 @@ private fun MentionFilePickerDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("关闭")
-            }
+            ReasonixOutlinedActionButton(text = "关闭", onClick = onDismiss)
         }
     )
 }
@@ -2086,42 +2054,38 @@ private fun MessageBubble(
             val quietToolCard = toolExecution?.isQuiet == true ||
                 toolResult?.isQuiet == true ||
                 webFetchResult != null
-            Surface(
-                shape = if (quietToolCard) RoundedCornerShape(12.dp) else MaterialTheme.shapes.large,
-                color = if (quietToolCard) {
-                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f)
-                } else {
-                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)
-                },
-                tonalElevation = if (quietToolCard) 0.dp else 1.dp,
+            ReasonixGlassSurface(
                 modifier = Modifier
                     .fillMaxWidth()
                     .combinedClickable(
                         onClick = {},
                         onLongClick = onLongPress
-                    )
+                    ),
+                shape = if (quietToolCard) RoundedCornerShape(16.dp) else MaterialTheme.shapes.large,
+                contentPadding = PaddingValues(
+                    horizontal = 12.dp,
+                    vertical = if (quietToolCard) 10.dp else 12.dp
+                )
             ) {
-                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = if (quietToolCard) 10.dp else 12.dp)) {
-                    if (toolExecution != null) {
-                        ToolExecutionCard(tool = toolExecution)
-                    } else if (toolResult != null) {
-                        ToolResultCard(tool = toolResult)
-                    } else if (webFetchResult != null) {
-                        WebFetchResultCard(result = webFetchResult)
-                    } else {
-                        Text(
-                            text = "工具输出",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary
+                Text(
+                    text = if (quietToolCard) "工具结果" else "工具输出",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = accent
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                if (toolExecution != null) {
+                    ToolExecutionCard(tool = toolExecution)
+                } else if (toolResult != null) {
+                    ToolResultCard(tool = toolResult)
+                } else if (webFetchResult != null) {
+                    WebFetchResultCard(result = webFetchResult)
+                } else {
+                    SelectionContainer {
+                        MarkdownText(
+                            text = msg.content,
+                            modifier = Modifier.fillMaxWidth(),
+                            fontSize = 12
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        SelectionContainer {
-                            MarkdownText(
-                                text = msg.content,
-                                modifier = Modifier.fillMaxWidth(),
-                                fontSize = 12
-                            )
-                        }
                     }
                 }
             }
@@ -2139,59 +2103,54 @@ private fun MessageBubble(
                     onLongPress = onLongPress
                 )
             } else {
-                Surface(
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
-                    tonalElevation = 1.dp,
+                ReasonixGlassSurface(
                     modifier = Modifier
                         .fillMaxWidth()
                         .combinedClickable(
                             onClick = onClick,
                             onLongClick = onLongPress
-                        )
+                        ),
+                    shape = MaterialTheme.shapes.large,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
                 ) {
-                    Column(modifier = Modifier.padding(10.dp)) {
-                        Text(
-                            text = "子代理",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.secondary
+                    Text(
+                        text = "子代理",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = accent
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    SelectionContainer {
+                        MarkdownText(
+                            text = msg.content,
+                            modifier = Modifier.fillMaxWidth(),
+                            fontSize = 13
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        SelectionContainer {
-                            MarkdownText(
-                                text = msg.content,
-                                modifier = Modifier.fillMaxWidth(),
-                                fontSize = 13
-                            )
-                        }
                     }
                 }
             }
         } else if (isSystem) {
-            Surface(
-                shape = MaterialTheme.shapes.large,
-                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f),
+            ReasonixGlassSurface(
                 modifier = Modifier
                     .fillMaxWidth()
                     .combinedClickable(
                         onClick = {},
                         onLongClick = onLongPress
-                    )
+                    ),
+                shape = MaterialTheme.shapes.large,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp)
             ) {
                 SelectionContainer {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(
-                            text = "系统提示",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = msg.content,
-                            color = MaterialTheme.colorScheme.error,
-                            fontSize = 12.sp
-                        )
-                    }
+                    Text(
+                        text = "系统提示",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = msg.content,
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 12.sp
+                    )
                 }
             }
         } else {
@@ -2988,19 +2947,17 @@ private fun InputBar(
 ) {
     var showMoreActions by remember { mutableStateOf(false) }
     val actionsEnabled = enabled && !isSending
+    val accent = rememberReasonixAccentColor()
 
-    Surface(
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 6.dp,
-        shadowElevation = 2.dp,
-        shape = MaterialTheme.shapes.extraLarge,
+    ReasonixGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        shape = MaterialTheme.shapes.extraLarge,
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
     ) {
         Column(
             modifier = Modifier
-                .padding(horizontal = 12.dp, vertical = 10.dp)
                 .fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
@@ -3021,7 +2978,10 @@ private fun InputBar(
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = MaterialTheme.colorScheme.primary,
                     unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                    cursorColor = MaterialTheme.colorScheme.primary
+                    cursorColor = MaterialTheme.colorScheme.primary,
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    disabledContainerColor = Color.Transparent
                 ),
                 shape = MaterialTheme.shapes.large,
                 keyboardOptions = KeyboardOptions(imeAction = if (isSending) ImeAction.Default else ImeAction.Send),
@@ -3039,16 +2999,18 @@ private fun InputBar(
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box {
-                    FilledTonalIconButton(
-                        onClick = { showMoreActions = true },
-                        enabled = actionsEnabled
-                    ) {
-                        Text("+", fontSize = 18.sp)
-                    }
+                    ReasonixTagButton(
+                        text = if (text.isBlank()) "更多" else "操作",
+                        onClick = {
+                            if (actionsEnabled) {
+                                showMoreActions = true
+                            }
+                        }
+                    )
                     DropdownMenu(
                         expanded = showMoreActions,
                         onDismissRequest = { showMoreActions = false }
@@ -3087,27 +3049,22 @@ private fun InputBar(
                         )
                     }
                 }
-                Spacer(modifier = Modifier.width(8.dp))
-                FilledTonalIconButton(
-                    onClick = onPreviousInput,
-                    enabled = actionsEnabled && canRecallPrevious
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.KeyboardArrowUp,
-                        contentDescription = "上一条输入"
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                FilledTonalIconButton(
-                    onClick = onNextInput,
-                    enabled = actionsEnabled && canRecallNext
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.KeyboardArrowDown,
-                        contentDescription = "下一条输入"
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
+                ReasonixTagButton(
+                    text = "上一条",
+                    onClick = {
+                        if (actionsEnabled && canRecallPrevious) {
+                            onPreviousInput()
+                        }
+                    }
+                )
+                ReasonixTagButton(
+                    text = "下一条",
+                    onClick = {
+                        if (actionsEnabled && canRecallNext) {
+                            onNextInput()
+                        }
+                    }
+                )
                 Button(
                     onClick = {
                         if (isSending) {
@@ -3116,9 +3073,21 @@ private fun InputBar(
                             onSend()
                         }
                     },
-                    enabled = if (isSending) true else enabled && canSend
+                    enabled = if (isSending) true else enabled && canSend,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isSending) {
+                            MaterialTheme.colorScheme.errorContainer
+                        } else {
+                            accent
+                        },
+                        contentColor = if (isSending) {
+                            MaterialTheme.colorScheme.onErrorContainer
+                        } else {
+                            MaterialTheme.colorScheme.onPrimary
+                        }
+                    )
                 ) {
-                    Text(if (isSending) "终止" else "发送")
+                    Text(text = if (isSending) "终止" else "发送")
                 }
             }
         }
@@ -3131,22 +3100,19 @@ private fun PendingImageAttachmentsBar(
     onOpenPreview: (List<PendingImageAttachmentUi>, Int) -> Unit,
     onRemove: (PendingImageAttachmentUi) -> Unit
 ) {
-    Surface(
-        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f),
-        tonalElevation = 2.dp,
-        shape = MaterialTheme.shapes.large,
+    val accent = rememberReasonixAccentColor()
+    ReasonixGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        shape = MaterialTheme.shapes.large,
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
                 text = "待发送图片 ${attachments.size} 张",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.tertiary
+                color = accent
             )
             attachments.forEachIndexed { index, attachment ->
                 Row(
@@ -3164,12 +3130,8 @@ private fun PendingImageAttachmentsBar(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    TextButton(onClick = { onOpenPreview(attachments, index) }) {
-                        Text("预览")
-                    }
-                    TextButton(onClick = { onRemove(attachment) }) {
-                        Text("移除")
-                    }
+                    ReasonixTagButton(text = "预览", onClick = { onOpenPreview(attachments, index) })
+                    ReasonixTagButton(text = "移除", onClick = { onRemove(attachment) })
                 }
             }
         }
@@ -3183,22 +3145,19 @@ private fun RecentImageAttachmentsBar(
     onReuse: (MessageImageAttachmentUi) -> Unit,
     onOpenPreview: (List<MessageImageAttachmentUi>, Int) -> Unit
 ) {
-    Surface(
-        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
-        tonalElevation = 2.dp,
-        shape = MaterialTheme.shapes.large,
+    val accent = rememberReasonixAccentColor()
+    ReasonixGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        shape = MaterialTheme.shapes.large,
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
                 text = "最近图片",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary
+                color = accent
             )
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),

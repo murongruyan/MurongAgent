@@ -6,6 +6,13 @@ import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.os.Environment
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -103,6 +110,9 @@ import dev.reasonix.mobile.common.shell.KeepShellPublic
 import dev.reasonix.mobile.common.utils.RootFile
 import dev.reasonix.mobile.ui.ReasonixAlertDialog
 import dev.reasonix.mobile.ui.ReasonixGlassSurface
+import dev.reasonix.mobile.ui.ReasonixInfoCard
+import dev.reasonix.mobile.ui.ReasonixOutlinedActionButton
+import dev.reasonix.mobile.ui.ReasonixTagButton
 import dev.reasonix.mobile.ui.SkillDraftImportCard
 import dev.reasonix.mobile.ui.highlightSyntax
 import kotlinx.coroutines.Dispatchers
@@ -788,8 +798,37 @@ private fun ProjectEditorSection(
     )
     val pageScrollState = rememberScrollState()
     val currentFileName = selectedFilePath?.substringAfterLast(File.separatorChar).orEmpty()
+    val currentRelativePath = selectedFilePath
+        ?.removePrefix(projectRoot.absolutePath)
+        ?.removePrefix(File.separator)
+        .orEmpty()
 
-    if (selectedFilePath == null) {
+    fun exitEditorPage() {
+        selectedFilePath = null
+        focusedSearchLine = null
+        focusedSearchQuery = null
+        aiCompletionCandidate = null
+        showAiCompletionDialog = false
+    }
+
+    BackHandler(enabled = selectedFilePath != null) {
+        exitEditorPage()
+    }
+
+    AnimatedContent(
+        targetState = selectedFilePath != null,
+        transitionSpec = {
+            if (targetState) {
+                slideInHorizontally { fullWidth -> fullWidth } + fadeIn() togetherWith
+                    slideOutHorizontally { fullWidth -> -fullWidth / 4 } + fadeOut()
+            } else {
+                slideInHorizontally { fullWidth -> -fullWidth / 4 } + fadeIn() togetherWith
+                    slideOutHorizontally { fullWidth -> fullWidth } + fadeOut()
+            }
+        },
+        label = "projectEditorSecondaryPage"
+    ) { showEditorPage ->
+    if (!showEditorPage) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -797,33 +836,43 @@ private fun ProjectEditorSection(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+            ReasonixInfoCard(title = "", titleVisible = false) {
+                Text("项目文件", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    "路径: ${projectRoot.absolutePath}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    "上面搜文件名，下面像文件管理器一样浏览文件夹和文件；点开文件后会进入单独的编辑二级页。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("项目文件", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "路径: ${projectRoot.absolutePath}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    ReasonixOutlinedActionButton(
+                        text = "刷新",
+                        onClick = { reloadVersion++ },
+                        modifier = Modifier.weight(1f)
                     )
-                    Text(
-                        "上面搜文件名，下面像文件管理器一样浏览文件夹和文件。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    ReasonixTagButton(
+                        text = "${visibleEntries.size} 项",
+                        onClick = {}
                     )
-                    OutlinedButton(onClick = { reloadVersion++ }) { Text("刷新") }
                 }
             }
 
-            Card {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
+            ReasonixGlassSurface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)
+            ) {
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
@@ -901,7 +950,6 @@ private fun ProjectEditorSection(
                             )
                         }
                     }
-                }
             }
         }
     } else {
@@ -931,11 +979,61 @@ private fun ProjectEditorSection(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Surface(
-                tonalElevation = 2.dp,
-                shadowElevation = 2.dp
+            ReasonixInfoCard(title = "", titleVisible = false) {
+                Text(
+                    text = currentFileName,
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = if (currentRelativePath.isBlank()) projectRoot.name else currentRelativePath,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ReasonixOutlinedActionButton(
+                        text = "返回文件列表",
+                        onClick = { exitEditorPage() },
+                        modifier = Modifier.weight(1f)
+                    )
+                    ReasonixTagButton(
+                        text = if (dirty) "有未保存修改" else "已同步",
+                        onClick = {}
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ReasonixTagButton(
+                        text = if (isRawJsonFile) "原始页" else "代码页",
+                        onClick = {}
+                    )
+                    ReasonixTagButton(
+                        text = if (currentRelativePath.isBlank()) "项目根目录" else projectRoot.name,
+                        onClick = {}
+                    )
+                }
+            }
+
+            ReasonixGlassSurface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
             ) {
                 Row(
                     modifier = Modifier
@@ -945,24 +1043,8 @@ private fun ProjectEditorSection(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(
-                        onClick = {
-                            selectedFilePath = null
-                            focusedSearchLine = null
-                            focusedSearchQuery = null
-                            aiCompletionCandidate = null
-                            showAiCompletionDialog = false
-                        }
-                    ) { Text("返回") }
-                    Text(
-                        text = currentFileName,
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    OutlinedButton(onClick = {}, enabled = false) {
-                        Text("第 $currentLine 行")
-                    }
+                    ReasonixTagButton(text = if (isRawJsonFile) "JSON 文件" else (language ?: "自动识别"), onClick = {})
+                    ReasonixTagButton(text = "第 $currentLine 行", onClick = {})
                     if (isRawJsonFile) {
                         ProjectEditorMode.entries.forEach { mode ->
                             if (mode == ProjectEditorMode.RAW_JSON || mode != ProjectEditorMode.RAW_JSON) {
@@ -985,13 +1067,9 @@ private fun ProjectEditorSection(
                                 )
                             }
                     }
-                    IconButton(onClick = { showSearchReplaceDialog = true }) {
-                        Icon(Icons.Outlined.Search, contentDescription = "搜索替换")
-                    }
+                    ReasonixTagButton(text = "搜索", onClick = { showSearchReplaceDialog = true })
                     Box {
-                        IconButton(onClick = { showEditorMenu = true }) {
-                            Icon(Icons.Outlined.Edit, contentDescription = "行操作")
-                        }
+                        ReasonixTagButton(text = "行操作", onClick = { showEditorMenu = true })
                         DropdownMenu(
                             expanded = showEditorMenu,
                             onDismissRequest = { showEditorMenu = false }
@@ -1008,9 +1086,7 @@ private fun ProjectEditorSection(
                         }
                     }
                     Box {
-                        IconButton(onClick = { showMoreMenu = true }) {
-                            Icon(Icons.Outlined.MoreVert, contentDescription = "更多")
-                        }
+                        ReasonixTagButton(text = "更多", onClick = { showMoreMenu = true })
                         DropdownMenu(
                             expanded = showMoreMenu,
                             onDismissRequest = { showMoreMenu = false }
@@ -1038,12 +1114,16 @@ private fun ProjectEditorSection(
                             )
                         }
                     }
-                    OutlinedButton(onClick = { navigateEditorHistory(backward = true) }, enabled = undoStack.isNotEmpty()) {
-                        Text("后退")
-                    }
-                    OutlinedButton(onClick = { navigateEditorHistory(backward = false) }, enabled = redoStack.isNotEmpty()) {
-                        Text("前进")
-                    }
+                    ReasonixOutlinedActionButton(
+                        text = "后退",
+                        onClick = { navigateEditorHistory(backward = true) },
+                        enabled = undoStack.isNotEmpty()
+                    )
+                    ReasonixOutlinedActionButton(
+                        text = "前进",
+                        onClick = { navigateEditorHistory(backward = false) },
+                        enabled = redoStack.isNotEmpty()
+                    )
                     Button(
                         onClick = {
                             scope.launch {
@@ -1066,154 +1146,199 @@ private fun ProjectEditorSection(
             }
 
             editorError?.let {
-                Text(
-                    text = it,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "语法高亮: ${language ?: "自动"}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (editorDiagnostics.isNotEmpty()) {
-                    Spacer(Modifier.width(8.dp))
-                    TextButton(
-                        onClick = { showDiagnosticsDialog = true },
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                    ) {
-                        Text(
-                            text = "错误 ${editorDiagnostics.size}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-                }
-                if (conflictBlocks.isNotEmpty()) {
-                    Spacer(Modifier.width(4.dp))
-                    TextButton(
-                        onClick = { showConflictResolverDialog = true },
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                    ) {
-                        Text(
-                            text = "冲突 ${conflictBlocks.size}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
-                Spacer(Modifier.weight(1f))
-                if (dirty) {
+                ReasonixGlassSurface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)
+                ) {
                     Text(
-                        text = "有未保存修改",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
                     )
                 }
             }
-            currentLineDiagnostic?.let { diagnostic ->
-                Text(
-                    text = "第 ${diagnostic.lineNumber} 行: ${diagnostic.message}",
-                    modifier = Modifier.padding(horizontal = 12.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
 
-            Box(
+            ReasonixGlassSurface(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                    .fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
             ) {
-                if (isFileLoading) {
-                    EmptyEditorState("正在读取文件", "请稍候，正在加载当前文件内容。")
-                } else if (editorMode == ProjectEditorMode.RAW_JSON && isRawJsonFile) {
-                    ReasonixGlassSurface(
-                        modifier = Modifier.fillMaxSize(),
-                        shape = RoundedCornerShape(18.dp),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp)
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "原始 JSON",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "参考 fas.json 原始页，保持简单直接的文本编辑体验，适合快速粘贴、校正和整体替换。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxWidth()
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            OutlinedTextField(
-                                value = editorValue,
-                                onValueChange = { updateEditorValue(it) },
-                                modifier = Modifier.fillMaxSize(),
-                                label = { Text("JSON 原文") },
-                                textStyle = MaterialTheme.typography.bodySmall.copy(
-                                    fontFamily = FontFamily.Monospace,
-                                    lineHeight = 18.sp
-                                )
+                            Text(
+                                text = "语法高亮: ${language ?: "自动"}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = if (isRawJsonFile) {
+                                    "当前文件以原始文本为主，适合整体校正和快速替换。"
+                                } else {
+                                    "当前编辑区保持独立二级页结构，文件列表返回和状态信息都在这一页内收口。"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (editorDiagnostics.isNotEmpty()) {
+                            Spacer(Modifier.width(8.dp))
+                            ReasonixTagButton(
+                                text = "错误 ${editorDiagnostics.size}",
+                                onClick = { showDiagnosticsDialog = true }
+                            )
+                        }
+                        if (conflictBlocks.isNotEmpty()) {
+                            Spacer(Modifier.width(6.dp))
+                            ReasonixTagButton(
+                                text = "冲突 ${conflictBlocks.size}",
+                                onClick = { showConflictResolverDialog = true }
                             )
                         }
                     }
-                } else {
+                    HorizontalDivider()
+                    currentLineDiagnostic?.let { diagnostic ->
+                        ReasonixGlassSurface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(18.dp),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)
+                        ) {
+                            Text(
+                                text = "第 ${diagnostic.lineNumber} 行: ${diagnostic.message}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
                     Box(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color(0xFF1E1E1E), RoundedCornerShape(12.dp))
+                            .weight(1f)
+                            .fillMaxWidth()
                     ) {
-                        ProjectCodeEditorPane(
-                            editorValue = editorValue,
-                            onValueChange = { updateEditorValue(it) },
-                            language = language,
-                            searchQuery = editorSearchQuery,
-                            currentMatch = currentSearchMatch,
-                            diagnostics = editorDiagnostics,
-                            verticalScrollState = editorVerticalScroll,
-                            horizontalScrollState = editorHorizontalScroll,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-                }
-            }
-
-            Surface(tonalElevation = 2.dp) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .navigationBarsPadding()
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    quickInsertActions.forEach { action ->
-                        OutlinedButton(
-                            onClick = { insertQuickAction(action) },
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 2.dp)
-                        ) {
-                            Text(action.label)
+                        if (isFileLoading) {
+                            EmptyEditorState("正在读取文件", "请稍候，正在加载当前文件内容。")
+                        } else if (editorMode == ProjectEditorMode.RAW_JSON && isRawJsonFile) {
+                            Column(
+                                modifier = Modifier.fillMaxSize(),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text(
+                                    text = "原始 JSON",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = "参考 fas.json 原始页，保持简单直接的文本编辑体验，适合快速粘贴、校正和整体替换。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxWidth()
+                                ) {
+                                    OutlinedTextField(
+                                        value = editorValue,
+                                        onValueChange = { updateEditorValue(it) },
+                                        modifier = Modifier.fillMaxSize(),
+                                        label = { Text("JSON 原文") },
+                                        textStyle = MaterialTheme.typography.bodySmall.copy(
+                                            fontFamily = FontFamily.Monospace,
+                                            lineHeight = 18.sp
+                                        )
+                                    )
+                                }
+                            }
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color(0xFF1E1E1E), RoundedCornerShape(18.dp))
+                            ) {
+                                ProjectCodeEditorPane(
+                                    editorValue = editorValue,
+                                    onValueChange = { updateEditorValue(it) },
+                                    language = language,
+                                    searchQuery = editorSearchQuery,
+                                    currentMatch = currentSearchMatch,
+                                    diagnostics = editorDiagnostics,
+                                    verticalScrollState = editorVerticalScroll,
+                                    horizontalScrollState = editorHorizontalScroll,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
                         }
+                    }
+                    HorizontalDivider()
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .navigationBarsPadding()
+                            .padding(bottom = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        ReasonixTagButton(
+                            text = "快捷插入",
+                            onClick = {}
+                        )
+                        quickInsertActions.forEach { action ->
+                            ReasonixTagButton(
+                                text = action.label,
+                                onClick = { insertQuickAction(action) }
+                            )
+                        }
+                        if (dirty) {
+                            ReasonixOutlinedActionButton(
+                                text = "保存修改",
+                                onClick = {
+                                    scope.launch {
+                                        isSaving = true
+                                        editorError = null
+                                        val result = withContext(Dispatchers.IO) {
+                                            runCatching { saveProjectFile(File(selectedFilePath!!), editedContent) }
+                                        }
+                                        result
+                                            .onSuccess { loadedContent = editedContent }
+                                            .onFailure { error -> editorError = error.message ?: "保存失败" }
+                                        isSaving = false
+                                    }
+                                },
+                                enabled = !isSaving
+                            )
+                        } else {
+                            ReasonixTagButton(
+                                text = "已同步",
+                                onClick = {}
+                            )
+                        }
+                        Text(
+                            text = "第 $currentLine 行",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
         }
+    }
     }
 
     if (showSearchReplaceDialog) {

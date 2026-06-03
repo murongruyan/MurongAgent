@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -48,8 +49,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
@@ -59,6 +63,9 @@ import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 enum class ReasonixThemeMode {
     SYSTEM,
@@ -213,9 +220,9 @@ fun Modifier.reasonixBackdropGlass(
     return hazeEffect(
         state = hazeState,
         style = HazeStyle(
-            blurRadius = 24.dp,
+            blurRadius = 36.dp,
             backgroundColor = Color.Transparent,
-            tint = HazeTint(surfaceColor.copy(alpha = surfaceColor.alpha.coerceIn(0.08f, 0.20f)))
+            tint = HazeTint(surfaceColor.copy(alpha = surfaceColor.alpha.coerceIn(0.12f, 0.26f)))
         )
     )
 }
@@ -400,6 +407,46 @@ data class ReasonixBottomBarItem(
 )
 
 @Composable
+private fun ReasonixBottomBarSurface(
+    modifier: Modifier = Modifier,
+    shape: Shape = RoundedCornerShape(40.dp),
+    content: @Composable () -> Unit
+) {
+    val ui = LocalReasonixUiController.current
+    val accent = rememberReasonixAccentColor()
+    val darkMode = reasonixIsDarkColor(MaterialTheme.colorScheme.background)
+    val hazeState = LocalReasonixHazeState.current
+    val glassTint = if (darkMode) {
+        accent.copy(alpha = 0.10f)
+    } else {
+        Color.White.copy(alpha = 0.22f)
+    }
+    Surface(
+        modifier = modifier
+            .clip(shape)
+            .reasonixBackdropGlass(
+                surfaceColor = glassTint,
+                enabled = ui.themeStyle == ReasonixThemeStyle.GLASS,
+                hazeState = hazeState
+            )
+            .clip(shape),
+        shape = shape,
+        color = if (ui.themeStyle == ReasonixThemeStyle.GLASS) {
+            Color.Transparent
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
+        border = BorderStroke(
+            1.dp,
+            accent.copy(alpha = if (darkMode) 0.20f else 0.14f)
+        ),
+        shadowElevation = if (ui.themeStyle == ReasonixThemeStyle.GLASS) 2.dp else 1.dp
+    ) {
+        content()
+    }
+}
+
+@Composable
 fun ReasonixFloatingBottomBar(
     items: List<ReasonixBottomBarItem>,
     selectedIndex: Int,
@@ -409,40 +456,86 @@ fun ReasonixFloatingBottomBar(
 ) {
     val accent = rememberReasonixAccentColor()
     val darkMode = reasonixIsDarkColor(MaterialTheme.colorScheme.background)
-    val animatedVisualIndex by animateFloatAsState(
-        targetValue = visualIndex.coerceIn(0f, (items.lastIndex).coerceAtLeast(0).toFloat()),
-        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
-        label = "reasonixBottomBarVisualIndex"
+    val viewConfiguration = LocalViewConfiguration.current
+    var draggingVisualIndex by remember(items.size) { mutableStateOf<Float?>(null) }
+    var bottomBarHeld by remember(items.size) { mutableStateOf(false) }
+    val targetVisualIndex = (draggingVisualIndex ?: visualIndex)
+        .coerceIn(0f, items.lastIndex.coerceAtLeast(0).toFloat())
+    val heldProgress by animateFloatAsState(
+        targetValue = if (bottomBarHeld) 1f else 0f,
+        animationSpec = tween(durationMillis = 140, easing = FastOutSlowInEasing),
+        label = "reasonixBottomBarHoldProgress"
     )
-    ReasonixGlassSurface(
+    ReasonixBottomBarSurface(
         modifier = modifier
             .navigationBarsPadding()
             .widthIn(max = 520.dp)
             .zIndex(5f),
-        shape = RoundedCornerShape(40.dp),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+        shape = RoundedCornerShape(40.dp)
     ) {
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
             val slotWidth = maxWidth / items.size.coerceAtLeast(1)
             Box(
                 modifier = Modifier
-                    .padding(horizontal = 4.dp)
+                    .padding(horizontal = 6.dp, vertical = 6.dp)
                     .fillMaxWidth()
-                    .height(64.dp)
+                    .height(62.dp)
+                    .pointerInput(items.size, selectedIndex) {
+                        awaitEachGesture {
+                            var down = awaitPointerEvent().changes.firstOrNull { it.pressed }
+                            while (down == null) {
+                                down = awaitPointerEvent().changes.firstOrNull { it.pressed }
+                            }
+                            val initialDown = down ?: return@awaitEachGesture
+                            val longPressTriggered = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis.toLong()) {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.firstOrNull { it.id == initialDown.id } ?: break
+                                    if (!change.pressed) {
+                                        return@withTimeoutOrNull false
+                                    }
+                                }
+                                false
+                            } == null
+                            if (!longPressTriggered) {
+                                draggingVisualIndex = null
+                                bottomBarHeld = false
+                                return@awaitEachGesture
+                            }
+                            bottomBarHeld = true
+                            val slotWidthPx = size.width / items.size.coerceAtLeast(1).toFloat()
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == initialDown.id } ?: break
+                                val index = (change.position.x / slotWidthPx)
+                                    .coerceIn(0f, items.lastIndex.toFloat())
+                                draggingVisualIndex = index
+                                if (!change.pressed) break
+                            }
+                            val settledIndex = draggingVisualIndex
+                                ?.roundToInt()
+                                ?.coerceIn(0, items.lastIndex)
+                            draggingVisualIndex = null
+                            bottomBarHeld = false
+                            if (settledIndex != null && settledIndex != selectedIndex) {
+                                onSelect(settledIndex)
+                            }
+                        }
+                    }
             ) {
                 Surface(
                     modifier = Modifier
                         .align(Alignment.CenterStart)
-                        .padding(start = slotWidth * animatedVisualIndex),
+                        .padding(start = slotWidth * targetVisualIndex),
                     shape = RoundedCornerShape(32.dp),
-                    color = accent.copy(alpha = if (darkMode) 0.26f else 0.18f),
-                    border = BorderStroke(1.dp, accent.copy(alpha = if (darkMode) 0.34f else 0.28f)),
+                    color = accent.copy(alpha = if (darkMode) 0.30f + (heldProgress * 0.08f) else 0.20f + (heldProgress * 0.08f)),
+                    border = BorderStroke(1.dp, accent.copy(alpha = if (darkMode) 0.42f else 0.34f)),
                     shadowElevation = 0.dp
                 ) {
                     Spacer(
                         modifier = Modifier
                             .widthIn(min = slotWidth - 8.dp)
-                            .height(56.dp)
+                            .height(56.dp + (heldProgress * 4).dp)
                     )
                 }
                 Row(
@@ -452,7 +545,21 @@ fun ReasonixFloatingBottomBar(
                 ) {
                     items.forEachIndexed { index, item ->
                         val selected = index == selectedIndex
+                        val selectionProgress by animateFloatAsState(
+                            targetValue = (1f - abs(targetVisualIndex - index).coerceIn(0f, 1f)),
+                            animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
+                            label = "reasonixBottomBarItemProgress$index"
+                        )
                         val interactionSource = remember { MutableInteractionSource() }
+                        val idleColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                            alpha = if (darkMode) 0.90f else 0.78f
+                        )
+                        val activeColor = if (darkMode) {
+                            Color.White
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        }
+                        val itemColor = lerp(idleColor, activeColor, selectionProgress)
                         Column(
                             modifier = Modifier
                                 .weight(1f)
@@ -461,34 +568,38 @@ fun ReasonixFloatingBottomBar(
                                     interactionSource = interactionSource,
                                     indication = null
                                 ) { onSelect(index) }
-                                .padding(vertical = 10.dp),
+                                .padding(vertical = 8.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Surface(
                                 shape = CircleShape,
-                                color = Color.Transparent
+                                color = accent.copy(
+                                    alpha = if (selectionProgress > 0.55f) {
+                                        if (darkMode) 0.12f else 0.09f
+                                    } else {
+                                        0f
+                                    }
+                                )
                             ) {
                                 Icon(
                                     imageVector = item.icon,
                                     contentDescription = item.label,
-                                    modifier = Modifier.size(20.dp),
-                                    tint = if (selected) {
-                                        if (darkMode) Color.White else MaterialTheme.colorScheme.onSurface
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    }
+                                    modifier = Modifier
+                                        .padding(6.dp)
+                                        .size(18.dp + (selectionProgress * 2f).dp),
+                                    tint = itemColor
                                 )
                             }
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = item.label,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = if (selected) {
-                                    if (darkMode) Color.White else MaterialTheme.colorScheme.onSurface
+                                color = itemColor,
+                                fontWeight = if (selected || selectionProgress > 0.55f) {
+                                    FontWeight.SemiBold
                                 } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                                    FontWeight.Medium
+                                }
                             )
                         }
                     }

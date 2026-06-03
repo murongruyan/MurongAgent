@@ -22,9 +22,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -127,6 +127,9 @@ fun MainScreen() {
         initialPage = shellScreens.indexOfFirst { it.route == currentScreen.route }.coerceAtLeast(0),
         pageCount = { shellScreens.size }
     )
+    val topLevelHistory = remember { mutableStateListOf<Int>() }
+    var lastVisitedTopLevelPage by remember { mutableIntStateOf(pagerState.currentPage) }
+    var consumingTopLevelBack by remember { mutableStateOf(false) }
     val authVm: AuthViewModel = hiltViewModel()
     val chatVm: ChatViewModel = hiltViewModel()
     val settingsVm: SettingsViewModel = hiltViewModel()
@@ -164,8 +167,25 @@ fun MainScreen() {
         }
     }
 
+    suspend fun navigateBackToPreviousTopLevel() {
+        val targetPage = topLevelHistory.removeLastOrNull() ?: return
+        consumingTopLevelBack = true
+        drawerState.close()
+        pagerState.animateScrollToPage(targetPage)
+    }
+
     LaunchedEffect(pagerState.currentPage) {
-        currentScreen = shellScreens[pagerState.currentPage]
+        val newPage = pagerState.currentPage
+        if (newPage != lastVisitedTopLevelPage) {
+            if (consumingTopLevelBack) {
+                consumingTopLevelBack = false
+            } else if (topLevelHistory.lastOrNull() != lastVisitedTopLevelPage) {
+                topLevelHistory.add(lastVisitedTopLevelPage)
+            }
+            lastVisitedTopLevelPage = newPage
+        }
+        drawerState.close()
+        currentScreen = shellScreens[newPage]
     }
 
     LaunchedEffect(currentScreen) {
@@ -193,8 +213,20 @@ fun MainScreen() {
         }
     }
 
+    BackHandler(enabled = drawerState.isOpen) {
+        scope.launch {
+            drawerState.close()
+        }
+    }
+
     BackHandler(enabled = settingsSubpage != SettingsSubpage.Main) {
         settingsSubpage = SettingsSubpage.Main
+    }
+
+    BackHandler(enabled = settingsSubpage == SettingsSubpage.Main && topLevelHistory.isNotEmpty()) {
+        scope.launch {
+            navigateBackToPreviousTopLevel()
+        }
     }
 
     PredictiveBackHandler(enabled = settingsSubpage != SettingsSubpage.Main) { progress ->
@@ -316,10 +348,36 @@ fun MainScreen() {
             is Screen.Settings -> Screen.Settings.title
         }
     }
+    val topBarSubtitle = when (settingsSubpage) {
+        SettingsSubpage.Theme -> "风格、模式与强调色"
+        SettingsSubpage.About -> "应用信息与产品方向"
+        SettingsSubpage.Main -> when (currentScreen) {
+            is Screen.Chat -> "会话列表、消息流与上下文控制"
+            is Screen.Projects -> "项目浏览、文件编辑与 Git 工作流"
+            is Screen.Tools -> "工具状态、审批与执行记录"
+            is Screen.Settings -> "账号、模型与全局偏好"
+        }
+    }
+    val topBarTag = when (settingsSubpage) {
+        SettingsSubpage.Theme -> "外观"
+        SettingsSubpage.About -> "信息"
+        SettingsSubpage.Main -> when (currentScreen) {
+            is Screen.Chat -> "对话"
+            is Screen.Projects -> "项目"
+            is Screen.Tools -> "工具"
+            is Screen.Settings -> "设置"
+        }
+    }
     val pagerVisualIndex = (
         pagerState.currentPage.toFloat() + pagerState.currentPageOffsetFraction
         ).coerceIn(0f, shellScreens.lastIndex.toFloat())
     val showBottomBar = settingsSubpage == SettingsSubpage.Main
+
+    LaunchedEffect(currentScreen, settingsSubpage) {
+        if (currentScreen !is Screen.Chat || settingsSubpage != SettingsSubpage.Main) {
+            drawerState.close()
+        }
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -381,35 +439,49 @@ fun MainScreen() {
                             .statusBarsPadding()
                             .padding(horizontal = 12.dp, vertical = 8.dp),
                         shape = RoundedCornerShape(26.dp),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Box(
-                                modifier = Modifier.width(48.dp),
+                                modifier = Modifier.width(92.dp),
                                 contentAlignment = Alignment.CenterStart
                             ) {
                                 when {
                                     settingsSubpage != SettingsSubpage.Main -> {
-                                        IconButton(onClick = { settingsSubpage = SettingsSubpage.Main }) {
-                                            Text("←", style = MaterialTheme.typography.titleLarge)
-                                        }
+                                        ReasonixOutlinedActionButton(
+                                            text = "返回",
+                                            onClick = { settingsSubpage = SettingsSubpage.Main }
+                                        )
+                                    }
+                                    topLevelHistory.isNotEmpty() -> {
+                                        ReasonixOutlinedActionButton(
+                                            text = "返回",
+                                            onClick = {
+                                                scope.launch {
+                                                    navigateBackToPreviousTopLevel()
+                                                }
+                                            }
+                                        )
                                     }
                                     currentScreen is Screen.Chat -> {
-                                        IconButton(
+                                        ReasonixOutlinedActionButton(
+                                            text = "会话",
                                             onClick = {
                                                 scope.launch {
                                                     drawerState.open()
                                                 }
                                             }
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Outlined.Menu,
-                                                contentDescription = "打开会话列表"
-                                            )
-                                        }
+                                        )
+                                    }
+                                    else -> {
+                                        Text(
+                                            text = "Reasonix",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                     }
                                 }
                             }
@@ -424,18 +496,13 @@ fun MainScreen() {
                                     maxLines = 1
                                 )
                                 Text(
-                                    text = when (currentScreen) {
-                                        is Screen.Chat -> "会话与执行流"
-                                        is Screen.Projects -> "项目、编辑与 Git"
-                                        is Screen.Tools -> "工具状态与审批"
-                                        is Screen.Settings -> if (settingsSubpage == SettingsSubpage.Main) "账号、模型与外观" else "设置二级页"
-                                    },
+                                    text = topBarSubtitle,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                             Row(
-                                modifier = Modifier.widthIn(min = 48.dp),
+                                modifier = Modifier.widthIn(min = 92.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.End
                             ) {
@@ -444,6 +511,11 @@ fun MainScreen() {
                                         ReasonixTagButton(text = cacheSummary, onClick = {})
                                         Spacer(modifier = Modifier.width(6.dp))
                                     }
+                                } else {
+                                    ReasonixTagButton(text = topBarTag, onClick = {})
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                }
+                                if (currentScreen is Screen.Chat && settingsSubpage == SettingsSubpage.Main) {
                                     Box {
                                         IconButton(onClick = { showChatMenu = true }) {
                                             Icon(
@@ -590,41 +662,20 @@ fun MainScreen() {
                             }
                         }
                     }
-                },
-                bottomBar = {
-                    if (showBottomBar) {
-                        ReasonixFloatingBottomBar(
-                            items = listOf(
-                                ReasonixBottomBarItem("聊天", Icons.Outlined.MoreVert),
-                                ReasonixBottomBarItem("项目", Icons.Outlined.Info),
-                                ReasonixBottomBarItem("工具", Icons.Outlined.Menu),
-                                ReasonixBottomBarItem("设置", Icons.Outlined.Settings)
-                            ),
-                            selectedIndex = pagerState.currentPage,
-                            visualIndex = pagerVisualIndex,
-                            onSelect = { index ->
-                                scope.launch {
-                                    pagerState.animateScrollToPage(index)
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 8.dp)
-                        )
-                    }
                 }
             ) { innerPadding ->
                 HorizontalPager(
                     state = pagerState,
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(innerPadding),
+                        .padding(innerPadding)
+                        .reasonixGlassSource(LocalReasonixHazeState.current),
                     userScrollEnabled = settingsSubpage == SettingsSubpage.Main
                 ) { page ->
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(bottom = if (showBottomBar) 92.dp else 12.dp)
+                            .padding(bottom = if (showBottomBar) 72.dp else 12.dp)
                     ) {
                         when (shellScreens[page]) {
                             is Screen.Chat -> {
@@ -867,6 +918,28 @@ fun MainScreen() {
                         }
                     }
                 }
+            }
+
+            if (showBottomBar) {
+                ReasonixFloatingBottomBar(
+                    items = listOf(
+                        ReasonixBottomBarItem("聊天", Icons.Outlined.MoreVert),
+                        ReasonixBottomBarItem("项目", Icons.Outlined.Edit),
+                        ReasonixBottomBarItem("工具", Icons.Outlined.Search),
+                        ReasonixBottomBarItem("设置", Icons.Outlined.Settings)
+                    ),
+                    selectedIndex = pagerState.currentPage,
+                    visualIndex = pagerVisualIndex,
+                    onSelect = { index ->
+                        scope.launch {
+                            pagerState.animateScrollToPage(index)
+                        }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                )
             }
         }
 

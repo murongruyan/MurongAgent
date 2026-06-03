@@ -98,6 +98,7 @@ data class ProviderConfig(
         When using tools, briefly narrate important intent and summarize the outcome in natural language after the tool result arrives.
         If a result is complex, break it into clear sections and keep it easy to scan.
         Be proactive, specific, and helpful. Prefer slightly verbose explanations over terse replies.
+        Never invent your own model identity. If the user asks what model you are, answer according to the actual runtime provider/model configuration supplied by the app, not by guessing from style.
     """.trimIndent(),
     val globalRules: List<GlobalRule> = emptyList(),
     val globalMemories: List<GlobalMemory> = emptyList(),

@@ -85,6 +85,8 @@ class AgentLoop(
 
         while (toolIteration < maxToolIterations) {
             toolIteration++
+            var streamedContentReceived = false
+            var streamedReasoningReceived = false
 
             // ── 调用 Provider（含重试） ──────────────
             val response = callWithRetry(
@@ -100,8 +102,14 @@ class AgentLoop(
                 ),
                 onDelta = { delta ->
                     when (delta) {
-                        is StreamDelta.Content -> onEvent(AgentEvent.ContentDelta(delta.text))
-                        is StreamDelta.Reasoning -> onEvent(AgentEvent.ReasoningDelta(delta.text))
+                        is StreamDelta.Content -> {
+                            streamedContentReceived = true
+                            onEvent(AgentEvent.ContentDelta(delta.text))
+                        }
+                        is StreamDelta.Reasoning -> {
+                            streamedReasoningReceived = true
+                            onEvent(AgentEvent.ReasoningDelta(delta.text))
+                        }
                         is StreamDelta.ToolCallStart -> onEvent(
                             AgentEvent.ToolExecution(
                                 toolName = delta.name,
@@ -142,7 +150,7 @@ class AgentLoop(
             if (toolCalls.isNullOrEmpty()) {
                 // 如果 response 有内容但流式事件没发出（例如 HTTP 错误），现在补发
                 val respContent = response.content
-                if (respContent != null) {
+                if (respContent != null && !streamedContentReceived && !streamedReasoningReceived) {
                     onEvent(AgentEvent.ContentDelta(respContent))
                 }
                 onEvent(AgentEvent.Done)
@@ -306,6 +314,24 @@ class AgentLoop(
             ChatMessage(
                 role = "system",
                 content = config.buildEffectiveSystemPrompt()
+            )
+        )
+
+        messages.add(
+            ChatMessage(
+                role = "system",
+                content = buildString {
+                    append("Runtime model info: provider=")
+                    append(config.activeProviderId)
+                    append(", model=")
+                    append(config.getActiveModel())
+                    config.getActiveReasoningEffort()?.takeIf { it.isNotBlank() }?.let {
+                        append(", reasoning_effort=")
+                        append(it)
+                    }
+                    append(". When the user asks what model you are, answer using this runtime info.")
+                    append(" Do not claim you are Claude, GPT, or another model family unless the runtime model above actually matches it.")
+                }
             )
         )
 
