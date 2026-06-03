@@ -214,7 +214,9 @@ fun Modifier.reasonixGlassSource(hazeState: HazeState?): Modifier {
 fun Modifier.reasonixBackdropGlass(
     surfaceColor: Color,
     enabled: Boolean,
-    hazeState: HazeState? = null
+    hazeState: HazeState? = null,
+    minTintAlpha: Float = 0.12f,
+    maxTintAlpha: Float = 0.26f
 ): Modifier {
     if (!enabled || hazeState == null) return this
     return hazeEffect(
@@ -222,7 +224,7 @@ fun Modifier.reasonixBackdropGlass(
         style = HazeStyle(
             blurRadius = 36.dp,
             backgroundColor = Color.Transparent,
-            tint = HazeTint(surfaceColor.copy(alpha = surfaceColor.alpha.coerceIn(0.12f, 0.26f)))
+            tint = HazeTint(surfaceColor.copy(alpha = surfaceColor.alpha.coerceIn(minTintAlpha, maxTintAlpha)))
         )
     )
 }
@@ -407,6 +409,48 @@ data class ReasonixBottomBarItem(
 )
 
 @Composable
+fun ReasonixSecondaryPageSurface(
+    modifier: Modifier = Modifier,
+    shape: Shape = RoundedCornerShape(34.dp),
+    contentPadding: androidx.compose.foundation.layout.PaddingValues = androidx.compose.foundation.layout.PaddingValues(0.dp),
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val ui = LocalReasonixUiController.current
+    val darkMode = reasonixIsDarkColor(MaterialTheme.colorScheme.background)
+    val accent = rememberReasonixAccentColor()
+    val hazeState = LocalReasonixHazeState.current
+    val surfaceColor = if (ui.themeStyle == ReasonixThemeStyle.GLASS) {
+        if (darkMode) Color(0xFF121924).copy(alpha = 0.76f) else Color.White.copy(alpha = 0.84f)
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    Surface(
+        modifier = modifier.reasonixBackdropGlass(
+            surfaceColor = surfaceColor,
+            enabled = ui.themeStyle == ReasonixThemeStyle.GLASS,
+            hazeState = hazeState,
+            minTintAlpha = 0.05f,
+            maxTintAlpha = 0.16f
+        ),
+        shape = shape,
+        color = surfaceColor,
+        border = if (ui.themeStyle == ReasonixThemeStyle.GLASS) {
+            null
+        } else {
+            BorderStroke(1.dp, accent.copy(alpha = if (darkMode) 0.14f else 0.10f))
+        },
+        shadowElevation = 0.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(contentPadding),
+            content = content
+        )
+    }
+}
+
+@Composable
 private fun ReasonixBottomBarSurface(
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(40.dp),
@@ -417,9 +461,9 @@ private fun ReasonixBottomBarSurface(
     val darkMode = reasonixIsDarkColor(MaterialTheme.colorScheme.background)
     val hazeState = LocalReasonixHazeState.current
     val glassTint = if (darkMode) {
-        accent.copy(alpha = 0.10f)
+        accent.copy(alpha = 0.014f)
     } else {
-        Color.White.copy(alpha = 0.22f)
+        accent.copy(alpha = 0.010f)
     }
     Surface(
         modifier = modifier
@@ -427,7 +471,9 @@ private fun ReasonixBottomBarSurface(
             .reasonixBackdropGlass(
                 surfaceColor = glassTint,
                 enabled = ui.themeStyle == ReasonixThemeStyle.GLASS,
-                hazeState = hazeState
+                hazeState = hazeState,
+                minTintAlpha = 0.003f,
+                maxTintAlpha = 0.014f
             )
             .clip(shape),
         shape = shape,
@@ -436,11 +482,15 @@ private fun ReasonixBottomBarSurface(
         } else {
             MaterialTheme.colorScheme.surface
         },
-        border = BorderStroke(
-            1.dp,
-            accent.copy(alpha = if (darkMode) 0.20f else 0.14f)
-        ),
-        shadowElevation = if (ui.themeStyle == ReasonixThemeStyle.GLASS) 2.dp else 1.dp
+        border = if (ui.themeStyle == ReasonixThemeStyle.GLASS) {
+            null
+        } else {
+            BorderStroke(
+                1.dp,
+                accent.copy(alpha = if (darkMode) 0.20f else 0.14f)
+            )
+        },
+        shadowElevation = if (ui.themeStyle == ReasonixThemeStyle.GLASS) 0.dp else 8.dp
     ) {
         content()
     }

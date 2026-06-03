@@ -33,6 +33,7 @@ import dev.reasonix.mobile.core.mcp.McpServerConfig
 import dev.reasonix.mobile.core.mcp.McpServerStatus
 import dev.reasonix.mobile.core.provider.ProviderRegistry
 import dev.reasonix.mobile.ui.McpDraftImportCard
+import dev.reasonix.mobile.ui.ReasonixGlassSurface
 import dev.reasonix.mobile.ui.ReasonixInfoCard
 import dev.reasonix.mobile.ui.ReasonixOutlinedActionButton
 import dev.reasonix.mobile.ui.ReasonixSectionCard
@@ -123,15 +124,14 @@ fun SettingsScreen(
             color = MaterialTheme.colorScheme.onBackground
         )
 
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface,
-            modifier = Modifier.fillMaxWidth()
+        ReasonixGlassSurface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            contentPadding = PaddingValues(16.dp)
         ) {
             Row(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
+                    .fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
