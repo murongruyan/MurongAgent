@@ -16,6 +16,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -35,6 +36,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import dagger.hilt.android.AndroidEntryPoint
@@ -110,6 +112,12 @@ private sealed interface SettingsSubpage {
     data object About : SettingsSubpage
 }
 
+private data class ProjectEditorChromeState(
+    val active: Boolean = false,
+    val fileName: String = "",
+    val relativePath: String = ""
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen() {
@@ -159,6 +167,14 @@ fun MainScreen() {
     var exportFormat by remember { mutableStateOf(ConversationExportFormat.MARKDOWN) }
     var pendingExportData by remember { mutableStateOf<ConversationExportData?>(null) }
     val uiController = LocalReasonixUiController.current
+    var projectEditorChromeState by remember { mutableStateOf(ProjectEditorChromeState()) }
+    var projectEditorCloseRequestSignal by remember { mutableIntStateOf(0) }
+    var showProjectEditorMenu by remember { mutableStateOf(false) }
+
+    fun navigateToTopLevel(target: Screen) {
+        settingsSubpage = SettingsSubpage.Main
+        currentScreen = target
+    }
 
     LaunchedEffect(Unit) {
         MainActivity.gitHubOAuthCallbackFlow.collect { callbackUri ->
@@ -193,11 +209,9 @@ fun MainScreen() {
         if (targetIndex >= 0 && targetIndex != pagerState.currentPage) {
             pagerState.animateScrollToPage(targetIndex)
         }
-    }
-
-    LaunchedEffect(Unit) {
-        chatVm.toastMessages.collect { message ->
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        drawerState.close()
+        if (currentScreen !is Screen.Projects) {
+            projectEditorChromeState = ProjectEditorChromeState()
         }
     }
 
@@ -207,9 +221,9 @@ fun MainScreen() {
         runCatching { uriHandler.openUri(authorizationUrl) }
     }
 
-    LaunchedEffect(currentScreen) {
-        if (currentScreen !is Screen.Chat && drawerState.isOpen) {
-            drawerState.close()
+    LaunchedEffect(Unit) {
+        chatVm.toastMessages.collect { message ->
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -221,6 +235,12 @@ fun MainScreen() {
 
     BackHandler(enabled = settingsSubpage != SettingsSubpage.Main) {
         settingsSubpage = SettingsSubpage.Main
+    }
+
+    val isProjectSecondaryPage = currentScreen is Screen.Projects && projectEditorChromeState.active
+
+    BackHandler(enabled = isProjectSecondaryPage) {
+        projectEditorCloseRequestSignal += 1
     }
 
     BackHandler(enabled = settingsSubpage == SettingsSubpage.Main && topLevelHistory.isNotEmpty()) {
@@ -271,7 +291,7 @@ fun MainScreen() {
                 val sourceName = resolveDisplayName(context, uri)
                 chatVm.importConversation(content, sourceName)
                     .onSuccess { count ->
-                        currentScreen = Screen.Chat
+                        navigateToTopLevel(Screen.Chat)
                         scope.launch {
                             snackbarHostState.showSnackbar("已导入 $count 条消息")
                         }
@@ -343,7 +363,7 @@ fun MainScreen() {
         SettingsSubpage.About -> "关于"
         SettingsSubpage.Main -> when (currentScreen) {
             is Screen.Chat -> chatState.sessionTitle.ifBlank { "新对话" }
-            is Screen.Projects -> Screen.Projects.title
+            is Screen.Projects -> projectEditorChromeState.fileName.ifBlank { Screen.Projects.title }
             is Screen.Tools -> Screen.Tools.title
             is Screen.Settings -> Screen.Settings.title
         }
@@ -353,7 +373,7 @@ fun MainScreen() {
         SettingsSubpage.About -> "应用信息与产品方向"
         SettingsSubpage.Main -> when (currentScreen) {
             is Screen.Chat -> "会话列表、消息流与上下文控制"
-            is Screen.Projects -> "项目浏览、文件编辑与 Git 工作流"
+            is Screen.Projects -> if (isProjectSecondaryPage) "" else "项目浏览、文件编辑与 Git 工作流"
             is Screen.Tools -> "工具状态、审批与执行记录"
             is Screen.Settings -> "账号、模型与全局偏好"
         }
@@ -363,7 +383,7 @@ fun MainScreen() {
         SettingsSubpage.About -> "信息"
         SettingsSubpage.Main -> when (currentScreen) {
             is Screen.Chat -> "对话"
-            is Screen.Projects -> "项目"
+            is Screen.Projects -> if (isProjectSecondaryPage) "" else "项目"
             is Screen.Tools -> "工具"
             is Screen.Settings -> "设置"
         }
@@ -371,12 +391,10 @@ fun MainScreen() {
     val pagerVisualIndex = (
         pagerState.currentPage.toFloat() + pagerState.currentPageOffsetFraction
         ).coerceIn(0f, shellScreens.lastIndex.toFloat())
-    val showBottomBar = settingsSubpage == SettingsSubpage.Main
+    val showBottomBar = settingsSubpage == SettingsSubpage.Main && !isProjectSecondaryPage
 
     LaunchedEffect(currentScreen, settingsSubpage) {
-        if (currentScreen !is Screen.Chat || settingsSubpage != SettingsSubpage.Main) {
-            drawerState.close()
-        }
+        drawerState.close()
     }
 
     ModalNavigationDrawer(
@@ -456,6 +474,12 @@ fun MainScreen() {
                                             onClick = { settingsSubpage = SettingsSubpage.Main }
                                         )
                                     }
+                                    isProjectSecondaryPage -> {
+                                        ReasonixOutlinedActionButton(
+                                            text = "返回",
+                                            onClick = { projectEditorCloseRequestSignal += 1 }
+                                        )
+                                    }
                                     topLevelHistory.isNotEmpty() -> {
                                         ReasonixOutlinedActionButton(
                                             text = "返回",
@@ -491,22 +515,70 @@ fun MainScreen() {
                             ) {
                                 Text(
                                     text = topBarTitle,
+                                    modifier = if (isProjectSecondaryPage && projectEditorChromeState.fileName.isNotBlank()) {
+                                        Modifier.combinedClickable(
+                                            onClick = {},
+                                            onLongClick = {
+                                                copyTextToClipboard(context, projectEditorChromeState.fileName)
+                                                scope.launch {
+                                                    snackbarHostState.showSnackbar("已复制文件名")
+                                                }
+                                            }
+                                        )
+                                    } else {
+                                        Modifier
+                                    },
                                     style = MaterialTheme.typography.titleMedium,
                                     color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
-                                Text(
-                                    text = topBarSubtitle,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                if (topBarSubtitle.isNotBlank()) {
+                                    Text(
+                                        text = topBarSubtitle,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                             Row(
                                 modifier = Modifier.widthIn(min = 92.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.End
                             ) {
-                                if (currentScreen is Screen.Chat && settingsSubpage == SettingsSubpage.Main) {
+                                if (isProjectSecondaryPage) {
+                                    Box {
+                                        IconButton(onClick = { showProjectEditorMenu = true }) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.MoreVert,
+                                                contentDescription = "文件操作"
+                                            )
+                                        }
+                                        DropdownMenu(
+                                            expanded = showProjectEditorMenu,
+                                            onDismissRequest = { showProjectEditorMenu = false }
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = { Text("复制文件名") },
+                                                onClick = {
+                                                    copyTextToClipboard(context, projectEditorChromeState.fileName)
+                                                    showProjectEditorMenu = false
+                                                }
+                                            )
+                                            projectEditorChromeState.relativePath
+                                                .takeIf { it.isNotBlank() }
+                                                ?.let { relativePath ->
+                                                    DropdownMenuItem(
+                                                        text = { Text("复制相对路径") },
+                                                        onClick = {
+                                                            copyTextToClipboard(context, relativePath)
+                                                            showProjectEditorMenu = false
+                                                        }
+                                                    )
+                                                }
+                                        }
+                                    }
+                                } else if (currentScreen is Screen.Chat && settingsSubpage == SettingsSubpage.Main) {
                                     buildPromptCacheSummary(chatState.usageSummary)?.let { cacheSummary ->
                                         ReasonixTagButton(text = cacheSummary, onClick = {})
                                         Spacer(modifier = Modifier.width(6.dp))
@@ -670,12 +742,12 @@ fun MainScreen() {
                         .fillMaxSize()
                         .padding(innerPadding)
                         .reasonixGlassSource(LocalReasonixHazeState.current),
-                    userScrollEnabled = settingsSubpage == SettingsSubpage.Main
+                    userScrollEnabled = settingsSubpage == SettingsSubpage.Main && !isProjectSecondaryPage
                 ) { page ->
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(bottom = if (showBottomBar) 72.dp else 12.dp)
+                            .padding(bottom = if (showBottomBar) 24.dp else 12.dp)
                     ) {
                         when (shellScreens[page]) {
                             is Screen.Chat -> {
@@ -702,9 +774,7 @@ fun MainScreen() {
                                     workflowExecutionMode = effectiveChatConfig.workflowExecutionMode,
                                     autoRouteBeforeExecution = false,
                                     onNavigateToSettings = {
-                                        scope.launch {
-                                            pagerState.animateScrollToPage(shellScreens.indexOf(Screen.Settings))
-                                        }
+                                        navigateToTopLevel(Screen.Settings)
                                     },
                                     onEditMessage = { messageId ->
                                         chatVm.rollbackToUserMessage(messageId)
@@ -793,9 +863,7 @@ fun MainScreen() {
                                         showTaskDialog = true
                                     },
                                     onOpenChat = {
-                                        scope.launch {
-                                            pagerState.animateScrollToPage(shellScreens.indexOf(Screen.Chat))
-                                        }
+                                        navigateToTopLevel(Screen.Chat)
                                     },
                                     onUpdateProjectConfig = { rules, memories, skills ->
                                         chatVm.updateProjectConfig(rules, memories, skills)
@@ -817,7 +885,15 @@ fun MainScreen() {
                                     },
                                     onDeleteProjectKnowledgeSnapshot = { snapshotId ->
                                         chatVm.deleteProjectKnowledgeSnapshot(snapshotId)
-                                    }
+                                    },
+                                    onEditorPageChanged = { active, fileName, relativePath ->
+                                        projectEditorChromeState = ProjectEditorChromeState(
+                                            active = active,
+                                            fileName = fileName.orEmpty(),
+                                            relativePath = relativePath.orEmpty()
+                                        )
+                                    },
+                                    closeEditorRequestSignal = projectEditorCloseRequestSignal
                                 )
                             }
 
@@ -838,9 +914,7 @@ fun MainScreen() {
                                     checkpoints = chatState.checkpoints,
                                     fileChanges = chatState.fileChanges,
                                     onOpenChat = {
-                                        scope.launch {
-                                            pagerState.animateScrollToPage(shellScreens.indexOf(Screen.Chat))
-                                        }
+                                        navigateToTopLevel(Screen.Chat)
                                     },
                                     onApprovePendingTool = {
                                         chatVm.approvePendingTool()
@@ -956,7 +1030,7 @@ fun MainScreen() {
                     taskProjectPath = ""
                     showTaskDialog = false
                     scope.launch { drawerState.close() }
-                    currentScreen = Screen.Chat
+                    navigateToTopLevel(Screen.Chat)
                 }
             )
         }
