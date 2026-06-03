@@ -246,10 +246,11 @@ internal fun embeddedGitFetch(repoRoot: String, githubToken: String?): String {
         val repository = git.repository
         val remotes = repository.config.getSubsections("remote").ifEmpty { setOf("origin") }
         remotes.forEach { remote ->
+            val remoteTarget = resolveEmbeddedTransportRemote(repository, remote, githubToken)
             git.fetch()
-                .setRemote(remote)
+                .setRemote(remoteTarget)
                 .setRemoveDeletedRefs(true)
-                .setCredentialsProvider(embeddedGitCredentialsProvider(repository, remote, githubToken))
+                .setCredentialsProvider(embeddedGitCredentialsProvider(remoteTarget, githubToken))
                 .call()
         }
         return "已完成抓取"
@@ -263,11 +264,12 @@ internal fun embeddedGitPull(repoRoot: String, githubToken: String?): String {
         val branchConfig = BranchConfig(repository.config, currentBranch)
         val remoteName = branchConfig.remote ?: "origin"
         val remoteBranch = branchConfig.merge?.let(Repository::shortenRefName) ?: currentBranch
+        val remoteTarget = resolveEmbeddedTransportRemote(repository, remoteName, githubToken)
         val result = git.pull()
-            .setRemote(remoteName)
+            .setRemote(remoteTarget)
             .setRemoteBranchName(remoteBranch)
             .setFastForward(MergeCommand.FastForwardMode.FF_ONLY)
-            .setCredentialsProvider(embeddedGitCredentialsProvider(repository, remoteName, githubToken))
+            .setCredentialsProvider(embeddedGitCredentialsProvider(remoteTarget, githubToken))
             .call()
         ensureEmbeddedPullResult(result)
         return "已完成拉取"
@@ -280,9 +282,10 @@ internal fun embeddedGitPush(repoRoot: String, githubToken: String?): String {
         val currentBranch = repository.safeCurrentBranch() ?: error("当前没有可推送的活动分支")
         val branchConfig = BranchConfig(repository.config, currentBranch)
         val remoteName = branchConfig.remote ?: "origin"
+        val remoteTarget = resolveEmbeddedTransportRemote(repository, remoteName, githubToken)
         val results = git.push()
-            .setRemote(remoteName)
-            .setCredentialsProvider(embeddedGitCredentialsProvider(repository, remoteName, githubToken))
+            .setRemote(remoteTarget)
+            .setCredentialsProvider(embeddedGitCredentialsProvider(remoteTarget, githubToken))
             .setRefSpecs(RefSpec("HEAD:refs/heads/$currentBranch"))
             .call()
         ensureEmbeddedPushResults(results)
@@ -515,22 +518,55 @@ private fun ensureEmbeddedPushResults(results: Iterable<PushResult>) {
 }
 
 private fun embeddedGitCredentialsProvider(
-    repository: Repository,
-    remoteName: String,
+    remoteTarget: String,
     githubToken: String?
 ): CredentialsProvider? {
     val token = githubToken?.trim().orEmpty()
     if (token.isBlank()) return null
-    val remoteUrl = repository.config.getString("remote", remoteName, "url").orEmpty().lowercase(Locale.getDefault())
+    val remoteUrl = remoteTarget.lowercase(Locale.getDefault())
     return if (
         remoteUrl.startsWith("https://") ||
-        remoteUrl.startsWith("http://") ||
-        remoteUrl.startsWith("git@github.com:")
+        remoteUrl.startsWith("http://")
     ) {
         UsernamePasswordCredentialsProvider("x-access-token", token)
     } else {
         null
     }
+}
+
+private fun resolveEmbeddedTransportRemote(
+    repository: Repository,
+    remoteName: String,
+    githubToken: String?
+): String {
+    val configuredRemote = repository.config.getString("remote", remoteName, "url").orEmpty().trim()
+    if (configuredRemote.isBlank()) return remoteName
+    val token = githubToken?.trim().orEmpty()
+    if (token.isBlank()) return remoteName
+    val githubHttpsRemote = convertGitHubRemoteToHttps(configuredRemote)
+    return githubHttpsRemote ?: remoteName
+}
+
+private fun convertGitHubRemoteToHttps(remoteUrl: String): String? {
+    val trimmed = remoteUrl.trim()
+    if (trimmed.isBlank()) return null
+    if (trimmed.startsWith("git@github.com:", ignoreCase = true)) {
+        val path = trimmed.substringAfter(':').removePrefix("/").removeSuffix(".git")
+        return path.takeIf { it.contains("/") }?.let { "https://github.com/$it.git" }
+    }
+    if (trimmed.startsWith("ssh://", ignoreCase = true)) {
+        val uri = runCatching { java.net.URI(trimmed) }.getOrNull() ?: return null
+        if (!uri.host.equals("github.com", ignoreCase = true)) return null
+        val path = uri.path.orEmpty().trim('/').removeSuffix(".git")
+        return path.takeIf { it.contains("/") }?.let { "https://github.com/$it.git" }
+    }
+    if (trimmed.startsWith("https://github.com/", ignoreCase = true) ||
+        trimmed.startsWith("http://github.com/", ignoreCase = true)
+    ) {
+        val normalized = trimmed.removePrefix("http://").removePrefix("https://")
+        return "https://$normalized"
+    }
+    return null
 }
 
 private fun branchTrackingName(repository: Repository, branchName: String): String? {

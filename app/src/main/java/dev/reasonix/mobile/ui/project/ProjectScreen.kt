@@ -2874,7 +2874,8 @@ private fun ProjectGitSection(
                     upstreamBranch = gitState.upstreamBranch,
                     aheadCount = gitState.aheadCount,
                     behindCount = gitState.behindCount,
-                    remoteBranchCount = gitState.remoteBranches.size
+                    remoteBranchCount = gitState.remoteBranches.size,
+                    tokenConfigured = config.githubToken.isNotBlank()
                 )
                 ProjectGitHubActionsSection(
                     state = githubActionsState,
@@ -4445,10 +4446,14 @@ private fun ProjectGitRemoteSummaryCard(
     upstreamBranch: String?,
     aheadCount: Int,
     behindCount: Int,
-    remoteBranchCount: Int
+    remoteBranchCount: Int,
+    tokenConfigured: Boolean
 ) {
     val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
+    val transportHint = remember(remoteUrl, tokenConfigured) {
+        summarizeProjectGitRemoteTransport(remoteUrl, tokenConfigured)
+    }
     ReasonixGlassSurface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -4470,6 +4475,13 @@ private fun ProjectGitRemoteSummaryCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = mutedTextColor
             )
+            transportHint?.let { hint ->
+                Text(
+                    text = hint,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = mutedTextColor
+                )
+            }
         }
     }
 }
@@ -5697,6 +5709,39 @@ private fun parseProjectGitHubRepoRef(remoteUrl: String?): ProjectGitHubRepoRef?
         owner = segments[segments.lastIndex - 1],
         repo = segments.last()
     )
+}
+
+private fun summarizeProjectGitRemoteTransport(
+    remoteUrl: String?,
+    tokenConfigured: Boolean
+): String? {
+    val raw = remoteUrl?.trim().orEmpty()
+    if (raw.isBlank()) return null
+    val isGitHubRemote = parseProjectGitHubRepoRef(raw) != null
+    return when {
+        raw.startsWith("git@github.com:", ignoreCase = true) ||
+            (raw.startsWith("ssh://", ignoreCase = true) && Uri.parse(raw).host.equals("github.com", ignoreCase = true)) -> {
+            if (tokenConfigured) {
+                "当前是 GitHub SSH 远端，内置 Git 会自动改走 HTTPS + Token 传输。"
+            } else {
+                "当前是 GitHub SSH 远端；未配置 Token 时，拉取和推送会受限。"
+            }
+        }
+        raw.startsWith("https://", ignoreCase = true) ||
+            raw.startsWith("http://", ignoreCase = true) -> {
+            if (isGitHubRemote && tokenConfigured) {
+                "当前是 HTTPS 远端，内置 Git 会优先使用 GitHub Token 认证。"
+            } else if (isGitHubRemote) {
+                "当前是 HTTPS 远端；如需稳定推送，请在设置页配置 GitHub Token。"
+            } else {
+                "当前是 HTTPS 远端，认证方式取决于该服务端本身。"
+            }
+        }
+        raw.startsWith("git@", ignoreCase = true) || raw.startsWith("ssh://", ignoreCase = true) -> {
+            "当前是 SSH 远端；除 GitHub 外，其他 SSH 仓库仍需要设备侧凭据支持。"
+        }
+        else -> "当前远端类型较特殊，内置 Git 会按仓库原始配置尝试连接。"
+    }
 }
 
 private fun runProjectGitHubApiRequest(
