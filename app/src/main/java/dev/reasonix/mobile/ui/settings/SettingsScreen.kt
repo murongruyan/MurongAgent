@@ -34,6 +34,7 @@ import dev.reasonix.mobile.core.config.SkillRunAs
 import dev.reasonix.mobile.core.loop.SessionSummary
 import dev.reasonix.mobile.core.mcp.McpServerConfig
 import dev.reasonix.mobile.core.mcp.McpServerStatus
+import dev.reasonix.mobile.core.provider.ModelProvider
 import dev.reasonix.mobile.core.provider.ProviderRegistry
 import dev.reasonix.mobile.ui.McpDraftImportCard
 import dev.reasonix.mobile.ui.ReasonixGlassSurface
@@ -227,429 +228,24 @@ fun SettingsScreen(
         // ═══════════════════════════════════════
         // AI 模型提供商
         // ═══════════════════════════════════════
-        Surface(
-            shape = RoundedCornerShape(14.dp),
-            color = MaterialTheme.colorScheme.surface,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { providerSectionExpanded = !providerSectionExpanded },
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            text = "AI 模型提供商",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onBackground
-                        )
-                        Text(
-                            text = "展开后可切换 Provider、模型、推理深度和预算配置。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Icon(
-                        imageVector = if (providerSectionExpanded) {
-                            Icons.Outlined.KeyboardArrowUp
-                        } else {
-                            Icons.Outlined.KeyboardArrowDown
-                        },
-                        contentDescription = if (providerSectionExpanded) "收起模型供应商" else "展开模型供应商",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+            ProviderSettingsSection(
+                providers = providers,
+                config = config,
+                showApiKey = showApiKey,
+                onToggleShowApiKey = { showApiKey = !showApiKey },
+                providerSectionExpanded = providerSectionExpanded,
+                onProviderSectionExpandedChange = { providerSectionExpanded = it },
+                balanceSyncStates = balanceSyncStates,
+                onConfigChanged = onConfigChanged,
+                onRefreshProviderBalance = onRefreshProviderBalance,
+                supportsBalanceFetch = supportsBalanceFetch
+            )
 
-                AnimatedVisibility(visible = providerSectionExpanded) {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        providers.forEach { provider ->
-                            val isActive = config.activeProviderId == provider.id
-
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = if (isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
-                                        else MaterialTheme.colorScheme.surface,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { onConfigChanged(config.copy(activeProviderId = provider.id)) }
-                            ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        RadioButton(
-                                            selected = isActive,
-                                            onClick = { onConfigChanged(config.copy(activeProviderId = provider.id)) },
-                                            colors = RadioButtonDefaults.colors(
-                                                selectedColor = MaterialTheme.colorScheme.primary
-                                            )
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Column {
-                                            Text(
-                                                text = provider.name,
-                                                style = MaterialTheme.typography.titleSmall,
-                                                color = MaterialTheme.colorScheme.onSurface
-                                            )
-                                            Text(
-                                                text = "默认模型: ${provider.defaultModel}",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                fontSize = 11.sp
-                                            )
-                                        }
-                                    }
-
-                                    AnimatedVisibility(visible = isActive) {
-                                        Column(
-                                            modifier = Modifier.padding(start = 44.dp, top = 8.dp),
-                                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                            val apiKey = when (provider.id) {
-                                "deepseek" -> config.deepseekApiKey
-                                "openai-compatible" -> config.openaiApiKey
-                                "claude" -> config.claudeApiKey
-                                else -> ""
-                            }
-                            val baseUrl = when (provider.id) {
-                                "deepseek" -> config.deepseekBaseUrl
-                                "openai-compatible" -> config.openaiBaseUrl
-                                "claude" -> config.claudeBaseUrl
-                                else -> ""
-                            }
-                            val model = when (provider.id) {
-                                "deepseek" -> config.deepseekModel
-                                "openai-compatible" -> config.openaiModel
-                                "claude" -> config.claudeModel
-                                else -> ""
-                            }
-                            val resolvedModel = config.getResolvedModel(provider.id)
-                            val reasoningEffort = when (provider.id) {
-                                "deepseek" -> config.deepseekReasoningEffort
-                                "openai-compatible" -> config.openaiReasoningEffort
-                                "claude" -> config.claudeReasoningEffort
-                                else -> ""
-                            }
-                            val promptPricePer1M = when (provider.id) {
-                                "deepseek" -> config.deepseekPromptPricePer1M
-                                "openai-compatible" -> config.openaiPromptPricePer1M
-                                "claude" -> config.claudePromptPricePer1M
-                                else -> 0.0
-                            }
-                            val completionPricePer1M = when (provider.id) {
-                                "deepseek" -> config.deepseekCompletionPricePer1M
-                                "openai-compatible" -> config.openaiCompletionPricePer1M
-                                "claude" -> config.claudeCompletionPricePer1M
-                                else -> 0.0
-                            }
-                            val balanceUsd = when (provider.id) {
-                                "deepseek" -> config.deepseekBalanceUsd
-                                "openai-compatible" -> config.openaiBalanceUsd
-                                "claude" -> config.claudeBalanceUsd
-                                else -> 0.0
-                            }
-                            val balanceApiPath = config.getBalanceApiPath(provider.id)
-                            val balanceCurrency = config.getBalanceCurrency(provider.id)
-                            val balanceSyncedAt = config.getBalanceSyncedAt(provider.id)
-                            val balanceSyncState = balanceSyncStates[provider.id] ?: BalanceSyncUiState()
-                            val canFetchBalance = supportsBalanceFetch(provider.id)
-
-                            // API Key
-                            OutlinedTextField(
-                                value = apiKey,
-                                onValueChange = { key ->
-                                    onConfigChanged(when (provider.id) {
-                                        "deepseek" -> config.copy(deepseekApiKey = key)
-                                        "openai-compatible" -> config.copy(openaiApiKey = key)
-                                        "claude" -> config.copy(claudeApiKey = key)
-                                        else -> config
-                                    })
-                                },
-                                label = { Text("API Key") },
-                                modifier = Modifier.fillMaxWidth(),
-                                visualTransformation = if (showApiKey) VisualTransformation.None
-                                    else PasswordVisualTransformation(),
-                                trailingIcon = {
-                                    TextButton(onClick = { showApiKey = !showApiKey }) {
-                                        Text(if (showApiKey) "隐藏" else "显示", fontSize = 12.sp)
-                                    }
-                                },
-                                singleLine = true,
-                                textStyle = MaterialTheme.typography.bodySmall,
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                                    unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                                    cursorColor = MaterialTheme.colorScheme.primary
-                                )
-                            )
-
-                            // Base URL（中转站地址）
-                            OutlinedTextField(
-                                value = baseUrl,
-                                onValueChange = { url ->
-                                    onConfigChanged(when (provider.id) {
-                                        "deepseek" -> config.copy(deepseekBaseUrl = url)
-                                        "openai-compatible" -> config.copy(openaiBaseUrl = url)
-                                        "claude" -> config.copy(claudeBaseUrl = url)
-                                        else -> config
-                                    })
-                                },
-                                label = { Text("Base URL（中转站地址）") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                textStyle = MaterialTheme.typography.bodySmall,
-                                placeholder = { Text(provider.defaultBaseUrl, fontSize = 12.sp) },
-                                supportingText = { Text("留空 = 官方 API", fontSize = 10.sp) },
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                                    unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                                    cursorColor = MaterialTheme.colorScheme.primary
-                                )
-                            )
-
-                            if (provider.id == "deepseek") {
-                                Text(
-                                    text = "模型档位",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    FilterChip(
-                                        selected = config.deepseekModelPreset == "flash",
-                                        onClick = {
-                                            onConfigChanged(config.copy(deepseekModelPreset = "flash"))
-                                        },
-                                        label = { Text("Flash", fontSize = 12.sp) }
-                                    )
-                                    FilterChip(
-                                        selected = config.deepseekModelPreset == "pro",
-                                        onClick = {
-                                            onConfigChanged(config.copy(deepseekModelPreset = "pro"))
-                                        },
-                                        label = { Text("Pro", fontSize = 12.sp) }
-                                    )
-                                    FilterChip(
-                                        selected = config.deepseekModelPreset == "custom",
-                                        onClick = {
-                                            onConfigChanged(config.copy(deepseekModelPreset = "custom"))
-                                        },
-                                        label = { Text("自定义", fontSize = 12.sp) }
-                                    )
-                                }
-                                Text(
-                                    text = "当前实际模型: $resolvedModel",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 11.sp
-                                )
-                            }
-
-                            // 模型名
-                            OutlinedTextField(
-                                value = model,
-                                onValueChange = { m ->
-                                    onConfigChanged(when (provider.id) {
-                                        "deepseek" -> config.copy(deepseekModel = m)
-                                        "openai-compatible" -> config.copy(openaiModel = m)
-                                        "claude" -> config.copy(claudeModel = m)
-                                        else -> config
-                                    })
-                                },
-                                label = { Text("模型名称") },
-                                modifier = Modifier.fillMaxWidth(),
-                                enabled = provider.id != "deepseek" || config.deepseekModelPreset == "custom",
-                                singleLine = true,
-                                textStyle = MaterialTheme.typography.bodySmall,
-                                placeholder = { Text(provider.defaultModel, fontSize = 12.sp) },
-                                supportingText = {
-                                    if (provider.id == "deepseek" && config.deepseekModelPreset != "custom") {
-                                        Text("切换到“自定义”后可手动输入模型 ID", fontSize = 10.sp)
-                                    }
-                                },
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                                    unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                                    cursorColor = MaterialTheme.colorScheme.primary
-                                )
-                            )
-
-                            if (provider.supportsReasoning && provider.supportedReasoningEfforts.isNotEmpty()) {
-                                Text(
-                                    text = "推理深度",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    provider.supportedReasoningEfforts.forEach { effort ->
-                                        FilterChip(
-                                            selected = reasoningEffort == effort,
-                                            onClick = {
-                                                onConfigChanged(
-                                                    when (provider.id) {
-                                                        "deepseek" -> config.copy(deepseekReasoningEffort = effort)
-                                                        "openai-compatible" -> config.copy(openaiReasoningEffort = effort)
-                                                        "claude" -> config.copy(claudeReasoningEffort = effort)
-                                                        else -> config
-                                                    }
-                                                )
-                                            },
-                                            label = { Text(effort, fontSize = 12.sp) }
-                                        )
-                                    }
-                                }
-                                Text(
-                                    text = provider.buildReasoningHint(resolvedModel, reasoningEffort)
-                                        ?: "当前请求: model=$resolvedModel, effort=$reasoningEffort",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 11.sp
-                                )
-                            }
-
-                            Text(
-                                text = "价格与预算",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            OutlinedTextField(
-                                value = formatDoubleInput(promptPricePer1M),
-                                onValueChange = { value ->
-                                    parseDoubleInput(value)?.let { parsed ->
-                                        onConfigChanged(
-                                            when (provider.id) {
-                                                "deepseek" -> config.copy(deepseekPromptPricePer1M = parsed)
-                                                "openai-compatible" -> config.copy(openaiPromptPricePer1M = parsed)
-                                                "claude" -> config.copy(claudePromptPricePer1M = parsed)
-                                                else -> config
-                                            }
-                                        )
-                                    }
-                                },
-                                label = { Text("输入价格（USD / 1M tokens）") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                textStyle = MaterialTheme.typography.bodySmall
-                            )
-                            OutlinedTextField(
-                                value = formatDoubleInput(completionPricePer1M),
-                                onValueChange = { value ->
-                                    parseDoubleInput(value)?.let { parsed ->
-                                        onConfigChanged(
-                                            when (provider.id) {
-                                                "deepseek" -> config.copy(deepseekCompletionPricePer1M = parsed)
-                                                "openai-compatible" -> config.copy(openaiCompletionPricePer1M = parsed)
-                                                "claude" -> config.copy(claudeCompletionPricePer1M = parsed)
-                                                else -> config
-                                            }
-                                        )
-                                    }
-                                },
-                                label = { Text("输出价格（USD / 1M tokens）") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                textStyle = MaterialTheme.typography.bodySmall
-                            )
-                            if (provider.id == "openai-compatible" || provider.id == "claude") {
-                                OutlinedTextField(
-                                    value = balanceApiPath,
-                                    onValueChange = { path ->
-                                        onConfigChanged(
-                                            when (provider.id) {
-                                                "openai-compatible" -> config.copy(openaiBalanceApiPath = path)
-                                                "claude" -> config.copy(claudeBalanceApiPath = path)
-                                                else -> config
-                                            }
-                                        )
-                                    },
-                                    label = { Text("余额接口路径") },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    singleLine = true,
-                                    textStyle = MaterialTheme.typography.bodySmall,
-                                    placeholder = {
-                                        Text(
-                                            "/user/balance 或 https://example.com/account/balance",
-                                            fontSize = 12.sp
-                                        )
-                                    },
-                                    supportingText = {
-                                        Text(
-                                            "可填相对路径或完整 URL。适用于支持兼容余额接口的中转站；留空时仍使用本地预算。",
-                                            fontSize = 10.sp
-                                        )
-                                    },
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                                        unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                                        cursorColor = MaterialTheme.colorScheme.primary
-                                    )
-                                )
-                            }
-                            if (canFetchBalance) {
-                                BalanceSyncCard(
-                                    balanceUsd = balanceUsd,
-                                    currency = balanceCurrency,
-                                    syncedAt = balanceSyncedAt,
-                                    syncState = balanceSyncState,
-                                    onRefresh = { onRefreshProviderBalance(provider.id) }
-                                )
-                            } else {
-                                OutlinedTextField(
-                                    value = formatDoubleInput(balanceUsd),
-                                    onValueChange = { value ->
-                                        parseDoubleInput(value)?.let { parsed ->
-                                            onConfigChanged(
-                                                when (provider.id) {
-                                                    "deepseek" -> config.copy(deepseekBalanceUsd = parsed)
-                                                    "openai-compatible" -> config.copy(openaiBalanceUsd = parsed)
-                                                    "claude" -> config.copy(claudeBalanceUsd = parsed)
-                                                    else -> config
-                                                }
-                                            )
-                                        }
-                                    },
-                                    label = { Text("本地预算余额（估算，USD）") },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    singleLine = true,
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                    textStyle = MaterialTheme.typography.bodySmall,
-                                    supportingText = {
-                                        Text(
-                                            if (provider.id == "deepseek") {
-                                                "该 Provider 当前没有统一余额接口，先用本地预算做剩余额度估算。"
-                                            } else {
-                                                "未配置余额接口路径时，先用本地预算做剩余额度估算。"
-                                            },
-                                            fontSize = 10.sp
-                                        )
-                                    }
-                                )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Text(
-            text = "GitHub 联动",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onBackground
-        )
+            Text(
+                text = "GitHub 联动",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground
+            )
 
         Surface(
             shape = RoundedCornerShape(12.dp),
@@ -1197,6 +793,443 @@ fun SettingsScreen(
         )
 
         Spacer(modifier = Modifier.height(32.dp))
+        }
+    }
+}
+
+@Composable
+private fun ProviderSettingsSection(
+    providers: List<ModelProvider>,
+    config: ProviderConfig,
+    showApiKey: Boolean,
+    onToggleShowApiKey: () -> Unit,
+    providerSectionExpanded: Boolean,
+    onProviderSectionExpandedChange: (Boolean) -> Unit,
+    balanceSyncStates: Map<String, BalanceSyncUiState>,
+    onConfigChanged: (ProviderConfig) -> Unit,
+    onRefreshProviderBalance: (String) -> Unit,
+    supportsBalanceFetch: (String) -> Boolean
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onProviderSectionExpandedChange(!providerSectionExpanded) },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "AI 模型提供商",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Text(
+                        text = "展开后可切换 Provider、模型、推理深度和预算配置。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Icon(
+                    imageVector = if (providerSectionExpanded) {
+                        Icons.Outlined.KeyboardArrowUp
+                    } else {
+                        Icons.Outlined.KeyboardArrowDown
+                    },
+                    contentDescription = if (providerSectionExpanded) "收起模型供应商" else "展开模型供应商",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            AnimatedVisibility(visible = providerSectionExpanded) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    providers.forEach { provider ->
+                        val isActive = config.activeProviderId == provider.id
+                        val apiKey = when (provider.id) {
+                            "deepseek" -> config.deepseekApiKey
+                            "openai-compatible" -> config.openaiApiKey
+                            "claude" -> config.claudeApiKey
+                            else -> ""
+                        }
+                        val baseUrl = when (provider.id) {
+                            "deepseek" -> config.deepseekBaseUrl
+                            "openai-compatible" -> config.openaiBaseUrl
+                            "claude" -> config.claudeBaseUrl
+                            else -> ""
+                        }
+                        val model = when (provider.id) {
+                            "deepseek" -> config.deepseekModel
+                            "openai-compatible" -> config.openaiModel
+                            "claude" -> config.claudeModel
+                            else -> ""
+                        }
+                        val resolvedModel = config.getResolvedModel(provider.id)
+                        val reasoningEffort = when (provider.id) {
+                            "deepseek" -> config.deepseekReasoningEffort
+                            "openai-compatible" -> config.openaiReasoningEffort
+                            "claude" -> config.claudeReasoningEffort
+                            else -> ""
+                        }
+                        val promptPricePer1M = when (provider.id) {
+                            "deepseek" -> config.deepseekPromptPricePer1M
+                            "openai-compatible" -> config.openaiPromptPricePer1M
+                            "claude" -> config.claudePromptPricePer1M
+                            else -> 0.0
+                        }
+                        val completionPricePer1M = when (provider.id) {
+                            "deepseek" -> config.deepseekCompletionPricePer1M
+                            "openai-compatible" -> config.openaiCompletionPricePer1M
+                            "claude" -> config.claudeCompletionPricePer1M
+                            else -> 0.0
+                        }
+                        val balanceUsd = when (provider.id) {
+                            "deepseek" -> config.deepseekBalanceUsd
+                            "openai-compatible" -> config.openaiBalanceUsd
+                            "claude" -> config.claudeBalanceUsd
+                            else -> 0.0
+                        }
+                        val balanceApiPath = config.getBalanceApiPath(provider.id)
+                        val balanceCurrency = config.getBalanceCurrency(provider.id)
+                        val balanceSyncedAt = config.getBalanceSyncedAt(provider.id)
+                        val balanceSyncState = balanceSyncStates[provider.id] ?: BalanceSyncUiState()
+                        val canFetchBalance = supportsBalanceFetch(provider.id)
+
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isActive) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                            } else {
+                                MaterialTheme.colorScheme.surface
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onConfigChanged(config.copy(activeProviderId = provider.id)) }
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    RadioButton(
+                                        selected = isActive,
+                                        onClick = { onConfigChanged(config.copy(activeProviderId = provider.id)) },
+                                        colors = RadioButtonDefaults.colors(
+                                            selectedColor = MaterialTheme.colorScheme.primary
+                                        )
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Column {
+                                        Text(
+                                            text = provider.name,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = "默认模型: ${provider.defaultModel}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
+
+                                AnimatedVisibility(visible = isActive) {
+                                    Column(
+                                        modifier = Modifier.padding(start = 44.dp, top = 8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        OutlinedTextField(
+                                            value = apiKey,
+                                            onValueChange = { key ->
+                                                onConfigChanged(
+                                                    when (provider.id) {
+                                                        "deepseek" -> config.copy(deepseekApiKey = key)
+                                                        "openai-compatible" -> config.copy(openaiApiKey = key)
+                                                        "claude" -> config.copy(claudeApiKey = key)
+                                                        else -> config
+                                                    }
+                                                )
+                                            },
+                                            label = { Text("API Key") },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            visualTransformation = if (showApiKey) {
+                                                VisualTransformation.None
+                                            } else {
+                                                PasswordVisualTransformation()
+                                            },
+                                            trailingIcon = {
+                                                TextButton(onClick = onToggleShowApiKey) {
+                                                    Text(if (showApiKey) "隐藏" else "显示", fontSize = 12.sp)
+                                                }
+                                            },
+                                            singleLine = true,
+                                            textStyle = MaterialTheme.typography.bodySmall,
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                                                cursorColor = MaterialTheme.colorScheme.primary
+                                            )
+                                        )
+
+                                        OutlinedTextField(
+                                            value = baseUrl,
+                                            onValueChange = { url ->
+                                                onConfigChanged(
+                                                    when (provider.id) {
+                                                        "deepseek" -> config.copy(deepseekBaseUrl = url)
+                                                        "openai-compatible" -> config.copy(openaiBaseUrl = url)
+                                                        "claude" -> config.copy(claudeBaseUrl = url)
+                                                        else -> config
+                                                    }
+                                                )
+                                            },
+                                            label = { Text("Base URL（中转站地址）") },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            singleLine = true,
+                                            textStyle = MaterialTheme.typography.bodySmall,
+                                            placeholder = { Text(provider.defaultBaseUrl, fontSize = 12.sp) },
+                                            supportingText = { Text("留空 = 官方 API", fontSize = 10.sp) },
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                                                cursorColor = MaterialTheme.colorScheme.primary
+                                            )
+                                        )
+
+                                        if (provider.id == "deepseek") {
+                                            Text(
+                                                text = "模型档位",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                FilterChip(
+                                                    selected = config.deepseekModelPreset == "flash",
+                                                    onClick = { onConfigChanged(config.copy(deepseekModelPreset = "flash")) },
+                                                    label = { Text("Flash", fontSize = 12.sp) }
+                                                )
+                                                FilterChip(
+                                                    selected = config.deepseekModelPreset == "pro",
+                                                    onClick = { onConfigChanged(config.copy(deepseekModelPreset = "pro")) },
+                                                    label = { Text("Pro", fontSize = 12.sp) }
+                                                )
+                                                FilterChip(
+                                                    selected = config.deepseekModelPreset == "custom",
+                                                    onClick = { onConfigChanged(config.copy(deepseekModelPreset = "custom")) },
+                                                    label = { Text("自定义", fontSize = 12.sp) }
+                                                )
+                                            }
+                                            Text(
+                                                text = "当前实际模型: $resolvedModel",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+
+                                        OutlinedTextField(
+                                            value = model,
+                                            onValueChange = { m ->
+                                                onConfigChanged(
+                                                    when (provider.id) {
+                                                        "deepseek" -> config.copy(deepseekModel = m)
+                                                        "openai-compatible" -> config.copy(openaiModel = m)
+                                                        "claude" -> config.copy(claudeModel = m)
+                                                        else -> config
+                                                    }
+                                                )
+                                            },
+                                            label = { Text("模型名称") },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            enabled = provider.id != "deepseek" || config.deepseekModelPreset == "custom",
+                                            singleLine = true,
+                                            textStyle = MaterialTheme.typography.bodySmall,
+                                            placeholder = { Text(provider.defaultModel, fontSize = 12.sp) },
+                                            supportingText = {
+                                                if (provider.id == "deepseek" && config.deepseekModelPreset != "custom") {
+                                                    Text("切换到“自定义”后可手动输入模型 ID", fontSize = 10.sp)
+                                                }
+                                            },
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                                                cursorColor = MaterialTheme.colorScheme.primary
+                                            )
+                                        )
+
+                                        if (provider.supportsReasoning && provider.supportedReasoningEfforts.isNotEmpty()) {
+                                            Text(
+                                                text = "推理深度",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                provider.supportedReasoningEfforts.forEach { effort ->
+                                                    FilterChip(
+                                                        selected = reasoningEffort == effort,
+                                                        onClick = {
+                                                            onConfigChanged(
+                                                                when (provider.id) {
+                                                                    "deepseek" -> config.copy(deepseekReasoningEffort = effort)
+                                                                    "openai-compatible" -> config.copy(openaiReasoningEffort = effort)
+                                                                    "claude" -> config.copy(claudeReasoningEffort = effort)
+                                                                    else -> config
+                                                                }
+                                                            )
+                                                        },
+                                                        label = { Text(effort, fontSize = 12.sp) }
+                                                    )
+                                                }
+                                            }
+                                            Text(
+                                                text = provider.buildReasoningHint(resolvedModel, reasoningEffort)
+                                                    ?: "当前请求: model=$resolvedModel, effort=$reasoningEffort",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+
+                                        Text(
+                                            text = "价格与预算",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        OutlinedTextField(
+                                            value = formatDoubleInput(promptPricePer1M),
+                                            onValueChange = { value ->
+                                                parseDoubleInput(value)?.let { parsed ->
+                                                    onConfigChanged(
+                                                        when (provider.id) {
+                                                            "deepseek" -> config.copy(deepseekPromptPricePer1M = parsed)
+                                                            "openai-compatible" -> config.copy(openaiPromptPricePer1M = parsed)
+                                                            "claude" -> config.copy(claudePromptPricePer1M = parsed)
+                                                            else -> config
+                                                        }
+                                                    )
+                                                }
+                                            },
+                                            label = { Text("输入价格（USD / 1M tokens）") },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            singleLine = true,
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                            textStyle = MaterialTheme.typography.bodySmall
+                                        )
+                                        OutlinedTextField(
+                                            value = formatDoubleInput(completionPricePer1M),
+                                            onValueChange = { value ->
+                                                parseDoubleInput(value)?.let { parsed ->
+                                                    onConfigChanged(
+                                                        when (provider.id) {
+                                                            "deepseek" -> config.copy(deepseekCompletionPricePer1M = parsed)
+                                                            "openai-compatible" -> config.copy(openaiCompletionPricePer1M = parsed)
+                                                            "claude" -> config.copy(claudeCompletionPricePer1M = parsed)
+                                                            else -> config
+                                                        }
+                                                    )
+                                                }
+                                            },
+                                            label = { Text("输出价格（USD / 1M tokens）") },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            singleLine = true,
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                            textStyle = MaterialTheme.typography.bodySmall
+                                        )
+
+                                        if (provider.id == "openai-compatible" || provider.id == "claude") {
+                                            OutlinedTextField(
+                                                value = balanceApiPath,
+                                                onValueChange = { path ->
+                                                    onConfigChanged(
+                                                        when (provider.id) {
+                                                            "openai-compatible" -> config.copy(openaiBalanceApiPath = path)
+                                                            "claude" -> config.copy(claudeBalanceApiPath = path)
+                                                            else -> config
+                                                        }
+                                                    )
+                                                },
+                                                label = { Text("余额接口路径") },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                singleLine = true,
+                                                textStyle = MaterialTheme.typography.bodySmall,
+                                                placeholder = {
+                                                    Text(
+                                                        "/user/balance 或 https://example.com/account/balance",
+                                                        fontSize = 12.sp
+                                                    )
+                                                },
+                                                supportingText = {
+                                                    Text(
+                                                        "可填相对路径或完整 URL。适用于支持兼容余额接口的中转站；留空时仍使用本地预算。",
+                                                        fontSize = 10.sp
+                                                    )
+                                                },
+                                                colors = OutlinedTextFieldDefaults.colors(
+                                                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                                    unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                                                    cursorColor = MaterialTheme.colorScheme.primary
+                                                )
+                                            )
+                                        }
+
+                                        if (canFetchBalance) {
+                                            BalanceSyncCard(
+                                                balanceUsd = balanceUsd,
+                                                currency = balanceCurrency,
+                                                syncedAt = balanceSyncedAt,
+                                                syncState = balanceSyncState,
+                                                onRefresh = { onRefreshProviderBalance(provider.id) }
+                                            )
+                                        } else {
+                                            OutlinedTextField(
+                                                value = formatDoubleInput(balanceUsd),
+                                                onValueChange = { value ->
+                                                    parseDoubleInput(value)?.let { parsed ->
+                                                        onConfigChanged(
+                                                            when (provider.id) {
+                                                                "deepseek" -> config.copy(deepseekBalanceUsd = parsed)
+                                                                "openai-compatible" -> config.copy(openaiBalanceUsd = parsed)
+                                                                "claude" -> config.copy(claudeBalanceUsd = parsed)
+                                                                else -> config
+                                                            }
+                                                        )
+                                                    }
+                                                },
+                                                label = { Text("本地预算余额（估算，USD）") },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                singleLine = true,
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                textStyle = MaterialTheme.typography.bodySmall,
+                                                supportingText = {
+                                                    Text(
+                                                        if (provider.id == "deepseek") {
+                                                            "该 Provider 当前没有统一余额接口，先用本地预算做剩余额度估算。"
+                                                        } else {
+                                                            "未配置余额接口路径时，先用本地预算做剩余额度估算。"
+                                                        },
+                                                        fontSize = 10.sp
+                                                    )
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
