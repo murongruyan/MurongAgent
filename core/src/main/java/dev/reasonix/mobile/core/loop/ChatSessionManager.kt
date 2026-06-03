@@ -521,6 +521,7 @@ class ChatSessionManager(
     private companion object {
         val SUBAGENT_TERMINAL_STATUSES = setOf("completed", "failed", "cancelled", "rejected")
         val SUBAGENT_ACTIVE_STATUSES = setOf("pending_approval", "queued", "running", "summarizing", "cancelling")
+        val draftCompatJson = Json { ignoreUnknownKeys = true }
         val AUTO_COMPLEXITY_KEYWORDS = listOf(
             "自动", "下载", "接入", "集成", "重构", "架构", "规划", "计划", "迁移",
             "批量", "排查", "调试", "分析", "审查", "搜索", "联网", "修复", "实现",
@@ -5013,7 +5014,7 @@ class ChatSessionManager(
     private fun parseJsonDraftRootCompat(raw: String): JsonElement? {
         val candidate = raw.trim()
         if (candidate.isBlank()) return null
-        return runCatching { Json { ignoreUnknownKeys = true }.parseToJsonElement(candidate) }.getOrNull()
+        return runCatching { draftCompatJson.parseToJsonElement(candidate) }.getOrNull()
     }
 
     private fun unwrapDraftEntriesCompat(root: JsonElement, vararg collectionKeys: String): List<JsonElement> {

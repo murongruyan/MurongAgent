@@ -11,6 +11,9 @@ import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
 class WebFetchTool : Tool {
+    private companion object {
+        val argsJson = Json { ignoreUnknownKeys = true }
+    }
 
     override val name = "web_fetch"
     override val description = "抓取单个网页并提取标题、摘要和正文文本，适合在搜索后继续读取网页内容。"
@@ -37,7 +40,7 @@ class WebFetchTool : Tool {
 
     override suspend fun execute(args: String): String {
         return try {
-            val obj = Json { ignoreUnknownKeys = true }.parseToJsonElement(args).jsonObject
+            val obj = argsJson.parseToJsonElement(args).jsonObject
             val rawUrl = obj["url"]?.jsonPrimitive?.content?.trim()
                 ?: return "Error: 'url' parameter required"
             val maxChars = (obj["maxChars"]?.jsonPrimitive?.intOrNull ?: 4000)
