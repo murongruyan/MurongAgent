@@ -769,6 +769,7 @@ class ChatSessionManager(
         "subagent:cap:file_write_code" -> "代码文件写入"
         "subagent:cap:code_edit_apply" -> "代码编辑"
         "subagent:cap:shell_exec" -> "Shell 执行"
+        "mcp:github:write" -> "GitHub 写操作"
         else -> null
     }
 
@@ -787,6 +788,11 @@ class ChatSessionManager(
             label = "可自动继承",
             detail = "代码编辑类授权在同项目下可按保守边界自动继承。",
             autoInheritable = true
+        )
+        "mcp:github:write" -> ApprovalScopePolicyUi(
+            label = "需手动导入",
+            detail = "GitHub 的创建、推送、合并、发评论等远端写操作默认需要单独确认，不自动继承。",
+            autoInheritable = false
         )
         "subagent:cap:shell_exec" -> ApprovalScopePolicyUi(
             label = "必须重审",
@@ -5664,14 +5670,26 @@ class ChatSessionManager(
             .filter { lastSessionConfig.isMcpToolEnabled(it.name) }
             .sortedBy { it.name }
         if (availableTools.isEmpty()) return null
+        val githubTools = availableTools.filter(::isGitHubMcpTool)
         return buildString {
             appendLine("Enabled MCP Tools:")
             appendLine("These MCP tools are currently available to the main agent, and subagents can inherit matching tools when a Skill's Allowed Tools list references them.")
             appendLine("Prefer exact tool names when delegating Skill-based subagent work.")
+            if (githubTools.isNotEmpty()) {
+                appendLine()
+                appendLine("GitHub MCP Guidance:")
+                appendLine("- GitHub MCP tools are available in this session. Prefer them for repository, issue, pull request and remote file operations instead of falling back to shell git.")
+                appendLine("- GitHub write actions such as create/update/push/merge/comment require explicit user approval before execution.")
+            }
             appendLine()
             availableTools.forEach { tool ->
                 append("- ")
                 append(tool.name)
+                mcpToolCapabilityHint(tool)?.let {
+                    append(" [")
+                    append(it)
+                    append("]")
+                }
                 val description = tool.description
                     .substringAfter("] ", tool.description)
                     .trim()
@@ -5683,6 +5701,49 @@ class ChatSessionManager(
                 appendLine()
             }
         }.trim()
+    }
+
+    private fun isGitHubMcpTool(tool: Tool): Boolean {
+        val normalizedName = tool.name.lowercase(Locale.ROOT)
+        val normalizedDescription = tool.description.lowercase(Locale.ROOT)
+        return normalizedName.contains("github") || normalizedDescription.contains("github")
+    }
+
+    private fun mcpToolCapabilityHint(tool: Tool): String? {
+        if (!isGitHubMcpTool(tool)) return null
+        val normalizedName = tool.name.removePrefix("mcp_").lowercase(Locale.ROOT)
+        return if (isGitHubWriteToolName(normalizedName)) {
+            "GitHub 写操作，需审批"
+        } else {
+            "GitHub 只读"
+        }
+    }
+
+    private fun isGitHubWriteToolName(toolName: String): Boolean {
+        val writePrefixes = listOf(
+            "create_",
+            "update_",
+            "delete_",
+            "merge_",
+            "push_",
+            "fork_",
+            "add_"
+        )
+        if (writePrefixes.any { toolName.startsWith(it) }) return true
+        return toolName in setOf(
+            "create_branch",
+            "create_repository",
+            "create_issue",
+            "create_pull_request",
+            "create_pull_request_review",
+            "create_or_update_file",
+            "push_files",
+            "merge_pull_request",
+            "update_pull_request_branch",
+            "update_issue",
+            "add_issue_comment",
+            "fork_repository"
+        )
     }
 
     private fun buildStableAuxiliarySystemMessages(

@@ -1,13 +1,16 @@
 package dev.reasonix.mobile.core.mcp
 
 import android.content.Context
+import dev.reasonix.mobile.core.tool.ApprovalRiskLevel
 import dev.reasonix.mobile.core.tool.Tool
+import dev.reasonix.mobile.core.tool.ToolApprovalRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.builtins.ListSerializer
 import java.io.File
+import java.util.Locale
 
 /**
  * MCP 注册中心——管理所有 MCP 服务器连接和工具
@@ -165,7 +168,100 @@ class McpToolAdapter(
         get() = "[MCP/${toolDef.serverName}] ${toolDef.description}"
     override val parameters: Map<String, Any> get() = toolDef.inputSchema
 
+    override fun buildApprovalRequest(args: String): ToolApprovalRequest? {
+        val approvalScopeTokens = buildMcpApprovalScopeTokens(toolDef)
+        if (approvalScopeTokens.isEmpty()) return null
+        return ToolApprovalRequest(
+            toolName = name,
+            summary = "执行 GitHub 远端写操作",
+            detail = buildGitHubApprovalDetail(toolDef, args),
+            riskLevel = ApprovalRiskLevel.HIGH,
+            rawArgs = args,
+            approvalScopeTokens = approvalScopeTokens
+        )
+    }
+
     override suspend fun execute(args: String): String {
         return registry.callTool(toolDef.name, args)
     }
+}
+
+private fun buildMcpApprovalScopeTokens(toolDef: McpToolDef): Set<String> {
+    if (!toolDef.isGitHubTool()) return emptySet()
+    return if (toolDef.isGitHubWriteTool()) setOf("mcp:github:write") else emptySet()
+}
+
+private fun buildGitHubApprovalDetail(toolDef: McpToolDef, args: String): String {
+    val target = summarizeGitHubApprovalTarget(args)
+    return buildString {
+        append("MCP/GitHub 工具: ")
+        append(toolDef.name)
+        target?.let {
+            append("\n目标: ")
+            append(it)
+        }
+        append("\n参数: ")
+        append(args)
+    }
+}
+
+private fun summarizeGitHubApprovalTarget(args: String): String? {
+    val obj = runCatching { Json.parseToJsonElement(args).jsonObject }.getOrNull() ?: return null
+    val parts = mutableListOf<String>()
+    obj["owner"]?.jsonPrimitive?.contentOrNull
+        ?.takeIf { it.isNotBlank() }
+        ?.let { owner ->
+            val repo = obj["repo"]?.jsonPrimitive?.contentOrNull
+                ?.takeIf { it.isNotBlank() }
+            parts += if (repo != null) "$owner/$repo" else owner
+        }
+    obj["path"]?.jsonPrimitive?.contentOrNull
+        ?.takeIf { it.isNotBlank() }
+        ?.let { parts += "path=$it" }
+    obj["branch"]?.jsonPrimitive?.contentOrNull
+        ?.takeIf { it.isNotBlank() }
+        ?.let { parts += "branch=$it" }
+    obj["pull_number"]?.jsonPrimitive?.contentOrNull
+        ?.takeIf { it.isNotBlank() }
+        ?.let { parts += "PR #$it" }
+    obj["issue_number"]?.jsonPrimitive?.contentOrNull
+        ?.takeIf { it.isNotBlank() }
+        ?.let { parts += "Issue #$it" }
+    obj["name"]?.jsonPrimitive?.contentOrNull
+        ?.takeIf { it.isNotBlank() }
+        ?.let { parts += "name=$it" }
+    return parts.distinct().takeIf { it.isNotEmpty() }?.joinToString(" · ")
+}
+
+private fun McpToolDef.isGitHubTool(): Boolean {
+    return serverName.contains("github", ignoreCase = true) ||
+        name.contains("github", ignoreCase = true)
+}
+
+private fun McpToolDef.isGitHubWriteTool(): Boolean {
+    val normalized = name.lowercase(Locale.ROOT)
+    val writePrefixes = listOf(
+        "create_",
+        "update_",
+        "delete_",
+        "merge_",
+        "push_",
+        "fork_",
+        "add_"
+    )
+    if (writePrefixes.any { normalized.startsWith(it) }) return true
+    return normalized in setOf(
+        "create_branch",
+        "create_repository",
+        "create_issue",
+        "create_pull_request",
+        "create_pull_request_review",
+        "create_or_update_file",
+        "push_files",
+        "merge_pull_request",
+        "update_pull_request_branch",
+        "update_issue",
+        "add_issue_comment",
+        "fork_repository"
+    )
 }
