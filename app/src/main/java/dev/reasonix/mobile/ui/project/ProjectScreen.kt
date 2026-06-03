@@ -193,7 +193,7 @@ fun ProjectScreen(
 ) {
     val workspaceRoot = remember(currentProjectPath) {
         currentProjectPath
-            ?.takeIf { File(it).isDirectory }
+            ?.takeIf { File(it).isDirectory || RootFile.dirExists(it) }
             ?.let(::File)
     }
     val detectedRepos = remember(workspaceRoot?.absolutePath) {
@@ -263,6 +263,48 @@ fun ProjectScreen(
         contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
+            ReasonixGlassSurface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                shape = RoundedCornerShape(24.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "项目工作区",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = mutedTextColor
+                        )
+                        Text(
+                            text = currentProjectPath?.takeIf { it.isNotBlank() } ?: "还没选择项目文件夹",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (detectedRepos.isNotEmpty()) {
+                            val gitRepoCount = detectedRepos.count { it.hasGitMetadata }
+                            Text(
+                                text = "已识别 ${detectedRepos.size} 个项目根目录，其中 $gitRepoCount 个是 Git 仓库",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                    OutlinedButton(onClick = onNewTask) {
+                        Text("选择文件夹")
+                    }
+                }
+            }
             if (!(selectedTab == ProjectPrimaryTab.EDITOR && editorPageActive)) {
                 PrimaryScrollableTabRow(
                     selectedTabIndex = selectedTab.ordinal,
@@ -366,7 +408,7 @@ private fun ProjectEditorSection(
     val editorBackgroundColor = MaterialTheme.colorScheme.background.copy(alpha = 0.96f)
     val projectRoot = remember(currentProjectPath) {
         currentProjectPath
-            ?.takeIf { File(it).isDirectory }
+            ?.takeIf { File(it).isDirectory || RootFile.dirExists(it) }
             ?.let(::File)
     }
     val detectedRepoRoots = remember(detectedRepos) { detectedRepos.map { it.rootPath }.toSet() }
@@ -945,7 +987,9 @@ private fun ProjectEditorSection(
             title = "未选择可编辑项目",
             message = currentProjectPath?.let {
                 "当前项目路径不是可访问的文件夹：$it"
-            } ?: "先选择一个项目文件夹，项目页才会显示文件树和编辑器。"
+            } ?: "先选择一个项目文件夹，项目页才会显示文件树和编辑器。",
+            actionLabel = "选择项目文件夹",
+            onAction = onNewTask
         )
         return
     }
@@ -1079,7 +1123,11 @@ private fun ProjectEditorSection(
                                 onClick = { onSelectRepoRoot(repo.rootPath) },
                                 label = {
                                     Text(
-                                        if (repo.isWorkspaceRoot) "${repo.displayName}（根）" else repo.displayName,
+                                        when {
+                                            repo.isWorkspaceRoot -> "${repo.displayName}（根）"
+                                            repo.hasGitMetadata -> repo.displayName
+                                            else -> "${repo.displayName}（项目）"
+                                        },
                                         fontSize = 12.sp
                                     )
                                 }
@@ -1806,7 +1854,12 @@ private fun ProjectEditorSection(
 }
 
 @Composable
-private fun EmptyEditorState(title: String, message: String) {
+private fun EmptyEditorState(
+    title: String,
+    message: String,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null
+) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1823,6 +1876,11 @@ private fun EmptyEditorState(title: String, message: String) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (!actionLabel.isNullOrBlank() && onAction != null) {
+                OutlinedButton(onClick = onAction) {
+                    Text(actionLabel)
+                }
+            }
         }
     }
 }
@@ -2507,7 +2565,13 @@ private fun ProjectGitSection(
         if (detectedRepos.isEmpty()) return@LaunchedEffect
         val summaries = withContext(Dispatchers.IO) {
             detectedRepos.associate { repo ->
-                repo.rootPath to loadProjectGitStatus(repo.rootPath)
+                repo.rootPath to if (repo.hasGitMetadata) {
+                    loadProjectGitStatus(repo.rootPath)
+                } else {
+                    ProjectGitStatusUi.empty(repo.rootPath).copy(
+                        errorMessage = "当前目录是独立项目，但没有检测到 `.git` 仓库。"
+                    )
+                }
             }
         }
         repoStatusSummaries.putAll(summaries)
@@ -2540,6 +2604,7 @@ private fun ProjectGitSection(
             val chromeColor = rememberReasonixChromeColor()
             val mutedTextColor = rememberReasonixMutedTextColor()
             if (detectedRepos.isNotEmpty()) {
+                val gitRepoCount = detectedRepos.count { it.hasGitMetadata }
                 ProjectSectionCard(
                     shape = RoundedCornerShape(14.dp),
                     surfaceColorOverride = chromeColor.copy(alpha = 0.42f)
@@ -2548,11 +2613,11 @@ private fun ProjectGitSection(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "当前工作区识别到 ${detectedRepos.size} 个 Git 项目",
+                            text = "当前工作区识别到 ${detectedRepos.size} 个项目根目录，其中 $gitRepoCount 个是 Git 仓库",
                             style = MaterialTheme.typography.titleSmall
                         )
                         Text(
-                            text = "下面切换的是 Git/GitHub 操作目标仓库，不影响上面的整个文件夹浏览。",
+                            text = "下面优先列出自动识别到的项目根目录；只有带 `.git` 的目录才会启用完整 Git/GitHub 操作。",
                             style = MaterialTheme.typography.bodySmall,
                             color = mutedTextColor
                         )
@@ -2568,7 +2633,11 @@ private fun ProjectGitSection(
                                     onClick = { onSelectRepoRoot(repo.rootPath) },
                                     label = {
                                         Text(
-                                            if (repo.isWorkspaceRoot) "${repo.displayName}（根）" else repo.relativePath,
+                                            when {
+                                                repo.isWorkspaceRoot -> "${repo.displayName}（根）"
+                                                repo.hasGitMetadata -> repo.relativePath
+                                                else -> "${repo.relativePath}（项目）"
+                                            },
                                             fontSize = 12.sp
                                         )
                                     }
@@ -2598,6 +2667,8 @@ private fun ProjectGitSection(
                                     Text(
                                         text = if (summary.repo.isWorkspaceRoot) {
                                             "${summary.repo.displayName}（工作区根）"
+                                        } else if (!summary.repo.hasGitMetadata) {
+                                            "${summary.repo.relativePath}（独立项目）"
                                         } else {
                                             summary.repo.relativePath
                                         },
@@ -5987,7 +6058,8 @@ private data class ProjectDetectedRepoUi(
     val rootPath: String,
     val displayName: String,
     val relativePath: String,
-    val isWorkspaceRoot: Boolean
+    val isWorkspaceRoot: Boolean,
+    val hasGitMetadata: Boolean
 )
 
 private data class ProjectRepoStatusSummaryUi(
@@ -6019,35 +6091,59 @@ private fun flattenVisibleEntries(
 
 private fun detectProjectGitRepositories(root: File): List<ProjectDetectedRepoUi> {
     val rootPath = root.absolutePath
-    val results = linkedSetOf<String>()
-    if (File(root, ".git").exists() || RootFile.exists(File(root, ".git").absolutePath)) {
-        results += rootPath
-    }
-    root.walkTopDown()
-        .onEnter { dir ->
-            if (dir.absolutePath == rootPath) {
-                true
-            } else {
-                !shouldSkipSearchDir(dir, root) && dir.name != ".git"
+    val results = linkedMapOf<String, Boolean>()
+    val pendingDirs = ArrayDeque<File>().apply { add(root) }
+    while (pendingDirs.isNotEmpty()) {
+        val dir = pendingDirs.removeFirst()
+        val dirPath = dir.absolutePath
+        val children = runCatching { listProjectEntries(dir) }.getOrElse { emptyList() }
+        val hasGitMetadata = hasProjectGitMetadata(dir)
+        val isProjectRoot = hasGitMetadata || (dirPath != rootPath && hasProjectRootMarkers(children))
+        if (isProjectRoot) {
+            results[dirPath] = results[dirPath] == true || hasGitMetadata
+        }
+        if (isProjectRoot && dirPath != rootPath) {
+            continue
+        }
+        children.forEach { entry ->
+            if (!entry.isDirectory) return@forEach
+            val childDir = File(entry.absolutePath)
+            if (childDir.name == ".git") {
+                childDir.parentFile?.absolutePath?.let { repoRoot ->
+                    results[repoRoot] = true
+                }
+                return@forEach
             }
+            if (shouldSkipSearchDir(childDir, root)) return@forEach
+            pendingDirs += childDir
         }
-        .forEach { file ->
-            if (!file.isDirectory || file.name != ".git") return@forEach
-            file.parentFile?.absolutePath?.let(results::add)
-        }
+    }
     return results
-        .map { repoRoot ->
+        .map { (repoRoot, hasGitMetadata) ->
             ProjectDetectedRepoUi(
                 rootPath = repoRoot,
                 displayName = File(repoRoot).name.ifBlank { repoRoot },
                 relativePath = if (repoRoot == rootPath) "." else relativeProjectPath(rootPath, repoRoot),
-                isWorkspaceRoot = repoRoot == rootPath
+                isWorkspaceRoot = repoRoot == rootPath,
+                hasGitMetadata = hasGitMetadata
             )
         }
         .sortedWith(
-            compareBy<ProjectDetectedRepoUi> { !it.isWorkspaceRoot }
+            compareBy<ProjectDetectedRepoUi> { !it.hasGitMetadata }
+                .thenBy { !it.isWorkspaceRoot }
                 .thenBy { it.relativePath.lowercase(Locale.getDefault()) }
         )
+}
+
+private fun hasProjectGitMetadata(dir: File): Boolean {
+    val gitDir = File(dir, ".git")
+    return gitDir.exists() || RootFile.exists(gitDir.absolutePath)
+}
+
+private fun hasProjectRootMarkers(entries: List<ProjectTreeEntry>): Boolean {
+    if (entries.isEmpty()) return false
+    val names = entries.map { it.name.lowercase(Locale.getDefault()) }.toSet()
+    return PROJECT_ROOT_MARKERS.any(names::contains)
 }
 
 private fun listProjectEntries(dir: File): List<ProjectTreeEntry> {
@@ -7660,6 +7756,17 @@ private val PROJECT_GITHUB_HTTP = OkHttpClient.Builder()
     .writeTimeout(30, TimeUnit.SECONDS)
     .build()
 private val SEARCH_SKIPPED_DIR_NAMES = setOf(".git", ".gradle", "build", "node_modules", ".idea")
+private val PROJECT_ROOT_MARKERS = setOf(
+    "settings.gradle",
+    "settings.gradle.kts",
+    "build.gradle",
+    "build.gradle.kts",
+    "go.mod",
+    "package.json",
+    "cargo.toml",
+    "pyproject.toml",
+    "pom.xml"
+)
 private val PROJECT_EDITOR_SYMBOL_ACTIONS = listOf(
     ProjectQuickInsertAction(":", ":"),
     ProjectQuickInsertAction("()", "()"),
