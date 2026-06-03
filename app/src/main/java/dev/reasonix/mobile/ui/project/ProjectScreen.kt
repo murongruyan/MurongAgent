@@ -3250,8 +3250,8 @@ private fun ProjectGitSection(
                             }
                             var message = "已创建 GitHub 仓库 ${createResult.repo.owner}/${createResult.repo.repo}"
                             if (createGitHubRepoBindOriginFlag) {
-                                val cloneUrl = createResult.cloneUrl
-                                if (cloneUrl.isNullOrBlank()) {
+                                val remoteUrl = createResult.recommendedRemoteUrl
+                                if (remoteUrl.isNullOrBlank()) {
                                     isGitHubActionRunning = false
                                     feedbackMessage = "GitHub 已创建仓库，但没有返回可绑定的远端地址"
                                     return@launch
@@ -3259,12 +3259,12 @@ private fun ProjectGitSection(
                                 val bindResult = withContext(Dispatchers.IO) {
                                     bindProjectGitHubRemote(
                                         projectPath = projectPath,
-                                        remoteUrl = cloneUrl,
+                                        remoteUrl = remoteUrl,
                                         preferredBranch = gitState.currentBranch ?: initBranchDraft.trim().ifBlank { "main" }
                                     )
                                 }
                                 message = if (bindResult.success) {
-                                    "$message，并已绑定 origin"
+                                    "$message，并已绑定 origin（默认使用 HTTPS 远端）"
                                 } else {
                                     "$message，但绑定 origin 失败: ${bindResult.error ?: bindResult.output}"
                                 }
@@ -3332,7 +3332,7 @@ private fun ProjectGitSection(
                         }
                     )
                     Text(
-                        text = "会使用当前设置页里的 GitHub Token 创建仓库。绑定 origin 后，项目页里的 GitHub 工作流和 Release 能直接识别这个仓库。",
+                        text = "会使用当前设置页里的 GitHub Token 创建仓库。若同时绑定 origin，这里会默认写入 HTTPS 远端，后续由内置 Git 优先使用 Token 认证。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -5528,6 +5528,8 @@ private fun createProjectGitHubRepository(
             success = false,
             repo = null,
             cloneUrl = null,
+            sshUrl = null,
+            recommendedRemoteUrl = null,
             htmlUrl = null,
             error = result.error ?: "创建 GitHub 仓库失败"
         )
@@ -5537,17 +5539,26 @@ private fun createProjectGitHubRepository(
             success = false,
             repo = null,
             cloneUrl = null,
+            sshUrl = null,
+            recommendedRemoteUrl = null,
             htmlUrl = null,
             error = "GitHub 返回的仓库信息无法解析"
         )
     val owner = obj.jsonObjectOrNull("owner")?.string("login")
     val repo = obj.string("name")
     val cloneUrl = obj.string("clone_url")
-    return if (owner.isNullOrBlank() || repo.isNullOrBlank() || cloneUrl.isNullOrBlank()) {
+    val sshUrl = obj.string("ssh_url")
+    val recommendedRemoteUrl = preferredProjectGitHubRemoteUrl(
+        cloneUrl = cloneUrl,
+        sshUrl = sshUrl
+    )
+    return if (owner.isNullOrBlank() || repo.isNullOrBlank() || recommendedRemoteUrl.isNullOrBlank()) {
         ProjectGitHubCreateRepoResult(
             success = false,
             repo = null,
             cloneUrl = null,
+            sshUrl = null,
+            recommendedRemoteUrl = null,
             htmlUrl = null,
             error = "GitHub 返回的仓库信息不完整"
         )
@@ -5556,6 +5567,8 @@ private fun createProjectGitHubRepository(
             success = true,
             repo = ProjectGitHubRepoRef(owner = owner, repo = repo),
             cloneUrl = cloneUrl,
+            sshUrl = sshUrl,
+            recommendedRemoteUrl = recommendedRemoteUrl,
             htmlUrl = obj.string("html_url"),
             error = null
         )
@@ -5709,6 +5722,15 @@ private fun parseProjectGitHubRepoRef(remoteUrl: String?): ProjectGitHubRepoRef?
         owner = segments[segments.lastIndex - 1],
         repo = segments.last()
     )
+}
+
+private fun preferredProjectGitHubRemoteUrl(
+    cloneUrl: String?,
+    sshUrl: String?
+): String? {
+    val httpsRemote = cloneUrl?.trim()?.takeIf { it.isNotBlank() }
+    if (httpsRemote != null) return httpsRemote
+    return sshUrl?.trim()?.takeIf { it.isNotBlank() }
 }
 
 private fun summarizeProjectGitRemoteTransport(
@@ -7882,6 +7904,8 @@ private data class ProjectGitHubCreateRepoResult(
     val success: Boolean,
     val repo: ProjectGitHubRepoRef?,
     val cloneUrl: String?,
+    val sshUrl: String?,
+    val recommendedRemoteUrl: String?,
     val htmlUrl: String?,
     val error: String?
 )
