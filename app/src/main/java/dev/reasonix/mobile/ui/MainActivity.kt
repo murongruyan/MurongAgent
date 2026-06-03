@@ -64,6 +64,7 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
+import kotlin.math.abs
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -124,7 +125,7 @@ fun MainScreen() {
     val shellScreens = remember {
         listOf(Screen.Chat, Screen.Projects, Screen.Tools, Screen.Settings)
     }
-    var currentScreen: Screen by remember { mutableStateOf(Screen.Chat) }
+    var selectedTopLevelPage by remember { mutableIntStateOf(0) }
     var settingsSubpage by remember { mutableStateOf<SettingsSubpage>(SettingsSubpage.Main) }
     var settingsBackProgress by remember { mutableFloatStateOf(0f) }
     var showTaskDialog by remember { mutableStateOf(false) }
@@ -132,11 +133,11 @@ fun MainScreen() {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val pagerState = rememberPagerState(
-        initialPage = shellScreens.indexOfFirst { it.route == currentScreen.route }.coerceAtLeast(0),
+        initialPage = selectedTopLevelPage,
         pageCount = { shellScreens.size }
     )
     val topLevelHistory = remember { mutableStateListOf<Int>() }
-    var lastVisitedTopLevelPage by remember { mutableIntStateOf(pagerState.currentPage) }
+    var lastSettledTopLevelPage by remember { mutableIntStateOf(selectedTopLevelPage) }
     var consumingTopLevelBack by remember { mutableStateOf(false) }
     val authVm: AuthViewModel = hiltViewModel()
     val chatVm: ChatViewModel = hiltViewModel()
@@ -170,10 +171,17 @@ fun MainScreen() {
     var projectEditorChromeState by remember { mutableStateOf(ProjectEditorChromeState()) }
     var projectEditorCloseRequestSignal by remember { mutableIntStateOf(0) }
     var showProjectEditorMenu by remember { mutableStateOf(false) }
+    val currentScreen = shellScreens[selectedTopLevelPage]
+    val darkMode = uiController.themeMode == ReasonixThemeMode.DARK ||
+        (uiController.themeMode == ReasonixThemeMode.SYSTEM &&
+            reasonixIsDarkColor(MaterialTheme.colorScheme.background))
+    val chromeColor = rememberReasonixChromeColor()
 
     fun navigateToTopLevel(target: Screen) {
+        val targetIndex = shellScreens.indexOfFirst { it.route == target.route }
+        if (targetIndex < 0) return
         settingsSubpage = SettingsSubpage.Main
-        currentScreen = target
+        selectedTopLevelPage = targetIndex
     }
 
     LaunchedEffect(Unit) {
@@ -186,28 +194,34 @@ fun MainScreen() {
     suspend fun navigateBackToPreviousTopLevel() {
         val targetPage = topLevelHistory.removeLastOrNull() ?: return
         consumingTopLevelBack = true
+        settingsSubpage = SettingsSubpage.Main
+        selectedTopLevelPage = targetPage
         drawerState.close()
-        pagerState.animateScrollToPage(targetPage)
     }
 
-    LaunchedEffect(pagerState.currentPage) {
-        val newPage = pagerState.currentPage
-        if (newPage != lastVisitedTopLevelPage) {
+    LaunchedEffect(pagerState.settledPage) {
+        val settledPage = pagerState.settledPage
+        if (settledPage != lastSettledTopLevelPage) {
             if (consumingTopLevelBack) {
                 consumingTopLevelBack = false
-            } else if (topLevelHistory.lastOrNull() != lastVisitedTopLevelPage) {
-                topLevelHistory.add(lastVisitedTopLevelPage)
+            } else if (topLevelHistory.lastOrNull() != lastSettledTopLevelPage) {
+                topLevelHistory.add(lastSettledTopLevelPage)
             }
-            lastVisitedTopLevelPage = newPage
+            lastSettledTopLevelPage = settledPage
+        }
+        if (selectedTopLevelPage != settledPage) {
+            selectedTopLevelPage = settledPage
         }
         drawerState.close()
-        currentScreen = shellScreens[newPage]
     }
 
-    LaunchedEffect(currentScreen) {
-        val targetIndex = shellScreens.indexOfFirst { it.route == currentScreen.route }
-        if (targetIndex >= 0 && targetIndex != pagerState.currentPage) {
-            pagerState.animateScrollToPage(targetIndex)
+    LaunchedEffect(selectedTopLevelPage) {
+        if (selectedTopLevelPage != pagerState.currentPage) {
+            if (abs(selectedTopLevelPage - pagerState.currentPage) > 1) {
+                pagerState.scrollToPage(selectedTopLevelPage)
+            } else {
+                pagerState.animateScrollToPage(selectedTopLevelPage)
+            }
         }
         drawerState.close()
         if (currentScreen !is Screen.Projects) {
@@ -243,7 +257,11 @@ fun MainScreen() {
         projectEditorCloseRequestSignal += 1
     }
 
-    BackHandler(enabled = settingsSubpage == SettingsSubpage.Main && topLevelHistory.isNotEmpty()) {
+    BackHandler(
+        enabled = settingsSubpage == SettingsSubpage.Main &&
+            topLevelHistory.isNotEmpty() &&
+            !drawerState.isOpen
+    ) {
         scope.launch {
             navigateBackToPreviousTopLevel()
         }
@@ -441,11 +459,9 @@ fun MainScreen() {
                     .fillMaxSize()
                     .reasonixGlassSource(LocalReasonixHazeState.current)
             ) {
-                ReasonixGradientBackground(
+                ReasonixBackgroundLayer(
                     modifier = Modifier.fillMaxSize(),
-                    darkMode = uiController.themeMode == ReasonixThemeMode.DARK ||
-                        (uiController.themeMode == ReasonixThemeMode.SYSTEM &&
-                            reasonixIsDarkColor(MaterialTheme.colorScheme.background))
+                    darkMode = darkMode
                 )
             }
             Scaffold(
@@ -459,7 +475,8 @@ fun MainScreen() {
                             .statusBarsPadding()
                             .padding(horizontal = 12.dp, vertical = 8.dp),
                         shape = RoundedCornerShape(26.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        surfaceColorOverride = chromeColor.copy(alpha = if (darkMode) 0.60f else 0.68f)
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -482,22 +499,22 @@ fun MainScreen() {
                                             onClick = { projectEditorCloseRequestSignal += 1 }
                                         )
                                     }
-                                    topLevelHistory.isNotEmpty() -> {
-                                        ReasonixOutlinedActionButton(
-                                            text = "返回",
-                                            onClick = {
-                                                scope.launch {
-                                                    navigateBackToPreviousTopLevel()
-                                                }
-                                            }
-                                        )
-                                    }
                                     currentScreen is Screen.Chat -> {
                                         ReasonixOutlinedActionButton(
                                             text = "会话",
                                             onClick = {
                                                 scope.launch {
                                                     drawerState.open()
+                                                }
+                                            }
+                                        )
+                                    }
+                                    topLevelHistory.isNotEmpty() -> {
+                                        ReasonixOutlinedActionButton(
+                                            text = "返回",
+                                            onClick = {
+                                                scope.launch {
+                                                    navigateBackToPreviousTopLevel()
                                                 }
                                             }
                                         )
@@ -1010,12 +1027,10 @@ fun MainScreen() {
                         ReasonixBottomBarItem("工具", Icons.Outlined.Search),
                         ReasonixBottomBarItem("设置", Icons.Outlined.Settings)
                     ),
-                    selectedIndex = pagerState.currentPage,
+                    selectedIndex = selectedTopLevelPage,
                     visualIndex = pagerVisualIndex,
                     onSelect = { index ->
-                        scope.launch {
-                            pagerState.animateScrollToPage(index)
-                        }
+                        selectedTopLevelPage = index
                     },
                     modifier = Modifier
                         .align(Alignment.BottomCenter)

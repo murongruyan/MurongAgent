@@ -115,6 +115,10 @@ import dev.reasonix.mobile.ui.ReasonixOutlinedActionButton
 import dev.reasonix.mobile.ui.ReasonixTagButton
 import dev.reasonix.mobile.ui.SkillDraftImportCard
 import dev.reasonix.mobile.ui.highlightSyntax
+import dev.reasonix.mobile.ui.rememberReasonixAccentColor
+import dev.reasonix.mobile.ui.rememberReasonixChromeColor
+import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
+import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -1128,12 +1132,14 @@ private fun ProjectEditorSection(
             }
 
             editorError?.let {
+                val chromeColor = rememberReasonixChromeColor()
                 ReasonixGlassSurface(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(vertical = 2.dp),
                     shape = RoundedCornerShape(18.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+                    surfaceColorOverride = chromeColor.copy(alpha = 0.62f)
                 ) {
                     Text(
                         text = it,
@@ -1428,6 +1434,8 @@ private fun ProjectEditorSection(
             onDismissRequest = { showDiagnosticsDialog = false },
             title = { Text("错误列表") },
             text = {
+                val chromeColor = rememberReasonixChromeColor()
+                val mutedTextColor = rememberReasonixMutedTextColor()
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1439,7 +1447,7 @@ private fun ProjectEditorSection(
                         Text(
                             text = "当前没有识别到明显的结构错误。",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                     } else {
                         editorDiagnostics.forEach { diagnostic ->
@@ -1448,7 +1456,7 @@ private fun ProjectEditorSection(
                                     .fillMaxWidth()
                                     .clickable { jumpToDiagnostic(diagnostic) },
                                 shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f)
+                                color = chromeColor.copy(alpha = 0.62f)
                             ) {
                                 Column(
                                     modifier = Modifier.padding(10.dp),
@@ -1462,7 +1470,7 @@ private fun ProjectEditorSection(
                                     Text(
                                         text = diagnostic.message,
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                        color = MaterialTheme.colorScheme.onSurface
                                     )
                                 }
                             }
@@ -1489,6 +1497,8 @@ private fun ProjectEditorSection(
                 )
             },
             text = {
+                val surfaceColor = rememberReasonixSurfaceColor()
+                val mutedTextColor = rememberReasonixMutedTextColor()
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1500,7 +1510,7 @@ private fun ProjectEditorSection(
                         Text(
                             text = "当前文件没有检测到 Git 冲突块。",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                     } else {
                         conflictBlocks.forEachIndexed { index, block ->
@@ -1508,7 +1518,7 @@ private fun ProjectEditorSection(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(10.dp),
                                 tonalElevation = 2.dp,
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                                color = surfaceColor.copy(alpha = 0.58f)
                             ) {
                                 Column(
                                     modifier = Modifier.padding(12.dp),
@@ -1521,20 +1531,20 @@ private fun ProjectEditorSection(
                                     Text(
                                         text = "当前: ${block.currentLabel} · 对方: ${block.incomingLabel}",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = mutedTextColor
                                     )
                                     if (block.currentLines.isNotEmpty()) {
                                         Text(
                                             text = "当前片段: ${block.currentLines.joinToString(" ").trim().take(80)}",
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            color = mutedTextColor
                                         )
                                     }
                                     if (block.incomingLines.isNotEmpty()) {
                                         Text(
                                             text = "对方片段: ${block.incomingLines.joinToString(" ").trim().take(80)}",
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            color = mutedTextColor
                                         )
                                     }
                                     Row(
@@ -1603,35 +1613,42 @@ private fun ProjectSearchResultRow(
     query: String,
     onOpen: () -> Unit
 ) {
-    Column(
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onOpen)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+            .clickable(onClick = onOpen),
+        shape = RoundedCornerShape(16.dp),
+        color = surfaceColor.copy(alpha = 0.56f)
     ) {
-        Text(
-            text = highlightSearchKeyword(hit.relativePath, query),
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            text = buildString {
-                append(projectSearchTypeLabel(hit.fileType))
-                hit.lineNumber?.let { append(" · 第 $it 行") }
-            },
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Text(
-            text = highlightSearchKeyword(hit.preview.ifBlank { "文件名匹配" }, query),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = highlightSearchKeyword(hit.relativePath, query),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = buildString {
+                    append(projectSearchTypeLabel(hit.fileType))
+                    hit.lineNumber?.let { append(" · 第 $it 行") }
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Text(
+                text = highlightSearchKeyword(hit.preview.ifBlank { "文件名匹配" }, query),
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedTextColor,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }
 
@@ -1770,10 +1787,13 @@ private fun ProjectTreeRow(
     onToggleDir: (String) -> Unit,
     onSelectFile: (String) -> Unit
 ) {
+    val accent = rememberReasonixAccentColor()
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     val background = if (isSelected) {
-        MaterialTheme.colorScheme.secondaryContainer
+        accent.copy(alpha = 0.16f)
     } else {
-        Color.Transparent
+        surfaceColor.copy(alpha = 0.10f)
     }
     Row(
         modifier = Modifier
@@ -1789,7 +1809,7 @@ private fun ProjectTreeRow(
             Text(
                 text = if (isExpanded) "v" else ">",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
             Text(
                 text = "[DIR]",
@@ -1801,7 +1821,7 @@ private fun ProjectTreeRow(
             Text(
                 text = "[FILE]",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
         }
         Spacer(Modifier.width(8.dp))
@@ -1816,7 +1836,7 @@ private fun ProjectTreeRow(
                 Text(
                     text = relativeProjectPath(rootPath, entry.absolutePath),
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = mutedTextColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -2247,9 +2267,12 @@ private fun ProjectGitSection(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         } else {
+            val surfaceColor = rememberReasonixSurfaceColor()
+            val chromeColor = rememberReasonixChromeColor()
+            val mutedTextColor = rememberReasonixMutedTextColor()
             Surface(
                 shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                color = surfaceColor.copy(alpha = 0.60f),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
@@ -2259,7 +2282,7 @@ private fun ProjectGitSection(
                     Text(
                         gitState.repoRoot?.let { "仓库根目录: $it" } ?: "当前目录未识别到 Git 仓库",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = mutedTextColor
                     )
                     Text(
                         if (gitState.branchSummary.isNotBlank()) "当前分支: ${gitState.branchSummary}" else "当前分支: 未知",
@@ -2269,13 +2292,13 @@ private fun ProjectGitSection(
                         Text(
                             "最近提交: $summary",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                     }
                     Text(
                         "已暂存 ${gitState.stagedFiles.size} · 已修改 ${gitState.modifiedFiles.size} · 未跟踪 ${gitState.untrackedFiles.size} · 冲突 ${gitState.conflictedFiles.size}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = mutedTextColor
                     )
                 }
             }
@@ -2366,7 +2389,7 @@ private fun ProjectGitSection(
                     Text(
                         if (isGitLoading) "正在读取 Git 状态..." else "正在执行 Git 操作...",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = mutedTextColor
                     )
                 }
             }
@@ -2374,13 +2397,13 @@ private fun ProjectGitSection(
             feedbackMessage?.takeIf { it.isNotBlank() }?.let { message ->
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                    color = chromeColor.copy(alpha = 0.58f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
                         text = message,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
                     )
                 }
@@ -2404,7 +2427,7 @@ private fun ProjectGitSection(
             if (!gitState.isRepository || !gitState.hasRemote) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.22f),
+                    color = chromeColor.copy(alpha = 0.46f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
@@ -2967,6 +2990,9 @@ private fun ProjectGitSection(
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    val surfaceColor = rememberReasonixSurfaceColor()
+                    val mutedTextColor = rememberReasonixMutedTextColor()
+                    val chromeColor = rememberReasonixChromeColor()
                     Text(
                         text = "已暂存 ${gitState.stagedFiles.size} 个文件",
                         style = MaterialTheme.typography.labelMedium,
@@ -2975,7 +3001,7 @@ private fun ProjectGitSection(
                     if (gitState.stagedFiles.isNotEmpty()) {
                         Surface(
                             shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                            color = surfaceColor.copy(alpha = 0.60f)
                         ) {
                             Column(
                                 modifier = Modifier.padding(10.dp),
@@ -2985,7 +3011,7 @@ private fun ProjectGitSection(
                                     Text(
                                         text = "${file.statusLabel} · ${file.displayPath}",
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        color = mutedTextColor,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
@@ -2994,7 +3020,7 @@ private fun ProjectGitSection(
                                     Text(
                                         text = "还有 ${gitState.stagedFiles.size - 6} 个文件未展开",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = mutedTextColor
                                     )
                                 }
                             }
@@ -3043,7 +3069,7 @@ private fun ProjectGitSection(
                     if (finalCommitMessage.isNotBlank()) {
                         Surface(
                             shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f)
+                            color = chromeColor.copy(alpha = 0.58f)
                         ) {
                             Column(
                                 modifier = Modifier.padding(10.dp),
@@ -3056,7 +3082,7 @@ private fun ProjectGitSection(
                                 Text(
                                     text = finalCommitMessage,
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = mutedTextColor
                                 )
                             }
                         }
@@ -3098,6 +3124,9 @@ private fun ProjectGitSection(
             },
             title = { Text("分支管理") },
             text = {
+                val surfaceColor = rememberReasonixSurfaceColor()
+                val chromeColor = rememberReasonixChromeColor()
+                val mutedTextColor = rememberReasonixMutedTextColor()
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(
                         value = newBranchName,
@@ -3110,7 +3139,7 @@ private fun ProjectGitSection(
                     Text(
                         "本地分支",
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = mutedTextColor
                     )
                     Column(
                         modifier = Modifier
@@ -3122,7 +3151,7 @@ private fun ProjectGitSection(
                         gitState.localBranches.forEach { branch ->
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                color = surfaceColor.copy(alpha = 0.58f),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Row(
@@ -3142,7 +3171,7 @@ private fun ProjectGitSection(
                                             Text(
                                                 track,
                                                 style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                color = mutedTextColor
                                             )
                                         }
                                     }
@@ -3167,13 +3196,13 @@ private fun ProjectGitSection(
                             Text(
                                 "远端分支",
                                 style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = mutedTextColor
                             )
                             gitState.remoteBranches.forEach { remoteBranch ->
                                 val suggestedLocalName = remoteBranch.substringAfter('/', remoteBranch)
                                 Surface(
                                     shape = RoundedCornerShape(12.dp),
-                                    color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.3f),
+                                    color = chromeColor.copy(alpha = 0.56f),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Row(
@@ -3192,7 +3221,7 @@ private fun ProjectGitSection(
                                             Text(
                                                 "本地建议分支名: $suggestedLocalName",
                                                 style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                color = mutedTextColor
                                             )
                                         }
                                         OutlinedButton(
@@ -3980,13 +4009,16 @@ private fun ProjectGitBranchSummaryCard(
     branchCount: Int,
     onManageBranches: () -> Unit
 ) {
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
-        modifier = Modifier.fillMaxWidth()
+    val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    ReasonixGlassSurface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+        surfaceColorOverride = chromeColor.copy(alpha = 0.62f)
     ) {
         Row(
-            modifier = Modifier.padding(12.dp),
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -3995,7 +4027,7 @@ private fun ProjectGitBranchSummaryCard(
                 Text(
                     "当前: ${currentBranch ?: "未知"} · 本地分支: $branchCount",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = mutedTextColor
                 )
             }
             OutlinedButton(onClick = onManageBranches) {
@@ -4013,25 +4045,28 @@ private fun ProjectGitRemoteSummaryCard(
     behindCount: Int,
     remoteBranchCount: Int
 ) {
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.35f),
-        modifier = Modifier.fillMaxWidth()
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    ReasonixGlassSurface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+        surfaceColorOverride = surfaceColor.copy(alpha = 0.62f)
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Text("远端", style = MaterialTheme.typography.titleSmall)
             Text(
                 remoteUrl ?: "未配置 origin 远端",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
             Text(
                 "上游: ${upstreamBranch ?: "未设置"} · ahead $aheadCount / behind $behindCount · 远端分支 $remoteBranchCount",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
         }
     }
@@ -4052,14 +4087,18 @@ private fun ProjectGitHubActionsSection(
     onDownloadRunLogs: (ProjectGitHubWorkflowRunUi) -> Unit,
     onOpenRunDetail: (ProjectGitHubWorkflowRunUi) -> Unit
 ) {
+    val chromeColor = rememberReasonixChromeColor()
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.28f),
-            modifier = Modifier.fillMaxWidth()
+        ReasonixGlassSurface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+            surfaceColorOverride = chromeColor.copy(alpha = 0.58f)
         ) {
             Column(
-                modifier = Modifier.padding(12.dp),
+                modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Row(
@@ -4075,20 +4114,20 @@ private fun ProjectGitHubActionsSection(
                         Text(
                             text = state.repo?.let { "${it.owner}/${it.repo}" } ?: "当前远端还没有解析到 owner/repo",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                         state.viewerLogin?.let { login ->
                             Text(
                                 text = "已登录 Token: @$login",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = mutedTextColor
                             )
                         }
                         state.defaultBranch?.let { branch ->
                             Text(
                                 text = "默认分支: $branch · 工作流 ${state.workflows.size} · 最近运行 ${state.recentRuns.size}",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = mutedTextColor
                             )
                         }
                     }
@@ -4117,7 +4156,7 @@ private fun ProjectGitHubActionsSection(
                             Text(
                                 text = "正在读取 GitHub 工作流...",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = mutedTextColor
                             )
                         }
                     }
@@ -4132,7 +4171,7 @@ private fun ProjectGitHubActionsSection(
                         Text(
                             text = "先去设置页填 GitHub Token，工作流、Release 和产物下载才能真正联动。",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                     }
                 }
@@ -4141,13 +4180,14 @@ private fun ProjectGitHubActionsSection(
         if (state.workflows.isNotEmpty()) {
             Text("可执行工作流", style = MaterialTheme.typography.titleSmall)
             state.workflows.forEach { workflow ->
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                    modifier = Modifier.fillMaxWidth()
+                ReasonixGlassSurface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+                    surfaceColorOverride = surfaceColor.copy(alpha = 0.58f)
                 ) {
                     Column(
-                        modifier = Modifier.padding(12.dp),
+                        modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
@@ -4157,7 +4197,7 @@ private fun ProjectGitHubActionsSection(
                         Text(
                             text = "${workflow.path} · ${workflow.stateLabel}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             workflow.htmlUrl?.takeIf { it.isNotBlank() }?.let {
@@ -4182,13 +4222,14 @@ private fun ProjectGitHubActionsSection(
         if (state.recentRuns.isNotEmpty()) {
             Text("最近运行", style = MaterialTheme.typography.titleSmall)
             state.recentRuns.forEach { run ->
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                    modifier = Modifier.fillMaxWidth()
+                ReasonixGlassSurface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+                    surfaceColorOverride = surfaceColor.copy(alpha = 0.58f)
                 ) {
                     Column(
-                        modifier = Modifier.padding(12.dp),
+                        modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
@@ -4198,12 +4239,12 @@ private fun ProjectGitHubActionsSection(
                         Text(
                             text = "${run.statusLabel} · ${run.headBranch} · ${run.updatedAt}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                         Text(
                             text = "事件 ${run.event} · #${run.runNumber}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             run.htmlUrl?.takeIf { it.isNotBlank() }?.let {

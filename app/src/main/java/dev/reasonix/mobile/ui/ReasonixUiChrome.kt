@@ -1,12 +1,18 @@
 package dev.reasonix.mobile.ui
 
+import android.app.WallpaperManager
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Color as AndroidColor
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.blur
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -40,6 +46,7 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -49,21 +56,26 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.consume
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.core.graphics.ColorUtils
+import androidx.core.graphics.drawable.toBitmap
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -78,6 +90,13 @@ enum class ReasonixThemeStyle {
     GLASS
 }
 
+enum class ReasonixBackgroundMode {
+    GRADIENT,
+    SOLID,
+    WALLPAPER,
+    CUSTOM_IMAGE
+}
+
 data class ReasonixAccentPreset(
     val label: String,
     val color: Color
@@ -86,7 +105,16 @@ data class ReasonixAccentPreset(
 private const val UI_PREFS_NAME = "reasonix_ui"
 private const val KEY_THEME_MODE = "theme_mode"
 private const val KEY_THEME_STYLE = "theme_style"
-private const val KEY_ACCENT_INDEX = "accent_index"
+private const val KEY_THEME_COLOR_HEX = "theme_color_hex"
+private const val KEY_BACKGROUND_MODE = "background_mode"
+private const val KEY_BACKGROUND_COLOR_HEX = "background_color_hex"
+private const val KEY_SURFACE_COLOR_HEX = "surface_color_hex"
+private const val KEY_CHROME_COLOR_HEX = "chrome_color_hex"
+private const val KEY_MUTED_TEXT_COLOR_HEX = "muted_text_color_hex"
+private const val KEY_CUSTOM_BACKGROUND_URI = "custom_background_uri"
+private const val KEY_BACKGROUND_BLUR_RADIUS = "background_blur_radius"
+private const val KEY_FONT_SCALE = "font_scale"
+private const val KEY_UI_SCALE = "ui_scale"
 
 private val AccentPresets = listOf(
     ReasonixAccentPreset("樱粉", Color(0xFFF663A6)),
@@ -120,13 +148,94 @@ class ReasonixUiController(private val context: Context) {
     )
         private set
 
-    var accentIndex by mutableIntStateOf(
-        prefs.getInt(KEY_ACCENT_INDEX, 0).coerceIn(0, AccentPresets.lastIndex)
+    var themeColorHex by mutableStateOf(
+        normalizeReasonixColorHex(
+            prefs.getString(KEY_THEME_COLOR_HEX, null),
+            AccentPresets.first().color
+        )
     )
         private set
 
+    var backgroundMode by mutableStateOf(
+        runCatching {
+            ReasonixBackgroundMode.valueOf(
+                prefs.getString(KEY_BACKGROUND_MODE, ReasonixBackgroundMode.GRADIENT.name)
+                    ?: ReasonixBackgroundMode.GRADIENT.name
+            )
+        }.getOrDefault(ReasonixBackgroundMode.GRADIENT)
+    )
+        private set
+
+    var backgroundColorHex by mutableStateOf(
+        normalizeReasonixColorHex(
+            prefs.getString(KEY_BACKGROUND_COLOR_HEX, null),
+            Color(0xFFF5F7FD)
+        )
+    )
+        private set
+
+    var surfaceColorHex by mutableStateOf(
+        normalizeReasonixColorHex(
+            prefs.getString(KEY_SURFACE_COLOR_HEX, null),
+            Color.White
+        )
+    )
+        private set
+
+    var chromeColorHex by mutableStateOf(
+        normalizeReasonixColorHex(
+            prefs.getString(KEY_CHROME_COLOR_HEX, null),
+            Color.White
+        )
+    )
+        private set
+
+    var mutedTextColorHex by mutableStateOf(
+        normalizeReasonixColorHex(
+            prefs.getString(KEY_MUTED_TEXT_COLOR_HEX, null),
+            Color(0xFF6A738A)
+        )
+    )
+        private set
+
+    var customBackgroundUri by mutableStateOf(
+        prefs.getString(KEY_CUSTOM_BACKGROUND_URI, "").orEmpty()
+    )
+        private set
+
+    var backgroundBlurRadius by mutableIntStateOf(
+        prefs.getInt(KEY_BACKGROUND_BLUR_RADIUS, 18).coerceIn(0, 60)
+    )
+        private set
+
+    var fontScale by mutableStateOf(
+        prefs.getFloat(KEY_FONT_SCALE, 1.0f).coerceIn(0.85f, 1.30f)
+    )
+        private set
+
+    var uiScale by mutableStateOf(
+        prefs.getFloat(KEY_UI_SCALE, 1.0f).coerceIn(0.85f, 1.20f)
+    )
+        private set
+
+    val accentIndex: Int
+        get() {
+            val currentColor = accentColor.toArgb()
+            return AccentPresets.indexOfFirst { it.color.toArgb() == currentColor }
+        }
+
     val accentPreset: ReasonixAccentPreset
-        get() = AccentPresets[accentIndex.coerceIn(0, AccentPresets.lastIndex)]
+        get() = AccentPresets.getOrNull(accentIndex)
+            ?: ReasonixAccentPreset("自定义", accentColor)
+
+    val accentColor: Color
+        get() = parseReasonixColor(themeColorHex, AccentPresets.first().color)
+
+    val backgroundColor: Color
+        get() = parseReasonixColor(
+            backgroundColorHex,
+            if (themeMode == ReasonixThemeMode.DARK) Color(0xFF090B12) else Color(0xFFF5F7FD)
+        )
 
     fun updateThemeMode(value: ReasonixThemeMode) {
         themeMode = value
@@ -140,11 +249,101 @@ class ReasonixUiController(private val context: Context) {
 
     fun updateAccentIndex(value: Int) {
         val safeValue = value.coerceIn(0, AccentPresets.lastIndex)
-        accentIndex = safeValue
-        prefs.edit().putInt(KEY_ACCENT_INDEX, safeValue).apply()
+        updateThemeColorHex(AccentPresets[safeValue].color.toReasonixHex())
+    }
+
+    fun updateThemeColorHex(value: String) {
+        themeColorHex = normalizeReasonixColorHex(value, accentColor)
+        prefs.edit().putString(KEY_THEME_COLOR_HEX, themeColorHex).apply()
+    }
+
+    fun updateBackgroundMode(value: ReasonixBackgroundMode) {
+        backgroundMode = value
+        prefs.edit().putString(KEY_BACKGROUND_MODE, value.name).apply()
+    }
+
+    fun updateBackgroundColorHex(value: String) {
+        backgroundColorHex = normalizeReasonixColorHex(value, backgroundColor)
+        prefs.edit().putString(KEY_BACKGROUND_COLOR_HEX, backgroundColorHex).apply()
+    }
+
+    fun updateCustomBackgroundUri(value: String) {
+        customBackgroundUri = value.trim()
+        prefs.edit().putString(KEY_CUSTOM_BACKGROUND_URI, customBackgroundUri).apply()
+    }
+
+    fun updateSurfaceColorHex(value: String) {
+        surfaceColorHex = normalizeReasonixColorHex(value, Color.White)
+        prefs.edit().putString(KEY_SURFACE_COLOR_HEX, surfaceColorHex).apply()
+    }
+
+    fun updateChromeColorHex(value: String) {
+        chromeColorHex = normalizeReasonixColorHex(value, Color.White)
+        prefs.edit().putString(KEY_CHROME_COLOR_HEX, chromeColorHex).apply()
+    }
+
+    fun updateMutedTextColorHex(value: String) {
+        mutedTextColorHex = normalizeReasonixColorHex(value, Color(0xFF6A738A))
+        prefs.edit().putString(KEY_MUTED_TEXT_COLOR_HEX, mutedTextColorHex).apply()
+    }
+
+    fun clearCustomBackgroundUri() {
+        customBackgroundUri = ""
+        prefs.edit().remove(KEY_CUSTOM_BACKGROUND_URI).apply()
+        if (backgroundMode == ReasonixBackgroundMode.CUSTOM_IMAGE) {
+            updateBackgroundMode(ReasonixBackgroundMode.GRADIENT)
+        }
+    }
+
+    fun updateBackgroundBlurRadius(value: Int) {
+        backgroundBlurRadius = value.coerceIn(0, 60)
+        prefs.edit().putInt(KEY_BACKGROUND_BLUR_RADIUS, backgroundBlurRadius).apply()
+    }
+
+    fun updateFontScale(value: Float) {
+        fontScale = value.coerceIn(0.85f, 1.30f)
+        prefs.edit().putFloat(KEY_FONT_SCALE, fontScale).apply()
+    }
+
+    fun updateUiScale(value: Float) {
+        uiScale = value.coerceIn(0.85f, 1.20f)
+        prefs.edit().putFloat(KEY_UI_SCALE, uiScale).apply()
     }
 
     fun accentPresets(): List<ReasonixAccentPreset> = AccentPresets
+}
+
+internal fun defaultReasonixBackgroundColor(darkMode: Boolean): Color {
+    return if (darkMode) Color(0xFF090B12) else Color(0xFFF5F7FD)
+}
+
+internal fun defaultReasonixSurfaceColor(darkMode: Boolean): Color {
+    return if (darkMode) Color(0xFF151A24) else Color.White
+}
+
+internal fun defaultReasonixChromeColor(darkMode: Boolean): Color {
+    return if (darkMode) Color(0xFF121924) else Color.White
+}
+
+internal fun defaultReasonixMutedTextColor(darkMode: Boolean): Color {
+    return if (darkMode) Color(0xFF9EA8C4) else Color(0xFF6A738A)
+}
+
+internal fun normalizeReasonixColorHex(raw: String?, fallback: Color): String {
+    val value = raw?.trim().orEmpty().ifBlank { fallback.toReasonixHex() }
+    val normalized = if (value.startsWith("#")) value else "#$value"
+    return when (normalized.length) {
+        7, 9 -> normalized.uppercase()
+        else -> fallback.toReasonixHex()
+    }
+}
+
+internal fun parseReasonixColor(hex: String, fallback: Color): Color {
+    return runCatching { Color(AndroidColor.parseColor(hex)) }.getOrDefault(fallback)
+}
+
+internal fun Color.toReasonixHex(): String {
+    return String.format("#%08X", toArgb())
 }
 
 internal fun reasonixIsDarkColor(color: Color): Boolean {
@@ -167,16 +366,109 @@ fun rememberReasonixUiController(): ReasonixUiController {
 @Composable
 @ReadOnlyComposable
 fun rememberReasonixAccentColor(): Color {
-    return LocalReasonixUiController.current.accentPreset.color
+    return LocalReasonixUiController.current.accentColor
+}
+
+@Composable
+@ReadOnlyComposable
+fun rememberReasonixSurfaceColor(): Color {
+    val ui = LocalReasonixUiController.current
+    val darkMode = reasonixIsDarkColor(MaterialTheme.colorScheme.background)
+    return parseReasonixColor(ui.surfaceColorHex, defaultReasonixSurfaceColor(darkMode))
+}
+
+@Composable
+@ReadOnlyComposable
+fun rememberReasonixChromeColor(): Color {
+    val ui = LocalReasonixUiController.current
+    val darkMode = reasonixIsDarkColor(MaterialTheme.colorScheme.background)
+    return parseReasonixColor(ui.chromeColorHex, defaultReasonixChromeColor(darkMode))
+}
+
+@Composable
+@ReadOnlyComposable
+fun rememberReasonixMutedTextColor(): Color {
+    val ui = LocalReasonixUiController.current
+    val darkMode = reasonixIsDarkColor(MaterialTheme.colorScheme.background)
+    return parseReasonixColor(ui.mutedTextColorHex, defaultReasonixMutedTextColor(darkMode))
+}
+
+@Composable
+fun ReasonixBackgroundLayer(
+    modifier: Modifier = Modifier,
+    darkMode: Boolean
+) {
+    val context = LocalContext.current
+    val ui = LocalReasonixUiController.current
+    val hazeState = LocalReasonixHazeState.current
+    val bitmapState = produceState<Bitmap?>(initialValue = null, ui.backgroundMode, ui.customBackgroundUri) {
+        value = withContext(Dispatchers.IO) {
+            when (ui.backgroundMode) {
+                ReasonixBackgroundMode.WALLPAPER -> loadWallpaperBitmap(context)
+                ReasonixBackgroundMode.CUSTOM_IMAGE -> loadBitmapFromUri(context, ui.customBackgroundUri)
+                else -> null
+            }
+        }
+    }
+    val backgroundModifier = modifier
+        .fillMaxSize()
+        .reasonixGlassSource(hazeState)
+        .then(
+            if (ui.backgroundBlurRadius > 0 &&
+                ui.backgroundMode in setOf(
+                    ReasonixBackgroundMode.WALLPAPER,
+                    ReasonixBackgroundMode.CUSTOM_IMAGE
+                )
+            ) {
+                Modifier.blur(ui.backgroundBlurRadius.dp)
+            } else {
+                Modifier
+            }
+        )
+
+    when (ui.backgroundMode) {
+        ReasonixBackgroundMode.WALLPAPER,
+        ReasonixBackgroundMode.CUSTOM_IMAGE -> {
+            val bitmap = bitmapState.value
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = null,
+                    modifier = backgroundModifier,
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                ReasonixGradientBackground(
+                    modifier = modifier.fillMaxSize().reasonixGlassSource(hazeState),
+                    darkMode = darkMode,
+                    baseColor = ui.backgroundColor,
+                    accent = ui.accentColor
+                )
+            }
+        }
+
+        ReasonixBackgroundMode.SOLID -> {
+            Box(modifier = backgroundModifier.background(ui.backgroundColor))
+        }
+
+        ReasonixBackgroundMode.GRADIENT -> {
+            ReasonixGradientBackground(
+                modifier = modifier.fillMaxSize().reasonixGlassSource(hazeState),
+                darkMode = darkMode,
+                baseColor = ui.backgroundColor,
+                accent = ui.accentColor
+            )
+        }
+    }
 }
 
 @Composable
 fun ReasonixGradientBackground(
     modifier: Modifier = Modifier,
-    darkMode: Boolean
+    darkMode: Boolean,
+    baseColor: Color = if (darkMode) Color(0xFF090B12) else Color(0xFFF5F7FD),
+    accent: Color = rememberReasonixAccentColor()
 ) {
-    val accent = rememberReasonixAccentColor()
-    val baseColor = if (darkMode) Color(0xFF090B12) else Color(0xFFF5F7FD)
     val topLeft = if (darkMode) accent.copy(alpha = 0.22f) else accent.copy(alpha = 0.24f)
     val topRight = if (darkMode) Color(0xFF21325C).copy(alpha = 0.28f) else Color(0xFFDCE6FF)
     val bottom = if (darkMode) Color(0xFF1D1430).copy(alpha = 0.24f) else Color(0xFFFFE3F0)
@@ -207,6 +499,19 @@ fun ReasonixGradientBackground(
     )
 }
 
+private fun loadWallpaperBitmap(context: Context): Bitmap? {
+    return runCatching {
+        WallpaperManager.getInstance(context).drawable?.toBitmap()
+    }.getOrNull()
+}
+
+private fun loadBitmapFromUri(context: Context, uriValue: String): Bitmap? {
+    if (uriValue.isBlank()) return null
+    return runCatching {
+        context.contentResolver.openInputStream(android.net.Uri.parse(uriValue))?.use(BitmapFactory::decodeStream)
+    }.getOrNull()
+}
+
 fun Modifier.reasonixGlassSource(hazeState: HazeState?): Modifier {
     return if (hazeState == null) this else hazeSource(state = hazeState)
 }
@@ -234,16 +539,18 @@ fun ReasonixGlassSurface(
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(28.dp),
     contentPadding: androidx.compose.foundation.layout.PaddingValues = androidx.compose.foundation.layout.PaddingValues(0.dp),
+    surfaceColorOverride: Color? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val ui = LocalReasonixUiController.current
     val darkMode = reasonixIsDarkColor(MaterialTheme.colorScheme.background)
     val accent = rememberReasonixAccentColor()
+    val surfaceSeed = rememberReasonixSurfaceColor()
     val hazeState = LocalReasonixHazeState.current
-    val surfaceColor = if (ui.themeStyle == ReasonixThemeStyle.GLASS) {
-        if (darkMode) Color(0xFF151A24).copy(alpha = 0.52f) else Color.White.copy(alpha = 0.58f)
+    val surfaceColor = surfaceColorOverride ?: if (ui.themeStyle == ReasonixThemeStyle.GLASS) {
+        surfaceSeed.copy(alpha = if (darkMode) 0.52f else 0.58f)
     } else {
-        MaterialTheme.colorScheme.surface
+        surfaceSeed.copy(alpha = 0.96f)
     }
     val borderColor = if (ui.themeStyle == ReasonixThemeStyle.GLASS) {
         accent.copy(alpha = if (darkMode) 0.22f else 0.18f)
@@ -418,11 +725,12 @@ fun ReasonixSecondaryPageSurface(
     val ui = LocalReasonixUiController.current
     val darkMode = reasonixIsDarkColor(MaterialTheme.colorScheme.background)
     val accent = rememberReasonixAccentColor()
+    val chromeSeed = rememberReasonixChromeColor()
     val hazeState = LocalReasonixHazeState.current
     val surfaceColor = if (ui.themeStyle == ReasonixThemeStyle.GLASS) {
-        if (darkMode) Color(0xFF121924).copy(alpha = 0.76f) else Color.White.copy(alpha = 0.84f)
+        chromeSeed.copy(alpha = if (darkMode) 0.76f else 0.84f)
     } else {
-        MaterialTheme.colorScheme.surface
+        chromeSeed.copy(alpha = 0.98f)
     }
     Surface(
         modifier = modifier.reasonixBackdropGlass(
@@ -459,11 +767,12 @@ private fun ReasonixBottomBarSurface(
     val ui = LocalReasonixUiController.current
     val accent = rememberReasonixAccentColor()
     val darkMode = reasonixIsDarkColor(MaterialTheme.colorScheme.background)
+    val chromeSeed = rememberReasonixChromeColor()
     val hazeState = LocalReasonixHazeState.current
     val glassTint = if (darkMode) {
-        accent.copy(alpha = 0.014f)
+        ColorUtils.blendARGB(chromeSeed.toArgb(), accent.toArgb(), 0.18f).let { Color(it) }.copy(alpha = 0.11f)
     } else {
-        accent.copy(alpha = 0.010f)
+        ColorUtils.blendARGB(chromeSeed.toArgb(), accent.toArgb(), 0.12f).let { Color(it) }.copy(alpha = 0.14f)
     }
     Surface(
         modifier = modifier
@@ -506,7 +815,6 @@ fun ReasonixFloatingBottomBar(
 ) {
     val accent = rememberReasonixAccentColor()
     val darkMode = reasonixIsDarkColor(MaterialTheme.colorScheme.background)
-    val viewConfiguration = LocalViewConfiguration.current
     var draggingVisualIndex by remember(items.size) { mutableStateOf<Float?>(null) }
     var bottomBarHeld by remember(items.size) { mutableStateOf(false) }
     val targetVisualIndex = (draggingVisualIndex ?: visualIndex)
@@ -531,45 +839,32 @@ fun ReasonixFloatingBottomBar(
                     .fillMaxWidth()
                     .height(62.dp)
                     .pointerInput(items.size, selectedIndex) {
-                        awaitEachGesture {
-                            var down = awaitPointerEvent().changes.firstOrNull { it.pressed }
-                            while (down == null) {
-                                down = awaitPointerEvent().changes.firstOrNull { it.pressed }
-                            }
-                            val initialDown = down ?: return@awaitEachGesture
-                            val longPressTriggered = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis.toLong()) {
-                                while (true) {
-                                    val event = awaitPointerEvent()
-                                    val change = event.changes.firstOrNull { it.id == initialDown.id } ?: break
-                                    if (!change.pressed) {
-                                        return@withTimeoutOrNull false
-                                    }
-                                }
-                                false
-                            } == null
-                            if (!longPressTriggered) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { offset ->
+                                bottomBarHeld = true
+                                val slotWidthPx = size.width / items.size.coerceAtLeast(1).toFloat()
+                                draggingVisualIndex = (offset.x / slotWidthPx)
+                                    .coerceIn(0f, items.lastIndex.toFloat())
+                            },
+                            onDragEnd = {
+                                val settledIndex = draggingVisualIndex
+                                    ?.roundToInt()
+                                    ?.coerceIn(0, items.lastIndex)
                                 draggingVisualIndex = null
                                 bottomBarHeld = false
-                                return@awaitEachGesture
+                                if (settledIndex != null && settledIndex != selectedIndex) {
+                                    onSelect(settledIndex)
+                                }
+                            },
+                            onDragCancel = {
+                                draggingVisualIndex = null
+                                bottomBarHeld = false
                             }
-                            bottomBarHeld = true
+                        ) { change, _ ->
+                            change.consume()
                             val slotWidthPx = size.width / items.size.coerceAtLeast(1).toFloat()
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                val change = event.changes.firstOrNull { it.id == initialDown.id } ?: break
-                                val index = (change.position.x / slotWidthPx)
-                                    .coerceIn(0f, items.lastIndex.toFloat())
-                                draggingVisualIndex = index
-                                if (!change.pressed) break
-                            }
-                            val settledIndex = draggingVisualIndex
-                                ?.roundToInt()
-                                ?.coerceIn(0, items.lastIndex)
-                            draggingVisualIndex = null
-                            bottomBarHeld = false
-                            if (settledIndex != null && settledIndex != selectedIndex) {
-                                onSelect(settledIndex)
-                            }
+                            draggingVisualIndex = (change.position.x / slotWidthPx)
+                                .coerceIn(0f, items.lastIndex.toFloat())
                         }
                     }
             ) {

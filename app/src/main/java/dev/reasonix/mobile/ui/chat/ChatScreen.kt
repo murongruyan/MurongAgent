@@ -36,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -87,6 +88,9 @@ import dev.reasonix.mobile.ui.MarkdownText
 import dev.reasonix.mobile.ui.ProjectKnowledgeOutlineUi
 import dev.reasonix.mobile.ui.buildProjectKnowledgeOutlines
 import dev.reasonix.mobile.ui.rememberReasonixAccentColor
+import dev.reasonix.mobile.ui.rememberReasonixChromeColor
+import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
+import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -786,12 +790,15 @@ private fun WorkflowStatusStrip(
     message: String
 ) {
     val accent = rememberReasonixAccentColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    val chromeColor = rememberReasonixChromeColor()
     ReasonixGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 4.dp),
         shape = RoundedCornerShape(20.dp),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+        surfaceColorOverride = chromeColor.copy(alpha = 0.66f)
     ) {
         Text(
             text = title,
@@ -802,7 +809,7 @@ private fun WorkflowStatusStrip(
         Text(
             text = message,
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = mutedTextColor
         )
     }
 }
@@ -816,6 +823,9 @@ private fun WorkflowPlanCard(
 ) {
     var showRawPlan by remember(plan.id) { mutableStateOf(false) }
     val accent = rememberReasonixAccentColor()
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     val progress = remember(plan.steps.size, plan.currentStepIndex) {
         if (plan.steps.isEmpty()) 0f else plan.currentStepIndex.toFloat() / plan.steps.size.toFloat()
     }
@@ -824,7 +834,8 @@ private fun WorkflowPlanCard(
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 6.dp),
         shape = MaterialTheme.shapes.large,
-        contentPadding = PaddingValues(14.dp)
+        contentPadding = PaddingValues(14.dp),
+        surfaceColorOverride = chromeColor.copy(alpha = 0.72f)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
@@ -844,7 +855,7 @@ private fun WorkflowPlanCard(
                     Text(
                         text = plan.goal,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = mutedTextColor,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -888,7 +899,7 @@ private fun WorkflowPlanCard(
                     Text(
                         text = "${plan.currentStepIndex}/${plan.steps.size}",
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = mutedTextColor
                     )
                 }
                 LinearProgressIndicator(
@@ -904,7 +915,8 @@ private fun WorkflowPlanCard(
             ReasonixGlassSurface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = MaterialTheme.shapes.medium,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                surfaceColorOverride = surfaceColor.copy(alpha = 0.70f)
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
@@ -942,7 +954,7 @@ private fun WorkflowPlanCard(
                         plan.mentionedFiles.forEach { mention ->
                             Surface(
                                 shape = MaterialTheme.shapes.medium,
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                color = surfaceColor.copy(alpha = 0.68f)
                             ) {
                                 Text(
                                     text = mention.displayPath,
@@ -967,7 +979,8 @@ private fun WorkflowPlanCard(
                         ReasonixGlassSurface(
                             modifier = Modifier.fillMaxWidth(),
                             shape = MaterialTheme.shapes.medium,
-                            contentPadding = PaddingValues(12.dp)
+                            contentPadding = PaddingValues(12.dp),
+                            surfaceColorOverride = surfaceColor.copy(alpha = 0.68f)
                         ) {
                             SelectionContainer {
                                 Text(
@@ -1012,17 +1025,19 @@ private fun WorkflowPlanCard(
 
 @Composable
 private fun WorkflowPlanStatusBadge(status: WorkflowPlanStatusUi) {
+    val accent = rememberReasonixAccentColor()
+    val chromeColor = rememberReasonixChromeColor()
     val containerColor = when (status) {
-        WorkflowPlanStatusUi.READY -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
-        WorkflowPlanStatusUi.EXECUTING -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.75f)
-        WorkflowPlanStatusUi.BLOCKED -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.75f)
-        WorkflowPlanStatusUi.COMPLETED -> Color(0xFFE0F2E9)
+        WorkflowPlanStatusUi.READY -> accent.copy(alpha = 0.18f)
+        WorkflowPlanStatusUi.EXECUTING -> chromeColor.copy(alpha = 0.72f)
+        WorkflowPlanStatusUi.BLOCKED -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.18f)
+        WorkflowPlanStatusUi.COMPLETED -> accent.copy(alpha = 0.14f)
     }
     val contentColor = when (status) {
         WorkflowPlanStatusUi.READY -> MaterialTheme.colorScheme.primary
         WorkflowPlanStatusUi.EXECUTING -> MaterialTheme.colorScheme.secondary
         WorkflowPlanStatusUi.BLOCKED -> MaterialTheme.colorScheme.tertiary
-        WorkflowPlanStatusUi.COMPLETED -> Color(0xFF2E7D32)
+        WorkflowPlanStatusUi.COMPLETED -> accent
     }
     Surface(
         shape = MaterialTheme.shapes.medium,
@@ -1043,15 +1058,18 @@ private fun WorkflowPlanStageChip(
     isCurrent: Boolean,
     isCompleted: Boolean
 ) {
+    val accent = rememberReasonixAccentColor()
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     val containerColor = when {
-        isCurrent -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f)
-        isCompleted -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
-        else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+        isCurrent -> accent.copy(alpha = 0.18f)
+        isCompleted -> surfaceColor.copy(alpha = 0.72f)
+        else -> surfaceColor.copy(alpha = 0.48f)
     }
     val contentColor = when {
         isCurrent -> MaterialTheme.colorScheme.primary
         isCompleted -> MaterialTheme.colorScheme.secondary
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
+        else -> mutedTextColor
     }
     Surface(
         shape = MaterialTheme.shapes.medium,
@@ -1072,15 +1090,17 @@ private fun WorkflowPlanStepRow(
     step: String,
     status: WorkflowPlanStepStatus
 ) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     val badgeColor = when (status) {
         WorkflowPlanStepStatus.COMPLETED -> Color(0xFF2E7D32)
         WorkflowPlanStepStatus.CURRENT -> MaterialTheme.colorScheme.primary
-        WorkflowPlanStepStatus.PENDING -> MaterialTheme.colorScheme.onSurfaceVariant
+        WorkflowPlanStepStatus.PENDING -> mutedTextColor
     }
     val containerColor = when (status) {
         WorkflowPlanStepStatus.COMPLETED -> Color(0x142E7D32)
         WorkflowPlanStepStatus.CURRENT -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f)
-        WorkflowPlanStepStatus.PENDING -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f)
+        WorkflowPlanStepStatus.PENDING -> surfaceColor.copy(alpha = 0.46f)
     }
     Surface(
         shape = MaterialTheme.shapes.medium,
@@ -1158,12 +1178,16 @@ private fun ClarificationCard(
 ) {
     var answer by remember(request.id) { mutableStateOf("") }
     val accent = rememberReasonixAccentColor()
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     ReasonixGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 6.dp),
         shape = MaterialTheme.shapes.large,
-        contentPadding = PaddingValues(14.dp)
+        contentPadding = PaddingValues(14.dp),
+        surfaceColorOverride = chromeColor.copy(alpha = 0.70f)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(
@@ -1175,7 +1199,7 @@ private fun ClarificationCard(
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = mutedTextColor
                 )
             }
             Text(
@@ -1187,12 +1211,13 @@ private fun ClarificationCard(
                 ReasonixGlassSurface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.medium,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                    surfaceColorOverride = surfaceColor.copy(alpha = 0.70f)
                 ) {
                     Text(
                         text = "已确认 ${request.previousAnswers.size} 条澄清信息，本轮会在此基础上继续追问最关键的缺口。",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = mutedTextColor
                     )
                 }
             }
@@ -1993,6 +2018,12 @@ private fun MessageBubble(
     val isSubagent = msg.role == "subagent"
     val isSystem = msg.role == "system"
     val accent = rememberReasonixAccentColor()
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    val userBubbleColor = lerp(surfaceColor, accent, 0.18f).copy(alpha = 0.82f)
+    val assistantBubbleColor = surfaceColor.copy(alpha = 0.72f)
+    val toolBubbleColor = chromeColor.copy(alpha = 0.74f)
 
     Column(
         modifier = Modifier
@@ -2014,7 +2045,8 @@ private fun MessageBubble(
                     bottomStart = 20.dp,
                     bottomEnd = 20.dp
                 ),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+                surfaceColorOverride = userBubbleColor
             ) {
                 Text(
                     text = "你",
@@ -2065,7 +2097,8 @@ private fun MessageBubble(
                 contentPadding = PaddingValues(
                     horizontal = 12.dp,
                     vertical = if (quietToolCard) 10.dp else 12.dp
-                )
+                ),
+                surfaceColorOverride = toolBubbleColor
             ) {
                 Text(
                     text = if (quietToolCard) "工具结果" else "工具输出",
@@ -2111,7 +2144,8 @@ private fun MessageBubble(
                             onLongClick = onLongPress
                         ),
                     shape = MaterialTheme.shapes.large,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                    surfaceColorOverride = toolBubbleColor
                 ) {
                     Text(
                         text = "子代理",
@@ -2137,7 +2171,8 @@ private fun MessageBubble(
                         onLongClick = onLongPress
                     ),
                 shape = MaterialTheme.shapes.large,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp)
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+                surfaceColorOverride = chromeColor.copy(alpha = 0.70f)
             ) {
                 SelectionContainer {
                     Text(
@@ -2190,7 +2225,8 @@ private fun MessageBubble(
                         bottomStart = 20.dp,
                         bottomEnd = 20.dp
                     ),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+                    surfaceColorOverride = assistantBubbleColor
                 ) {
                     Text(
                         text = "助手",
@@ -2237,13 +2273,13 @@ private fun MessageBubble(
                         } else if (msg.isStreaming) {
                             Text(
                                 text = "思考中…",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = mutedTextColor,
                                 fontSize = 14.sp
                             )
                         } else {
                             Text(
                                 text = "(空回复)",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = mutedTextColor,
                                 fontSize = 14.sp
                             )
                         }
@@ -2908,9 +2944,10 @@ private fun SheetActionItem(
     label: String,
     onClick: () -> Unit
 ) {
+    val surfaceColor = rememberReasonixSurfaceColor()
     Surface(
         shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        color = surfaceColor.copy(alpha = 0.68f),
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
@@ -2948,6 +2985,8 @@ private fun InputBar(
     var showMoreActions by remember { mutableStateOf(false) }
     val actionsEnabled = enabled && !isSending
     val accent = rememberReasonixAccentColor()
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
 
     ReasonixGlassSurface(
         modifier = Modifier
@@ -2955,7 +2994,8 @@ private fun InputBar(
             .navigationBarsPadding()
             .padding(horizontal = 12.dp, vertical = 10.dp),
         shape = MaterialTheme.shapes.extraLarge,
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+        surfaceColorOverride = surfaceColor.copy(alpha = 0.78f)
     ) {
         Column(
             modifier = Modifier
@@ -2973,16 +3013,16 @@ private fun InputBar(
                 placeholder = {
                     Text(
                         "输入你的问题…",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = mutedTextColor
                     )
                 },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = MaterialTheme.colorScheme.primary,
                     unfocusedBorderColor = MaterialTheme.colorScheme.outline,
                     cursorColor = MaterialTheme.colorScheme.primary,
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    disabledContainerColor = Color.Transparent
+                    focusedContainerColor = surfaceColor.copy(alpha = 0.34f),
+                    unfocusedContainerColor = surfaceColor.copy(alpha = 0.22f),
+                    disabledContainerColor = surfaceColor.copy(alpha = 0.14f)
                 ),
                 shape = MaterialTheme.shapes.large,
                 keyboardOptions = KeyboardOptions(imeAction = if (isSending) ImeAction.Default else ImeAction.Send),
@@ -3878,9 +3918,10 @@ private fun DraftProposalCard(
     proposal: DraftProposalUi,
     onDismiss: () -> Unit
 ) {
+    val chromeColor = rememberReasonixChromeColor()
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f),
+        color = chromeColor.copy(alpha = 0.68f),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
@@ -3892,7 +3933,7 @@ private fun DraftProposalCard(
                     text = if (proposal.type == DraftProposalType.MCP_SERVER) "🔌 MCP 配置提案" else "📋 Skill 提案",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                    color = MaterialTheme.colorScheme.onSurface
                 )
                 Spacer(modifier = Modifier.weight(1f))
                 TextButton(onClick = onDismiss) {
@@ -3902,14 +3943,14 @@ private fun DraftProposalCard(
             Text(
                 text = proposal.previewLabel,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = "检测到兼容草案块，不会自动导入或接入，请在设置页或项目页手动处理。",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSecondaryContainer
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
@@ -3949,9 +3990,12 @@ private fun ReasoningCard(
     isStreaming: Boolean,
     onToggle: () -> Unit
 ) {
+    val chromeColor = rememberReasonixChromeColor()
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Surface(
         shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f),
+        color = chromeColor.copy(alpha = 0.60f),
         tonalElevation = 0.dp,
         modifier = Modifier
             .fillMaxWidth()
@@ -3973,7 +4017,7 @@ private fun ReasoningCard(
                     Icon(
                         imageVector = if (expanded) Icons.Outlined.KeyboardArrowDown else Icons.Outlined.KeyboardArrowUp,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        tint = mutedTextColor
                     )
                     Text(
                         text = "思考过程",
@@ -3984,26 +4028,26 @@ private fun ReasoningCard(
                         Text(
                             text = "生成中",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                     }
                 }
                 Text(
                     text = if (expanded) "收起" else "展开",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = mutedTextColor
                 )
             }
             AnimatedVisibility(visible = expanded) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+                    color = surfaceColor.copy(alpha = 0.82f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     SelectionContainer {
                         Text(
                             text = content,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = mutedTextColor,
                             fontSize = 12.sp,
                             fontFamily = FontFamily.Monospace,
                             modifier = Modifier.padding(10.dp)
@@ -4017,6 +4061,7 @@ private fun ReasoningCard(
 
 @Composable
 private fun ToolExecutionCard(tool: ToolExecutionMessageUi) {
+    val mutedTextColor = rememberReasonixMutedTextColor()
     val canExpand = tool.args.isNotBlank()
     var showArgs by remember(tool) { mutableStateOf(canExpand && !tool.isQuiet) }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -4038,7 +4083,7 @@ private fun ToolExecutionCard(tool: ToolExecutionMessageUi) {
                 Text(
                     text = "正在等待工具参数返回…",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = mutedTextColor
                 )
             }
             canExpand -> {
@@ -4095,6 +4140,7 @@ private fun ToolCardHeader(
     quiet: Boolean,
     onToggle: () -> Unit
 ) {
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -4117,7 +4163,7 @@ private fun ToolCardHeader(
                 Icon(
                     imageVector = if (expanded) Icons.Outlined.KeyboardArrowDown else Icons.Outlined.KeyboardArrowUp,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = mutedTextColor
                 )
             } else {
                 Spacer(modifier = Modifier.width(24.dp))
@@ -4137,7 +4183,7 @@ private fun ToolCardHeader(
                     Text(
                         text = it,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = mutedTextColor,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -5001,13 +5047,16 @@ private fun SessionDrawerItem(
     onDelete: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    val accent = rememberReasonixAccentColor()
 
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = if (selected) {
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+            accent.copy(alpha = 0.16f)
         } else {
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+            surfaceColor.copy(alpha = 0.54f)
         },
         modifier = Modifier
             .fillMaxWidth()
@@ -5031,7 +5080,7 @@ private fun SessionDrawerItem(
                 Text(
                     text = "${session.messageCount} 条消息 · ${session.providerId}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = mutedTextColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -5039,7 +5088,7 @@ private fun SessionDrawerItem(
                     Text(
                         text = session.modelName,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = mutedTextColor,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -5059,7 +5108,7 @@ private fun SessionDrawerItem(
                     Icon(
                         imageVector = Icons.Outlined.MoreVert,
                         contentDescription = "会话操作",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        tint = mutedTextColor
                     )
                 }
                 DropdownMenu(
@@ -5103,8 +5152,10 @@ private fun CurrentProjectBar(
     projectPath: String,
     knowledgeFileCount: Int
 ) {
+    val accent = rememberReasonixAccentColor()
+    val surfaceColor = rememberReasonixSurfaceColor()
     Surface(
-        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+        color = surfaceColor.copy(alpha = 0.74f),
         tonalElevation = 2.dp,
         shape = MaterialTheme.shapes.large,
         modifier = Modifier
@@ -5120,14 +5171,14 @@ private fun CurrentProjectBar(
             Icon(
                 imageVector = Icons.Outlined.Add,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary
+                tint = accent
             )
             Spacer(modifier = Modifier.width(8.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "当前项目",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
+                    color = accent
                 )
                 Text(
                     text = projectPath,
@@ -5140,7 +5191,7 @@ private fun CurrentProjectBar(
                     Text(
                         text = "已接入知识文件 $knowledgeFileCount 个，可在 @文件 中直接选择",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
+                        color = accent
                     )
                 }
             }
@@ -5150,8 +5201,10 @@ private fun CurrentProjectBar(
 
 @Composable
 private fun SessionUsageBar(usageSummary: UsageSummarySnapshot) {
+    val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Surface(
-        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
+        color = chromeColor.copy(alpha = 0.60f),
         tonalElevation = 2.dp,
         shape = MaterialTheme.shapes.large,
         modifier = Modifier
@@ -5182,13 +5235,13 @@ private fun SessionUsageBar(usageSummary: UsageSummarySnapshot) {
                 Text(
                     text = cacheParts.joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = mutedTextColor
                 )
             }
             Text(
                 text = "预估成本 \$${"%.6f".format(usageSummary.estimatedCostUsd)}",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
         }
     }
@@ -5201,8 +5254,9 @@ private fun FileChangeStatusBar(
     batchCount: Int,
     onClick: () -> Unit
 ) {
+    val chromeColor = rememberReasonixChromeColor()
     Surface(
-        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f),
+        color = chromeColor.copy(alpha = 0.62f),
         tonalElevation = 2.dp,
         shape = MaterialTheme.shapes.large,
         modifier = Modifier
@@ -5247,8 +5301,10 @@ private fun CompressionStatusBar(
     createdAt: Long,
     onClick: () -> Unit
 ) {
+    val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Surface(
-        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.6f),
+        color = chromeColor.copy(alpha = 0.58f),
         tonalElevation = 2.dp,
         shape = MaterialTheme.shapes.large,
         modifier = Modifier
@@ -5284,7 +5340,7 @@ private fun CompressionStatusBar(
             Text(
                 text = summary.lineSequence().take(3).joinToString(" ").take(180),
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = mutedTextColor,
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis
             )
@@ -5308,8 +5364,10 @@ private fun SubagentStatusBar(
     val runningCount = runs.count { it.status in setOf("pending_approval", "queued", "running", "summarizing", "cancelling") }
     val failedCount = runs.count { it.status in setOf("failed", "rejected") }
     val completedCount = runs.count { it.status == "completed" }
+    val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Surface(
-        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.52f),
+        color = chromeColor.copy(alpha = 0.60f),
         tonalElevation = 2.dp,
         shape = MaterialTheme.shapes.large,
         modifier = Modifier
@@ -5343,7 +5401,7 @@ private fun SubagentStatusBar(
                 Text(
                     text = "最新任务: ${run.goal.take(36)} · ${subagentStatusLabel(run.status)}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = mutedTextColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -5365,6 +5423,8 @@ private fun FileChangeBatchSheet(
     onOpenCheckpoint: (ConversationCheckpointUi) -> Unit
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
+        val surfaceColor = rememberReasonixSurfaceColor()
+        val mutedTextColor = rememberReasonixMutedTextColor()
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -5379,14 +5439,14 @@ private fun FileChangeBatchSheet(
             if (checkpoints.isEmpty()) {
                 Surface(
                     shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+                    color = surfaceColor.copy(alpha = 0.56f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
                         text = "还没有可汇总的修改批次",
                         modifier = Modifier.padding(14.dp),
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = mutedTextColor
                     )
                 }
             } else {
@@ -5394,7 +5454,7 @@ private fun FileChangeBatchSheet(
                     val batchRecords = records.filter { it.checkpointId == checkpoint.id }
                     Surface(
                         shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+                        color = surfaceColor.copy(alpha = 0.56f),
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { onOpenCheckpoint(checkpoint) }
@@ -5413,7 +5473,7 @@ private fun FileChangeBatchSheet(
                             Text(
                                 text = "${batchRecords.size} 个文件 · ${formatTimestamp(checkpoint.createdAt)}",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = mutedTextColor
                             )
                             Text(
                                 text = checkpoint.changedFiles.take(3).joinToString("\n"),
@@ -5440,6 +5500,9 @@ private fun FileChangeBatchDetailSheet(
     onOpenRecord: (FileChangeRecordUi) -> Unit
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
+        val surfaceColor = rememberReasonixSurfaceColor()
+        val chromeColor = rememberReasonixChromeColor()
+        val mutedTextColor = rememberReasonixMutedTextColor()
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -5459,11 +5522,11 @@ private fun FileChangeBatchDetailSheet(
             Text(
                 text = "${records.size} 个文件 · ${formatTimestamp(checkpoint.createdAt)}",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
             Surface(
                 shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.38f),
+                color = chromeColor.copy(alpha = 0.58f),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
@@ -5498,7 +5561,7 @@ private fun FileChangeBatchDetailSheet(
             records.forEach { record ->
                 Surface(
                     shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+                        color = surfaceColor.copy(alpha = 0.56f),
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable { onOpenRecord(record) }
@@ -5517,7 +5580,7 @@ private fun FileChangeBatchDetailSheet(
                         Text(
                             text = formatFileChangeOperation(record.operation),
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                         Text(
                             text = record.diffPreview.lineSequence().take(4).joinToString("\n"),
@@ -5542,6 +5605,8 @@ private fun SubagentRunHistorySheet(
 ) {
     var selectedFilter by remember(runs) { mutableStateOf(SubagentHistoryFilter.ALL) }
     var selectedSort by remember(runs) { mutableStateOf(SubagentHistorySortMode.LATEST) }
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     val filteredRuns = remember(runs, selectedFilter) {
         runs.filter { matchesSubagentHistoryFilter(it, selectedFilter) }
     }
@@ -5586,7 +5651,7 @@ private fun SubagentRunHistorySheet(
             Text(
                 text = "按状态筛选",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -5603,7 +5668,7 @@ private fun SubagentRunHistorySheet(
             Text(
                 text = "排序方式",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -5620,39 +5685,39 @@ private fun SubagentRunHistorySheet(
             Text(
                 text = "筛选后 ${sortedRuns.size} 条",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
             if (runs.isEmpty()) {
                 Surface(
                     shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+                    color = surfaceColor.copy(alpha = 0.56f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
                         text = "当前会话还没有子代理任务。",
                         modifier = Modifier.padding(14.dp),
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = mutedTextColor
                     )
                 }
             } else if (sortedRuns.isEmpty()) {
                 Surface(
                     shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+                    color = surfaceColor.copy(alpha = 0.56f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
                         text = "当前筛选条件下没有匹配的子代理任务。",
                         modifier = Modifier.padding(14.dp),
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = mutedTextColor
                     )
                 }
             } else {
                 sortedRuns.forEach { run ->
                     Surface(
                         shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+                        color = surfaceColor.copy(alpha = 0.56f),
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { onOpenRun(run) }
@@ -5686,7 +5751,7 @@ private fun SubagentRunHistorySheet(
                             Text(
                                 text = "模型 ${run.model} · ${formatSubagentTimeRange(run)}",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = mutedTextColor
                             )
                             run.batchLabel?.takeIf { it.isNotBlank() }?.let { batchLabel ->
                                 Text(
@@ -5748,7 +5813,7 @@ private fun SubagentRunHistorySheet(
                                     }
                                 },
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = mutedTextColor
                             )
                         }
                     }
@@ -5882,9 +5947,10 @@ private fun FileChangeDetailSection(
     title: String,
     content: String
 ) {
+    val surfaceColor = rememberReasonixSurfaceColor()
     Surface(
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.36f),
+        color = surfaceColor.copy(alpha = 0.52f),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
@@ -5937,9 +6003,11 @@ private fun CompressionHistorySheet(
 
 @Composable
 private fun CompressionHistoryItem(snapshot: ContextCompressionUi) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Surface(
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+        color = surfaceColor.copy(alpha = 0.56f),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
@@ -5964,14 +6032,14 @@ private fun CompressionHistoryItem(snapshot: ContextCompressionUi) {
                     color = if (snapshot.active) {
                         MaterialTheme.colorScheme.primary
                     } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
+                        mutedTextColor
                     }
                 )
             }
             Text(
                 text = "覆盖 ${snapshot.sourceMessageCount} 条历史消息 · ${formatTimestamp(snapshot.createdAt)}",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
             Text(
                 text = snapshot.summary,
@@ -6013,8 +6081,10 @@ private fun CompressionSuggestionBar(
     onCompress: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Surface(
-        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f),
+        color = chromeColor.copy(alpha = 0.60f),
         tonalElevation = 2.dp,
         shape = MaterialTheme.shapes.large,
         modifier = Modifier
@@ -6040,17 +6110,17 @@ private fun CompressionSuggestionBar(
             Text(
                 text = "预计可压缩 ${suggestion.preview.compressibleMessageCount} 条历史消息，保留最近 ${suggestion.preview.recentMessageCount} 条原文继续对话。",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
             Text(
                 text = "后续注入上下文预计从 ${formatTokenCount(suggestion.preview.estimatedCurrentContextTokens)} Token 降到 ${formatTokenCount(suggestion.preview.estimatedCompressedContextTokens)} Token，约减少 ${formatTokenCount(suggestion.preview.estimatedTokensSaved)} Token（-${suggestion.preview.estimatedReductionPercent}%）。",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
             Text(
                 text = "摘要本身预计占用 ${formatTokenCount(suggestion.preview.estimatedSummaryTokens)} Token，适合先压历史再继续当前问题。",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilledTonalButton(onClick = onCompress) {
