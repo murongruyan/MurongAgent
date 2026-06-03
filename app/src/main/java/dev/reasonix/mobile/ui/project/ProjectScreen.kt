@@ -3465,6 +3465,9 @@ private fun ProjectGitSection(
             },
             title = { Text("运行详情") },
             text = {
+                val surfaceColor = rememberReasonixSurfaceColor()
+                val chromeColor = rememberReasonixChromeColor()
+                val mutedTextColor = rememberReasonixMutedTextColor()
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -3479,12 +3482,12 @@ private fun ProjectGitSection(
                     Text(
                         text = "${detail.statusLabel} · ${detail.headBranch} · ${detail.event}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = mutedTextColor
                     )
                     Text(
                         text = "更新于 ${detail.updatedAt}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = mutedTextColor
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         detail.htmlUrl?.takeIf { it.isNotBlank() }?.let {
@@ -3531,7 +3534,7 @@ private fun ProjectGitSection(
                     detail.issueSummaries.takeIf { it.isNotEmpty() }?.let { issues ->
                         Surface(
                             shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.28f),
+                            color = chromeColor.copy(alpha = 0.56f),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(
@@ -3541,13 +3544,13 @@ private fun ProjectGitSection(
                                 Text(
                                     text = "日志摘要",
                                     style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                    color = MaterialTheme.colorScheme.onSurface
                                 )
                                 issues.forEach { issue ->
                                     Text(
                                         text = issue,
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                        color = MaterialTheme.colorScheme.onSurface
                                     )
                                 }
                             }
@@ -3557,13 +3560,13 @@ private fun ProjectGitSection(
                         Text(
                             text = "这次运行还没有返回 job 详情，可能仍在初始化。",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                     } else {
                         detail.jobs.forEach { job ->
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                color = surfaceColor.copy(alpha = 0.58f),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Column(
@@ -3574,7 +3577,7 @@ private fun ProjectGitSection(
                                     Text(
                                         text = job.statusLabel,
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = mutedTextColor
                                     )
                                     if (job.startedAt.isNotBlank() || job.completedAt.isNotBlank()) {
                                         Text(
@@ -3588,7 +3591,7 @@ private fun ProjectGitSection(
                                                 }
                                             },
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            color = mutedTextColor
                                         )
                                     }
                                     job.steps.forEach { step ->
@@ -3603,7 +3606,7 @@ private fun ProjectGitSection(
                                                 append(step.statusLabel)
                                             },
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            color = mutedTextColor
                                         )
                                     }
                                 }
@@ -3652,6 +3655,7 @@ private fun ProjectGitSection(
             },
             title = { Text("编辑 Release") },
             text = {
+                val mutedTextColor = rememberReasonixMutedTextColor()
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -3708,7 +3712,7 @@ private fun ProjectGitSection(
                     Text(
                         text = if (releaseDraftFlag) "当前将保存为草稿 Release" else if (releasePrereleaseFlag) "当前将保存为预发布 Release" else "当前将保存为正式 Release",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = mutedTextColor
                     )
                 }
             }
@@ -3760,6 +3764,7 @@ private fun ProjectGitSection(
             },
             title = { Text("新建 Release") },
             text = {
+                val mutedTextColor = rememberReasonixMutedTextColor()
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -3817,7 +3822,7 @@ private fun ProjectGitSection(
                     Text(
                         text = if (releaseDraftFlag) "创建后先保留为草稿" else if (releasePrereleaseFlag) "创建后会标记为预发布" else "创建后会作为正式 Release 展示",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = mutedTextColor
                     )
                 }
             }
@@ -3834,6 +3839,8 @@ private fun ProjectGitSection(
             },
             title = { Text("Release 资产") },
             text = {
+                val surfaceColor = rememberReasonixSurfaceColor()
+                val mutedTextColor = rememberReasonixMutedTextColor()
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -3861,13 +3868,13 @@ private fun ProjectGitSection(
                         Text(
                             text = "这个 Release 还没有可下载资产。",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                     } else {
                         dialog.assets.forEach { asset ->
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                color = surfaceColor.copy(alpha = 0.58f),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Column(
@@ -3878,7 +3885,7 @@ private fun ProjectGitSection(
                                     Text(
                                         text = "大小 ${asset.sizeLabel} · 更新 ${asset.updatedAt}",
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = mutedTextColor
                                     )
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         asset.browserDownloadUrl?.takeIf { it.isNotBlank() }?.let {
@@ -3963,19 +3970,21 @@ private fun ProjectGitFileGroup(
     onAction: (ProjectGitFileChangeUi) -> Unit,
     onOpenDiff: (ProjectGitFileChangeUi) -> Unit
 ) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(title, style = MaterialTheme.typography.titleSmall)
         if (items.isEmpty()) {
             Text(
                 emptyText,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
         } else {
             items.forEach { change ->
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                    color = surfaceColor.copy(alpha = 0.58f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
@@ -3986,7 +3995,7 @@ private fun ProjectGitFileGroup(
                         Text(
                             change.statusLabel,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             TextButton(onClick = { onOpenDiff(change) }) {
@@ -4302,13 +4311,13 @@ private fun ProjectGitHubDownloadHistorySection(
             Text(
                 text = "这里会显示本页触发的工作流日志、产物和 Release 资产下载记录。",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
         } else {
             downloads.forEach { item ->
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                    color = surfaceColor.copy(alpha = 0.58f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
@@ -4322,12 +4331,12 @@ private fun ProjectGitHubDownloadHistorySection(
                         Text(
                             text = "${item.fileName} · ${item.createdAtLabel}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                         Text(
                             text = "下载 ID ${item.downloadId}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = onOpenSystemDownloads) {
@@ -4358,6 +4367,8 @@ private fun ProjectGitHubReleaseSection(
     onOpenReleasePage: (ProjectGitHubReleaseUi) -> Unit,
     onOpenAssets: (ProjectGitHubReleaseUi) -> Unit
 ) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -4376,13 +4387,13 @@ private fun ProjectGitHubReleaseSection(
             Text(
                 text = "当前仓库还没有读取到 Release。",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
         } else {
             releases.forEach { release ->
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                    color = surfaceColor.copy(alpha = 0.58f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
@@ -4410,13 +4421,13 @@ private fun ProjectGitHubReleaseSection(
                                 }
                             },
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                         if (release.body.isNotBlank()) {
                             Text(
                                 text = release.body.take(140),
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = mutedTextColor
                             )
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -4471,19 +4482,21 @@ private fun ProjectGitHistorySection(
     commits: List<ProjectGitCommitUi>,
     onOpenCommit: (ProjectGitCommitUi) -> Unit
 ) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("最近提交", style = MaterialTheme.typography.titleSmall)
         if (commits.isEmpty()) {
             Text(
                 "当前仓库还没有可显示的提交记录。",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
         } else {
             commits.forEach { commit ->
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                    color = surfaceColor.copy(alpha = 0.58f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
@@ -4494,13 +4507,13 @@ private fun ProjectGitHistorySection(
                         Text(
                             "${commit.shortHash} · ${commit.relativeTime}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                         commit.author.takeIf { it.isNotBlank() }?.let { author ->
                             Text(
                                 author,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = mutedTextColor
                             )
                         }
                         TextButton(onClick = { onOpenCommit(commit) }) {

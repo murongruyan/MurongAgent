@@ -1467,12 +1467,15 @@ private fun InlineMentionSuggestionsCard(
                 )
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    val surfaceColor = rememberReasonixSurfaceColor()
+                    val chromeColor = rememberReasonixChromeColor()
+                    val mutedTextColor = rememberReasonixMutedTextColor()
                     if (query.isBlank()) {
                         visibleResults.forEach { mention ->
                             MentionCandidateRow(
                                 mention = mention,
                                 query = query,
-                                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                                containerColor = surfaceColor.copy(alpha = 0.82f),
                                 isKnowledge = mention.path in knowledgePaths,
                                 knowledgeOutline = knowledgeOutlines[mention.path],
                                 snapshotNames = snapshotNamesByPath[mention.path].orEmpty(),
@@ -1487,7 +1490,7 @@ private fun InlineMentionSuggestionsCard(
                             knowledgePaths = knowledgePaths,
                             knowledgeOutlines = knowledgeOutlines,
                             snapshotNamesByPath = snapshotNamesByPath,
-                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                            containerColor = chromeColor.copy(alpha = 0.54f),
                             onSelect = onSelect
                         )
                         MentionCandidateSection(
@@ -1497,7 +1500,7 @@ private fun InlineMentionSuggestionsCard(
                             knowledgePaths = knowledgePaths,
                             knowledgeOutlines = knowledgeOutlines,
                             snapshotNamesByPath = snapshotNamesByPath,
-                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                            containerColor = surfaceColor.copy(alpha = 0.82f),
                             onSelect = onSelect
                         )
                     }
@@ -1514,6 +1517,7 @@ private fun MentionInputHintBar(
     onOpenPicker: () -> Unit
 ) {
     val accent = rememberReasonixAccentColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     ReasonixGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
@@ -1542,7 +1546,7 @@ private fun MentionInputHintBar(
                         "当前匹配 $matchCount 项，可继续输入缩小范围或打开完整搜索。"
                     },
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = mutedTextColor
                 )
             }
             Spacer(modifier = Modifier.width(8.dp))
@@ -1565,6 +1569,9 @@ private fun MentionFilePickerDialog(
     onSelect: (FileMentionUi) -> Unit
 ) {
     var localQuery by remember(query) { mutableStateOf(query) }
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     val results = remember(localQuery, initialResults) {
         if (localQuery == query) initialResults else onSearch(localQuery)
     }
@@ -1634,7 +1641,7 @@ private fun MentionFilePickerDialog(
                     Text(
                         text = "当前没有匹配文件，先进入项目任务并确保项目目录已绑定。",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = mutedTextColor
                     )
                 } else {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1643,7 +1650,7 @@ private fun MentionFilePickerDialog(
                                 MentionCandidateRow(
                                     mention = mention,
                                     query = localQuery,
-                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                    containerColor = surfaceColor.copy(alpha = 0.66f),
                                     isKnowledge = mention.path in knowledgePaths,
                                     knowledgeOutline = knowledgeOutlines[mention.path],
                                     snapshotNames = snapshotNamesByPath[mention.path].orEmpty(),
@@ -1658,7 +1665,7 @@ private fun MentionFilePickerDialog(
                                 knowledgePaths = knowledgePaths,
                                 knowledgeOutlines = knowledgeOutlines,
                                 snapshotNamesByPath = snapshotNamesByPath,
-                                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
+                                containerColor = chromeColor.copy(alpha = 0.52f),
                                 onSelect = onSelect
                             )
                             MentionCandidateSection(
@@ -1668,7 +1675,7 @@ private fun MentionFilePickerDialog(
                                 knowledgePaths = knowledgePaths,
                                 knowledgeOutlines = knowledgeOutlines,
                                 snapshotNamesByPath = snapshotNamesByPath,
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                containerColor = surfaceColor.copy(alpha = 0.66f),
                                 onSelect = onSelect
                             )
                         }
@@ -1753,9 +1760,11 @@ private fun MentionReasonBadge(
     label: String,
     compact: Boolean = false
 ) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Surface(
         shape = MaterialTheme.shapes.small,
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)
+        color = surfaceColor.copy(alpha = 0.72f)
     ) {
         Text(
             text = label,
@@ -1764,7 +1773,7 @@ private fun MentionReasonBadge(
                 vertical = if (compact) 1.dp else 2.dp
             ),
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = mutedTextColor
         )
     }
 }
@@ -1774,9 +1783,11 @@ private fun MentionSnapshotBadge(
     label: String,
     compact: Boolean = false
 ) {
+    val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Surface(
         shape = MaterialTheme.shapes.small,
-        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)
+        color = chromeColor.copy(alpha = 0.70f)
     ) {
         Text(
             text = "快照 $label",
@@ -1785,7 +1796,7 @@ private fun MentionSnapshotBadge(
                 vertical = if (compact) 1.dp else 2.dp
             ),
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSecondaryContainer
+            color = MaterialTheme.colorScheme.onSurface
         )
     }
 }
@@ -2401,9 +2412,11 @@ private fun SubagentCard(
     onClick: () -> Unit,
     onLongPress: () -> Unit
 ) {
+    val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Surface(
         shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+        color = chromeColor.copy(alpha = 0.70f),
         tonalElevation = 1.dp,
         modifier = Modifier
             .fillMaxWidth()
@@ -2442,7 +2455,7 @@ private fun SubagentCard(
             Text(
                 text = "模型 ${run.model} · 推理 ${run.reasoningEffort ?: "默认"}",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
             run.templateTitle?.takeIf { it.isNotBlank() }?.let { templateTitle ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2457,7 +2470,7 @@ private fun SubagentCard(
                         Text(
                             text = "#${run.templateId}",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                            color = mutedTextColor.copy(alpha = 0.72f)
                         )
                     }
                 }
@@ -2484,7 +2497,7 @@ private fun SubagentCard(
                 Text(
                     text = run.statusMessage,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = mutedTextColor
                 )
             }
             if (run.queuePosition != null || run.assignedSlot != null) {
@@ -2534,13 +2547,13 @@ private fun SubagentCard(
             Text(
                 text = "工具 ${run.allowedTools.joinToString(", ").ifBlank { "无" }}",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
             if (run.usageSummary.totalTokens > 0) {
                 Text(
                     text = "Token ${run.usageSummary.totalTokens} · 预估 \$${"%.6f".format(run.usageSummary.estimatedCostUsd)}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = mutedTextColor
                 )
             }
             Text(
@@ -2558,9 +2571,11 @@ private fun SubagentBatchCard(
     onClick: () -> Unit,
     onLongPress: () -> Unit
 ) {
+    val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Surface(
         shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.62f),
+        color = chromeColor.copy(alpha = 0.64f),
         tonalElevation = 1.dp,
         modifier = Modifier
             .fillMaxWidth()
@@ -2599,7 +2614,7 @@ private fun SubagentBatchCard(
             Text(
                 text = batch.parentGoal,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = mutedTextColor,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
@@ -2623,7 +2638,7 @@ private fun SubagentBatchCard(
                 Text(
                     text = batch.statusMessage,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = mutedTextColor
                 )
             }
             buildBatchSchedulingMetricLine(batch)?.let { metricLine ->
@@ -2637,7 +2652,7 @@ private fun SubagentBatchCard(
                 Text(
                     text = "${formatTimestamp(entry.timestamp)} · ${entry.title}",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = mutedTextColor
                 )
             }
             Text(
@@ -2656,6 +2671,8 @@ private fun SubagentDetailSheet(
     onCancel: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -2674,14 +2691,14 @@ private fun SubagentDetailSheet(
             // ── 阶段时间线（核心视觉） ──
             Surface(
                 shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                color = surfaceColor.copy(alpha = 0.58f),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text(
                         text = "执行阶段",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = mutedTextColor,
                         modifier = Modifier.padding(bottom = 8.dp)
                     )
                     SubagentRunStageTimeline(run = run)
@@ -2795,6 +2812,8 @@ private fun SubagentBatchDetailSheet(
     batch: SubagentBatchUi,
     onDismiss: () -> Unit
 ) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -2812,14 +2831,14 @@ private fun SubagentBatchDetailSheet(
             // ── 批次时间线 ──
             Surface(
                 shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                color = surfaceColor.copy(alpha = 0.58f),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text(
                         text = "事件时间线",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = mutedTextColor,
                         modifier = Modifier.padding(bottom = 8.dp)
                     )
                     SubagentBatchTimeline(timeline = batch.timeline)
@@ -2879,8 +2898,9 @@ private fun SubagentBatchDetailSheet(
 
 @Composable
 private fun EditHintBar(onCancel: () -> Unit) {
+    val chromeColor = rememberReasonixChromeColor()
     Surface(
-        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.9f),
+        color = chromeColor.copy(alpha = 0.68f),
         shape = MaterialTheme.shapes.large,
         modifier = Modifier
             .fillMaxWidth()
@@ -2896,7 +2916,7 @@ private fun EditHintBar(onCancel: () -> Unit) {
             Text(
                 text = "正在重新编辑历史消息，发送后会从该节点继续。",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f)
             )
             TextButton(onClick = onCancel) {
@@ -3342,6 +3362,8 @@ private fun ImagePreviewDialog(
     val bitmap = remember(currentItem.uri, currentItem.localCachePath) {
         decodePreviewBitmap(context, currentItem)
     }
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             shape = RoundedCornerShape(20.dp),
@@ -3373,7 +3395,7 @@ private fun ImagePreviewDialog(
                 }
                 Surface(
                     shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                    color = surfaceColor.copy(alpha = 0.58f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Box(
@@ -3395,7 +3417,7 @@ private fun ImagePreviewDialog(
                             Text(
                                 text = "图片预览不可用",
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = mutedTextColor
                             )
                         }
                     }
@@ -3415,7 +3437,7 @@ private fun ImagePreviewDialog(
                         Text(
                             text = "${currentIndex + 1} / ${items.size}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = mutedTextColor
                         )
                         OutlinedButton(
                             onClick = { currentIndex = (currentIndex + 1).coerceAtMost(items.lastIndex) },
@@ -3488,6 +3510,9 @@ private fun WelcomeView(
     onNavigateToSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val chromeColor = rememberReasonixChromeColor()
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -3505,14 +3530,14 @@ private fun WelcomeView(
         Text(
             text = "AI 编程助手 · 支持多 Provider",
             fontSize = 14.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = mutedTextColor
         )
         Spacer(modifier = Modifier.height(32.dp))
 
         if (!hasApiKey) {
             Surface(
                 shape = MaterialTheme.shapes.extraLarge,
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
+                color = chromeColor.copy(alpha = 0.64f),
                 tonalElevation = 2.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -3530,7 +3555,7 @@ private fun WelcomeView(
                     Text(
                         text = "请先配置 AI 提供商和 API Key，\n支持 DeepSeek、OpenAI 兼容中转站、Claude",
                         fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = mutedTextColor,
                         lineHeight = 20.sp
                     )
                     Spacer(modifier = Modifier.height(16.dp))
@@ -3547,7 +3572,7 @@ private fun WelcomeView(
         } else {
             Surface(
                 shape = MaterialTheme.shapes.extraLarge,
-                color = MaterialTheme.colorScheme.surface,
+                color = surfaceColor.copy(alpha = 0.82f),
                 tonalElevation = 3.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -3565,7 +3590,7 @@ private fun WelcomeView(
                     Text(
                         text = "在下方输入你的问题，\n我可以帮你写代码、执行命令、查看文件",
                         fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = mutedTextColor,
                         lineHeight = 20.sp
                     )
                 }
@@ -3943,14 +3968,14 @@ private fun DraftProposalCard(
             Text(
                 text = proposal.previewLabel,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = mutedTextColor,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = "检测到兼容草案块，不会自动导入或接入，请在设置页或项目页手动处理。",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = mutedTextColor
             )
         }
     }
@@ -4428,11 +4453,12 @@ private fun shouldIncludeSystemMessageInCopiedConversation(content: String): Boo
 
 @Composable
 private fun DetailRow(label: String, value: String) {
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = mutedTextColor
         )
         Text(
             text = value,
@@ -4444,15 +4470,17 @@ private fun DetailRow(label: String, value: String) {
 
 @Composable
 private fun DetailBlock(label: String, value: String) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = mutedTextColor
         )
         Surface(
             shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+            color = surfaceColor.copy(alpha = 0.60f),
             modifier = Modifier.fillMaxWidth()
         ) {
             SelectionContainer {
@@ -4578,6 +4606,7 @@ private fun stageStatusColor(status: StageStatus, themeColor: Color): Color = wh
 @Composable
 private fun SubagentRunStageTimeline(run: SubagentRunUi) {
     val stages = remember(run) { buildSubagentRunStages(run) }
+    val mutedTextColor = rememberReasonixMutedTextColor()
     if (stages.isEmpty()) return
 
     Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
@@ -4638,8 +4667,8 @@ private fun SubagentRunStageTimeline(run: SubagentRunUi) {
                             color = when (stage.status) {
                                 StageStatus.COMPLETED -> MaterialTheme.colorScheme.onSurface
                                 StageStatus.CURRENT -> MaterialTheme.colorScheme.primary
-                                StageStatus.PENDING -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                                StageStatus.SKIPPED -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+                                StageStatus.PENDING -> mutedTextColor.copy(alpha = 0.72f)
+                                StageStatus.SKIPPED -> mutedTextColor.copy(alpha = 0.48f)
                             }
                         )
                         stage.durationLabel?.let { duration ->
@@ -4649,7 +4678,7 @@ private fun SubagentRunStageTimeline(run: SubagentRunUi) {
                                 color = when (stage.status) {
                                     StageStatus.COMPLETED -> Color(0xFF2E7D32)
                                     StageStatus.CURRENT -> MaterialTheme.colorScheme.primary
-                                    else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                    else -> mutedTextColor.copy(alpha = 0.72f)
                                 }
                             )
                         }
@@ -4658,7 +4687,7 @@ private fun SubagentRunStageTimeline(run: SubagentRunUi) {
                         Text(
                             text = ts,
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                            color = mutedTextColor.copy(alpha = 0.8f)
                         )
                     }
                 }
@@ -4669,11 +4698,12 @@ private fun SubagentRunStageTimeline(run: SubagentRunUi) {
 
 @Composable
 private fun SubagentBatchTimeline(timeline: List<SubagentTimelineEntryUi>) {
+    val mutedTextColor = rememberReasonixMutedTextColor()
     if (timeline.isEmpty()) {
         Text(
             text = "当前还没有可展示的批次时间线。",
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+            color = mutedTextColor.copy(alpha = 0.72f)
         )
         return
     }
@@ -4733,7 +4763,7 @@ private fun SubagentBatchTimeline(timeline: List<SubagentTimelineEntryUi>) {
                         Text(
                             text = formatTimestamp(entry.timestamp),
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            color = mutedTextColor.copy(alpha = 0.8f),
                             modifier = Modifier.padding(start = 4.dp)
                         )
                     }
@@ -4741,7 +4771,7 @@ private fun SubagentBatchTimeline(timeline: List<SubagentTimelineEntryUi>) {
                         Text(
                             text = entry.detail,
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = mutedTextColor,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -4941,6 +4971,8 @@ fun SessionDrawerContent(
     onDeleteSession: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     Column(
         modifier = modifier
             .fillMaxHeight()
@@ -5002,7 +5034,7 @@ fun SessionDrawerContent(
         if (sessions.isEmpty()) {
             Surface(
                 shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                color = surfaceColor.copy(alpha = 0.58f),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
@@ -5015,7 +5047,7 @@ fun SessionDrawerContent(
                     Text(
                         text = "发送第一条消息后，这里会自动出现会话记录。",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = mutedTextColor
                     )
                 }
             }
