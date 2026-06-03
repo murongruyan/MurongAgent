@@ -744,7 +744,7 @@ fun ReasonixSecondaryPageSurface(
     val chromeSeed = rememberReasonixChromeColor()
     val hazeState = LocalReasonixHazeState.current
     val surfaceColor = if (ui.themeStyle == ReasonixThemeStyle.GLASS) {
-        chromeSeed.copy(alpha = if (darkMode) 0.76f else 0.84f)
+        chromeSeed.copy(alpha = if (darkMode) 0.54f else 0.30f)
     } else {
         chromeSeed.copy(alpha = 0.98f)
     }

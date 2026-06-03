@@ -166,25 +166,9 @@ fun ToolsScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             item {
-                ReasonixInfoCard(title = "工具中心") {
-                    Text(
-                        text = "这里统一收口 Root、审批、工作流、文件改动和 MCP 状态，和项目页、设置页保持同一套玻璃层级。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            item {
-                RootStatusCard(
-                    rootStatus = rootStatus,
-                    isCheckingRoot = isCheckingRoot,
-                    onCheckRoot = onCheckRoot
-                )
-            }
-            item {
                 SectionTitle(
                     title = "内置工具",
-                    subtitle = "集中查看当前工具开关、Root、审批、工作流和 MCP 状态。"
+                    subtitle = "集中查看当前工具开关、审批、工作流和 MCP 状态。"
                 )
             }
             items(builtInTools, key = { it.name }) { tool ->
@@ -242,12 +226,6 @@ fun ToolsScreen(
                     onConnectMcpServers = onConnectMcpServers,
                     onRefreshMcpStatus = onRefreshMcpStatus,
                     onOpenStatus = { selectedMcpStatus = it }
-                )
-            }
-            item {
-                PlanningCard(
-                    title = "后续规划",
-                    body = "当前工具页先保留可编译且稳定的管理闭环，后面再继续把更细的协议级配置迁回移动端。"
                 )
             }
             item {
@@ -351,7 +329,7 @@ private fun RootStatusCard(
     val subtitle = when {
         isCheckingRoot -> "正在检查设备 Root 状态..."
         rootStatus == true -> "文件工具和命令工具可以直接走 root 能力。"
-        else -> "建议先确认 Root，再继续使用文件和 shell 能力。"
+        else -> "应用会自动检测 Root，可继续直接使用文件和 shell 能力。"
     }
     ToolsPanelCard {
         Column(
@@ -376,8 +354,11 @@ private fun RootStatusCard(
                     }
                 )
             }
-            FilledTonalButton(onClick = onCheckRoot) {
-                Text(if (isCheckingRoot) "检查中..." else "重新检测 Root")
+            if (isCheckingRoot) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp
+                )
             }
         }
     }

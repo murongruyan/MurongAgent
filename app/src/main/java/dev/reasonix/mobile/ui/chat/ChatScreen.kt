@@ -4224,7 +4224,7 @@ private fun ToolCardHeader(
                 verticalArrangement = Arrangement.spacedBy(if (summary.isNullOrBlank()) 0.dp else 2.dp)
             ) {
                 Text(
-                    text = toolName,
+                    text = displayToolName(toolName),
                     style = if (quiet) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
@@ -4339,6 +4339,9 @@ private fun buildToolResultSummary(
     result: String,
     fileChanges: List<String>
 ): String? {
+    if (toolName.equals("shell", ignoreCase = true)) {
+        return null
+    }
     if (fileChanges.isNotEmpty()) {
         val firstChange = fileChanges.firstOrNull().orEmpty()
         return if (fileChanges.size == 1) {
@@ -4416,6 +4419,22 @@ private fun truncateInlineText(value: String, maxLength: Int = 56): String {
     val singleLine = value.replace(Regex("""\s+"""), " ").trim()
     if (singleLine.length <= maxLength) return singleLine
     return singleLine.take(maxLength - 1).trimEnd() + "…"
+}
+
+private fun displayToolName(toolName: String): String {
+    return when (toolName.lowercase()) {
+        "file" -> "文件"
+        "shell", "command" -> "命令"
+        "read" -> "读取"
+        "grep" -> "搜索"
+        "glob" -> "匹配"
+        "searchcodebase" -> "代码库搜索"
+        "webfetch", "web_fetch" -> "网页抓取"
+        "websearch", "web_search" -> "联网搜索"
+        "code_edit" -> "代码编辑"
+        "subagent" -> "子代理"
+        else -> toolName
+    }
 }
 
 private fun copyTextToClipboard(context: android.content.Context, text: String) {

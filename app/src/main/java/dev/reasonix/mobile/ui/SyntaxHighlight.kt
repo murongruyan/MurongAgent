@@ -4,18 +4,19 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 
-internal const val KEYWORD_BLUE = 0xFF7FC8FF
-internal const val STRING_ORANGE = 0xFFFFC17A
-internal const val COMMENT_GREEN = 0xFF8FD18A
-internal const val TYPE_CYAN = 0xFF72E6D3
-internal const val NUMBER_LIGHT = 0xFFD9F29B
-internal const val CODE_BG = 0xFF1E1E1E
-internal const val CODE_LANG_BG = 0xFF2D2D2D
+internal const val KEYWORD_BLUE = 0xFF2F6BFF
+internal const val STRING_ORANGE = 0xFFB85A00
+internal const val COMMENT_GREEN = 0xFF2E7D32
+internal const val TYPE_CYAN = 0xFF006C7A
+internal const val NUMBER_LIGHT = 0xFF7A5C00
+internal const val CODE_BG = 0xFFF2F4F8
+internal const val CODE_LANG_BG = 0xFFE3E8F2
 
 fun highlightSyntax(code: String, language: String): AnnotatedString {
     val builder = AnnotatedString.Builder()
+    val normalizedLanguage = language.lowercase()
 
-    val keywords = when (language.lowercase()) {
+    val keywords = when (normalizedLanguage) {
         "kotlin", "kt" -> listOf(
             "fun", "val", "var", "class", "object", "interface", "enum", "sealed",
             "data", "open", "abstract", "override", "private", "public", "protected",
@@ -74,10 +75,9 @@ fun highlightSyntax(code: String, language: String): AnnotatedString {
             "case", "esac", "in", "function", "return", "exit", "export", "local",
             "source", ".", "echo", "read", "set", "unset", "trap", "exec"
         )
-        "toml" -> listOf(
+        "toml", "properties", "prop", "ini", "conf", "cfg" -> listOf(
             "true", "false"
         )
-        "ini", "conf", "cfg" -> emptyList()
         "sql" -> listOf(
             "select", "from", "where", "insert", "into", "update", "delete", "join",
             "left", "right", "inner", "outer", "on", "group", "by", "order", "having",
@@ -108,6 +108,24 @@ fun highlightSyntax(code: String, language: String): AnnotatedString {
 
     while (j < len) {
         when {
+            (normalizedLanguage == "properties" ||
+                normalizedLanguage == "prop" ||
+                normalizedLanguage == "ini" ||
+                normalizedLanguage == "conf" ||
+                normalizedLanguage == "cfg" ||
+                normalizedLanguage == "toml") &&
+                isIniLikeKeyStart(code, j) -> {
+                val keyEndExclusive = findIniLikeKeyEnd(code, j)
+                if (keyEndExclusive > j) {
+                    builder.pushStyle(SpanStyle(color = Color(TYPE_CYAN)))
+                    builder.append(code.substring(j, keyEndExclusive))
+                    builder.pop()
+                    j = keyEndExclusive
+                } else {
+                    builder.append(code[j])
+                    j++
+                }
+            }
             (language.equals("html", ignoreCase = true) || language.equals("htm", ignoreCase = true)) &&
                 j + 3 < len && code.startsWith("<!--", j) -> {
                 val commentEnd = code.indexOf("-->", j + 4).let { if (it == -1) len else it + 3 }
@@ -244,4 +262,28 @@ fun highlightSyntax(code: String, language: String): AnnotatedString {
     }
 
     return builder.toAnnotatedString()
+}
+
+private fun isIniLikeKeyStart(code: String, index: Int): Boolean {
+    if (index !in code.indices) return false
+    val lineStart = index == 0 || code[index - 1] == '\n'
+    if (!lineStart) return false
+    val firstChar = code[index]
+    return !firstChar.isWhitespace() && firstChar != '#' && firstChar != ';' && firstChar != '['
+}
+
+private fun findIniLikeKeyEnd(code: String, startIndex: Int): Int {
+    var cursor = startIndex
+    while (cursor < code.length && code[cursor] != '\n') {
+        val current = code[cursor]
+        if (current == '=' || current == ':') {
+            var end = cursor
+            while (end > startIndex && code[end - 1].isWhitespace()) {
+                end--
+            }
+            return end
+        }
+        cursor++
+    }
+    return startIndex
 }

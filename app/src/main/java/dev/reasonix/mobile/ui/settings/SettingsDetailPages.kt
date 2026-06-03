@@ -755,12 +755,6 @@ fun AboutPage() {
                             color = MaterialTheme.colorScheme.onSurface,
                             fontWeight = FontWeight.SemiBold
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "这套界面正在继续往现代玻璃、统一弹窗、横向分页和更像桌面端的项目工作流收口。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
                     }
                 }
 
@@ -783,33 +777,6 @@ fun AboutPage() {
                             text = "README",
                             onClick = { uriHandler.openUri("https://github.com/murongruyan/reasonix-mobile/blob/main/README.md") },
                             modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-
-                ReasonixSectionCard(title = "说明") {
-                    Text(
-                        text = "这一版 UI 重点朝正式产品化收口：模糊悬浮底栏、统一弹窗、现代玻璃卡片、可横滑的一级页、主题页和关于页，以及更接近桌面端的信息组织方式。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    ReasonixGlassSurface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = MaterialTheme.shapes.large,
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp)
-                    ) {
-                        Text(
-                            text = "产品方向",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "优先保证聊天、项目编辑、工具和设置四个一级界面的统一质感，同时把二级页层级、顶部 chrome 和底部交互继续向参考项目靠齐。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }

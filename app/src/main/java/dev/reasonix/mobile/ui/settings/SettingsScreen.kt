@@ -87,6 +87,22 @@ fun SettingsScreen(
         lastOpenedGitHubAuthUrl = uri
     }
 
+    LaunchedEffect(Unit) {
+        onCheckRoot()
+    }
+
+    LaunchedEffect(config.githubToken) {
+        if (config.isGitHubSignedIn()) {
+            onRefreshGitHubAuthStatus()
+        }
+    }
+
+    LaunchedEffect(config.activeProviderId) {
+        if (supportsBalanceFetch(config.activeProviderId)) {
+            onRefreshProviderBalance(config.activeProviderId)
+        }
+    }
+
     ReasonixSecondaryPageSurface(
         modifier = Modifier
             .fillMaxSize()
@@ -100,15 +116,7 @@ fun SettingsScreen(
                 .padding(start = 12.dp, top = 10.dp, end = 12.dp, bottom = 132.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            ReasonixInfoCard(title = "界面收口") {
-                Text(
-                    text = "这里保留核心设置，同时把外观和关于拆成单独页面，方便后续继续做现代玻璃风的产品化 UI。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
 
-            ReasonixSectionCard(title = "外观与关于") {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -156,7 +164,7 @@ fun SettingsScreen(
                                 isCheckingRoot -> "检测中…"
                                 rootStatus == true -> "✅ Root 可用"
                                 rootStatus == false -> "❌ Root 不可用"
-                                else -> "点击检测"
+                                else -> "自动检测中…"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = when {
@@ -166,18 +174,11 @@ fun SettingsScreen(
                             }
                         )
                     }
-                    FilledTonalButton(
-                        onClick = onCheckRoot,
-                        enabled = !isCheckingRoot
-                    ) {
-                        if (isCheckingRoot) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Text("检测")
-                        }
+                    if (isCheckingRoot) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
                     }
                 }
             }
@@ -329,12 +330,6 @@ fun SettingsScreen(
                     ) {
                         Text(if (config.isGitHubSignedIn()) "重新登录" else "GitHub 登录", fontSize = 12.sp)
                     }
-                    FilledTonalButton(
-                        onClick = onRefreshGitHubAuthStatus,
-                        enabled = !gitHubAuthState.isLoading
-                    ) {
-                        Text("查看状态", fontSize = 12.sp)
-                    }
                     OutlinedButton(
                         onClick = onClearGitHubToken,
                         enabled = config.isGitHubSignedIn() && !gitHubAuthState.isLoading
@@ -432,7 +427,7 @@ fun SettingsScreen(
                     )
                 } else {
                     Text(
-                        text = "当前余额币种为 $activeBalanceCurrency，无法直接与 USD 成本相减。",
+                        text = "当前余额为 ${formatBalance(config.getBalanceUsd(), activeBalanceCurrency)}，成本仍按 USD 统计，暂不做跨币种换算。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1262,7 +1257,7 @@ private fun BalanceSyncCard(
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.Start,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
@@ -1282,18 +1277,11 @@ private fun BalanceSyncCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                FilledTonalButton(
-                    onClick = onRefresh,
-                    enabled = !syncState.isSyncing
-                ) {
-                    if (syncState.isSyncing) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            strokeWidth = 2.dp
-                        )
-                    } else {
-                        Text("同步", fontSize = 12.sp)
-                    }
+                if (syncState.isSyncing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 2.dp
+                    )
                 }
             }
             syncState.message?.takeIf { it.isNotBlank() }?.let {

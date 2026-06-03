@@ -55,6 +55,10 @@ class SettingsViewModel @Inject constructor(
     private val mcpRegistry: McpRegistry,
     private val chatSessionManager: ChatSessionManager
 ) : ViewModel() {
+    private companion object {
+        const val AUTO_BALANCE_SYNC_INTERVAL_MS = 10 * 60 * 1000L
+    }
+
     private val githubJson = Json { ignoreUnknownKeys = true; isLenient = true }
     private val githubClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -97,12 +101,28 @@ class SettingsViewModel @Inject constructor(
         // 加载已保存的 MCP 配置
         _mcpServers.value = mcpRegistry.loadConfigs()
         _sessions.value = chatSessionManager.listSessions()
+        checkRoot()
         viewModelScope.launch {
             configRepository.configFlow.collect { currentConfig ->
                 _gitHubAuthState.value = _gitHubAuthState.value.copy(
                     viewerLogin = currentConfig.githubViewerLogin.ifBlank { null },
                     viewerName = currentConfig.githubViewerName.ifBlank { null }
                 )
+                if (
+                    currentConfig.isGitHubSignedIn() &&
+                    _gitHubAuthState.value.viewerLogin.isNullOrBlank() &&
+                    !_gitHubAuthState.value.isLoading
+                ) {
+                    refreshGitHubAuthStatus()
+                }
+                val activeProviderId = currentConfig.activeProviderId
+                val lastSyncedAt = currentConfig.getBalanceSyncedAt(activeProviderId)
+                val shouldAutoSyncBalance = providerBalanceService.supportsBalanceFetch(activeProviderId, currentConfig) &&
+                    (_balanceSyncStates.value[activeProviderId]?.isSyncing != true) &&
+                    (lastSyncedAt <= 0L || System.currentTimeMillis() - lastSyncedAt >= AUTO_BALANCE_SYNC_INTERVAL_MS)
+                if (shouldAutoSyncBalance) {
+                    refreshProviderBalance(activeProviderId)
+                }
             }
         }
     }
@@ -234,13 +254,32 @@ class SettingsViewModel @Inject constructor(
                 )
                 return@launch
             }
-            _gitHubAuthState.value = _gitHubAuthState.value.copy(
-                isLoading = false,
-                viewerLogin = currentConfig.githubViewerLogin.ifBlank { null },
-                viewerName = currentConfig.githubViewerName.ifBlank { null },
-                message = "当前已登录 GitHub",
-                error = null
-            )
+            _gitHubAuthState.value = _gitHubAuthState.value.copy(isLoading = true, error = null, message = "正在校验 GitHub 登录状态...")
+            val viewerResult = fetchGitHubViewer(currentConfig.getGitHubApiBaseUrl(), currentConfig.githubToken)
+            if (viewerResult.success) {
+                val resolvedLogin = viewerResult.viewerLogin.orEmpty()
+                val resolvedName = viewerResult.viewerName.orEmpty()
+                configRepository.saveConfig(
+                    currentConfig.copy(
+                        githubViewerLogin = resolvedLogin,
+                        githubViewerName = resolvedName
+                    )
+                )
+                _gitHubAuthState.value = GitHubAuthUiState(
+                    isLoading = false,
+                    viewerLogin = viewerResult.viewerLogin,
+                    viewerName = viewerResult.viewerName,
+                    message = "GitHub 已连接",
+                    error = null
+                )
+            } else {
+                _gitHubAuthState.value = GitHubAuthUiState(
+                    isLoading = false,
+                    viewerLogin = currentConfig.githubViewerLogin.ifBlank { null },
+                    viewerName = currentConfig.githubViewerName.ifBlank { null },
+                    error = viewerResult.error ?: "GitHub 登录状态校验失败"
+                )
+            }
         }
     }
 

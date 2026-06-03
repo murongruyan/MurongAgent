@@ -363,7 +363,7 @@ private fun ProjectEditorSection(
     val editorSurfaceColor = rememberReasonixSurfaceColor()
     val editorChromeColor = rememberReasonixChromeColor()
     val editorMutedTextColor = rememberReasonixMutedTextColor()
-    val editorBackgroundColor = editorSurfaceColor.copy(alpha = 0.42f)
+    val editorBackgroundColor = MaterialTheme.colorScheme.background.copy(alpha = 0.96f)
     val projectRoot = remember(currentProjectPath) {
         currentProjectPath
             ?.takeIf { File(it).isDirectory }
@@ -1108,17 +1108,15 @@ private fun ProjectEditorSection(
                 }
             }
 
-            ReasonixGlassSurface(
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f),
-                shape = RoundedCornerShape(22.dp),
-                contentPadding = PaddingValues(0.dp)
+                    .weight(1f)
             ) {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     item(key = "status") {
                         when {
@@ -1293,12 +1291,13 @@ private fun ProjectEditorSection(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             ReasonixGlassSurface(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                shape = RoundedCornerShape(20.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                surfaceColorOverride = editorChromeColor.copy(alpha = 0.14f)
             ) {
                 Row(
                     modifier = Modifier
@@ -1371,12 +1370,14 @@ private fun ProjectEditorSection(
                     .weight(1f)
                     .fillMaxWidth(),
                 shape = RoundedCornerShape(24.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                surfaceColorOverride = Color.Transparent
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(10.dp)
+                        .background(editorBackgroundColor.copy(alpha = 0.72f), RoundedCornerShape(24.dp))
+                        .padding(6.dp)
                 ) {
                     if (isFileLoading) {
                         EmptyEditorState("正在读取文件", "请稍候，正在加载当前文件内容。")
@@ -1395,7 +1396,7 @@ private fun ProjectEditorSection(
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(editorChromeColor.copy(alpha = 0.28f), RoundedCornerShape(18.dp))
+                                .background(editorChromeColor.copy(alpha = 0.05f), RoundedCornerShape(18.dp))
                         ) {
                             ProjectCodeEditorPane(
                                 editorValue = editorValue,
@@ -1833,43 +1834,37 @@ private fun ProjectSearchResultRow(
     repoLabel: String? = null,
     onOpen: () -> Unit
 ) {
-    val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
-    Surface(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onOpen),
-        shape = RoundedCornerShape(16.dp),
-        color = surfaceColor.copy(alpha = 0.56f)
+            .clickable(onClick = onOpen)
+            .padding(horizontal = 6.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Text(
-                text = highlightSearchKeyword(hit.relativePath, query),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = buildString {
-                    append(projectSearchTypeLabel(hit.fileType))
-                    hit.lineNumber?.let { append(" · 第 $it 行") }
-                    repoLabel?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Text(
-                text = highlightSearchKeyword(hit.preview.ifBlank { "文件名匹配" }, query),
-                style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
+        Text(
+            text = highlightSearchKeyword(hit.relativePath, query),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = buildString {
+                append(projectSearchTypeLabel(hit.fileType))
+                hit.lineNumber?.let { append(" · 第 $it 行") }
+                repoLabel?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Text(
+            text = highlightSearchKeyword(hit.preview.ifBlank { "文件名匹配" }, query),
+            style = MaterialTheme.typography.bodySmall,
+            color = mutedTextColor,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -2018,7 +2013,7 @@ private fun ProjectTreeRow(
     val background = if (isSelected) {
         accent.copy(alpha = 0.16f)
     } else {
-        surfaceColor.copy(alpha = 0.10f)
+        Color.Transparent
     }
     Row(
         modifier = Modifier
@@ -2027,7 +2022,7 @@ private fun ProjectTreeRow(
                 if (entry.isDirectory) onToggleDir(entry.absolutePath) else onSelectFile(entry.absolutePath)
             }
             .background(background)
-            .padding(start = 12.dp + (depth * 14).dp, top = 8.dp, end = 12.dp, bottom = 8.dp),
+            .padding(start = 6.dp + (depth * 14).dp, top = 6.dp, end = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (entry.isDirectory) {
@@ -2053,15 +2048,6 @@ private fun ProjectTreeRow(
                     text = badge,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            if (!entry.isDirectory) {
-                Text(
-                    text = relativeProjectPath(rootPath, entry.absolutePath),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = mutedTextColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -2097,7 +2083,8 @@ private fun ProjectConfigSection(
         modifier = Modifier
             .fillMaxWidth()
             .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
+            .verticalScroll(rememberScrollState())
+            .padding(bottom = 168.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         ReasonixInfoCard(title = "", titleVisible = false) {
@@ -2693,7 +2680,9 @@ private fun ProjectGitSection(
                     onClick = {
                         val repoRoot = gitState.repoRoot ?: return@OutlinedButton
                         runGitAction("已完成抓取") {
-                            runGitCommand(repoRoot, "fetch --all --prune")
+                            runEmbeddedGitAction {
+                                embeddedGitFetch(repoRoot, config.githubToken)
+                            }
                         }
                     },
                     enabled = gitState.hasRemote && !isGitLoading && !isGitActionRunning
@@ -2704,7 +2693,9 @@ private fun ProjectGitSection(
                     onClick = {
                         val repoRoot = gitState.repoRoot ?: return@OutlinedButton
                         runGitAction("已完成拉取") {
-                            runGitCommand(repoRoot, "pull --ff-only")
+                            runEmbeddedGitAction {
+                                embeddedGitPull(repoRoot, config.githubToken)
+                            }
                         }
                     },
                     enabled = gitState.canPull && !isGitLoading && !isGitActionRunning
@@ -2715,7 +2706,9 @@ private fun ProjectGitSection(
                     onClick = {
                         val repoRoot = gitState.repoRoot ?: return@OutlinedButton
                         runGitAction("已完成推送") {
-                            runGitCommand(repoRoot, "push")
+                            runEmbeddedGitAction {
+                                embeddedGitPush(repoRoot, config.githubToken)
+                            }
                         }
                     },
                     enabled = gitState.canPush && !isGitLoading && !isGitActionRunning
@@ -2732,7 +2725,9 @@ private fun ProjectGitSection(
                     onClick = {
                         val repoRoot = gitState.repoRoot ?: return@OutlinedButton
                         runGitAction("已全部暂存") {
-                            runGitCommand(repoRoot, "add -A")
+                            runEmbeddedGitAction {
+                                embeddedGitStageAll(repoRoot)
+                            }
                         }
                     },
                     enabled = gitState.canStageAll && !isGitLoading && !isGitActionRunning
@@ -2839,22 +2834,7 @@ private fun ProjectGitSection(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
-                if (!gitState.hasGitCommand) {
-                    ReasonixGlassSurface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(12.dp),
-                        surfaceColorOverride = chromeColor.copy(alpha = 0.40f)
-                    ) {
-                        Text("Git 命令不可用", style = MaterialTheme.typography.titleSmall)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "已经识别到这是一个 Git 仓库，但当前设备 shell 还调不起 `git`。这通常是设备里没装 git，或者 su / PATH 环境没有把 git 暴露给当前进程。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = mutedTextColor
-                        )
-                    }
-                } else if (!gitState.hasRemote) {
+                if (!gitState.hasRemote) {
                     ProjectSectionCard(
                         shape = RoundedCornerShape(12.dp),
                         surfaceColorOverride = chromeColor.copy(alpha = 0.46f)
@@ -3149,7 +3129,9 @@ private fun ProjectGitSection(
                     onAction = { change ->
                         val repoRoot = gitState.repoRoot ?: return@ProjectGitFileGroup
                         runGitAction("已取消暂存 ${change.displayPath}") {
-                            runGitCommand(repoRoot, "restore --staged -- ${shellQuote(change.actionPath)}")
+                            runEmbeddedGitAction {
+                                embeddedGitUnstagePath(repoRoot, change.actionPath)
+                            }
                         }
                     },
                     onOpenDiff = ::openDiff
@@ -3162,7 +3144,9 @@ private fun ProjectGitSection(
                     onAction = { change ->
                         val repoRoot = gitState.repoRoot ?: return@ProjectGitFileGroup
                         runGitAction("已暂存 ${change.displayPath}") {
-                            runGitCommand(repoRoot, "add -- ${shellQuote(change.actionPath)}")
+                            runEmbeddedGitAction {
+                                embeddedGitStagePath(repoRoot, change.actionPath)
+                            }
                         }
                     },
                     onOpenDiff = ::openDiff
@@ -3175,7 +3159,9 @@ private fun ProjectGitSection(
                     onAction = { change ->
                         val repoRoot = gitState.repoRoot ?: return@ProjectGitFileGroup
                         runGitAction("已暂存 ${change.displayPath}") {
-                            runGitCommand(repoRoot, "add -- ${shellQuote(change.actionPath)}")
+                            runEmbeddedGitAction {
+                                embeddedGitStagePath(repoRoot, change.actionPath)
+                            }
                         }
                     },
                     onOpenDiff = ::openDiff
@@ -3366,7 +3352,9 @@ private fun ProjectGitSection(
                         if (message.isBlank()) return@Button
                         showCommitDialog = false
                         runGitAction("提交完成") {
-                            runGitCommand(repoRoot, "commit -m ${shellQuote(message)}")
+                            runEmbeddedGitAction {
+                                embeddedGitCommit(repoRoot, message)
+                            }
                         }
                         resetCommitDraft()
                     },
@@ -3505,7 +3493,9 @@ private fun ProjectGitSection(
                         if (targetBranch.isBlank()) return@Button
                         showBranchDialog = false
                         runGitAction("已切换到新分支 $targetBranch") {
-                            runGitCommand(repoRoot, "checkout -b ${shellQuote(targetBranch)}")
+                            runEmbeddedGitAction {
+                                embeddedGitCreateBranch(repoRoot, targetBranch)
+                            }
                         }
                         newBranchName = ""
                     },
@@ -3583,7 +3573,9 @@ private fun ProjectGitSection(
                                                 val repoRoot = gitState.repoRoot ?: return@OutlinedButton
                                                 showBranchDialog = false
                                                 runGitAction("已切换到 ${branch.name}") {
-                                                    runGitCommand(repoRoot, "checkout ${shellQuote(branch.name)}")
+                                                    runEmbeddedGitAction {
+                                                        embeddedGitCheckoutBranch(repoRoot, branch.name)
+                                                    }
                                                 }
                                             },
                                             enabled = !isGitActionRunning
@@ -3631,7 +3623,9 @@ private fun ProjectGitSection(
                                                 val repoRoot = gitState.repoRoot ?: return@OutlinedButton
                                                 showBranchDialog = false
                                                 runGitAction("已跟踪并切换到 $suggestedLocalName") {
-                                                    runGitCommand(repoRoot, "checkout --track ${shellQuote(remoteBranch)}")
+                                                    runEmbeddedGitAction {
+                                                        embeddedGitCheckoutRemoteBranch(repoRoot, remoteBranch)
+                                                    }
                                                 }
                                             },
                                             enabled = !isGitActionRunning
@@ -5021,141 +5015,83 @@ private data class ProjectGitCommandResult(
     val exitCode: Int = 0
 )
 
+private fun runEmbeddedGitAction(block: () -> String): ProjectGitCommandResult {
+    return runCatching {
+        ProjectGitCommandResult(
+            success = true,
+            output = block()
+        )
+    }.getOrElse { error ->
+        ProjectGitCommandResult(
+            success = false,
+            output = "",
+            error = error.message ?: "Git 操作失败"
+        )
+    }
+}
+
 private fun loadProjectGitStatus(projectPath: String): ProjectGitStatusUi {
-    val repoRoot = findProjectGitRoot(projectPath)
+    val repoRoot = findEmbeddedGitRoot(projectPath) ?: findProjectGitRoot(projectPath)
         ?: return ProjectGitStatusUi.empty(projectPath).copy(
             errorMessage = "当前目录下没有识别到 `.git` 仓库。"
         )
-    val statusResult = runGitCommand(
-        repoRoot,
-        "status --short --branch --porcelain=v1 -uall"
-    )
-    if (!statusResult.success) {
-        return ProjectGitStatusUi.empty(projectPath).copy(
+    return runCatching {
+        val status = loadEmbeddedGitStatus(projectPath)
+        ProjectGitStatusUi(
+            projectPath = projectPath,
+            repoRoot = status.repoRoot,
+            hasGitCommand = true,
+            branchSummary = status.branchSummary,
+            currentBranch = status.currentBranch,
+            remoteUrl = status.remoteUrl,
+            upstreamBranch = status.upstreamBranch,
+            aheadCount = status.aheadCount,
+            behindCount = status.behindCount,
+            lastCommitSummary = status.lastCommitSummary,
+            localBranches = status.localBranches.map { branch ->
+                ProjectGitBranchUi(
+                    name = branch.name,
+                    isCurrent = branch.isCurrent,
+                    trackInfo = branch.trackInfo
+                )
+            },
+            remoteBranches = status.remoteBranches,
+            recentCommits = status.recentCommits.map { commit ->
+                ProjectGitCommitUi(
+                    commitHash = commit.commitHash,
+                    shortHash = commit.shortHash,
+                    subject = commit.subject,
+                    relativeTime = commit.relativeTime,
+                    author = commit.author
+                )
+            },
+            conflictedFiles = status.conflictedFiles.map { change -> change.toProjectGitFileChange() },
+            stagedFiles = status.stagedFiles.map { change -> change.toProjectGitFileChange() },
+            modifiedFiles = status.modifiedFiles.map { change -> change.toProjectGitFileChange() },
+            untrackedFiles = status.untrackedFiles.map { change -> change.toProjectGitFileChange() },
+            errorMessage = null
+        )
+    }.getOrElse { error ->
+        ProjectGitStatusUi.empty(projectPath).copy(
             repoRoot = repoRoot,
-            hasGitCommand = !isGitCommandUnavailable(statusResult),
-            errorMessage = if (isGitCommandUnavailable(statusResult)) {
-                buildGitUnavailableMessage(statusResult)
-            } else {
-                statusResult.error ?: statusResult.output.ifBlank { "读取 Git 状态失败" }
-            }
+            hasGitCommand = true,
+            errorMessage = error.message ?: "读取 Git 状态失败"
         )
     }
-    val branchSummary = parseGitBranchSummary(statusResult.output)
-    val parsed = parseProjectGitStatusLines(repoRoot, statusResult.output)
-    val branches = loadProjectGitBranches(repoRoot)
-    val remoteInfo = loadProjectGitRemoteInfo(repoRoot)
-    val upstreamStatus = remoteInfo.upstreamBranch?.let { loadProjectGitUpstreamStatus(repoRoot) }
-        ?: ProjectGitUpstreamStatus(0, 0)
-    val remoteBranches = loadProjectGitRemoteBranches(repoRoot)
-    val recentCommits = loadProjectGitHistory(repoRoot)
-    val lastCommitSummary = runGitCommand(
-        repoRoot,
-        "log -1 --pretty=format:%h%x09%s%x09%cr"
-    ).output.trim().ifBlank { null }
-    return ProjectGitStatusUi(
-        projectPath = projectPath,
-        repoRoot = repoRoot,
-        hasGitCommand = true,
-        branchSummary = branchSummary,
-        currentBranch = branches.firstOrNull { it.isCurrent }?.name,
-        remoteUrl = remoteInfo.remoteUrl,
-        upstreamBranch = remoteInfo.upstreamBranch,
-        aheadCount = upstreamStatus.aheadCount,
-        behindCount = upstreamStatus.behindCount,
-        lastCommitSummary = lastCommitSummary,
-        localBranches = branches,
-        remoteBranches = remoteBranches,
-        recentCommits = recentCommits,
-        conflictedFiles = parsed.conflicted,
-        stagedFiles = parsed.staged,
-        modifiedFiles = parsed.modified,
-        untrackedFiles = parsed.untracked,
-        errorMessage = null
-    )
-}
-
-private fun isGitCommandUnavailable(result: ProjectGitCommandResult): Boolean {
-    if (result.exitCode == 127) return true
-    val text = listOfNotNull(result.error, result.output)
-        .joinToString("\n")
-        .lowercase()
-    return "git: not found" in text ||
-        "git: inaccessible" in text ||
-        "git not found" in text ||
-        "command not found" in text ||
-        "not recognized as an internal or external command" in text
-}
-
-private fun buildGitUnavailableMessage(result: ProjectGitCommandResult): String {
-    val detail = result.output.ifBlank { result.error.orEmpty() }.trim()
-    return if (detail.isBlank()) {
-        "已识别到当前目录是 Git 仓库，但设备 shell 里调用不到 `git` 命令。"
-    } else {
-        "已识别到当前目录是 Git 仓库，但设备 shell 里调用不到 `git` 命令：$detail"
-    }
-}
-
-private fun loadProjectGitBranches(repoRoot: String): List<ProjectGitBranchUi> {
-    val result = runGitCommand(repoRoot, "branch --list --no-color -vv")
-    if (!result.success) return emptyList()
-    return result.output.lineSequence()
-        .mapNotNull { line ->
-            val trimmed = line.trimEnd()
-            if (trimmed.isBlank()) return@mapNotNull null
-            val isCurrent = trimmed.startsWith("*")
-            val content = trimmed.removePrefix("*").removePrefix(" ").trim()
-            val tokens = content.split(Regex("\\s+"))
-            val name = tokens.firstOrNull().orEmpty()
-            if (name.isBlank()) return@mapNotNull null
-            val trackInfo = Regex("""\[(.+?)\]""")
-                .find(content)
-                ?.groupValues
-                ?.getOrNull(1)
-                ?.trim()
-            ProjectGitBranchUi(
-                name = name,
-                isCurrent = isCurrent,
-                trackInfo = trackInfo
-            )
-        }
-        .toList()
-}
-
-private fun loadProjectGitHistory(repoRoot: String): List<ProjectGitCommitUi> {
-    val result = runGitCommand(
-        repoRoot,
-        "log -12 --date=relative --pretty=format:%H%x09%h%x09%s%x09%cr%x09%an"
-    )
-    if (!result.success) return emptyList()
-    return result.output.lineSequence()
-        .mapNotNull { line ->
-            val parts = line.split('\t')
-            if (parts.size < 5) return@mapNotNull null
-            ProjectGitCommitUi(
-                commitHash = parts[0],
-                shortHash = parts[1],
-                subject = parts[2],
-                relativeTime = parts[3],
-                author = parts[4]
-            )
-        }
-        .toList()
 }
 
 private fun loadProjectGitCommitPreview(
     repoRoot: String,
     commitHash: String
 ): ProjectGitDiffPreviewUi? {
-    val result = runGitCommand(
-        repoRoot,
-        "show --stat --patch --format=fuller ${shellQuote(commitHash)}"
-    )
-    if (!result.success) return null
-    return ProjectGitDiffPreviewUi(
-        title = "提交 ${commitHash.take(8)}",
-        content = result.output.trimEnd().ifBlank { "该提交暂无可显示详情。" }
-    )
+    return runCatching {
+        loadEmbeddedGitCommitPreview(repoRoot, commitHash)?.let { preview ->
+            ProjectGitDiffPreviewUi(
+                title = preview.title,
+                content = preview.content
+            )
+        }
+    }.getOrNull()
 }
 
 private fun buildGitCommitMessage(title: String, detail: String): String {
@@ -5618,32 +5554,8 @@ private fun initializeProjectGitRepository(
     projectPath: String,
     preferredBranch: String
 ): ProjectGitCommandResult {
-    val branchName = preferredBranch.trim().ifBlank { "main" }
-    val directInit = runGitCommand(projectPath, "init -b ${shellQuote(branchName)}")
-    if (directInit.success) {
-        return ProjectGitCommandResult(
-            success = true,
-            output = directInit.output.ifBlank { "Git 仓库初始化完成" },
-            exitCode = directInit.exitCode
-        )
-    }
-    val fallbackInit = runGitCommand(projectPath, "init")
-    if (!fallbackInit.success) {
-        return fallbackInit
-    }
-    val setHeadResult = runCheckedShellCommand(
-        "git -C ${shellQuote(projectPath)} symbolic-ref HEAD ${shellQuote("refs/heads/$branchName")}"
-    )
-    return if (setHeadResult.success) {
-        ProjectGitCommandResult(
-            success = true,
-            output = listOf(fallbackInit.output, setHeadResult.output)
-                .filter { it.isNotBlank() }
-                .joinToString("\n")
-                .ifBlank { "Git 仓库初始化完成" }
-        )
-    } else {
-        fallbackInit
+    return runEmbeddedGitAction {
+        initializeEmbeddedGitRepository(projectPath, preferredBranch)
     }
 }
 
@@ -5652,28 +5564,8 @@ private fun bindProjectGitHubRemote(
     remoteUrl: String,
     preferredBranch: String
 ): ProjectGitCommandResult {
-    val repoRoot = findProjectGitRoot(projectPath) ?: run {
-        val initResult = initializeProjectGitRepository(projectPath, preferredBranch)
-        if (!initResult.success) return initResult
-        findProjectGitRoot(projectPath) ?: projectPath
-    }
-    val currentOrigin = runGitCommand(
-        repoRoot,
-        "remote get-url origin",
-        allowedExitCodes = setOf(0, 2, 128)
-    )
-    val remoteResult = if (currentOrigin.success && currentOrigin.output.isNotBlank()) {
-        runGitCommand(repoRoot, "remote set-url origin ${shellQuote(remoteUrl)}")
-    } else {
-        runGitCommand(repoRoot, "remote add origin ${shellQuote(remoteUrl)}")
-    }
-    return if (remoteResult.success) {
-        ProjectGitCommandResult(
-            success = true,
-            output = remoteResult.output.ifBlank { "已绑定 GitHub origin" }
-        )
-    } else {
-        remoteResult
+    return runEmbeddedGitAction {
+        bindEmbeddedGitRemote(projectPath, remoteUrl, preferredBranch)
     }
 }
 
@@ -5923,166 +5815,46 @@ private fun formatProjectDateTime(timeMillis: Long): String {
     }
 }
 
-private data class ProjectGitRemoteInfo(
-    val remoteUrl: String?,
-    val upstreamBranch: String?
-)
-
-private data class ProjectGitUpstreamStatus(
-    val aheadCount: Int,
-    val behindCount: Int
-)
-
-private fun loadProjectGitRemoteInfo(repoRoot: String): ProjectGitRemoteInfo {
-    val remoteUrl = runGitCommand(repoRoot, "remote get-url origin")
-        .output
-        .trim()
-        .ifBlank { null }
-    val upstreamBranch = runGitCommand(repoRoot, "rev-parse --abbrev-ref --symbolic-full-name @{upstream}")
-        .output
-        .trim()
-        .ifBlank { null }
-        ?.takeUnless { it == "@{upstream}" }
-    return ProjectGitRemoteInfo(
-        remoteUrl = remoteUrl,
-        upstreamBranch = upstreamBranch
-    )
-}
-
-private fun loadProjectGitUpstreamStatus(repoRoot: String): ProjectGitUpstreamStatus {
-    val result = runGitCommand(
-        repoRoot,
-        "rev-list --left-right --count HEAD...@{upstream}"
-    )
-    if (!result.success) return ProjectGitUpstreamStatus(aheadCount = 0, behindCount = 0)
-    val parts = result.output.trim().split(Regex("\\s+"))
-    return ProjectGitUpstreamStatus(
-        aheadCount = parts.getOrNull(0)?.toIntOrNull() ?: 0,
-        behindCount = parts.getOrNull(1)?.toIntOrNull() ?: 0
-    )
-}
-
-private fun loadProjectGitRemoteBranches(repoRoot: String): List<String> {
-    val result = runGitCommand(repoRoot, "branch -r --no-color")
-    if (!result.success) return emptyList()
-    return result.output.lineSequence()
-        .map { it.trim() }
-        .filter { it.isNotBlank() && !it.contains("->") }
-        .toList()
-}
-
 private fun loadProjectGitDiffPreview(
     repoRoot: String,
     change: ProjectGitFileChangeUi
 ): ProjectGitDiffPreviewUi? {
-    val command = when (change.diffMode) {
-        ProjectGitDiffMode.STAGED -> "diff --cached -- ${shellQuote(change.actionPath)}"
-        ProjectGitDiffMode.WORKTREE -> "diff -- ${shellQuote(change.actionPath)}"
-        ProjectGitDiffMode.UNTRACKED -> "diff --no-index -- /dev/null ${shellQuote(change.actionPath)}"
-    }
-    val result = runGitCommand(
-        repoRoot,
-        command,
-        allowedExitCodes = if (change.diffMode == ProjectGitDiffMode.UNTRACKED) setOf(0, 1) else setOf(0)
-    )
-    if (!result.success) return null
-    val content = result.output.trimEnd().ifBlank { "该文件当前没有可显示的差异。" }
-    return ProjectGitDiffPreviewUi(
-        title = "${change.displayPath} · 差异",
-        content = content
-    )
+    return runCatching {
+        loadEmbeddedGitDiffPreview(
+            repoRoot = repoRoot,
+            change = EmbeddedGitFileChange(
+                displayPath = change.displayPath,
+                actionPath = change.actionPath,
+                statusLabel = change.statusLabel,
+                diffMode = change.diffMode.toEmbeddedDiffMode()
+            )
+        )?.let { preview ->
+            ProjectGitDiffPreviewUi(
+                title = preview.title,
+                content = preview.content
+            )
+        }
+    }.getOrNull()
 }
 
-private data class ProjectGitStatusParseResult(
-    val conflicted: List<ProjectGitFileChangeUi>,
-    val staged: List<ProjectGitFileChangeUi>,
-    val modified: List<ProjectGitFileChangeUi>,
-    val untracked: List<ProjectGitFileChangeUi>
-)
-
-private fun parseProjectGitStatusLines(
-    repoRoot: String,
-    raw: String
-): ProjectGitStatusParseResult {
-    val conflicted = mutableListOf<ProjectGitFileChangeUi>()
-    val staged = mutableListOf<ProjectGitFileChangeUi>()
-    val modified = mutableListOf<ProjectGitFileChangeUi>()
-    val untracked = mutableListOf<ProjectGitFileChangeUi>()
-    raw.lineSequence().forEach { line ->
-        if (line.isBlank() || line.startsWith("## ")) return@forEach
-        if (line.length < 3) return@forEach
-        val indexStatus = line[0]
-        val workTreeStatus = line[1]
-        val rawPath = line.substring(3).trim()
-        val actionPath = normalizeGitActionPath(repoRoot, rawPath)
-        val displayPath = rawPath.ifBlank { actionPath }
-        if (indexStatus == '?' && workTreeStatus == '?') {
-            untracked += ProjectGitFileChangeUi(
-                displayPath = displayPath,
-                actionPath = actionPath,
-                statusLabel = "未跟踪文件",
-                diffMode = ProjectGitDiffMode.UNTRACKED
-            )
-            return@forEach
+private fun EmbeddedGitFileChange.toProjectGitFileChange(): ProjectGitFileChangeUi {
+    return ProjectGitFileChangeUi(
+        displayPath = displayPath,
+        actionPath = actionPath,
+        statusLabel = statusLabel,
+        diffMode = when (diffMode) {
+            EmbeddedGitDiffMode.STAGED -> ProjectGitDiffMode.STAGED
+            EmbeddedGitDiffMode.WORKTREE -> ProjectGitDiffMode.WORKTREE
+            EmbeddedGitDiffMode.UNTRACKED -> ProjectGitDiffMode.UNTRACKED
         }
-        if (indexStatus == 'U' || workTreeStatus == 'U' || (indexStatus == 'A' && workTreeStatus == 'A') || (indexStatus == 'D' && workTreeStatus == 'D')) {
-            conflicted += ProjectGitFileChangeUi(
-                displayPath = displayPath,
-                actionPath = actionPath,
-                statusLabel = "冲突: ${gitConflictLabel(indexStatus, workTreeStatus)}",
-                diffMode = ProjectGitDiffMode.WORKTREE
-            )
-        }
-        if (indexStatus != ' ') {
-            staged += ProjectGitFileChangeUi(
-                displayPath = displayPath,
-                actionPath = actionPath,
-                statusLabel = "暂存区: ${gitStatusLabel(indexStatus)}",
-                diffMode = ProjectGitDiffMode.STAGED
-            )
-        }
-        if (workTreeStatus != ' ') {
-            modified += ProjectGitFileChangeUi(
-                displayPath = displayPath,
-                actionPath = actionPath,
-                statusLabel = "工作区: ${gitStatusLabel(workTreeStatus)}",
-                diffMode = ProjectGitDiffMode.WORKTREE
-            )
-        }
-    }
-    return ProjectGitStatusParseResult(
-        conflicted = conflicted.distinctBy { it.actionPath },
-        staged = staged.distinctBy { "${it.actionPath}:${it.diffMode}" },
-        modified = modified.distinctBy { "${it.actionPath}:${it.diffMode}" },
-        untracked = untracked.distinctBy { it.actionPath }
     )
 }
 
-private fun parseGitBranchSummary(raw: String): String {
-    val branchLine = raw.lineSequence().firstOrNull { it.startsWith("## ") }?.removePrefix("## ")?.trim().orEmpty()
-    if (branchLine.isBlank()) return ""
-    return branchLine.replace("...", " -> ")
-}
-
-private fun gitStatusLabel(code: Char): String = when (code) {
-    'M' -> "已修改"
-    'A' -> "新增"
-    'D' -> "删除"
-    'R' -> "重命名"
-    'C' -> "复制"
-    'U' -> "冲突"
-    'T' -> "类型变更"
-    else -> code.toString()
-}
-
-private fun gitConflictLabel(indexStatus: Char, workTreeStatus: Char): String {
-    return when {
-        indexStatus == 'U' && workTreeStatus == 'U' -> "双方都修改"
-        indexStatus == 'A' && workTreeStatus == 'A' -> "双方都新增"
-        indexStatus == 'D' && workTreeStatus == 'D' -> "双方都删除"
-        indexStatus == 'U' -> "当前分支冲突"
-        workTreeStatus == 'U' -> "合并目标冲突"
-        else -> "需要手动处理"
+private fun ProjectGitDiffMode.toEmbeddedDiffMode(): EmbeddedGitDiffMode {
+    return when (this) {
+        ProjectGitDiffMode.STAGED -> EmbeddedGitDiffMode.STAGED
+        ProjectGitDiffMode.WORKTREE -> EmbeddedGitDiffMode.WORKTREE
+        ProjectGitDiffMode.UNTRACKED -> EmbeddedGitDiffMode.UNTRACKED
     }
 }
 
@@ -6102,57 +5874,6 @@ private fun normalizeGitActionPath(repoRoot: String, rawPath: String): String {
     val normalized = rawPath.substringAfter(" -> ", rawPath).trim()
     if (normalized.startsWith("/")) return normalized
     return normalized.removePrefix("${repoRoot.trimEnd('/')}/")
-}
-
-private fun runGitCommand(
-    repoRoot: String,
-    args: String,
-    allowedExitCodes: Set<Int> = setOf(0)
-): ProjectGitCommandResult {
-    return runCheckedShellCommand(
-        "git -C ${shellQuote(repoRoot)} -c color.ui=false -c core.quotepath=false $args",
-        allowedExitCodes = allowedExitCodes
-    )
-}
-
-private fun runCheckedShellCommand(
-    command: String,
-    allowedExitCodes: Set<Int> = setOf(0)
-): ProjectGitCommandResult {
-    return runCatching {
-        val marker = "__PROJECT_GIT_STATUS__"
-        val raw = KeepShellPublic.doCmdSync("($command) 2>&1; printf '\\n$marker%s' \$?")
-        val markerIndex = raw.lastIndexOf(marker)
-        if (markerIndex < 0) {
-            return ProjectGitCommandResult(
-                success = false,
-                output = raw,
-                error = "无法读取 Git 命令执行状态"
-            )
-        }
-        val output = raw.substring(0, markerIndex).trimEnd()
-        val exitCode = raw.substring(markerIndex + marker.length).trim().toIntOrNull() ?: -1
-        if (exitCode in allowedExitCodes) {
-            ProjectGitCommandResult(success = true, output = output, exitCode = exitCode)
-        } else {
-            ProjectGitCommandResult(
-                success = false,
-                output = output,
-                error = output.ifBlank { "Git 命令执行失败，退出码 $exitCode" },
-                exitCode = exitCode
-            )
-        }
-    }.getOrElse { error ->
-        ProjectGitCommandResult(
-            success = false,
-            output = "",
-            error = error.message ?: "Git 命令执行异常"
-        )
-    }
-}
-
-private fun shellQuote(value: String): String {
-    return "'" + value.replace("'", "'\"'\"'") + "'"
 }
 
 private fun suggestProjectGitHubRepoName(projectPath: String?): String {
@@ -6607,7 +6328,7 @@ private fun ProjectCodeEditorPane(
             modifier = Modifier
                 .width(56.dp)
                 .fillMaxHeight()
-                .background(surfaceColor.copy(alpha = 0.72f))
+                .background(surfaceColor.copy(alpha = 0.18f))
         ) {
             Text(
                 text = lineNumbersText,
@@ -6654,7 +6375,7 @@ private fun ProjectCodeEditorPane(
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(backgroundColor.copy(alpha = 0.01f))
+                                .background(backgroundColor.copy(alpha = 0.08f))
                         ) {
                             innerTextField()
                         }

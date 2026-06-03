@@ -58,12 +58,12 @@ fun MarkdownText(
     val surfaceColor = rememberReasonixSurfaceColor()
     val chromeColor = rememberReasonixChromeColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
-    val inlineCodeBackground = lerp(Color(0xFF23232D), surfaceColor, 0.12f)
-    val inlineCodeTextColor = Color(0xFFF2F4FF)
-    val codeBlockBackground = lerp(Color(CODE_BG), surfaceColor, 0.08f)
-    val codeBlockHeaderBackground = lerp(Color(CODE_LANG_BG), chromeColor, 0.16f)
-    val codeBlockLanguageColor = lerp(Color(0xFFC3C7D9), mutedTextColor, 0.10f)
-    val codeBlockTextColor = Color(0xFFF3F4F7)
+    val inlineCodeBackground = lerp(surfaceColor, chromeColor, 0.32f)
+    val inlineCodeTextColor = MaterialTheme.colorScheme.onSurface
+    val codeBlockBackground = lerp(Color(CODE_BG), surfaceColor, 0.72f)
+    val codeBlockHeaderBackground = lerp(Color(CODE_LANG_BG), chromeColor, 0.58f)
+    val codeBlockLanguageColor = lerp(MaterialTheme.colorScheme.primary, mutedTextColor, 0.28f)
+    val codeBlockTextColor = MaterialTheme.colorScheme.onSurface
 
     Column(
         modifier = modifier,
