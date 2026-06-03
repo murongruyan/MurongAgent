@@ -121,17 +121,17 @@ class ReasonixUiController(private val context: Context) {
     val accentPreset: ReasonixAccentPreset
         get() = AccentPresets[accentIndex.coerceIn(0, AccentPresets.lastIndex)]
 
-    fun setThemeMode(value: ReasonixThemeMode) {
+    fun updateThemeMode(value: ReasonixThemeMode) {
         themeMode = value
         prefs.edit().putString(KEY_THEME_MODE, value.name).apply()
     }
 
-    fun setThemeStyle(value: ReasonixThemeStyle) {
+    fun updateThemeStyle(value: ReasonixThemeStyle) {
         themeStyle = value
         prefs.edit().putString(KEY_THEME_STYLE, value.name).apply()
     }
 
-    fun setAccentIndex(value: Int) {
+    fun updateAccentIndex(value: Int) {
         val safeValue = value.coerceIn(0, AccentPresets.lastIndex)
         accentIndex = safeValue
         prefs.edit().putInt(KEY_ACCENT_INDEX, safeValue).apply()

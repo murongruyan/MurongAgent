@@ -104,7 +104,7 @@ fun ThemeSettingsPage() {
                             modifier = Modifier
                                 .weight(1f)
                                 .clip(MaterialTheme.shapes.medium)
-                                .clickable { ui.setAccentIndex(index) }
+                                .clickable { ui.updateAccentIndex(index) }
                                 .padding(vertical = 4.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
@@ -160,7 +160,7 @@ fun ThemeSettingsPage() {
             currentValue = ui.themeMode,
             onDismiss = { showModeDialog = false },
             onSelect = {
-                ui.setThemeMode(it)
+                ui.updateThemeMode(it)
                 showModeDialog = false
             }
         )
@@ -176,7 +176,7 @@ fun ThemeSettingsPage() {
             currentValue = ui.themeStyle,
             onDismiss = { showStyleDialog = false },
             onSelect = {
-                ui.setThemeStyle(it)
+                ui.updateThemeStyle(it)
                 showStyleDialog = false
             }
         )
