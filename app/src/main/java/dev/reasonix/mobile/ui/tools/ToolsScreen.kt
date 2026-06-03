@@ -56,9 +56,11 @@ import dev.reasonix.mobile.core.loop.FileChangeRecordUi
 import dev.reasonix.mobile.core.loop.PendingApprovalUi
 import dev.reasonix.mobile.core.loop.ToolCallRecordUi
 import dev.reasonix.mobile.core.mcp.McpServerStatus
+import dev.reasonix.mobile.ui.PendingApprovalSummaryCard
 import dev.reasonix.mobile.ui.ReasonixGlassSurface
 import dev.reasonix.mobile.ui.ReasonixInfoCard
 import dev.reasonix.mobile.ui.ReasonixSecondaryPageSurface
+import dev.reasonix.mobile.ui.toPendingApprovalPresentation
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -611,6 +613,9 @@ private fun PendingApprovalSheet(
     onApprove: () -> Unit,
     onReject: () -> Unit
 ) {
+    val presentation = remember(approval.toolName, approval.summary, approval.detail, approval.rawArgs) {
+        approval.toPendingApprovalPresentation()
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("待审批工具调用") },
@@ -618,14 +623,13 @@ private fun PendingApprovalSheet(
             SelectionContainer {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("工具: ${approval.toolName}")
-                    Text("摘要: ${approval.summary}")
+                    Text("摘要: ${presentation.headline}")
                     Text("风险: ${approval.riskLevel}")
+                    PendingApprovalSummaryCard(presentation = presentation)
                     approval.explanationLabel?.let { Text("原因: $it") }
                     approval.explanationDetail?.let { Text(it) }
-                    Text("参数", style = MaterialTheme.typography.labelLarge)
+                    Text(presentation.rawArgsLabel, style = MaterialTheme.typography.labelLarge)
                     CodeBlock(approval.rawArgs)
-                    Text("详情", style = MaterialTheme.typography.labelLarge)
-                    Text(approval.detail)
                 }
             }
         },

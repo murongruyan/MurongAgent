@@ -1458,6 +1458,9 @@ private fun ApprovalDialog(
     onApprove: () -> Unit,
     onReject: () -> Unit
 ) {
+    val presentation = remember(approval.toolName, approval.summary, approval.detail, approval.rawArgs) {
+        approval.toPendingApprovalPresentation()
+    }
     ReasonixAlertDialog(
         onDismissRequest = {},
         title = { Text("审批请求") },
@@ -1465,14 +1468,10 @@ private fun ApprovalDialog(
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 RiskBadge(approval.riskLevel)
                 Text(
-                    text = approval.summary,
+                    text = presentation.headline,
                     style = MaterialTheme.typography.titleSmall
                 )
-                Text(
-                    text = approval.detail,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                PendingApprovalSummaryCard(presentation = presentation)
                 approval.explanationLabel?.let { label ->
                     Surface(
                         shape = MaterialTheme.shapes.medium,
@@ -1503,11 +1502,20 @@ private fun ApprovalDialog(
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = approval.rawArgs,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(12.dp)
-                    )
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = presentation.rawArgsLabel,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = approval.rawArgs,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
                 }
             }
         },
