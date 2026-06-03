@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -44,8 +45,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ArrowForward
-import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Refresh
@@ -67,7 +66,6 @@ import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -270,13 +268,7 @@ fun ProjectScreen(
                     selectedTabIndex = selectedTab.ordinal,
                     containerColor = chromeColor.copy(alpha = 0.32f),
                     contentColor = MaterialTheme.colorScheme.onSurface,
-                    divider = {},
-                    indicator = { tabPositions ->
-                        TabRowDefaults.SecondaryIndicator(
-                            modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab.ordinal]),
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.82f)
-                        )
-                    }
+                    divider = {}
                 ) {
                     ProjectPrimaryTab.entries.forEach { tab ->
                         Tab(
@@ -2044,19 +2036,9 @@ private fun ProjectTreeRow(
                 style = MaterialTheme.typography.bodyMedium,
                 color = mutedTextColor
             )
-            Spacer(Modifier.width(6.dp))
-            Icon(
-                imageVector = Icons.Outlined.Folder,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary
-            )
+            Spacer(Modifier.width(10.dp))
         } else {
-            Spacer(Modifier.width(18.dp))
-            Icon(
-                imageVector = Icons.Outlined.InsertDriveFile,
-                contentDescription = null,
-                tint = mutedTextColor
-            )
+            Spacer(Modifier.width(24.dp))
         }
         Spacer(Modifier.width(8.dp))
         Column {
