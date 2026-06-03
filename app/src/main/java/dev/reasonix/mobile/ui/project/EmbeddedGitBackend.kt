@@ -1,5 +1,6 @@
 package dev.reasonix.mobile.ui.project
 
+import dev.reasonix.mobile.common.utils.RootFile
 import org.eclipse.jgit.api.CreateBranchCommand
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.api.ListBranchCommand
@@ -81,15 +82,14 @@ internal data class EmbeddedGitDiffPreview(
     val content: String
 )
 
+private data class EmbeddedGitRepositoryLocation(
+    val repoRoot: String,
+    val gitDir: File,
+    val workTree: File
+)
+
 internal fun findEmbeddedGitRoot(projectPath: String): String? {
-    return runCatching {
-        FileRepositoryBuilder()
-            .findGitDir(File(projectPath))
-            .build()
-            .use { repository ->
-                repository.workTree?.absolutePath
-            }
-    }.getOrNull()
+    return resolveEmbeddedRepositoryLocation(projectPath)?.repoRoot
 }
 
 internal fun loadEmbeddedGitStatus(projectPath: String): EmbeddedGitStatus {
@@ -633,8 +633,71 @@ private fun Repository.safeCurrentBranch(): String? {
 }
 
 private fun openEmbeddedGit(repoRoot: String): Git {
+    val location = resolveEmbeddedRepositoryLocation(repoRoot)
+        ?: error("当前目录下没有识别到可用的 `.git` 仓库。")
     val repository = FileRepositoryBuilder()
-        .findGitDir(File(repoRoot))
+        .setGitDir(location.gitDir)
+        .setWorkTree(location.workTree)
+        .setMustExist(true)
         .build()
     return Git(repository)
+}
+
+private fun resolveEmbeddedRepositoryLocation(projectPath: String): EmbeddedGitRepositoryLocation? {
+    val normalizedPath = projectPath.trim().removeSuffix("/").removeSuffix("\\")
+    if (normalizedPath.isBlank()) return null
+    val direct = resolveEmbeddedRepositoryLocationFromMetadata(normalizedPath)
+    if (direct != null) return direct
+    return runCatching {
+        FileRepositoryBuilder()
+            .findGitDir(File(normalizedPath))
+            .build()
+            .use { repository ->
+                val workTree = repository.workTree ?: File(normalizedPath)
+                val gitDir = repository.directory ?: return@use null
+                EmbeddedGitRepositoryLocation(
+                    repoRoot = workTree.absolutePath,
+                    gitDir = gitDir,
+                    workTree = workTree
+                )
+            }
+    }.getOrNull()
+}
+
+private fun resolveEmbeddedRepositoryLocationFromMetadata(projectPath: String): EmbeddedGitRepositoryLocation? {
+    val gitPath = "$projectPath/.git"
+    if (RootFile.dirExists(gitPath) || File(gitPath).isDirectory) {
+        return EmbeddedGitRepositoryLocation(
+            repoRoot = projectPath,
+            gitDir = File(gitPath),
+            workTree = File(projectPath)
+        )
+    }
+    if (!(RootFile.fileExists(gitPath) || File(gitPath).isFile)) return null
+    val gitPointer = readEmbeddedGitMetadata(gitPath) ?: return null
+    val gitDirPath = parseEmbeddedGitDirPointer(gitPointer, projectPath) ?: return null
+    return EmbeddedGitRepositoryLocation(
+        repoRoot = projectPath,
+        gitDir = File(gitDirPath),
+        workTree = File(projectPath)
+    )
+}
+
+private fun readEmbeddedGitMetadata(path: String): String? {
+    val direct = runCatching {
+        val file = File(path)
+        if (file.exists() && file.isFile) file.readText() else null
+    }.getOrNull()
+    if (!direct.isNullOrBlank()) return direct
+    val fallback = RootFile.readFile(path)
+    return fallback.takeUnless { it.startsWith("error:") || it.isBlank() }
+}
+
+private fun parseEmbeddedGitDirPointer(content: String, repoRoot: String): String? {
+    val trimmed = content.trim()
+    if (!trimmed.startsWith("gitdir:", ignoreCase = true)) return null
+    val rawPath = trimmed.substringAfter("gitdir:", "").trim()
+    if (rawPath.isBlank()) return null
+    return File(rawPath).takeIf(File::isAbsolute)?.absolutePath
+        ?: File(repoRoot, rawPath).absolutePath
 }
