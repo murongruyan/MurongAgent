@@ -132,7 +132,6 @@ fun SettingsScreen(
                         modifier = Modifier.weight(1f)
                     )
                 }
-            }
 
             // ═══════════════════════════════════════
             // Root 权限检测
