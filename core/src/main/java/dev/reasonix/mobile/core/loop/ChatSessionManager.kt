@@ -539,7 +539,10 @@ class ChatSessionManager(
         val AUTO_DISCOVERY_TARGET_KEYWORDS = listOf(
             "mcp", "skill", "server", "工具", "插件", "tool", "prompt"
         )
-        val DRAFT_FENCE_REGEX = Regex("```(?:[a-zA-Z0-9_-]+)?\\s*([\\s\\S]*?)```")
+        val EXPLICIT_DRAFT_FENCE_REGEX = Regex(
+            """```(reasonix-skill-draft|reasonix-skill|skill-draft|reasonix-mcp-draft|reasonix-mcp|mcp-draft)\s*([\s\S]*?)```""",
+            setOf(RegexOption.IGNORE_CASE)
+        )
     }
 
     private data class PendingSubagentExecution(
@@ -2615,20 +2618,6 @@ class ChatSessionManager(
                 )
             ) {
                 return
-            }
-
-            val autoAttachOutcome = autoAttachDraftsFromAssistantMessage(
-                assistantMessageId = assistantMsg.id,
-                config = config
-            )
-            if (autoAttachOutcome.importedAnything && autoAttachOutcome.summary.isNotBlank()) {
-                appendMessage(
-                    ChatMessageUi(
-                        id = nextId(),
-                        role = "system",
-                        content = autoAttachOutcome.summary
-                    )
-                )
             }
 
             _state.value = _state.value.copy(
@@ -4816,9 +4805,9 @@ class ChatSessionManager(
                 appendLine("- The user is asking to install, import, connect, or load an external MCP or Skill.")
                 appendLine("- If web tools are available, search official docs or the canonical repository first.")
                 appendLine("- Prefer the official install/config format, not a paraphrased summary.")
-                appendLine("- When you find a valid MCP config, output a machine-readable draft that is directly importable.")
-                appendLine("- When you find a valid Skill definition, output a compatible Skill markdown or JSON draft.")
-                appendLine("- Keep surrounding prose short because compatible drafts will be auto-detected and auto-imported after the reply.")
+                appendLine("- When you output an MCP draft, wrap it in ```reasonix-mcp-draft fenced block.")
+                appendLine("- When you output a Skill draft, wrap it in ```reasonix-skill-draft fenced block.")
+                appendLine("- Do not expect the app to auto-import or auto-connect drafts from normal prose; drafts are reviewed separately.")
                 appendLine("- If the source requires manual secrets, explicitly leave placeholders instead of fabricating values.")
             }
         }.trim()
@@ -4869,85 +4858,7 @@ class ChatSessionManager(
         assistantMessageId: Long,
         config: ProviderConfig
     ): DraftAutoAttachOutcome {
-        val content = _state.value.messages
-            .firstOrNull { it.id == assistantMessageId }
-            ?.content
-            ?.trim()
-            .orEmpty()
-        if (content.isBlank()) return DraftAutoAttachOutcome()
-
-        var latestConfig = configRepository.getConfig()
-        val skillDrafts = parseSkillDraftsCompat(content)
-        val newSkills = skillDrafts.filter { candidate ->
-            latestConfig.globalSkills.none { existing ->
-                buildSkillIdentity(existing) == buildSkillIdentity(candidate)
-            }
-        }
-        if (newSkills.isNotEmpty()) {
-            latestConfig = latestConfig.copy(globalSkills = latestConfig.globalSkills + newSkills)
-            configRepository.saveConfig(latestConfig)
-        }
-
-        val registry = mcpRegistry
-        var importedMcpCount = 0
-        var connectedMcpCount = 0
-        if (registry != null) {
-            val draftConfigs = parseMcpServerDraftsCompat(content)
-            if (draftConfigs.isNotEmpty()) {
-                val existingConfigs = registry.loadConfigs().toMutableList()
-                val touchedNames = linkedSetOf<String>()
-                draftConfigs
-                    .distinctBy { it.name }
-                    .forEach { draft ->
-                        val existingIndex = existingConfigs.indexOfFirst { it.name == draft.name }
-                        if (existingIndex >= 0) {
-                            if (existingConfigs[existingIndex] != draft) {
-                                registry.disconnect(draft.name)
-                                existingConfigs[existingIndex] = draft
-                                importedMcpCount += 1
-                                touchedNames += draft.name
-                            }
-                        } else {
-                            existingConfigs += draft
-                            importedMcpCount += 1
-                            touchedNames += draft.name
-                        }
-                    }
-                if (touchedNames.isNotEmpty()) {
-                    registry.saveConfigs(existingConfigs)
-                    registry.connectAll(existingConfigs)
-                    val touchedStatuses = registry.getServerStatuses()
-                        .filter { it.name in touchedNames }
-                    connectedMcpCount = touchedStatuses.count { it.connected }
-                    if (!latestConfig.allowAllMcpTools) {
-                        val importedToolNames = touchedStatuses
-                            .flatMap { status -> status.toolNames.map { toolName -> "mcp_$toolName" } }
-                            .distinct()
-                        if (importedToolNames.isNotEmpty()) {
-                            latestConfig = latestConfig.copy(
-                                allowedMcpTools = (latestConfig.allowedMcpTools + importedToolNames).distinct()
-                            )
-                            configRepository.saveConfig(latestConfig)
-                        }
-                    }
-                }
-            }
-        }
-
-        val summaryParts = buildList {
-            if (newSkills.isNotEmpty()) {
-                add("已自动导入 ${newSkills.size} 个 Skill")
-            }
-            if (importedMcpCount > 0) {
-                add("已自动接入 $connectedMcpCount/$importedMcpCount 个 MCP")
-            }
-        }
-        return DraftAutoAttachOutcome(
-            importedSkillCount = newSkills.size,
-            importedMcpCount = importedMcpCount,
-            connectedMcpCount = connectedMcpCount,
-            summary = summaryParts.joinToString("，").takeIf { it.isNotBlank() }?.plus("。").orEmpty()
-        )
+        return DraftAutoAttachOutcome()
     }
 
     private fun buildSkillIdentity(skill: GlobalSkill): String {
@@ -4962,7 +4873,7 @@ class ChatSessionManager(
     }
 
     private fun parseSkillDraftsCompat(raw: String): List<GlobalSkill> {
-        extractDraftCandidates(raw).forEach { candidate ->
+        extractExplicitDraftCandidates(raw, "reasonix-skill-draft", "reasonix-skill", "skill-draft").forEach { candidate ->
             parseDesktopSkillMarkdownCompat(candidate)?.let { return listOf(it) }
             parseLooseSkillDraftCompat(candidate)?.let { return listOf(it) }
             parseJsonDraftRootCompat(candidate)?.let { root ->
@@ -4975,7 +4886,7 @@ class ChatSessionManager(
     }
 
     private fun parseMcpServerDraftsCompat(raw: String): List<McpServerConfig> {
-        extractDraftCandidates(raw).forEach { candidate ->
+        extractExplicitDraftCandidates(raw, "reasonix-mcp-draft", "reasonix-mcp", "mcp-draft").forEach { candidate ->
             val specItems = parseMcpSpecLinesCompat(candidate)
             if (specItems.isNotEmpty()) {
                 return specItems.distinctBy { it.name }
@@ -4989,24 +4900,15 @@ class ChatSessionManager(
         return emptyList()
     }
 
-    private fun extractDraftCandidates(raw: String): List<String> {
+    private fun extractExplicitDraftCandidates(raw: String, vararg acceptedTags: String): List<String> {
         val trimmed = raw.trim()
         if (trimmed.isBlank()) return emptyList()
-        val fenced = DRAFT_FENCE_REGEX.findAll(trimmed)
-            .mapNotNull { it.groupValues.getOrNull(1)?.trim()?.takeIf(String::isNotBlank) }
-            .toList()
-        return buildList {
-            add(trimmed)
-            addAll(fenced)
-            addAll(extractInlineBacktickBlocks(trimmed))
-        }.distinct()
-    }
-
-    private fun extractInlineBacktickBlocks(raw: String): List<String> {
-        return Regex("`([^`\\n]{6,})`")
-            .findAll(raw)
+        val accepted = acceptedTags.map { it.lowercase() }.toSet()
+        return EXPLICIT_DRAFT_FENCE_REGEX.findAll(trimmed)
             .mapNotNull { match ->
-                match.groupValues.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
+                val tag = match.groupValues.getOrNull(1)?.trim()?.lowercase().orEmpty()
+                val body = match.groupValues.getOrNull(2)?.trim()
+                body?.takeIf { tag in accepted && it.isNotBlank() }
             }
             .toList()
     }

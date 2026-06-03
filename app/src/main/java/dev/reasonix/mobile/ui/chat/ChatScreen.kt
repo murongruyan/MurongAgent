@@ -2141,7 +2141,7 @@ private fun MessageBubble(
             ) {
                 SelectionContainer {
                     Text(
-                        text = "系统提示",
+                        text = "系统状态",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -3767,15 +3767,14 @@ private fun detectDraftProposals(content: String): List<DraftProposalUi> {
 private fun extractProposalCandidates(content: String): List<String> {
     val trimmed = content.trim()
     if (trimmed.isBlank()) return emptyList()
-    val fenced = Regex("```(?:[a-zA-Z0-9_-]+)?\\s*([\\s\\S]*?)```")
+    val fenced = Regex(
+        """```(?:reasonix-skill-draft|reasonix-skill|skill-draft|reasonix-mcp-draft|reasonix-mcp|mcp-draft)\s*([\s\S]*?)```""",
+        RegexOption.IGNORE_CASE
+    )
         .findAll(trimmed)
         .mapNotNull { it.groupValues.getOrNull(1)?.trim()?.takeIf(String::isNotBlank) }
         .toList()
-    val inline = Regex("`([^`\\n]{6,})`")
-        .findAll(trimmed)
-        .mapNotNull { it.groupValues.getOrNull(1)?.trim()?.takeIf(String::isNotBlank) }
-        .toList()
-    return (listOf(trimmed) + fenced + inline).distinct()
+    return fenced.distinct()
 }
 
 private fun detectSkillProposalLabel(candidate: String): String? {
@@ -3907,7 +3906,7 @@ private fun DraftProposalCard(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = "该配置会在回复结束后自动尝试导入并接入。",
+                text = "检测到兼容草案块，不会自动导入或接入，请在设置页或项目页手动处理。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSecondaryContainer
             )
@@ -4349,7 +4348,11 @@ private fun jsonIntOrNull(
 private val WEB_FETCH_RESULT_JSON = Json { ignoreUnknownKeys = true }
 
 fun buildConversationText(messages: List<ChatMessageUi>): String {
-    return messages.joinToString("\n\n") { formatMessageForCopy(it) }
+    return messages
+        .filter { msg ->
+            msg.role != "system" || shouldIncludeSystemMessageInCopiedConversation(msg.content)
+        }
+        .joinToString("\n\n") { formatMessageForCopy(it) }
 }
 
 private fun formatMessageForCopy(msg: ChatMessageUi): String {
@@ -4358,19 +4361,22 @@ private fun formatMessageForCopy(msg: ChatMessageUi): String {
         "assistant" -> "助手"
         "tool_exec" -> "工具"
         "subagent" -> "子代理"
-        "system" -> "系统"
+        "system" -> "系统状态"
         else -> msg.role
     }
     val parts = buildList {
         add("[$roleLabel]")
-        if (!msg.reasoning.isNullOrBlank()) {
-            add("思考过程:\n${msg.reasoning}")
-        }
         if (msg.content.isNotBlank()) {
             add(msg.content)
         }
     }
     return parts.joinToString("\n")
+}
+
+private fun shouldIncludeSystemMessageInCopiedConversation(content: String): Boolean {
+    val normalized = content.trim()
+    if (normalized.isBlank()) return false
+    return normalized.startsWith("⚠️") || normalized.startsWith("⏹️")
 }
 
 @Composable
