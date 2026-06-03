@@ -63,6 +63,7 @@ fun ThemeSettingsPage() {
                     value = when (ui.themeStyle) {
                         ReasonixThemeStyle.CLASSIC -> "经典纯色"
                         ReasonixThemeStyle.GLASS -> "现代玻璃"
+                        else -> "现代玻璃"
                     },
                     onClick = { showStyleDialog = true }
                 )
@@ -81,6 +82,7 @@ fun ThemeSettingsPage() {
                         ReasonixThemeMode.SYSTEM -> "跟随系统"
                         ReasonixThemeMode.LIGHT -> "浅色模式"
                         ReasonixThemeMode.DARK -> "深色模式"
+                        else -> "跟随系统"
                     },
                     onClick = { showModeDialog = true }
                 )

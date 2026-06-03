@@ -36,9 +36,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -138,6 +140,11 @@ class ReasonixUiController(private val context: Context) {
     fun accentPresets(): List<ReasonixAccentPreset> = AccentPresets
 }
 
+internal fun reasonixIsDarkColor(color: Color): Boolean {
+    val luminance = (0.299f * color.red) + (0.587f * color.green) + (0.114f * color.blue)
+    return luminance < 0.5f
+}
+
 val LocalReasonixUiController = compositionLocalOf<ReasonixUiController> {
     error("ReasonixUiController not provided")
 }
@@ -221,7 +228,7 @@ fun ReasonixGlassSurface(
     content: @Composable ColumnScope.() -> Unit
 ) {
     val ui = LocalReasonixUiController.current
-    val darkMode = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val darkMode = reasonixIsDarkColor(MaterialTheme.colorScheme.background)
     val accent = rememberReasonixAccentColor()
     val hazeState = LocalReasonixHazeState.current
     val surfaceColor = if (ui.themeStyle == ReasonixThemeStyle.GLASS) {
@@ -375,7 +382,7 @@ fun ReasonixAlertDialog(
         text = text,
         shape = RoundedCornerShape(28.dp),
         containerColor = if (LocalReasonixUiController.current.themeStyle == ReasonixThemeStyle.GLASS) {
-            if (MaterialTheme.colorScheme.background.luminance() < 0.5f) {
+            if (reasonixIsDarkColor(MaterialTheme.colorScheme.background)) {
                 Color(0xFF151A24).copy(alpha = 0.90f)
             } else {
                 Color.White.copy(alpha = 0.94f)
@@ -401,7 +408,7 @@ fun ReasonixFloatingBottomBar(
     modifier: Modifier = Modifier
 ) {
     val accent = rememberReasonixAccentColor()
-    val darkMode = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val darkMode = reasonixIsDarkColor(MaterialTheme.colorScheme.background)
     val animatedVisualIndex by animateFloatAsState(
         targetValue = visualIndex.coerceIn(0f, (items.lastIndex).coerceAtLeast(0).toFloat()),
         animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),

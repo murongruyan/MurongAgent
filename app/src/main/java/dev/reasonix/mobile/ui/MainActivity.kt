@@ -25,10 +25,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -367,7 +367,7 @@ fun MainScreen() {
                     modifier = Modifier.fillMaxSize(),
                     darkMode = uiController.themeMode == ReasonixThemeMode.DARK ||
                         (uiController.themeMode == ReasonixThemeMode.SYSTEM &&
-                            MaterialTheme.colorScheme.background.luminance() < 0.5f)
+                            reasonixIsDarkColor(MaterialTheme.colorScheme.background))
                 )
             }
             Scaffold(
@@ -597,7 +597,7 @@ fun MainScreen() {
                             items = listOf(
                                 ReasonixBottomBarItem("聊天", Icons.Outlined.MoreVert),
                                 ReasonixBottomBarItem("项目", Icons.Outlined.Info),
-                                ReasonixBottomBarItem("工具", Icons.Outlined.Palette),
+                                ReasonixBottomBarItem("工具", Icons.Outlined.Menu),
                                 ReasonixBottomBarItem("设置", Icons.Outlined.Settings)
                             ),
                             selectedIndex = pagerState.currentPage,

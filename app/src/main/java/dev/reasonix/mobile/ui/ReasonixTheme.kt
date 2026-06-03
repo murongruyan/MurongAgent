@@ -71,6 +71,7 @@ fun ReasonixTheme(
         ReasonixThemeMode.SYSTEM -> isSystemInDarkTheme()
         ReasonixThemeMode.LIGHT -> false
         ReasonixThemeMode.DARK -> true
+        else -> isSystemInDarkTheme()
     }
     val accent = uiController.accentPreset.color
     val hazeState = remember { HazeState() }
