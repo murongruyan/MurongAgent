@@ -1171,6 +1171,7 @@ private fun ProjectEditorSection(
                                 )
                             )
                         }
+                    }
                 } else {
                     Box(
                         modifier = Modifier

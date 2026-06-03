@@ -2271,10 +2271,9 @@ private fun MessageBubble(
                             proposals.forEach { proposal ->
                                 Spacer(modifier = Modifier.height(8.dp))
                                 DraftProposalCard(
-                                        proposal = proposal,
-                                        onDismiss = { }
-                                    )
-                                }
+                                    proposal = proposal,
+                                    onDismiss = {}
+                                )
                             }
                         } else if (msg.isStreaming) {
                             Text(
