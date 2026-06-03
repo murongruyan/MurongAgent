@@ -1521,12 +1521,12 @@ private fun ApprovalDialog(
         },
         confirmButton = {
             TextButton(onClick = onApprove) {
-                Text("允许")
+                Text(presentation.approveLabel)
             }
         },
         dismissButton = {
             TextButton(onClick = onReject) {
-                Text("拒绝")
+                Text(presentation.rejectLabel)
             }
         }
     )

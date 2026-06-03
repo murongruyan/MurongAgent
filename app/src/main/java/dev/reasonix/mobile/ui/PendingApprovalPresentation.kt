@@ -21,7 +21,9 @@ internal data class PendingApprovalPresentation(
     val headline: String,
     val supportText: String?,
     val rows: List<Pair<String, String>>,
-    val rawArgsLabel: String
+    val rawArgsLabel: String,
+    val approveLabel: String,
+    val rejectLabel: String
 )
 
 @Composable
@@ -70,7 +72,9 @@ internal fun PendingApprovalUi.toPendingApprovalPresentation(): PendingApprovalP
             headline = summary,
             supportText = detail.takeIf { it.isNotBlank() },
             rows = emptyList(),
-            rawArgsLabel = "参数"
+            rawArgsLabel = "参数",
+            approveLabel = "允许",
+            rejectLabel = "拒绝"
         )
     }
 
@@ -112,7 +116,9 @@ internal fun PendingApprovalUi.toPendingApprovalPresentation(): PendingApprovalP
         headline = "GitHub 远端写操作",
         supportText = "批准后才会真正修改远端 GitHub 资源；当前展示的是本次要操作的目标。",
         rows = rows,
-        rawArgsLabel = "原始参数 (JSON)"
+        rawArgsLabel = "原始参数 (JSON)",
+        approveLabel = "允许写入 GitHub",
+        rejectLabel = "拒绝远端修改"
     )
 }
 

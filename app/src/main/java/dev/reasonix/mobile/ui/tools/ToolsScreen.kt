@@ -634,11 +634,11 @@ private fun PendingApprovalSheet(
             }
         },
         confirmButton = {
-            FilledTonalButton(onClick = onApprove) { Text("批准") }
+            FilledTonalButton(onClick = onApprove) { Text(presentation.approveLabel) }
         },
         dismissButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onReject) { Text("拒绝") }
+                TextButton(onClick = onReject) { Text(presentation.rejectLabel) }
                 TextButton(onClick = onDismiss) { Text("关闭") }
             }
         }
