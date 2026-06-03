@@ -7649,7 +7649,7 @@ private data class ProjectFoldRegion(val startLine: Int, val endLine: Int, val h
 private data class ProjectOutlineEntry(val startLine: Int, val lineNumber: Int, val depth: Int, val label: String, val kind: String)
 private data class ProjectLanguageOption(val label: String, val value: String?)
 private enum class ProjectSearchScope { ALL, FILE_NAME, TEXT }
-private enum class ProjectLineAction(val label: String) {
+internal enum class ProjectLineAction(val label: String) {
     COPY("复制行"),
     CUT("剪切行"),
     DELETE("删除行"),
@@ -7695,7 +7695,7 @@ enum class ProjectEditorMenuAction(val label: String) {
     LINE_INDENT_LESS(ProjectLineAction.INDENT_LESS.label),
     LINE_TOGGLE_COMMENT(ProjectLineAction.TOGGLE_COMMENT.label);
 
-    private fun toLineAction(): ProjectLineAction? {
+    internal fun toLineAction(): ProjectLineAction? {
         return when (this) {
             LINE_COPY -> ProjectLineAction.COPY
             LINE_CUT -> ProjectLineAction.CUT
