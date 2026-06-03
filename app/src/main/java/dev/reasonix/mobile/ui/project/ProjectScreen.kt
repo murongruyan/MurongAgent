@@ -118,7 +118,6 @@ import dev.reasonix.mobile.ui.ReasonixTagButton
 import dev.reasonix.mobile.ui.SkillDraftImportCard
 import dev.reasonix.mobile.ui.highlightSyntax
 import dev.reasonix.mobile.ui.rememberReasonixAccentColor
-import dev.reasonix.mobile.ui.rememberReasonixBackgroundColor
 import dev.reasonix.mobile.ui.rememberReasonixChromeColor
 import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
 import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
@@ -241,6 +240,9 @@ private fun ProjectEditorSection(
     editorMenuAction: ProjectEditorMenuAction?
 ) {
     val scope = rememberCoroutineScope()
+    val editorBackgroundColor = MaterialTheme.colorScheme.background
+    val editorSurfaceColor = rememberReasonixSurfaceColor()
+    val editorMutedTextColor = rememberReasonixMutedTextColor()
     val projectRoot = remember(currentProjectPath) {
         currentProjectPath
             ?.takeIf { File(it).isDirectory }
@@ -994,9 +996,6 @@ private fun ProjectEditorSection(
         val isRawJsonFile = remember(selectedFilePath, language) {
             isJsonLikeProjectFile(selectedFilePath, language)
         }
-        val editorBackgroundColor = rememberReasonixBackgroundColor()
-        val editorSurfaceColor = rememberReasonixSurfaceColor()
-        val editorMutedTextColor = rememberReasonixMutedTextColor()
         val editorLanguageLabel = remember(language, languageOverride, isRawJsonFile) {
             when {
                 isRawJsonFile -> "json"
@@ -7696,7 +7695,7 @@ enum class ProjectEditorMenuAction(val label: String) {
     LINE_INDENT_LESS(ProjectLineAction.INDENT_LESS.label),
     LINE_TOGGLE_COMMENT(ProjectLineAction.TOGGLE_COMMENT.label);
 
-    fun toLineAction(): ProjectLineAction? {
+    private fun toLineAction(): ProjectLineAction? {
         return when (this) {
             LINE_COPY -> ProjectLineAction.COPY
             LINE_CUT -> ProjectLineAction.CUT

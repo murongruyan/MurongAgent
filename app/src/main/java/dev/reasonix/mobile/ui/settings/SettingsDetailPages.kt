@@ -79,6 +79,21 @@ fun ThemeSettingsPage() {
     var fontScaleDraft by remember(ui.fontScale) { mutableFloatStateOf(ui.fontScale) }
     var uiScaleDraft by remember(ui.uiScale) { mutableFloatStateOf(ui.uiScale) }
     var blurRadiusDraft by remember(ui.backgroundBlurRadius) { mutableFloatStateOf(ui.backgroundBlurRadius.toFloat()) }
+    val backgroundPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        pendingWallpaperAction = null
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+        ui.updateCustomBackgroundUri(uri.toString())
+        ui.updateBackgroundMode(ReasonixBackgroundMode.CUSTOM_IMAGE)
+        Toast.makeText(context, "已应用自定义背景图", Toast.LENGTH_SHORT).show()
+    }
     val permissionRequester = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -110,21 +125,6 @@ fun ThemeSettingsPage() {
             Toast.makeText(context, "未授予所有文件访问权限", Toast.LENGTH_SHORT).show()
         }
         pendingWallpaperAction = null
-    }
-    val backgroundPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        pendingWallpaperAction = null
-        if (uri == null) return@rememberLauncherForActivityResult
-        runCatching {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION
-            )
-        }
-        ui.updateCustomBackgroundUri(uri.toString())
-        ui.updateBackgroundMode(ReasonixBackgroundMode.CUSTOM_IMAGE)
-        Toast.makeText(context, "已应用自定义背景图", Toast.LENGTH_SHORT).show()
     }
     val runWallpaperAction: (ReasonixBackgroundMode) -> Unit = { mode ->
         pendingWallpaperAction = mode
