@@ -394,7 +394,9 @@ fun MainScreen() {
     val showBottomBar = settingsSubpage == SettingsSubpage.Main && !isProjectSecondaryPage
 
     LaunchedEffect(currentScreen, settingsSubpage) {
-        drawerState.close()
+        if (currentScreen !is Screen.Chat || settingsSubpage != SettingsSubpage.Main) {
+            drawerState.close()
+        }
     }
 
     ModalNavigationDrawer(
@@ -744,12 +746,18 @@ fun MainScreen() {
                         .reasonixGlassSource(LocalReasonixHazeState.current),
                     userScrollEnabled = settingsSubpage == SettingsSubpage.Main && !isProjectSecondaryPage
                 ) { page ->
+                    val pageScreen = shellScreens[page]
+                    val pageBottomPadding = when {
+                        !showBottomBar -> 12.dp
+                        pageScreen is Screen.Chat -> 82.dp
+                        else -> 24.dp
+                    }
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(bottom = if (showBottomBar) 24.dp else 12.dp)
+                            .padding(bottom = pageBottomPadding)
                     ) {
-                        when (shellScreens[page]) {
+                        when (pageScreen) {
                             is Screen.Chat -> {
                                 ChatScreen(
                                     state = chatState,

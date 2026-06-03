@@ -2952,6 +2952,7 @@ private fun InputBar(
     ReasonixGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
+            .navigationBarsPadding()
             .padding(horizontal = 12.dp, vertical = 10.dp),
         shape = MaterialTheme.shapes.extraLarge,
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
