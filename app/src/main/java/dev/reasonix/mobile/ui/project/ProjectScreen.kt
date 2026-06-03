@@ -16,6 +16,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,6 +34,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -41,6 +44,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ArrowForward
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Refresh
@@ -62,6 +67,7 @@ import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -104,6 +110,7 @@ import dev.reasonix.mobile.core.config.ProviderConfig
 import dev.reasonix.mobile.core.config.ToolApprovalMode
 import dev.reasonix.mobile.core.config.WorkflowFailureFallbackMode
 import dev.reasonix.mobile.core.loop.ProjectKnowledgeSnapshotUi
+import dev.reasonix.mobile.core.loop.RepoScopedProjectConfigUi
 import dev.reasonix.mobile.core.loop.SessionSummary
 import dev.reasonix.mobile.core.provider.ChatMessage
 import dev.reasonix.mobile.core.provider.ChatRequest
@@ -113,7 +120,7 @@ import dev.reasonix.mobile.common.utils.RootFile
 import dev.reasonix.mobile.ui.ReasonixAlertDialog
 import dev.reasonix.mobile.ui.ReasonixGlassSurface
 import dev.reasonix.mobile.ui.ReasonixInfoCard
-import dev.reasonix.mobile.ui.ReasonixOutlinedActionButton
+import dev.reasonix.mobile.ui.ReasonixSecondaryPageSurface
 import dev.reasonix.mobile.ui.ReasonixTagButton
 import dev.reasonix.mobile.ui.SkillDraftImportCard
 import dev.reasonix.mobile.ui.highlightSyntax
@@ -146,22 +153,36 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
+private fun findOwningRepo(
+    filePath: String,
+    repos: List<ProjectDetectedRepoUi>
+): ProjectDetectedRepoUi? {
+    return repos
+        .filter { repo ->
+            filePath == repo.rootPath || filePath.startsWith(repo.rootPath + File.separator)
+        }
+        .maxByOrNull { it.rootPath.length }
+}
+
 @Composable
 fun ProjectScreen(
     config: ProviderConfig,
     currentProjectPath: String?,
+    currentProjectScopePath: String?,
     projectKnowledgeDraftPaths: List<String>,
     projectKnowledgeSnapshots: List<ProjectKnowledgeSnapshotUi>,
     projectRules: List<GlobalRule>,
     projectMemories: List<GlobalMemory>,
     projectSkills: List<GlobalSkill>,
     projectToolPreferences: ProjectToolPreferences?,
+    repoScopedConfigs: Map<String, RepoScopedProjectConfigUi>,
     mcpToolNames: List<String>,
     sessions: List<SessionSummary>,
     onNewTask: () -> Unit,
     onOpenChat: () -> Unit,
-    onUpdateProjectConfig: (List<GlobalRule>?, List<GlobalMemory>?, List<GlobalSkill>?) -> Unit,
-    onUpdateProjectToolPreferences: (ProjectToolPreferences?) -> Unit,
+    onProjectScopeChanged: (String?) -> Unit,
+    onUpdateProjectConfig: (String?, List<GlobalRule>?, List<GlobalMemory>?, List<GlobalSkill>?) -> Unit,
+    onUpdateProjectToolPreferences: (String?, ProjectToolPreferences?) -> Unit,
     onUpdateProjectKnowledgeDraftPaths: (List<String>) -> Unit,
     onSaveProjectKnowledgeSnapshot: (String, List<String>) -> Unit,
     onRenameProjectKnowledgeSnapshot: (String, String) -> Unit,
@@ -172,56 +193,160 @@ fun ProjectScreen(
     editorMenuActionSignal: Int = 0,
     editorMenuAction: ProjectEditorMenuAction? = null
 ) {
+    val workspaceRoot = remember(currentProjectPath) {
+        currentProjectPath
+            ?.takeIf { File(it).isDirectory }
+            ?.let(::File)
+    }
+    val detectedRepos = remember(workspaceRoot?.absolutePath) {
+        workspaceRoot?.let(::detectProjectGitRepositories).orEmpty()
+    }
+    var selectedRepoRoot by remember(currentProjectPath) { mutableStateOf<String?>(null) }
+    fun selectRepoRoot(target: String?) {
+        selectedRepoRoot = target
+        onProjectScopeChanged(target)
+    }
+    LaunchedEffect(currentProjectPath, currentProjectScopePath, detectedRepos) {
+        val selectedStillValid = selectedRepoRoot != null && detectedRepos.any { it.rootPath == selectedRepoRoot }
+        if (!selectedStillValid) {
+            selectedRepoRoot = currentProjectScopePath
+                ?.takeIf { scope -> detectedRepos.any { it.rootPath == scope } }
+                ?: detectedRepos.firstOrNull { it.isWorkspaceRoot }?.rootPath
+                ?: detectedRepos.firstOrNull()?.rootPath
+                ?: workspaceRoot?.absolutePath
+        }
+    }
     var selectedTab by remember(currentProjectPath) { mutableStateOf(ProjectPrimaryTab.EDITOR) }
     var editorPageActive by remember(currentProjectPath) { mutableStateOf(false) }
-    Surface(modifier = Modifier.fillMaxSize()) {
+    val projectPagerState = rememberPagerState(
+        initialPage = selectedTab.ordinal,
+        pageCount = { ProjectPrimaryTab.entries.size }
+    )
+    val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    val activeConfigScopePath = selectedRepoRoot ?: currentProjectPath
+    val activeRepoScopedConfig = remember(
+        activeConfigScopePath,
+        repoScopedConfigs,
+        projectRules,
+        projectMemories,
+        projectSkills,
+        projectToolPreferences
+    ) {
+        activeConfigScopePath?.let(repoScopedConfigs::get)?.let { scoped ->
+            RepoScopedProjectConfigUi(
+                projectRules = scoped.projectRules,
+                projectMemories = scoped.projectMemories,
+                projectSkills = scoped.projectSkills,
+                projectToolPreferences = scoped.projectToolPreferences
+            )
+        } ?: RepoScopedProjectConfigUi(
+            projectRules = projectRules,
+            projectMemories = projectMemories,
+            projectSkills = projectSkills,
+            projectToolPreferences = projectToolPreferences
+        )
+    }
+    LaunchedEffect(selectedTab) {
+        if (projectPagerState.currentPage != selectedTab.ordinal) {
+            projectPagerState.animateScrollToPage(selectedTab.ordinal)
+        }
+    }
+    LaunchedEffect(projectPagerState.settledPage) {
+        val settledTab = ProjectPrimaryTab.entries[projectPagerState.settledPage]
+        if (selectedTab != settledTab) {
+            selectedTab = settledTab
+        }
+    }
+    ReasonixSecondaryPageSurface(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
+    ) {
         Column(modifier = Modifier.fillMaxSize()) {
             if (!(selectedTab == ProjectPrimaryTab.EDITOR && editorPageActive)) {
                 PrimaryScrollableTabRow(
-                    selectedTabIndex = selectedTab.ordinal
+                    selectedTabIndex = selectedTab.ordinal,
+                    containerColor = chromeColor.copy(alpha = 0.32f),
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    divider = {},
+                    indicator = { tabPositions ->
+                        TabRowDefaults.SecondaryIndicator(
+                            modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab.ordinal]),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.82f)
+                        )
+                    }
                 ) {
                     ProjectPrimaryTab.entries.forEach { tab ->
                         Tab(
                             selected = selectedTab == tab,
                             onClick = { selectedTab = tab },
+                            selectedContentColor = MaterialTheme.colorScheme.onSurface,
+                            unselectedContentColor = mutedTextColor,
                             text = { Text(tab.label) }
                         )
                     }
                 }
             }
-            when (selectedTab) {
-                ProjectPrimaryTab.EDITOR -> ProjectEditorSection(
-                    config = config,
-                    currentProjectPath = currentProjectPath,
-                    sessions = sessions,
-                    onOpenChat = onOpenChat,
-                    onNewTask = onNewTask,
-                    onEditorPageChanged = { active, fileName, relativePath ->
-                        editorPageActive = active
-                        onEditorPageChanged(active, fileName, relativePath)
-                    },
-                    closeEditorRequestSignal = closeEditorRequestSignal,
-                    editorMenuActionSignal = editorMenuActionSignal,
-                    editorMenuAction = editorMenuAction
-                )
+            HorizontalPager(
+                state = projectPagerState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                userScrollEnabled = !editorPageActive
+            ) { page ->
+                when (ProjectPrimaryTab.entries[page]) {
+                    ProjectPrimaryTab.EDITOR -> ProjectEditorSection(
+                        config = config,
+                        currentProjectPath = currentProjectPath,
+                        detectedRepos = detectedRepos,
+                        selectedRepoRoot = selectedRepoRoot,
+                        onSelectRepoRoot = ::selectRepoRoot,
+                        sessions = sessions,
+                        onOpenChat = onOpenChat,
+                        onNewTask = onNewTask,
+                        onEditorPageChanged = { active, fileName, relativePath ->
+                            editorPageActive = active
+                            onEditorPageChanged(active, fileName, relativePath)
+                        },
+                        closeEditorRequestSignal = closeEditorRequestSignal,
+                        editorMenuActionSignal = editorMenuActionSignal,
+                        editorMenuAction = editorMenuAction
+                    )
 
-                ProjectPrimaryTab.CONFIG -> ProjectConfigSection(
-                    config = config,
-                    projectRules = projectRules,
-                    projectMemories = projectMemories,
-                    projectSkills = projectSkills,
-                    projectToolPreferences = projectToolPreferences,
-                    onUpdateProjectConfig = onUpdateProjectConfig,
-                    onUpdateProjectToolPreferences = onUpdateProjectToolPreferences
-                )
+                    ProjectPrimaryTab.CONFIG -> ProjectConfigSection(
+                        config = config,
+                        scopeLabel = detectedRepos.firstOrNull { it.rootPath == activeConfigScopePath }?.let { repo ->
+                            if (repo.isWorkspaceRoot) {
+                                "当前作用域：工作区根仓库"
+                            } else {
+                                "当前作用域：${repo.relativePath}"
+                            }
+                        } ?: "当前作用域：整个工作区",
+                        projectRules = activeRepoScopedConfig.projectRules,
+                        projectMemories = activeRepoScopedConfig.projectMemories,
+                        projectSkills = activeRepoScopedConfig.projectSkills,
+                        projectToolPreferences = activeRepoScopedConfig.projectToolPreferences,
+                        onUpdateProjectConfig = { rules, memories, skills ->
+                            onUpdateProjectConfig(activeConfigScopePath, rules, memories, skills)
+                        },
+                        onUpdateProjectToolPreferences = { preferences ->
+                            onUpdateProjectToolPreferences(activeConfigScopePath, preferences)
+                        }
+                    )
 
-                ProjectPrimaryTab.GIT -> ProjectGitSection(
-                    config = config,
-                    currentProjectPath = currentProjectPath,
-                    draftPathCount = projectKnowledgeDraftPaths.size,
-                    snapshotCount = projectKnowledgeSnapshots.size,
-                    mcpToolCount = mcpToolNames.size
-                )
+                    ProjectPrimaryTab.GIT -> ProjectGitSection(
+                        config = config,
+                        currentProjectPath = currentProjectPath,
+                        detectedRepos = detectedRepos,
+                        selectedRepoRoot = selectedRepoRoot,
+                        onSelectRepoRoot = ::selectRepoRoot,
+                        draftPathCount = projectKnowledgeDraftPaths.size,
+                        snapshotCount = projectKnowledgeSnapshots.size,
+                        mcpToolCount = mcpToolNames.size
+                    )
+                }
             }
         }
     }
@@ -231,6 +356,9 @@ fun ProjectScreen(
 private fun ProjectEditorSection(
     config: ProviderConfig,
     currentProjectPath: String?,
+    detectedRepos: List<ProjectDetectedRepoUi>,
+    selectedRepoRoot: String?,
+    onSelectRepoRoot: (String) -> Unit,
     sessions: List<SessionSummary>,
     onOpenChat: () -> Unit,
     onNewTask: () -> Unit,
@@ -240,15 +368,18 @@ private fun ProjectEditorSection(
     editorMenuAction: ProjectEditorMenuAction?
 ) {
     val scope = rememberCoroutineScope()
-    val editorBackgroundColor = MaterialTheme.colorScheme.background
     val editorSurfaceColor = rememberReasonixSurfaceColor()
+    val editorChromeColor = rememberReasonixChromeColor()
     val editorMutedTextColor = rememberReasonixMutedTextColor()
+    val editorBackgroundColor = editorSurfaceColor.copy(alpha = 0.42f)
     val projectRoot = remember(currentProjectPath) {
         currentProjectPath
             ?.takeIf { File(it).isDirectory }
             ?.let(::File)
     }
+    val detectedRepoRoots = remember(detectedRepos) { detectedRepos.map { it.rootPath }.toSet() }
     val entriesByDir = remember(currentProjectPath) { mutableStateMapOf<String, List<ProjectTreeEntry>>() }
+    var currentRepoViewOnly by remember(currentProjectPath) { mutableStateOf(false) }
     var expandedDirs by remember(currentProjectPath) {
         mutableStateOf(projectRoot?.absolutePath?.let { setOf(it) } ?: emptySet())
     }
@@ -284,6 +415,16 @@ private fun ProjectEditorSection(
     val undoStack = remember(currentProjectPath) { mutableStateListOf<TextFieldValue>() }
     val redoStack = remember(currentProjectPath) { mutableStateListOf<TextFieldValue>() }
     val context = LocalContext.current
+    val activeTreeRootPath = remember(projectRoot?.absolutePath, selectedRepoRoot, currentRepoViewOnly) {
+        when {
+            projectRoot == null -> null
+            currentRepoViewOnly && !selectedRepoRoot.isNullOrBlank() -> selectedRepoRoot
+            else -> projectRoot.absolutePath
+        }
+    }
+    val activeTreeRoot = remember(activeTreeRootPath) {
+        activeTreeRootPath?.let(::File)
+    }
 
     fun loadDir(path: String) {
         scope.launch {
@@ -302,7 +443,7 @@ private fun ProjectEditorSection(
     }
 
     suspend fun ensurePathExpanded(path: String) {
-        val rootPath = projectRoot?.absolutePath ?: return
+        val rootPath = activeTreeRootPath ?: return
         val dirs = projectAncestorDirs(
             rootPath = rootPath,
             filePath = path
@@ -707,7 +848,7 @@ private fun ProjectEditorSection(
 
     fun runSearch() {
         val query = searchQuery.trim()
-        val root = projectRoot ?: return
+        val root = activeTreeRoot ?: return
         if (query.isBlank()) {
             searchResult = null
             return
@@ -740,14 +881,15 @@ private fun ProjectEditorSection(
         }
     }
 
-    LaunchedEffect(projectRoot?.absolutePath, reloadVersion) {
+    LaunchedEffect(activeTreeRootPath, reloadVersion) {
         entriesByDir.clear()
-        if (projectRoot != null) {
-            loadDir(projectRoot.absolutePath)
+        expandedDirs = activeTreeRootPath?.let { setOf(it) } ?: emptySet()
+        if (activeTreeRoot != null) {
+            loadDir(activeTreeRoot.absolutePath)
         }
     }
 
-    LaunchedEffect(searchQuery, projectRoot?.absolutePath) {
+    LaunchedEffect(searchQuery, activeTreeRootPath) {
         if (searchQuery.isBlank()) {
             searchResult = null
         } else {
@@ -816,12 +958,13 @@ private fun ProjectEditorSection(
         return
     }
 
+    val treeRootPath = activeTreeRootPath ?: projectRoot.absolutePath
+    val treeRoot = activeTreeRoot ?: projectRoot
     val visibleEntries = flattenVisibleEntries(
-        rootPath = projectRoot.absolutePath,
+        rootPath = treeRootPath,
         entriesByDir = entriesByDir,
         expandedDirs = expandedDirs
     )
-    val pageScrollState = rememberScrollState()
     val currentFileName = selectedFilePath?.substringAfterLast(File.separatorChar).orEmpty()
     val currentRelativePath = selectedFilePath
         ?.removePrefix(projectRoot.absolutePath)
@@ -871,112 +1014,219 @@ private fun ProjectEditorSection(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(pageScrollState)
-                .padding(16.dp),
+                .padding(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 132.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            ReasonixInfoCard(title = "", titleVisible = false) {
-                Text("项目文件", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    "路径: ${projectRoot.absolutePath}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    "上面搜文件名，下面像文件管理器一样浏览文件夹和文件；点开文件后会进入单独的编辑二级页。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(10.dp))
+            ReasonixGlassSurface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(26.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    ReasonixOutlinedActionButton(
-                        text = "刷新",
+                    Icon(
+                        imageVector = Icons.Outlined.Search,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                            color = MaterialTheme.colorScheme.onSurface
+                        ),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        decorationBox = { innerTextField ->
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                if (searchQuery.isBlank()) {
+                                    Text(
+                                        text = if (currentRepoViewOnly) "搜索当前仓库文件名" else "搜索工作区文件名",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                innerTextField()
+                            }
+                        }
+                    )
+                    IconButton(
                         onClick = { reloadVersion++ },
-                        modifier = Modifier.weight(1f)
-                    )
-                    ReasonixTagButton(
-                        text = "${visibleEntries.size} 项",
-                        onClick = {}
-                    )
+                        modifier = Modifier.width(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Refresh,
+                            contentDescription = "刷新",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = treeRootPath,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (detectedRepos.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        detectedRepos.forEach { repo ->
+                            FilterChip(
+                                selected = repo.rootPath == selectedRepoRoot,
+                                onClick = { onSelectRepoRoot(repo.rootPath) },
+                                label = {
+                                    Text(
+                                        if (repo.isWorkspaceRoot) "${repo.displayName}（根）" else repo.displayName,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = !currentRepoViewOnly,
+                            onClick = { currentRepoViewOnly = false },
+                            label = { Text("整个工作区", fontSize = 12.sp) }
+                        )
+                        FilterChip(
+                            selected = currentRepoViewOnly,
+                            onClick = { currentRepoViewOnly = true },
+                            enabled = !selectedRepoRoot.isNullOrBlank(),
+                            label = { Text("当前仓库", fontSize = 12.sp) }
+                        )
+                    }
                 }
             }
 
             ReasonixGlassSurface(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
                 shape = RoundedCornerShape(22.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)
+                contentPadding = PaddingValues(0.dp)
             ) {
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        label = { Text("搜索文件名") },
-                        placeholder = { Text("输入文件名关键词") },
-                        leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) }
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("文件和文件夹", style = MaterialTheme.typography.titleSmall)
-                        Spacer(Modifier.weight(1f))
-                        if (isSearching) {
-                            Text("搜索中", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                        } else if (isTreeLoading) {
-                            Text("读取中", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    item(key = "status") {
+                        when {
+                            isSearching -> Text(
+                                "搜索中...",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            isTreeLoading -> Text(
+                                "读取中...",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
                         }
                     }
-                    HorizontalDivider()
                     if (searchQuery.isNotBlank()) {
                         val result = searchResult
-                        if (result == null || result.hits.isEmpty()) {
-                            Text(
-                                "没有匹配的文件名",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        } else {
-                            Text(
-                                "命中 ${result.totalCount} 个文件",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            result.hits.forEach { hit ->
-                                ProjectSearchResultRow(
-                                    hit = hit,
-                                    query = searchQuery,
-                                    onOpen = { openFile(hit.filePath) }
-                                )
+                        when {
+                            result == null -> {
+                                item(key = "search-empty-loading") {
+                                    Text(
+                                        "正在搜索文件名",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            result.hits.isEmpty() -> {
+                                item(key = "search-empty") {
+                                    Text(
+                                        "没有匹配的文件名",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            else -> {
+                                item(key = "search-count") {
+                                    Text(
+                                        "命中 ${result.totalCount} 个文件",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                items(result.hits, key = { it.filePath }) { hit ->
+                                    val owningRepo = findOwningRepo(hit.filePath, detectedRepos)
+                                    ProjectSearchResultRow(
+                                        hit = hit,
+                                        query = searchQuery,
+                                        repoLabel = owningRepo
+                                            ?.takeIf { !currentRepoViewOnly && detectedRepos.size > 1 }
+                                            ?.let { repo ->
+                                                if (repo.isWorkspaceRoot) "工作区根仓库" else repo.displayName
+                                            },
+                                        onOpen = {
+                                            owningRepo?.let { onSelectRepoRoot(it.rootPath) }
+                                            openFile(hit.filePath)
+                                        }
+                                    )
+                                }
                             }
                         }
                     } else {
-                        ProjectTreeRow(
-                            entry = ProjectTreeEntry(
-                                absolutePath = projectRoot.absolutePath,
-                                name = projectRoot.name.ifBlank { projectRoot.absolutePath },
-                                isDirectory = true
-                            ),
-                            rootPath = projectRoot.absolutePath,
-                            depth = 0,
-                            isExpanded = true,
-                            isSelected = false,
-                            onToggleDir = {},
-                            onSelectFile = {}
-                        )
-                        visibleEntries.forEach { item ->
+                        item(key = "tree-root") {
+                            ProjectTreeRow(
+                                entry = ProjectTreeEntry(
+                                    absolutePath = treeRoot.absolutePath,
+                                    name = treeRoot.name.ifBlank { treeRoot.absolutePath },
+                                    isDirectory = true
+                                ),
+                                rootPath = treeRootPath,
+                                depth = 0,
+                                isExpanded = true,
+                                isSelected = false,
+                                repoBadge = if (treeRoot.absolutePath in detectedRepoRoots) {
+                                    if (treeRoot.absolutePath == selectedRepoRoot) "Git 仓库 · 当前" else "Git 仓库"
+                                } else null,
+                                onToggleDir = {},
+                                onSelectFile = {}
+                            )
+                        }
+                        if (visibleEntries.isEmpty() && !isTreeLoading) {
+                            item(key = "tree-empty") {
+                                Text(
+                                    "当前目录没有可显示的文件或文件夹。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        items(visibleEntries, key = { it.entry.absolutePath }) { item ->
                             ProjectTreeRow(
                                 entry = item.entry,
-                                rootPath = projectRoot.absolutePath,
+                                rootPath = treeRootPath,
                                 depth = item.depth,
                                 isExpanded = item.entry.isDirectory && expandedDirs.contains(item.entry.absolutePath),
                                 isSelected = false,
+                                repoBadge = if (item.entry.absolutePath in detectedRepoRoots) {
+                                    if (item.entry.absolutePath == selectedRepoRoot) "Git 仓库 · 当前" else "Git 仓库"
+                                } else null,
                                 onToggleDir = { path ->
                                     expandedDirs = if (expandedDirs.contains(path)) {
                                         expandedDirs - path
@@ -989,6 +1239,7 @@ private fun ProjectEditorSection(
                             )
                         }
                     }
+                }
             }
         }
     } else {
@@ -1152,7 +1403,7 @@ private fun ProjectEditorSection(
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(editorBackgroundColor.copy(alpha = 0.88f), RoundedCornerShape(18.dp))
+                                .background(editorChromeColor.copy(alpha = 0.28f), RoundedCornerShape(18.dp))
                         ) {
                             ProjectCodeEditorPane(
                                 editorValue = editorValue,
@@ -1587,6 +1838,7 @@ private fun EmptyEditorState(title: String, message: String) {
 private fun ProjectSearchResultRow(
     hit: ProjectSearchHitUi,
     query: String,
+    repoLabel: String? = null,
     onOpen: () -> Unit
 ) {
     val surfaceColor = rememberReasonixSurfaceColor()
@@ -1613,6 +1865,7 @@ private fun ProjectSearchResultRow(
                 text = buildString {
                     append(projectSearchTypeLabel(hit.fileType))
                     hit.lineNumber?.let { append(" · 第 $it 行") }
+                    repoLabel?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary
@@ -1763,6 +2016,7 @@ private fun ProjectTreeRow(
     depth: Int,
     isExpanded: Boolean,
     isSelected: Boolean,
+    repoBadge: String?,
     onToggleDir: (String) -> Unit,
     onSelectFile: (String) -> Unit
 ) {
@@ -1790,17 +2044,18 @@ private fun ProjectTreeRow(
                 style = MaterialTheme.typography.bodyMedium,
                 color = mutedTextColor
             )
-            Text(
-                text = "[DIR]",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary
+            Spacer(Modifier.width(6.dp))
+            Icon(
+                imageVector = Icons.Outlined.Folder,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
             )
         } else {
-            Spacer(Modifier.width(24.dp))
-            Text(
-                text = "[FILE]",
-                style = MaterialTheme.typography.labelSmall,
-                color = mutedTextColor
+            Spacer(Modifier.width(18.dp))
+            Icon(
+                imageVector = Icons.Outlined.InsertDriveFile,
+                contentDescription = null,
+                tint = mutedTextColor
             )
         }
         Spacer(Modifier.width(8.dp))
@@ -1811,6 +2066,15 @@ private fun ProjectTreeRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+            repoBadge?.let { badge ->
+                Text(
+                    text = badge,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             if (!entry.isDirectory) {
                 Text(
                     text = relativeProjectPath(rootPath, entry.absolutePath),
@@ -1835,6 +2099,7 @@ private fun IconText(icon: androidx.compose.ui.graphics.vector.ImageVector, labe
 @Composable
 private fun ProjectConfigSection(
     config: ProviderConfig,
+    scopeLabel: String,
     projectRules: List<GlobalRule>,
     projectMemories: List<GlobalMemory>,
     projectSkills: List<GlobalSkill>,
@@ -1853,33 +2118,50 @@ private fun ProjectConfigSection(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text("项目配置", style = MaterialTheme.typography.titleMedium)
+        ReasonixInfoCard(title = "", titleVisible = false) {
+            Text("项目配置", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = scopeLabel,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "这里的规则、记忆、技能和审批策略都跟当前仓库作用域绑定，不再混成整个工作区的一锅。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
 
-        Text("审批模式", style = MaterialTheme.typography.labelMedium)
-        ToolApprovalMode.entries.forEach { mode ->
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                        approvalMode = mode
-                        onUpdateProjectToolPreferences(
-                            (projectToolPreferences ?: ProjectToolPreferences()).copy(approvalMode = mode)
-                        )
-                    }
-                    .padding(vertical = 4.dp)
-            ) {
-                RadioButton(
-                    selected = approvalMode == mode,
-                    onClick = {
-                        approvalMode = mode
-                        onUpdateProjectToolPreferences(
-                            (projectToolPreferences ?: ProjectToolPreferences()).copy(approvalMode = mode)
-                        )
-                    }
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(approvalModeLabel(mode), style = MaterialTheme.typography.bodyMedium)
+        ProjectSectionCard {
+            Text("审批模式", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            Spacer(modifier = Modifier.height(8.dp))
+            ToolApprovalMode.entries.forEach { mode ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            approvalMode = mode
+                            onUpdateProjectToolPreferences(
+                                (projectToolPreferences ?: ProjectToolPreferences()).copy(approvalMode = mode)
+                            )
+                        }
+                        .padding(vertical = 4.dp)
+                ) {
+                    RadioButton(
+                        selected = approvalMode == mode,
+                        onClick = {
+                            approvalMode = mode
+                            onUpdateProjectToolPreferences(
+                                (projectToolPreferences ?: ProjectToolPreferences()).copy(approvalMode = mode)
+                            )
+                        }
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(approvalModeLabel(mode), style = MaterialTheme.typography.bodyMedium)
+                }
             }
         }
 
@@ -1909,11 +2191,7 @@ private fun ProjectRuleEditorInline(rules: List<GlobalRule>, onRulesChanged: (Li
     val items = remember(rules) { rules.toMutableList() }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         items.forEach { rule ->
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
+            ProjectInsetCard {
                 Column(Modifier.padding(8.dp)) {
                     Text(
                         rule.title.ifBlank { "未命名规则" },
@@ -1946,11 +2224,7 @@ private fun ProjectMemoryEditorInline(memories: List<GlobalMemory>, onMemoriesCh
     val items = remember(memories) { memories.toMutableList() }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         items.forEach { memory ->
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
+            ProjectInsetCard {
                 Column(Modifier.padding(8.dp)) {
                     Text(
                         memory.title.ifBlank { "未命名记忆" },
@@ -1982,11 +2256,7 @@ private fun ProjectMemoryEditorInline(memories: List<GlobalMemory>, onMemoriesCh
 private fun ProjectSkillEditorInline(skills: List<GlobalSkill>, onSkillsChanged: (List<GlobalSkill>) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         skills.forEach { skill ->
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
+            ProjectInsetCard {
                 Column(Modifier.padding(8.dp)) {
                     Text(
                         skill.title.ifBlank { "未命名技能" },
@@ -2011,9 +2281,45 @@ private fun ProjectSkillEditorInline(skills: List<GlobalSkill>, onSkillsChanged:
 }
 
 @Composable
+private fun ProjectSectionCard(
+    modifier: Modifier = Modifier,
+    shape: RoundedCornerShape = RoundedCornerShape(18.dp),
+    surfaceColorOverride: Color? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    ReasonixGlassSurface(
+        modifier = modifier.fillMaxWidth(),
+        shape = shape,
+        contentPadding = PaddingValues(14.dp),
+        surfaceColorOverride = surfaceColorOverride,
+        content = content
+    )
+}
+
+@Composable
+private fun ProjectInsetCard(
+    modifier: Modifier = Modifier,
+    shape: RoundedCornerShape = RoundedCornerShape(12.dp),
+    surfaceColorOverride: Color? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val fallback = rememberReasonixSurfaceColor().copy(alpha = 0.42f)
+    ReasonixGlassSurface(
+        modifier = modifier.fillMaxWidth(),
+        shape = shape,
+        contentPadding = PaddingValues(8.dp),
+        surfaceColorOverride = surfaceColorOverride ?: fallback,
+        content = content
+    )
+}
+
+@Composable
 private fun ProjectGitSection(
     config: ProviderConfig,
     currentProjectPath: String?,
+    detectedRepos: List<ProjectDetectedRepoUi>,
+    selectedRepoRoot: String?,
+    onSelectRepoRoot: (String) -> Unit,
     draftPathCount: Int,
     snapshotCount: Int,
     mcpToolCount: Int
@@ -2022,40 +2328,42 @@ private fun ProjectGitSection(
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val downloadHistory = remember(currentProjectPath) { mutableStateListOf<ProjectGitHubDownloadRecordUi>() }
-    var gitState by remember(currentProjectPath) { mutableStateOf(ProjectGitStatusUi.empty(currentProjectPath)) }
-    var isGitLoading by remember(currentProjectPath) { mutableStateOf(false) }
-    var isGitActionRunning by remember(currentProjectPath) { mutableStateOf(false) }
-    var feedbackMessage by remember(currentProjectPath) { mutableStateOf<String?>(null) }
-    var showCommitDialog by remember(currentProjectPath) { mutableStateOf(false) }
-    var commitTitleDraft by remember(currentProjectPath) { mutableStateOf("") }
-    var commitDetailDraft by remember(currentProjectPath) { mutableStateOf("") }
-    var diffPreview by remember(currentProjectPath) { mutableStateOf<ProjectGitDiffPreviewUi?>(null) }
-    var showBranchDialog by remember(currentProjectPath) { mutableStateOf(false) }
-    var newBranchName by remember(currentProjectPath) { mutableStateOf("") }
-    var githubActionsState by remember(currentProjectPath) { mutableStateOf(ProjectGitHubActionsState.empty()) }
-    var isGitHubLoading by remember(currentProjectPath) { mutableStateOf(false) }
-    var isGitHubActionRunning by remember(currentProjectPath) { mutableStateOf(false) }
-    var workflowDispatchTarget by remember(currentProjectPath) { mutableStateOf<ProjectGitHubWorkflowUi?>(null) }
-    var workflowDispatchRefDraft by remember(currentProjectPath) { mutableStateOf("") }
-    var artifactDialogState by remember(currentProjectPath) { mutableStateOf<ProjectGitHubArtifactDialogUi?>(null) }
-    var workflowRunDetailDialogState by remember(currentProjectPath) { mutableStateOf<ProjectGitHubWorkflowRunDetailUi?>(null) }
-    var showInitGitDialog by remember(currentProjectPath) { mutableStateOf(false) }
-    var initBranchDraft by remember(currentProjectPath) { mutableStateOf("main") }
-    var showCreateGitHubRepoDialog by remember(currentProjectPath) { mutableStateOf(false) }
-    var createGitHubRepoNameDraft by remember(currentProjectPath) {
-        mutableStateOf(suggestProjectGitHubRepoName(currentProjectPath))
+    val repoStatusSummaries = remember(currentProjectPath) { mutableStateMapOf<String, ProjectGitStatusUi>() }
+    val activeProjectPath = selectedRepoRoot ?: currentProjectPath
+    var gitState by remember(activeProjectPath) { mutableStateOf(ProjectGitStatusUi.empty(activeProjectPath)) }
+    var isGitLoading by remember(activeProjectPath) { mutableStateOf(false) }
+    var isGitActionRunning by remember(activeProjectPath) { mutableStateOf(false) }
+    var feedbackMessage by remember(activeProjectPath) { mutableStateOf<String?>(null) }
+    var showCommitDialog by remember(activeProjectPath) { mutableStateOf(false) }
+    var commitTitleDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var commitDetailDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var diffPreview by remember(activeProjectPath) { mutableStateOf<ProjectGitDiffPreviewUi?>(null) }
+    var showBranchDialog by remember(activeProjectPath) { mutableStateOf(false) }
+    var newBranchName by remember(activeProjectPath) { mutableStateOf("") }
+    var githubActionsState by remember(activeProjectPath) { mutableStateOf(ProjectGitHubActionsState.empty()) }
+    var isGitHubLoading by remember(activeProjectPath) { mutableStateOf(false) }
+    var isGitHubActionRunning by remember(activeProjectPath) { mutableStateOf(false) }
+    var workflowDispatchTarget by remember(activeProjectPath) { mutableStateOf<ProjectGitHubWorkflowUi?>(null) }
+    var workflowDispatchRefDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var artifactDialogState by remember(activeProjectPath) { mutableStateOf<ProjectGitHubArtifactDialogUi?>(null) }
+    var workflowRunDetailDialogState by remember(activeProjectPath) { mutableStateOf<ProjectGitHubWorkflowRunDetailUi?>(null) }
+    var showInitGitDialog by remember(activeProjectPath) { mutableStateOf(false) }
+    var initBranchDraft by remember(activeProjectPath) { mutableStateOf("main") }
+    var showCreateGitHubRepoDialog by remember(activeProjectPath) { mutableStateOf(false) }
+    var createGitHubRepoNameDraft by remember(activeProjectPath) {
+        mutableStateOf(suggestProjectGitHubRepoName(activeProjectPath))
     }
-    var createGitHubRepoDescriptionDraft by remember(currentProjectPath) { mutableStateOf("") }
-    var createGitHubRepoPrivateFlag by remember(currentProjectPath) { mutableStateOf(false) }
-    var createGitHubRepoBindOriginFlag by remember(currentProjectPath) { mutableStateOf(true) }
-    var showCreateReleaseDialog by remember(currentProjectPath) { mutableStateOf(false) }
-    var releaseEditTarget by remember(currentProjectPath) { mutableStateOf<ProjectGitHubReleaseUi?>(null) }
-    var releaseNameDraft by remember(currentProjectPath) { mutableStateOf("") }
-    var releaseTagDraft by remember(currentProjectPath) { mutableStateOf("") }
-    var releaseBodyDraft by remember(currentProjectPath) { mutableStateOf("") }
-    var releaseDraftFlag by remember(currentProjectPath) { mutableStateOf(false) }
-    var releasePrereleaseFlag by remember(currentProjectPath) { mutableStateOf(false) }
-    var releaseAssetDialogState by remember(currentProjectPath) { mutableStateOf<ProjectGitHubReleaseAssetDialogUi?>(null) }
+    var createGitHubRepoDescriptionDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var createGitHubRepoPrivateFlag by remember(activeProjectPath) { mutableStateOf(false) }
+    var createGitHubRepoBindOriginFlag by remember(activeProjectPath) { mutableStateOf(true) }
+    var showCreateReleaseDialog by remember(activeProjectPath) { mutableStateOf(false) }
+    var releaseEditTarget by remember(activeProjectPath) { mutableStateOf<ProjectGitHubReleaseUi?>(null) }
+    var releaseNameDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var releaseTagDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var releaseBodyDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var releaseDraftFlag by remember(activeProjectPath) { mutableStateOf(false) }
+    var releasePrereleaseFlag by remember(activeProjectPath) { mutableStateOf(false) }
+    var releaseAssetDialogState by remember(activeProjectPath) { mutableStateOf<ProjectGitHubReleaseAssetDialogUi?>(null) }
 
     fun resetCommitDraft() {
         commitTitleDraft = ""
@@ -2071,7 +2379,7 @@ private fun ProjectGitSection(
     }
 
     fun resetCreateGitHubRepoDraft() {
-        createGitHubRepoNameDraft = suggestProjectGitHubRepoName(currentProjectPath)
+        createGitHubRepoNameDraft = suggestProjectGitHubRepoName(activeProjectPath)
         createGitHubRepoDescriptionDraft = ""
         createGitHubRepoPrivateFlag = false
         createGitHubRepoBindOriginFlag = true
@@ -2124,14 +2432,16 @@ private fun ProjectGitSection(
     }
 
     fun refreshGitState() {
-        val projectPath = currentProjectPath
+        val projectPath = activeProjectPath
         if (projectPath.isNullOrBlank()) {
             gitState = ProjectGitStatusUi.empty(projectPath)
             return
         }
         scope.launch {
             isGitLoading = true
-            gitState = withContext(Dispatchers.IO) { loadProjectGitStatus(projectPath) }
+            val status = withContext(Dispatchers.IO) { loadProjectGitStatus(projectPath) }
+            gitState = status
+            repoStatusSummaries[projectPath] = status
             isGitLoading = false
         }
     }
@@ -2219,8 +2529,19 @@ private fun ProjectGitSection(
         }
     }
 
-    LaunchedEffect(currentProjectPath) {
+    LaunchedEffect(activeProjectPath) {
         refreshGitState()
+    }
+
+    LaunchedEffect(detectedRepos) {
+        repoStatusSummaries.clear()
+        if (detectedRepos.isEmpty()) return@LaunchedEffect
+        val summaries = withContext(Dispatchers.IO) {
+            detectedRepos.associate { repo ->
+                repo.rootPath to loadProjectGitStatus(repo.rootPath)
+            }
+        }
+        repoStatusSummaries.putAll(summaries)
     }
 
     LaunchedEffect(gitState.remoteUrl, gitState.isRepository, config.githubToken, config.githubApiBaseUrl) {
@@ -2239,7 +2560,7 @@ private fun ProjectGitSection(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text("Git", style = MaterialTheme.typography.titleMedium)
-        if (currentProjectPath.isNullOrBlank()) {
+        if (activeProjectPath.isNullOrBlank()) {
             Text(
                 "先选择一个项目目录，Git 页才能识别仓库状态。",
                 style = MaterialTheme.typography.bodySmall,
@@ -2249,13 +2570,104 @@ private fun ProjectGitSection(
             val surfaceColor = rememberReasonixSurfaceColor()
             val chromeColor = rememberReasonixChromeColor()
             val mutedTextColor = rememberReasonixMutedTextColor()
-            Surface(
+            if (detectedRepos.isNotEmpty()) {
+                ProjectSectionCard(
+                    shape = RoundedCornerShape(14.dp),
+                    surfaceColorOverride = chromeColor.copy(alpha = 0.42f)
+                ) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "当前工作区识别到 ${detectedRepos.size} 个 Git 项目",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Text(
+                            text = "下面切换的是 Git/GitHub 操作目标仓库，不影响上面的整个文件夹浏览。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            detectedRepos.forEach { repo ->
+                                FilterChip(
+                                    selected = repo.rootPath == selectedRepoRoot,
+                                    onClick = { onSelectRepoRoot(repo.rootPath) },
+                                    label = {
+                                        Text(
+                                            if (repo.isWorkspaceRoot) "${repo.displayName}（根）" else repo.relativePath,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                        detectedRepos.mapNotNull { repo ->
+                            repoStatusSummaries[repo.rootPath]?.let { status ->
+                                ProjectRepoStatusSummaryUi(repo, status)
+                            }
+                        }.forEach { summary ->
+                            ProjectInsetCard(
+                                shape = RoundedCornerShape(12.dp),
+                                surfaceColorOverride = if (summary.repo.rootPath == selectedRepoRoot) {
+                                    surfaceColor.copy(alpha = 0.78f)
+                                } else {
+                                    chromeColor.copy(alpha = 0.30f)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onSelectRepoRoot(summary.repo.rootPath) }
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        text = if (summary.repo.isWorkspaceRoot) {
+                                            "${summary.repo.displayName}（工作区根）"
+                                        } else {
+                                            summary.repo.relativePath
+                                        },
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    Text(
+                                        text = if (summary.status.branchSummary.isNotBlank()) {
+                                            "分支: ${summary.status.branchSummary}"
+                                        } else {
+                                            "分支: 未知"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = mutedTextColor
+                                    )
+                                    summary.status.remoteUrl?.takeIf { it.isNotBlank() }?.let { remote ->
+                                        Text(
+                                            text = "远端: $remote",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = mutedTextColor,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    Text(
+                                        text = "暂存 ${summary.status.stagedFiles.size} · 修改 ${summary.status.modifiedFiles.size} · 未跟踪 ${summary.status.untrackedFiles.size}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            ProjectSectionCard(
                 shape = RoundedCornerShape(14.dp),
-                color = surfaceColor.copy(alpha = 0.60f),
-                modifier = Modifier.fillMaxWidth()
+                surfaceColorOverride = surfaceColor.copy(alpha = 0.60f)
             ) {
                 Column(
-                    modifier = Modifier.padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
@@ -2353,7 +2765,7 @@ private fun ProjectGitSection(
                 }
                 OutlinedButton(
                     onClick = { showBranchDialog = true },
-                    enabled = gitState.isRepository && !isGitLoading && !isGitActionRunning
+                    enabled = gitState.isRepository && gitState.hasGitCommand && !isGitLoading && !isGitActionRunning
                 ) {
                     Text("分支")
                 }
@@ -2374,67 +2786,51 @@ private fun ProjectGitSection(
             }
 
             feedbackMessage?.takeIf { it.isNotBlank() }?.let { message ->
-                Surface(
+                ProjectSectionCard(
                     shape = RoundedCornerShape(12.dp),
-                    color = chromeColor.copy(alpha = 0.58f),
-                    modifier = Modifier.fillMaxWidth()
+                    surfaceColorOverride = chromeColor.copy(alpha = 0.58f)
                 ) {
                     Text(
                         text = message,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 }
             }
 
             gitState.errorMessage?.takeIf { it.isNotBlank() }?.let { error ->
-                Surface(
+                ProjectSectionCard(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f),
-                    modifier = Modifier.fillMaxWidth()
+                    surfaceColorOverride = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
                 ) {
                     Text(
                         text = error,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                        color = MaterialTheme.colorScheme.onErrorContainer
                     )
                 }
             }
 
-            if (!gitState.isRepository || !gitState.hasRemote) {
-                Surface(
+            if (!gitState.isRepository) {
+                ProjectSectionCard(
                     shape = RoundedCornerShape(12.dp),
-                    color = chromeColor.copy(alpha = 0.46f),
-                    modifier = Modifier.fillMaxWidth()
+                    surfaceColorOverride = chromeColor.copy(alpha = 0.46f)
                 ) {
                     Column(
-                        modifier = Modifier.padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        Text(text = "仓库初始化", style = MaterialTheme.typography.titleSmall)
                         Text(
-                            text = if (!gitState.isRepository) "仓库初始化" else "GitHub 仓库绑定",
-                            style = MaterialTheme.typography.titleSmall
-                        )
-                        Text(
-                            text = when {
-                                !gitState.isRepository ->
-                                    "当前项目还没有 `.git`。可以先初始化本地 Git，再一键创建 GitHub 仓库并绑定 origin。"
-                                else ->
-                                    "当前本地仓库还没有 origin 远端。可以直接新建 GitHub 仓库并绑定。"
-                            },
+                            text = "当前项目还没有 `.git`。可以先初始化本地 Git，再一键创建 GitHub 仓库并绑定 origin。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (!gitState.isRepository) {
-                                Button(
-                                    onClick = { showInitGitDialog = true },
-                                    enabled = !isGitLoading && !isGitActionRunning
-                                ) {
-                                    Text("初始化 Git")
-                                }
+                            Button(
+                                onClick = { showInitGitDialog = true },
+                                enabled = !isGitLoading && !isGitActionRunning
+                            ) {
+                                Text("初始化 Git")
                             }
                             OutlinedButton(
                                 onClick = {
@@ -2455,15 +2851,62 @@ private fun ProjectGitSection(
                         }
                     }
                 }
-            }
-
-            if (!gitState.isRepository) {
                 Text(
-                    "当前项目目录下没有发现 `.git`，或设备环境里还不能执行 Git 命令。",
+                    "当前项目目录下没有发现 `.git` 仓库。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
+                if (!gitState.hasGitCommand) {
+                    ReasonixGlassSurface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(12.dp),
+                        surfaceColorOverride = chromeColor.copy(alpha = 0.40f)
+                    ) {
+                        Text("Git 命令不可用", style = MaterialTheme.typography.titleSmall)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "已经识别到这是一个 Git 仓库，但当前设备 shell 还调不起 `git`。这通常是设备里没装 git，或者 su / PATH 环境没有把 git 暴露给当前进程。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                    }
+                } else if (!gitState.hasRemote) {
+                    ProjectSectionCard(
+                        shape = RoundedCornerShape(12.dp),
+                        surfaceColorOverride = chromeColor.copy(alpha = 0.46f)
+                    ) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(text = "GitHub 仓库绑定", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                text = "当前本地仓库还没有 origin 远端。可以直接新建 GitHub 仓库并绑定。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(
+                                    onClick = {
+                                        resetCreateGitHubRepoDraft()
+                                        showCreateGitHubRepoDialog = true
+                                    },
+                                    enabled = config.githubToken.isNotBlank() && !isGitLoading && !isGitActionRunning && !isGitHubActionRunning
+                                ) {
+                                    Text("新建 GitHub 仓库")
+                                }
+                            }
+                            if (config.githubToken.isBlank()) {
+                                Text(
+                                    text = "要新建 GitHub 仓库，请先在设置页完成 GitHub 登录或填写 Token。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
                 ProjectGitRemoteSummaryCard(
                     remoteUrl = gitState.remoteUrl,
                     upstreamBranch = gitState.upstreamBranch,
@@ -2771,14 +3214,14 @@ private fun ProjectGitSection(
             confirmButton = {
                 Button(
                     onClick = {
-                        val projectPath = currentProjectPath ?: return@Button
+                        val projectPath = activeProjectPath ?: return@Button
                         val branchName = initBranchDraft.trim().ifBlank { "main" }
                         showInitGitDialog = false
                         runGitAction("已初始化 Git 仓库") {
                             initializeProjectGitRepository(projectPath, branchName)
                         }
                     },
-                    enabled = currentProjectPath != null && !isGitLoading && !isGitActionRunning
+                    enabled = activeProjectPath != null && !isGitLoading && !isGitActionRunning
                 ) {
                     Text("初始化")
                 }
@@ -2815,7 +3258,7 @@ private fun ProjectGitSection(
             confirmButton = {
                 Button(
                     onClick = {
-                        val projectPath = currentProjectPath ?: return@Button
+                        val projectPath = activeProjectPath ?: return@Button
                         val repoName = createGitHubRepoNameDraft.trim()
                         val token = config.githubToken.trim()
                         if (repoName.isBlank() || token.isBlank()) return@Button
@@ -2978,12 +3421,11 @@ private fun ProjectGitSection(
                         color = MaterialTheme.colorScheme.primary
                     )
                     if (gitState.stagedFiles.isNotEmpty()) {
-                        Surface(
+                        ProjectInsetCard(
                             shape = RoundedCornerShape(10.dp),
-                            color = surfaceColor.copy(alpha = 0.60f)
+                            surfaceColorOverride = surfaceColor.copy(alpha = 0.60f)
                         ) {
                             Column(
-                                modifier = Modifier.padding(10.dp),
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 gitState.stagedFiles.take(6).forEach { file ->
@@ -3046,12 +3488,11 @@ private fun ProjectGitSection(
                         maxLines = 8
                     )
                     if (finalCommitMessage.isNotBlank()) {
-                        Surface(
+                        ProjectInsetCard(
                             shape = RoundedCornerShape(10.dp),
-                            color = chromeColor.copy(alpha = 0.58f)
+                            surfaceColorOverride = chromeColor.copy(alpha = 0.58f)
                         ) {
                             Column(
-                                modifier = Modifier.padding(10.dp),
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 Text(
@@ -3128,13 +3569,13 @@ private fun ProjectGitSection(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         gitState.localBranches.forEach { branch ->
-                            Surface(
+                            ProjectInsetCard(
                                 shape = RoundedCornerShape(12.dp),
-                                color = surfaceColor.copy(alpha = 0.58f),
+                                surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(12.dp),
+                                    modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
@@ -3179,13 +3620,13 @@ private fun ProjectGitSection(
                             )
                             gitState.remoteBranches.forEach { remoteBranch ->
                                 val suggestedLocalName = remoteBranch.substringAfter('/', remoteBranch)
-                                Surface(
+                                ProjectInsetCard(
                                     shape = RoundedCornerShape(12.dp),
-                                    color = chromeColor.copy(alpha = 0.56f),
+                                    surfaceColorOverride = chromeColor.copy(alpha = 0.56f),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(12.dp),
+                                        modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
@@ -3359,13 +3800,12 @@ private fun ProjectGitSection(
                         )
                     } else {
                         dialog.artifacts.forEach { artifact ->
-                            Surface(
+                            ProjectInsetCard(
                                 shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                surfaceColorOverride = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Column(
-                                    modifier = Modifier.padding(12.dp),
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     Text(
@@ -3511,13 +3951,12 @@ private fun ProjectGitSection(
                         }
                     }
                     detail.issueSummaries.takeIf { it.isNotEmpty() }?.let { issues ->
-                        Surface(
+                        ProjectInsetCard(
                             shape = RoundedCornerShape(12.dp),
-                            color = chromeColor.copy(alpha = 0.56f),
+                            surfaceColorOverride = chromeColor.copy(alpha = 0.56f),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(
-                                modifier = Modifier.padding(12.dp),
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 Text(
@@ -3543,13 +3982,12 @@ private fun ProjectGitSection(
                         )
                     } else {
                         detail.jobs.forEach { job ->
-                            Surface(
+                            ProjectInsetCard(
                                 shape = RoundedCornerShape(12.dp),
-                                color = surfaceColor.copy(alpha = 0.58f),
+                                surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Column(
-                                    modifier = Modifier.padding(12.dp),
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     Text(job.name, style = MaterialTheme.typography.bodyMedium)
@@ -3851,13 +4289,12 @@ private fun ProjectGitSection(
                         )
                     } else {
                         dialog.assets.forEach { asset ->
-                            Surface(
+                            ProjectInsetCard(
                                 shape = RoundedCornerShape(12.dp),
-                                color = surfaceColor.copy(alpha = 0.58f),
+                                surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Column(
-                                    modifier = Modifier.padding(12.dp),
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     Text(asset.name, style = MaterialTheme.typography.bodyMedium)
@@ -3925,15 +4362,17 @@ private fun ProjectGitSection(
             },
             title = { Text(preview.title) },
             text = {
-                SelectionContainer {
-                    Text(
-                        text = preview.content,
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 420.dp)
-                            .verticalScroll(rememberScrollState())
-                    )
+                ProjectSectionCard(shape = RoundedCornerShape(12.dp)) {
+                    SelectionContainer {
+                        Text(
+                            text = preview.content,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 420.dp)
+                                .verticalScroll(rememberScrollState())
+                        )
+                    }
                 }
             }
         )
@@ -3961,13 +4400,12 @@ private fun ProjectGitFileGroup(
             )
         } else {
             items.forEach { change ->
-                Surface(
+                ProjectInsetCard(
                     shape = RoundedCornerShape(12.dp),
-                    color = surfaceColor.copy(alpha = 0.58f),
+                    surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
-                        modifier = Modifier.padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(change.displayPath, style = MaterialTheme.typography.bodyMedium)
@@ -4296,13 +4734,12 @@ private fun ProjectGitHubDownloadHistorySection(
             )
         } else {
             downloads.forEach { item ->
-                Surface(
+                ProjectInsetCard(
                     shape = RoundedCornerShape(12.dp),
-                    color = surfaceColor.copy(alpha = 0.58f),
+                    surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
-                        modifier = Modifier.padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
@@ -4372,13 +4809,12 @@ private fun ProjectGitHubReleaseSection(
             )
         } else {
             releases.forEach { release ->
-                Surface(
+                ProjectInsetCard(
                     shape = RoundedCornerShape(12.dp),
-                    color = surfaceColor.copy(alpha = 0.58f),
+                    surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
-                        modifier = Modifier.padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
@@ -4475,13 +4911,12 @@ private fun ProjectGitHistorySection(
             )
         } else {
             commits.forEach { commit ->
-                Surface(
+                ProjectInsetCard(
                     shape = RoundedCornerShape(12.dp),
-                    color = surfaceColor.copy(alpha = 0.58f),
+                    surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
-                        modifier = Modifier.padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(commit.subject, style = MaterialTheme.typography.bodyMedium)
@@ -4517,6 +4952,7 @@ private fun approvalModeLabel(mode: ToolApprovalMode): String = when (mode) {
 private data class ProjectGitStatusUi(
     val projectPath: String?,
     val repoRoot: String?,
+    val hasGitCommand: Boolean,
     val branchSummary: String,
     val currentBranch: String?,
     val remoteUrl: String?,
@@ -4535,15 +4971,16 @@ private data class ProjectGitStatusUi(
 ) {
     val isRepository: Boolean get() = !repoRoot.isNullOrBlank()
     val hasRemote: Boolean get() = !remoteUrl.isNullOrBlank()
-    val canPull: Boolean get() = hasRemote && !upstreamBranch.isNullOrBlank()
-    val canPush: Boolean get() = hasRemote && !currentBranch.isNullOrBlank()
-    val canStageAll: Boolean get() = modifiedFiles.isNotEmpty() || untrackedFiles.isNotEmpty()
-    val canCommit: Boolean get() = stagedFiles.isNotEmpty()
+    val canPull: Boolean get() = hasGitCommand && hasRemote && !upstreamBranch.isNullOrBlank()
+    val canPush: Boolean get() = hasGitCommand && hasRemote && !currentBranch.isNullOrBlank()
+    val canStageAll: Boolean get() = hasGitCommand && (modifiedFiles.isNotEmpty() || untrackedFiles.isNotEmpty())
+    val canCommit: Boolean get() = hasGitCommand && stagedFiles.isNotEmpty()
 
     companion object {
         fun empty(projectPath: String?) = ProjectGitStatusUi(
             projectPath = projectPath,
             repoRoot = null,
+            hasGitCommand = true,
             branchSummary = "",
             currentBranch = null,
             remoteUrl = null,
@@ -4607,12 +5044,6 @@ private fun loadProjectGitStatus(projectPath: String): ProjectGitStatusUi {
         ?: return ProjectGitStatusUi.empty(projectPath).copy(
             errorMessage = "当前目录下没有识别到 `.git` 仓库。"
         )
-    if (!runCheckedShellCommand("command -v git", allowedExitCodes = setOf(0)).success) {
-        return ProjectGitStatusUi.empty(projectPath).copy(
-            repoRoot = repoRoot,
-            errorMessage = "当前设备环境里没有可用的 `git` 命令。"
-        )
-    }
     val statusResult = runGitCommand(
         repoRoot,
         "status --short --branch --porcelain=v1 -uall"
@@ -4620,7 +5051,12 @@ private fun loadProjectGitStatus(projectPath: String): ProjectGitStatusUi {
     if (!statusResult.success) {
         return ProjectGitStatusUi.empty(projectPath).copy(
             repoRoot = repoRoot,
-            errorMessage = statusResult.error ?: statusResult.output.ifBlank { "读取 Git 状态失败" }
+            hasGitCommand = !isGitCommandUnavailable(statusResult),
+            errorMessage = if (isGitCommandUnavailable(statusResult)) {
+                buildGitUnavailableMessage(statusResult)
+            } else {
+                statusResult.error ?: statusResult.output.ifBlank { "读取 Git 状态失败" }
+            }
         )
     }
     val branchSummary = parseGitBranchSummary(statusResult.output)
@@ -4638,6 +5074,7 @@ private fun loadProjectGitStatus(projectPath: String): ProjectGitStatusUi {
     return ProjectGitStatusUi(
         projectPath = projectPath,
         repoRoot = repoRoot,
+        hasGitCommand = true,
         branchSummary = branchSummary,
         currentBranch = branches.firstOrNull { it.isCurrent }?.name,
         remoteUrl = remoteInfo.remoteUrl,
@@ -4654,6 +5091,27 @@ private fun loadProjectGitStatus(projectPath: String): ProjectGitStatusUi {
         untrackedFiles = parsed.untracked,
         errorMessage = null
     )
+}
+
+private fun isGitCommandUnavailable(result: ProjectGitCommandResult): Boolean {
+    if (result.exitCode == 127) return true
+    val text = listOfNotNull(result.error, result.output)
+        .joinToString("\n")
+        .lowercase()
+    return "git: not found" in text ||
+        "git: inaccessible" in text ||
+        "git not found" in text ||
+        "command not found" in text ||
+        "not recognized as an internal or external command" in text
+}
+
+private fun buildGitUnavailableMessage(result: ProjectGitCommandResult): String {
+    val detail = result.output.ifBlank { result.error.orEmpty() }.trim()
+    return if (detail.isBlank()) {
+        "已识别到当前目录是 Git 仓库，但设备 shell 里调用不到 `git` 命令。"
+    } else {
+        "已识别到当前目录是 Git 仓库，但设备 shell 里调用不到 `git` 命令：$detail"
+    }
 }
 
 private fun loadProjectGitBranches(repoRoot: String): List<ProjectGitBranchUi> {
@@ -5755,6 +6213,18 @@ private data class VisibleProjectTreeEntry(
     val depth: Int
 )
 
+private data class ProjectDetectedRepoUi(
+    val rootPath: String,
+    val displayName: String,
+    val relativePath: String,
+    val isWorkspaceRoot: Boolean
+)
+
+private data class ProjectRepoStatusSummaryUi(
+    val repo: ProjectDetectedRepoUi,
+    val status: ProjectGitStatusUi
+)
+
 private fun flattenVisibleEntries(
     rootPath: String,
     entriesByDir: Map<String, List<ProjectTreeEntry>>,
@@ -5775,6 +6245,39 @@ private fun flattenVisibleEntries(
             )
         }
     }
+}
+
+private fun detectProjectGitRepositories(root: File): List<ProjectDetectedRepoUi> {
+    val rootPath = root.absolutePath
+    val results = linkedSetOf<String>()
+    if (File(root, ".git").exists() || RootFile.exists(File(root, ".git").absolutePath)) {
+        results += rootPath
+    }
+    root.walkTopDown()
+        .onEnter { dir ->
+            if (dir.absolutePath == rootPath) {
+                true
+            } else {
+                !shouldSkipSearchDir(dir, root) && dir.name != ".git"
+            }
+        }
+        .forEach { file ->
+            if (!file.isDirectory || file.name != ".git") return@forEach
+            file.parentFile?.absolutePath?.let(results::add)
+        }
+    return results
+        .map { repoRoot ->
+            ProjectDetectedRepoUi(
+                rootPath = repoRoot,
+                displayName = File(repoRoot).name.ifBlank { repoRoot },
+                relativePath = if (repoRoot == rootPath) "." else relativeProjectPath(rootPath, repoRoot),
+                isWorkspaceRoot = repoRoot == rootPath
+            )
+        }
+        .sortedWith(
+            compareBy<ProjectDetectedRepoUi> { !it.isWorkspaceRoot }
+                .thenBy { it.relativePath.lowercase(Locale.getDefault()) }
+        )
 }
 
 private fun listProjectEntries(dir: File): List<ProjectTreeEntry> {

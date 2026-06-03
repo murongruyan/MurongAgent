@@ -1,6 +1,9 @@
 package dev.reasonix.mobile.ui.settings
 
 import androidx.compose.animation.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -36,6 +39,7 @@ import dev.reasonix.mobile.ui.McpDraftImportCard
 import dev.reasonix.mobile.ui.ReasonixGlassSurface
 import dev.reasonix.mobile.ui.ReasonixInfoCard
 import dev.reasonix.mobile.ui.ReasonixOutlinedActionButton
+import dev.reasonix.mobile.ui.ReasonixSecondaryPageSurface
 import dev.reasonix.mobile.ui.ReasonixSectionCard
 import dev.reasonix.mobile.ui.normalizeSkillAllowedTools
 import dev.reasonix.mobile.ui.sanitizeSkillAllowedTools
@@ -73,6 +77,7 @@ fun SettingsScreen(
     val uriHandler = LocalUriHandler.current
     val clipboardManager = LocalClipboardManager.current
     var lastOpenedGitHubAuthUrl by remember { mutableStateOf<String?>(null) }
+    var providerSectionExpanded by remember { mutableStateOf(true) }
 
     LaunchedEffect(gitHubAuthState.authorizationUrl) {
         val uri = gitHubAuthState.authorizationUrl?.trim().orEmpty()
@@ -81,48 +86,53 @@ fun SettingsScreen(
         lastOpenedGitHubAuthUrl = uri
     }
 
-    Column(
+    ReasonixSecondaryPageSurface(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
     ) {
-        ReasonixInfoCard(title = "界面收口") {
-            Text(
-                text = "这里保留核心设置，同时把外观和关于拆成单独页面，方便后续继续做现代玻璃风的产品化 UI。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
-        ReasonixSectionCard(title = "外观与关于") {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                ReasonixOutlinedActionButton(
-                    text = "主题界面",
-                    onClick = onOpenThemePage,
-                    modifier = Modifier.weight(1f)
-                )
-                ReasonixOutlinedActionButton(
-                    text = "关于界面",
-                    onClick = onOpenAboutPage,
-                    modifier = Modifier.weight(1f)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 12.dp, top = 10.dp, end = 12.dp, bottom = 132.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            ReasonixInfoCard(title = "界面收口") {
+                Text(
+                    text = "这里保留核心设置，同时把外观和关于拆成单独页面，方便后续继续做现代玻璃风的产品化 UI。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-        }
 
-        // ═══════════════════════════════════════
-        // Root 权限检测
-        // ═══════════════════════════════════════
-        Text(
-            text = "设备权限",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onBackground
-        )
+            ReasonixSectionCard(title = "外观与关于") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    ReasonixOutlinedActionButton(
+                        text = "主题界面",
+                        onClick = onOpenThemePage,
+                        modifier = Modifier.weight(1f)
+                    )
+                    ReasonixOutlinedActionButton(
+                        text = "关于界面",
+                        onClick = onOpenAboutPage,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            // ═══════════════════════════════════════
+            // Root 权限检测
+            // ═══════════════════════════════════════
+            Text(
+                text = "设备权限",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground
+            )
 
         ReasonixGlassSurface(
             modifier = Modifier.fillMaxWidth(),
@@ -218,55 +228,88 @@ fun SettingsScreen(
         // ═══════════════════════════════════════
         // AI 模型提供商
         // ═══════════════════════════════════════
-        Text(
-            text = "AI 模型提供商",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onBackground
-        )
-
-        providers.forEach { provider ->
-            val isActive = config.activeProviderId == provider.id
-
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = if (isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
-                        else MaterialTheme.colorScheme.surface,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onConfigChanged(config.copy(activeProviderId = provider.id)) }
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    // Provider 标题行
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(
-                            selected = isActive,
-                            onClick = { onConfigChanged(config.copy(activeProviderId = provider.id)) },
-                            colors = RadioButtonDefaults.colors(
-                                selectedColor = MaterialTheme.colorScheme.primary
-                            )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { providerSectionExpanded = !providerSectionExpanded },
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "AI 模型提供商",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onBackground
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column {
-                            Text(
-                                text = provider.name,
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "默认模型: ${provider.defaultModel}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 11.sp
-                            )
-                        }
+                        Text(
+                            text = "展开后可切换 Provider、模型、推理深度和预算配置。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
+                    Icon(
+                        imageVector = if (providerSectionExpanded) {
+                            Icons.Outlined.KeyboardArrowUp
+                        } else {
+                            Icons.Outlined.KeyboardArrowDown
+                        },
+                        contentDescription = if (providerSectionExpanded) "收起模型供应商" else "展开模型供应商",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
 
-                    // 展开配置
-                    AnimatedVisibility(visible = isActive) {
-                        Column(
-                            modifier = Modifier.padding(start = 44.dp, top = 8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
+                AnimatedVisibility(visible = providerSectionExpanded) {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        providers.forEach { provider ->
+                            val isActive = config.activeProviderId == provider.id
+
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                                        else MaterialTheme.colorScheme.surface,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onConfigChanged(config.copy(activeProviderId = provider.id)) }
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        RadioButton(
+                                            selected = isActive,
+                                            onClick = { onConfigChanged(config.copy(activeProviderId = provider.id)) },
+                                            colors = RadioButtonDefaults.colors(
+                                                selectedColor = MaterialTheme.colorScheme.primary
+                                            )
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Column {
+                                            Text(
+                                                text = provider.name,
+                                                style = MaterialTheme.typography.titleSmall,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = "默认模型: ${provider.defaultModel}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                    }
+
+                                    AnimatedVisibility(visible = isActive) {
+                                        Column(
+                                            modifier = Modifier.padding(start = 44.dp, top = 8.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
                             val apiKey = when (provider.id) {
                                 "deepseek" -> config.deepseekApiKey
                                 "openai-compatible" -> config.openaiApiKey
@@ -593,6 +636,9 @@ fun SettingsScreen(
                                         )
                                     }
                                 )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1151,7 +1197,8 @@ fun SettingsScreen(
             }
         )
 
-        Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(32.dp))
+        }
     }
 }
 

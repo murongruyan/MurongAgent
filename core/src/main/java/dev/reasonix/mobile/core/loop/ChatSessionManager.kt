@@ -206,6 +206,13 @@ data class ProjectKnowledgeSnapshotMutationResult(
     val message: String
 )
 
+data class RepoScopedProjectConfigUi(
+    val projectRules: List<GlobalRule> = emptyList(),
+    val projectMemories: List<GlobalMemory> = emptyList(),
+    val projectSkills: List<GlobalSkill> = emptyList(),
+    val projectToolPreferences: ProjectToolPreferences? = null
+)
+
 enum class WorkflowPlanStatusUi {
     READY,
     EXECUTING,
@@ -422,12 +429,14 @@ data class SessionState(
     val sessionId: String = "",
     val sessionTitle: String = "新对话",
     val projectPath: String? = null,
+    val activeProjectScopePath: String? = null,
     val projectRules: List<GlobalRule> = emptyList(),
     val projectMemories: List<GlobalMemory> = emptyList(),
     val projectSkills: List<GlobalSkill> = emptyList(),
     val projectKnowledgePaths: List<String> = emptyList(),
     val projectKnowledgeSnapshots: List<ProjectKnowledgeSnapshotUi> = emptyList(),
     val projectToolPreferences: ProjectToolPreferences? = null,
+    val repoScopedConfigs: Map<String, RepoScopedProjectConfigUi> = emptyMap(),
     val usageSummary: UsageSummarySnapshot = UsageSummarySnapshot(),
     val compressionSnapshot: ContextCompressionUi? = null,
     val compressionSnapshots: List<ContextCompressionUi> = emptyList(),
@@ -640,6 +649,83 @@ class ChatSessionManager(
 
     private fun normalizeProjectPath(path: String?): String? {
         return path?.trim()?.trimEnd('/', '\\')?.takeIf { it.isNotBlank() }
+    }
+
+    private fun buildRepoScopedProjectConfig(
+        rules: List<GlobalRule>,
+        memories: List<GlobalMemory>,
+        skills: List<GlobalSkill>,
+        preferences: ProjectToolPreferences?
+    ): RepoScopedProjectConfigUi {
+        return RepoScopedProjectConfigUi(
+            projectRules = rules,
+            projectMemories = memories,
+            projectSkills = skills,
+            projectToolPreferences = preferences
+        )
+    }
+
+    private fun normalizeRepoScopedConfigs(
+        configs: Map<String, RepoScopedProjectConfigUi>
+    ): Map<String, RepoScopedProjectConfigUi> {
+        return configs.entries
+            .mapNotNull { (path, config) ->
+                normalizeProjectPath(path)?.let { normalizedPath ->
+                    normalizedPath to config
+                }
+            }
+            .associate { it }
+    }
+
+    private fun restoreRepoScopedConfigs(session: PersistedSession): Map<String, RepoScopedProjectConfigUi> {
+        val restored = session.repoScopedConfigs.entries
+            .mapNotNull { (path, config) ->
+                normalizeProjectPath(path)?.let { normalizedPath ->
+                    normalizedPath to RepoScopedProjectConfigUi(
+                        projectRules = config.projectRules,
+                        projectMemories = config.projectMemories,
+                        projectSkills = config.projectSkills,
+                        projectToolPreferences = config.projectToolPreferences
+                    )
+                }
+            }
+            .associate { it }
+            .toMutableMap()
+        val legacyScope = normalizeProjectPath(session.projectPath)
+        if (legacyScope != null && restored[legacyScope] == null) {
+            restored[legacyScope] = buildRepoScopedProjectConfig(
+                rules = session.projectRules,
+                memories = session.projectMemories,
+                skills = session.projectSkills,
+                preferences = session.projectToolPreferences
+            )
+        }
+        return restored
+    }
+
+    private fun resolveRepoScopedProjectConfig(
+        scopePath: String?,
+        repoScopedConfigs: Map<String, RepoScopedProjectConfigUi>,
+        fallbackRules: List<GlobalRule>,
+        fallbackMemories: List<GlobalMemory>,
+        fallbackSkills: List<GlobalSkill>,
+        fallbackPreferences: ProjectToolPreferences?
+    ): RepoScopedProjectConfigUi {
+        val normalizedScope = normalizeProjectPath(scopePath)
+        return normalizedScope?.let(repoScopedConfigs::get)
+            ?: buildRepoScopedProjectConfig(
+                rules = fallbackRules,
+                memories = fallbackMemories,
+                skills = fallbackSkills,
+                preferences = fallbackPreferences
+            )
+    }
+
+    private fun activeProjectScopePath(
+        activeScopePath: String?,
+        projectPath: String?
+    ): String? {
+        return normalizeProjectPath(activeScopePath) ?: normalizeProjectPath(projectPath)
     }
 
     private fun findLatestProjectSession(projectPath: String): PersistedSession? {
@@ -1244,6 +1330,19 @@ class ChatSessionManager(
      */
     fun loadSession(sessionId: String): Boolean {
         val session = conversationStore.loadSession(sessionId) ?: return false
+        val restoredRepoScopedConfigs = restoreRepoScopedConfigs(session)
+        val resolvedScopePath = activeProjectScopePath(
+            activeScopePath = session.activeProjectScopePath,
+            projectPath = session.projectPath
+        )
+        val activeRepoConfig = resolveRepoScopedProjectConfig(
+            scopePath = resolvedScopePath,
+            repoScopedConfigs = restoredRepoScopedConfigs,
+            fallbackRules = session.projectRules,
+            fallbackMemories = session.projectMemories,
+            fallbackSkills = session.projectSkills,
+            fallbackPreferences = session.projectToolPreferences
+        )
         val restoredCompressionSnapshots = conversationStore.restoreCompressionSnapshots(
             snapshots = session.compressionSnapshots,
             fallbackSnapshot = session.compressionSnapshot
@@ -1266,9 +1365,10 @@ class ChatSessionManager(
             sessionId = session.id,
             sessionTitle = session.title,
             projectPath = session.projectPath,
-            projectRules = session.projectRules,
-            projectMemories = session.projectMemories,
-            projectSkills = session.projectSkills,
+            activeProjectScopePath = resolvedScopePath,
+            projectRules = activeRepoConfig.projectRules,
+            projectMemories = activeRepoConfig.projectMemories,
+            projectSkills = activeRepoConfig.projectSkills,
             projectKnowledgePaths = session.projectKnowledgePaths,
             projectKnowledgeSnapshots = session.projectKnowledgeSnapshots.map { snapshot ->
                 ProjectKnowledgeSnapshotUi(
@@ -1280,7 +1380,8 @@ class ChatSessionManager(
                     lastAppliedAt = snapshot.lastAppliedAt
                 )
             },
-            projectToolPreferences = session.projectToolPreferences,
+            projectToolPreferences = activeRepoConfig.projectToolPreferences,
+            repoScopedConfigs = restoredRepoScopedConfigs,
             usageSummary = session.usageSummary,
             compressionSnapshot = currentCompressionSnapshot,
             compressionSnapshots = restoredCompressionSnapshots,
@@ -1380,6 +1481,19 @@ class ChatSessionManager(
     fun startTask(projectPath: String) {
         val normalizedPath = projectPath.trim().removeSuffix("/")
         val inheritedProjectSession = findLatestProjectSession(normalizedPath)
+        val inheritedRepoScopedConfigs = inheritedProjectSession?.let(::restoreRepoScopedConfigs).orEmpty()
+        val resolvedScopePath = activeProjectScopePath(
+            activeScopePath = inheritedProjectSession?.activeProjectScopePath,
+            projectPath = normalizedPath
+        )
+        val activeRepoConfig = resolveRepoScopedProjectConfig(
+            scopePath = resolvedScopePath,
+            repoScopedConfigs = inheritedRepoScopedConfigs,
+            fallbackRules = inheritedProjectSession?.projectRules.orEmpty(),
+            fallbackMemories = inheritedProjectSession?.projectMemories.orEmpty(),
+            fallbackSkills = inheritedProjectSession?.projectSkills.orEmpty(),
+            fallbackPreferences = inheritedProjectSession?.projectToolPreferences
+        )
         saveCurrentSession()
         currentSessionId = UUID.randomUUID().toString().take(8)
         clearApprovedApprovalScopes()
@@ -1388,9 +1502,10 @@ class ChatSessionManager(
             sessionId = currentSessionId,
             sessionTitle = buildTaskTitle(normalizedPath),
             projectPath = normalizedPath,
-            projectRules = inheritedProjectSession?.projectRules.orEmpty(),
-            projectMemories = inheritedProjectSession?.projectMemories.orEmpty(),
-            projectSkills = inheritedProjectSession?.projectSkills.orEmpty(),
+            activeProjectScopePath = resolvedScopePath,
+            projectRules = activeRepoConfig.projectRules,
+            projectMemories = activeRepoConfig.projectMemories,
+            projectSkills = activeRepoConfig.projectSkills,
             projectKnowledgePaths = inheritedProjectSession?.projectKnowledgePaths.orEmpty(),
             projectKnowledgeSnapshots = inheritedProjectSession?.projectKnowledgeSnapshots.orEmpty().map { snapshot ->
                 ProjectKnowledgeSnapshotUi(
@@ -1402,9 +1517,43 @@ class ChatSessionManager(
                     lastAppliedAt = snapshot.lastAppliedAt
                 )
             },
-            projectToolPreferences = inheritedProjectSession?.projectToolPreferences
+            projectToolPreferences = activeRepoConfig.projectToolPreferences,
+            repoScopedConfigs = inheritedRepoScopedConfigs
         )
         syncApprovedApprovalScopesState()
+    }
+
+    fun switchProjectScope(scopePath: String?) {
+        val current = _state.value
+        val resolvedScopePath = activeProjectScopePath(
+            activeScopePath = scopePath,
+            projectPath = current.projectPath
+        )
+        val activeRepoConfig = resolveRepoScopedProjectConfig(
+            scopePath = resolvedScopePath,
+            repoScopedConfigs = current.repoScopedConfigs,
+            fallbackRules = current.projectRules,
+            fallbackMemories = current.projectMemories,
+            fallbackSkills = current.projectSkills,
+            fallbackPreferences = current.projectToolPreferences
+        )
+        if (
+            current.activeProjectScopePath == resolvedScopePath &&
+            current.projectRules == activeRepoConfig.projectRules &&
+            current.projectMemories == activeRepoConfig.projectMemories &&
+            current.projectSkills == activeRepoConfig.projectSkills &&
+            current.projectToolPreferences == activeRepoConfig.projectToolPreferences
+        ) {
+            return
+        }
+        _state.value = current.copy(
+            activeProjectScopePath = resolvedScopePath,
+            projectRules = activeRepoConfig.projectRules,
+            projectMemories = activeRepoConfig.projectMemories,
+            projectSkills = activeRepoConfig.projectSkills,
+            projectToolPreferences = activeRepoConfig.projectToolPreferences
+        )
+        saveCurrentSession()
     }
 
     /**
@@ -1425,21 +1574,70 @@ class ChatSessionManager(
     }
 
     fun updateProjectConfig(
+        scopePath: String? = activeProjectScopePath(_state.value.activeProjectScopePath, _state.value.projectPath),
         rules: List<GlobalRule>? = null,
         memories: List<GlobalMemory>? = null,
         skills: List<GlobalSkill>? = null
     ) {
         val current = _state.value
+        val normalizedScope = normalizeProjectPath(scopePath)
+        val workspaceScope = normalizeProjectPath(current.projectPath)
+        val updatedRepoScopedConfigs = if (normalizedScope != null) {
+            val currentScopedConfig = resolveRepoScopedProjectConfig(
+                scopePath = normalizedScope,
+                repoScopedConfigs = current.repoScopedConfigs,
+                fallbackRules = current.projectRules,
+                fallbackMemories = current.projectMemories,
+                fallbackSkills = current.projectSkills,
+                fallbackPreferences = current.projectToolPreferences
+            )
+            current.repoScopedConfigs + (
+                normalizedScope to currentScopedConfig.copy(
+                    projectRules = rules ?: currentScopedConfig.projectRules,
+                    projectMemories = memories ?: currentScopedConfig.projectMemories,
+                    projectSkills = skills ?: currentScopedConfig.projectSkills
+                )
+            )
+        } else {
+            current.repoScopedConfigs
+        }
+        val shouldUpdateLegacyFields = normalizedScope == null || normalizedScope == workspaceScope
         _state.value = current.copy(
-            projectRules = rules ?: current.projectRules,
-            projectMemories = memories ?: current.projectMemories,
-            projectSkills = skills ?: current.projectSkills
+            projectRules = if (shouldUpdateLegacyFields) (rules ?: current.projectRules) else current.projectRules,
+            projectMemories = if (shouldUpdateLegacyFields) (memories ?: current.projectMemories) else current.projectMemories,
+            projectSkills = if (shouldUpdateLegacyFields) (skills ?: current.projectSkills) else current.projectSkills,
+            repoScopedConfigs = updatedRepoScopedConfigs
         )
         saveCurrentSession()
     }
 
-    fun updateProjectToolPreferences(preferences: ProjectToolPreferences?) {
-        _state.value = _state.value.copy(projectToolPreferences = preferences)
+    fun updateProjectToolPreferences(
+        scopePath: String? = activeProjectScopePath(_state.value.activeProjectScopePath, _state.value.projectPath),
+        preferences: ProjectToolPreferences?
+    ) {
+        val current = _state.value
+        val normalizedScope = normalizeProjectPath(scopePath)
+        val workspaceScope = normalizeProjectPath(current.projectPath)
+        val updatedRepoScopedConfigs = if (normalizedScope != null) {
+            val currentScopedConfig = resolveRepoScopedProjectConfig(
+                scopePath = normalizedScope,
+                repoScopedConfigs = current.repoScopedConfigs,
+                fallbackRules = current.projectRules,
+                fallbackMemories = current.projectMemories,
+                fallbackSkills = current.projectSkills,
+                fallbackPreferences = current.projectToolPreferences
+            )
+            current.repoScopedConfigs + (
+                normalizedScope to currentScopedConfig.copy(projectToolPreferences = preferences)
+            )
+        } else {
+            current.repoScopedConfigs
+        }
+        val shouldUpdateLegacyFields = normalizedScope == null || normalizedScope == workspaceScope
+        _state.value = current.copy(
+            projectToolPreferences = if (shouldUpdateLegacyFields) preferences else current.projectToolPreferences,
+            repoScopedConfigs = updatedRepoScopedConfigs
+        )
         saveCurrentSession()
     }
 
@@ -1655,7 +1853,10 @@ class ChatSessionManager(
     }
 
     fun searchProjectFiles(query: String, limit: Int = 20): List<FileMentionUi> {
-        val projectPath = _state.value.projectPath?.trim()?.takeIf { it.isNotBlank() } ?: return emptyList()
+        val projectPath = activeProjectScopePath(
+            _state.value.activeProjectScopePath,
+            _state.value.projectPath
+        ) ?: return emptyList()
         val normalizedQuery = query.trim().replace('\\', '/')
         val results = linkedMapOf<String, FileMentionUi>()
 
@@ -2871,6 +3072,7 @@ class ChatSessionManager(
             state.projectSkills.isNotEmpty() ||
             state.projectKnowledgePaths.isNotEmpty() ||
             state.projectToolPreferences != null ||
+            state.repoScopedConfigs.isNotEmpty() ||
             state.pendingWorkflowPlan != null ||
             state.pendingClarificationRequest != null ||
             state.lastAutoRouteDecision != null ||
@@ -6302,6 +6504,20 @@ class ChatSessionManager(
         val state = _state.value
         val savedSession = conversationStore.loadSession(currentSessionId)
         val resolvedConfig = config ?: lastSessionConfig
+        val normalizedProjectPath = normalizeProjectPath(state.projectPath)
+        val normalizedActiveScopePath = activeProjectScopePath(
+            state.activeProjectScopePath,
+            state.projectPath
+        )
+        val normalizedRepoScopedConfigs = normalizeRepoScopedConfigs(state.repoScopedConfigs).toMutableMap()
+        if (normalizedActiveScopePath != null) {
+            normalizedRepoScopedConfigs[normalizedActiveScopePath] = buildRepoScopedProjectConfig(
+                rules = state.projectRules,
+                memories = state.projectMemories,
+                skills = state.projectSkills,
+                preferences = state.projectToolPreferences
+            )
+        }
         val providerId = when {
             config != null -> resolvedConfig.activeProviderId
             savedSession != null -> savedSession.providerId
@@ -6323,6 +6539,7 @@ class ChatSessionManager(
             providerId = providerId,
             modelName = modelName,
             projectPath = state.projectPath,
+            activeProjectScopePath = normalizedActiveScopePath,
             projectRules = state.projectRules,
             projectMemories = state.projectMemories,
             projectSkills = state.projectSkills,
@@ -6338,6 +6555,14 @@ class ChatSessionManager(
                 )
             },
             projectToolPreferences = state.projectToolPreferences,
+            repoScopedConfigs = normalizedRepoScopedConfigs.mapValues { (_, repoConfig) ->
+                PersistedRepoScopedProjectConfig(
+                    projectRules = repoConfig.projectRules,
+                    projectMemories = repoConfig.projectMemories,
+                    projectSkills = repoConfig.projectSkills,
+                    projectToolPreferences = repoConfig.projectToolPreferences
+                )
+            },
             usageSummary = state.usageSummary,
             compressionSnapshot = conversationStore.persistCompressionSnapshot(state.compressionSnapshot),
             compressionSnapshots = conversationStore.persistCompressionSnapshots(state.compressionSnapshots),

@@ -174,6 +174,11 @@ class ChatViewModel @Inject constructor(
         refreshSessions()
     }
 
+    fun switchProjectScope(scopePath: String?) {
+        sessionManager.switchProjectScope(scopePath)
+        refreshSessions()
+    }
+
     fun loadSession(sessionId: String) {
         if (sessionManager.loadSession(sessionId)) {
             refreshSessions()
@@ -295,16 +300,20 @@ class ChatViewModel @Inject constructor(
     }
 
     fun updateProjectConfig(
+        scopePath: String? = state.value.activeProjectScopePath ?: state.value.projectPath,
         rules: List<GlobalRule>? = null,
         memories: List<GlobalMemory>? = null,
         skills: List<GlobalSkill>? = null
     ) {
-        sessionManager.updateProjectConfig(rules, memories, skills)
+        sessionManager.updateProjectConfig(scopePath, rules, memories, skills)
         refreshSessions()
     }
 
-    fun updateProjectToolPreferences(preferences: ProjectToolPreferences?) {
-        sessionManager.updateProjectToolPreferences(preferences)
+    fun updateProjectToolPreferences(
+        scopePath: String? = state.value.activeProjectScopePath ?: state.value.projectPath,
+        preferences: ProjectToolPreferences?
+    ) {
+        sessionManager.updateProjectToolPreferences(scopePath, preferences)
         refreshSessions()
     }
 

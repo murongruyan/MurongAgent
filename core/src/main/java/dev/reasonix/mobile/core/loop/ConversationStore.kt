@@ -220,6 +220,14 @@ data class PersistedProjectKnowledgeSnapshot(
 )
 
 @Serializable
+data class PersistedRepoScopedProjectConfig(
+    val projectRules: List<GlobalRule> = emptyList(),
+    val projectMemories: List<GlobalMemory> = emptyList(),
+    val projectSkills: List<GlobalSkill> = emptyList(),
+    @Contextual val projectToolPreferences: ProjectToolPreferences? = null
+)
+
+@Serializable
 data class PersistedClarificationAnswer(
     val question: String,
     val answer: String,
@@ -264,12 +272,14 @@ data class PersistedSession(
     val providerId: String,
     val modelName: String,
     val projectPath: String? = null,
+    val activeProjectScopePath: String? = null,
     val projectRules: List<GlobalRule> = emptyList(),
     val projectMemories: List<GlobalMemory> = emptyList(),
     val projectSkills: List<GlobalSkill> = emptyList(),
     val projectKnowledgePaths: List<String> = emptyList(),
     val projectKnowledgeSnapshots: List<PersistedProjectKnowledgeSnapshot> = emptyList(),
     @Contextual val projectToolPreferences: ProjectToolPreferences? = null,
+    val repoScopedConfigs: Map<String, PersistedRepoScopedProjectConfig> = emptyMap(),
     val usageSummary: UsageSummarySnapshot = UsageSummarySnapshot(),
     val compressionSnapshot: PersistedCompressionSnapshot? = null,
     val compressionSnapshots: List<PersistedCompressionSnapshot> = emptyList(),

@@ -58,12 +58,12 @@ fun MarkdownText(
     val surfaceColor = rememberReasonixSurfaceColor()
     val chromeColor = rememberReasonixChromeColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
-    val inlineCodeBackground = lerp(Color(0xFF2E2E3E), surfaceColor, 0.22f)
-    val inlineCodeTextColor = Color(0xFFE4E6F6)
-    val codeBlockBackground = lerp(Color(CODE_BG), surfaceColor, 0.18f)
-    val codeBlockHeaderBackground = lerp(Color(CODE_LANG_BG), chromeColor, 0.24f)
-    val codeBlockLanguageColor = lerp(Color(0xFF8A8AA0), mutedTextColor, 0.18f)
-    val codeBlockTextColor = Color(0xFFD4D4D4)
+    val inlineCodeBackground = lerp(Color(0xFF23232D), surfaceColor, 0.12f)
+    val inlineCodeTextColor = Color(0xFFF2F4FF)
+    val codeBlockBackground = lerp(Color(CODE_BG), surfaceColor, 0.08f)
+    val codeBlockHeaderBackground = lerp(Color(CODE_LANG_BG), chromeColor, 0.16f)
+    val codeBlockLanguageColor = lerp(Color(0xFFC3C7D9), mutedTextColor, 0.10f)
+    val codeBlockTextColor = Color(0xFFF3F4F7)
 
     Column(
         modifier = modifier,
@@ -302,7 +302,17 @@ private fun buildParagraphAnnotatedString(
             // Italic
             matcher.group(3) != null -> {
                 val italicText = matcher.group(3)?.removeSurrounding("*").orEmpty()
-                builder.pushStyle(SpanStyle(fontStyle = FontStyle.Italic))
+                // Some Android font fallbacks render CJK italic text poorly or invisibly.
+                // Keep emphasis visible by using a medium-weight fallback for CJK-heavy content.
+                val italicStyle = if (containsCjkCharacters(italicText)) {
+                    SpanStyle(
+                        fontWeight = FontWeight.Medium,
+                        color = baseColor
+                    )
+                } else {
+                    SpanStyle(fontStyle = FontStyle.Italic)
+                }
+                builder.pushStyle(italicStyle)
                 builder.append(italicText)
                 builder.pop()
             }
@@ -326,6 +336,17 @@ private fun buildParagraphAnnotatedString(
     }
 
     return builder.toAnnotatedString()
+}
+
+private fun containsCjkCharacters(text: String): Boolean {
+    return text.any { ch ->
+        Character.UnicodeScript.of(ch.code) in setOf(
+            Character.UnicodeScript.HAN,
+            Character.UnicodeScript.HIRAGANA,
+            Character.UnicodeScript.KATAKANA,
+            Character.UnicodeScript.HANGUL
+        )
+    }
 }
 
 // ─── Markdown Segment Tree ─────────────────────────────────────
@@ -424,8 +445,8 @@ private fun parseMarkdown(text: String): List<MarkdownSegment> {
                         next.trimStart().startsWith("```") ||
                         next.trimStart().startsWith("-#") ||
                         next.trimStart().matches(Regex("^#{1,6} ")) ||
-                        next.trimStart().matches(Regex("^[-*+] ")) ||
-                        next.trimStart().matches(Regex("^\\d+\\. ")) ||
+                        next.trimStart().matches(Regex("^[-*+] .+")) ||
+                        next.trimStart().matches(Regex("^\\d+\\. .+")) ||
                         next.trimStart().startsWith("> ")
                     ) break
                     paraLines.add(next)

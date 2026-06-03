@@ -786,9 +786,9 @@ private fun ReasonixBottomBarSurface(
     val chromeSeed = rememberReasonixChromeColor()
     val hazeState = LocalReasonixHazeState.current
     val glassTint = if (darkMode) {
-        ColorUtils.blendARGB(chromeSeed.toArgb(), accent.toArgb(), 0.18f).let { Color(it) }.copy(alpha = 0.11f)
+        ColorUtils.blendARGB(chromeSeed.toArgb(), accent.toArgb(), 0.18f).let { Color(it) }.copy(alpha = 0.08f)
     } else {
-        ColorUtils.blendARGB(chromeSeed.toArgb(), accent.toArgb(), 0.12f).let { Color(it) }.copy(alpha = 0.14f)
+        ColorUtils.blendARGB(chromeSeed.toArgb(), accent.toArgb(), 0.12f).let { Color(it) }.copy(alpha = 0.10f)
     }
     Surface(
         modifier = modifier
@@ -797,8 +797,8 @@ private fun ReasonixBottomBarSurface(
                 surfaceColor = glassTint,
                 enabled = ui.themeStyle == ReasonixThemeStyle.GLASS,
                 hazeState = hazeState,
-                minTintAlpha = 0.003f,
-                maxTintAlpha = 0.014f
+                minTintAlpha = 0.002f,
+                maxTintAlpha = 0.010f
             )
             .clip(shape),
         shape = shape,
@@ -979,7 +979,7 @@ fun ReasonixSecondaryPageFrame(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 128.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         ReasonixInfoCard(title = title, titleVisible = false) {

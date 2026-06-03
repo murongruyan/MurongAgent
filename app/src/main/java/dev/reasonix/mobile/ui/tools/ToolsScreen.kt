@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -54,6 +55,9 @@ import dev.reasonix.mobile.core.loop.FileChangeRecordUi
 import dev.reasonix.mobile.core.loop.PendingApprovalUi
 import dev.reasonix.mobile.core.loop.ToolCallRecordUi
 import dev.reasonix.mobile.core.mcp.McpServerStatus
+import dev.reasonix.mobile.ui.ReasonixGlassSurface
+import dev.reasonix.mobile.ui.ReasonixInfoCard
+import dev.reasonix.mobile.ui.ReasonixSecondaryPageSurface
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -149,90 +153,105 @@ fun ToolsScreen(
         )
     }
 
-    LazyColumn(
+    ReasonixSecondaryPageSurface(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
     ) {
-        item {
-            RootStatusCard(
-                rootStatus = rootStatus,
-                isCheckingRoot = isCheckingRoot,
-                onCheckRoot = onCheckRoot
-            )
-        }
-        item {
-            SectionTitle(
-                title = "内置工具",
-                subtitle = "集中查看当前工具开关、Root、审批、工作流和 MCP 状态。"
-            )
-        }
-        items(builtInTools, key = { it.name }) { tool ->
-            ToolEntryCard(tool = tool)
-        }
-        item {
-            WorkflowCard(
-                config = config,
-                onManageWorkflow = { showWorkflowExecutionEditor = true },
-                onManageApproval = { showApprovalPolicyEditor = true },
-                onManageTools = { showToolAccessEditor = true }
-            )
-        }
-        item {
-            ApprovalCard(
-                pendingApproval = pendingApproval,
-                recentApprovals = recentApprovals,
-                onOpenChat = onOpenChat,
-                onOpenDetail = { showApprovalDetail = true },
-                onApprove = onApprovePendingTool,
-                onReject = onRejectPendingTool
-            )
-        }
-        item {
-            ProjectPreferenceCard(
-                currentProjectPath = currentProjectPath,
-                projectRuleCount = projectRuleCount,
-                projectMemoryCount = projectMemoryCount,
-                projectSkillCount = projectSkillCount,
-                mcpServerCount = mcpStatuses.size,
-                availableMcpToolCount = mcpToolNames.size
-            )
-        }
-        item {
-            AuditCard(
-                recentToolCalls = recentToolCalls,
-                recentErrors = recentErrors,
-                onOpenToolCall = { selectedToolCall = it },
-                onOpenError = { selectedError = it }
-            )
-        }
-        item {
-            FileChangeCard(
-                checkpoints = checkpoints,
-                fileChanges = fileChanges,
-                onOpenCheckpoint = { selectedCheckpoint = it },
-                onOpenRecord = { selectedRecord = it },
-                onRollbackCheckpoint = onRollbackFileCheckpoint
-            )
-        }
-        item {
-            McpCard(
-                mcpStatuses = mcpStatuses,
-                mcpConnectError = mcpConnectError,
-                onConnectMcpServers = onConnectMcpServers,
-                onRefreshMcpStatus = onRefreshMcpStatus,
-                onOpenStatus = { selectedMcpStatus = it }
-            )
-        }
-        item {
-            PlanningCard(
-                title = "后续规划",
-                body = "当前工具页先保留可编译且稳定的管理闭环，后面再继续把更细的协议级配置迁回移动端。"
-            )
-        }
-        item {
-            Spacer(modifier = Modifier.height(24.dp))
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = 2.dp, bottom = 132.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            item {
+                ReasonixInfoCard(title = "工具中心") {
+                    Text(
+                        text = "这里统一收口 Root、审批、工作流、文件改动和 MCP 状态，和项目页、设置页保持同一套玻璃层级。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            item {
+                RootStatusCard(
+                    rootStatus = rootStatus,
+                    isCheckingRoot = isCheckingRoot,
+                    onCheckRoot = onCheckRoot
+                )
+            }
+            item {
+                SectionTitle(
+                    title = "内置工具",
+                    subtitle = "集中查看当前工具开关、Root、审批、工作流和 MCP 状态。"
+                )
+            }
+            items(builtInTools, key = { it.name }) { tool ->
+                ToolEntryCard(tool = tool)
+            }
+            item {
+                WorkflowCard(
+                    config = config,
+                    onManageWorkflow = { showWorkflowExecutionEditor = true },
+                    onManageApproval = { showApprovalPolicyEditor = true },
+                    onManageTools = { showToolAccessEditor = true }
+                )
+            }
+            item {
+                ApprovalCard(
+                    pendingApproval = pendingApproval,
+                    recentApprovals = recentApprovals,
+                    onOpenChat = onOpenChat,
+                    onOpenDetail = { showApprovalDetail = true },
+                    onApprove = onApprovePendingTool,
+                    onReject = onRejectPendingTool
+                )
+            }
+            item {
+                ProjectPreferenceCard(
+                    currentProjectPath = currentProjectPath,
+                    projectRuleCount = projectRuleCount,
+                    projectMemoryCount = projectMemoryCount,
+                    projectSkillCount = projectSkillCount,
+                    mcpServerCount = mcpStatuses.size,
+                    availableMcpToolCount = mcpToolNames.size
+                )
+            }
+            item {
+                AuditCard(
+                    recentToolCalls = recentToolCalls,
+                    recentErrors = recentErrors,
+                    onOpenToolCall = { selectedToolCall = it },
+                    onOpenError = { selectedError = it }
+                )
+            }
+            item {
+                FileChangeCard(
+                    checkpoints = checkpoints,
+                    fileChanges = fileChanges,
+                    onOpenCheckpoint = { selectedCheckpoint = it },
+                    onOpenRecord = { selectedRecord = it },
+                    onRollbackCheckpoint = onRollbackFileCheckpoint
+                )
+            }
+            item {
+                McpCard(
+                    mcpStatuses = mcpStatuses,
+                    mcpConnectError = mcpConnectError,
+                    onConnectMcpServers = onConnectMcpServers,
+                    onRefreshMcpStatus = onRefreshMcpStatus,
+                    onOpenStatus = { selectedMcpStatus = it }
+                )
+            }
+            item {
+                PlanningCard(
+                    title = "后续规划",
+                    body = "当前工具页先保留可编译且稳定的管理闭环，后面再继续把更细的协议级配置迁回移动端。"
+                )
+            }
+            item {
+                Spacer(modifier = Modifier.height(24.dp))
+            }
         }
     }
 
@@ -333,11 +352,9 @@ private fun RootStatusCard(
         rootStatus == true -> "文件工具和命令工具可以直接走 root 能力。"
         else -> "建议先确认 Root，再继续使用文件和 shell 能力。"
     }
-    Surface(shape = MaterialTheme.shapes.large, tonalElevation = 2.dp) {
+    ToolsPanelCard {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
@@ -372,11 +389,9 @@ private fun WorkflowCard(
     onManageApproval: () -> Unit,
     onManageTools: () -> Unit
 ) {
-    Surface(shape = MaterialTheme.shapes.large, tonalElevation = 2.dp) {
+    ToolsPanelCard {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text("执行策略", style = MaterialTheme.typography.titleMedium)
@@ -402,11 +417,9 @@ private fun ApprovalCard(
     onApprove: () -> Unit,
     onReject: () -> Unit
 ) {
-    Surface(shape = MaterialTheme.shapes.large, tonalElevation = 2.dp) {
+    ToolsPanelCard {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text("审批状态", style = MaterialTheme.typography.titleMedium)
@@ -444,11 +457,9 @@ private fun ProjectPreferenceCard(
     mcpServerCount: Int,
     availableMcpToolCount: Int
 ) {
-    Surface(shape = MaterialTheme.shapes.large, tonalElevation = 2.dp) {
+    ToolsPanelCard {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text("项目上下文", style = MaterialTheme.typography.titleMedium)
@@ -469,11 +480,9 @@ private fun AuditCard(
     onOpenToolCall: (ToolCallRecordUi) -> Unit,
     onOpenError: (ErrorRecordUi) -> Unit
 ) {
-    Surface(shape = MaterialTheme.shapes.large, tonalElevation = 2.dp) {
+    ToolsPanelCard {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text("工具审计", style = MaterialTheme.typography.titleMedium)
@@ -505,11 +514,9 @@ private fun FileChangeCard(
     onOpenRecord: (FileChangeRecordUi) -> Unit,
     onRollbackCheckpoint: (String) -> Unit
 ) {
-    Surface(shape = MaterialTheme.shapes.large, tonalElevation = 2.dp) {
+    ToolsPanelCard {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text("文件修改", style = MaterialTheme.typography.titleMedium)
@@ -543,11 +550,9 @@ private fun McpCard(
     onRefreshMcpStatus: () -> Unit,
     onOpenStatus: (McpServerStatus) -> Unit
 ) {
-    Surface(shape = MaterialTheme.shapes.large, tonalElevation = 2.dp) {
+    ToolsPanelCard {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text("MCP 服务器", style = MaterialTheme.typography.titleMedium)
@@ -575,11 +580,9 @@ private fun McpCard(
 
 @Composable
 private fun ToolEntryCard(tool: ToolEntry) {
-    Surface(shape = MaterialTheme.shapes.large, tonalElevation = 1.dp) {
+    ToolsPanelCard {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -598,17 +601,25 @@ private fun ToolEntryCard(tool: ToolEntry) {
 
 @Composable
 private fun PlanningCard(title: String, body: String) {
-    Surface(shape = MaterialTheme.shapes.large, tonalElevation = 1.dp) {
+    ToolsPanelCard {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             Text(body, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
+}
+
+@Composable
+private fun ToolsPanelCard(content: @Composable ColumnScope.() -> Unit) {
+    ReasonixGlassSurface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        contentPadding = PaddingValues(16.dp),
+        content = content
+    )
 }
 
 @Composable

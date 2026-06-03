@@ -838,7 +838,7 @@ fun MainScreen() {
                         .fillMaxSize()
                         .padding(innerPadding)
                         .reasonixGlassSource(LocalReasonixHazeState.current),
-                    userScrollEnabled = settingsSubpage == SettingsSubpage.Main && !isProjectSecondaryPage
+                    userScrollEnabled = false
                 ) { page ->
                     val pageScreen = shellScreens[page]
                     val pageBottomPadding = when {
@@ -951,12 +951,14 @@ fun MainScreen() {
                                 ProjectScreen(
                                     config = settingsConfig,
                                     currentProjectPath = chatState.projectPath,
+                                    currentProjectScopePath = chatState.activeProjectScopePath,
                                     projectKnowledgeDraftPaths = chatState.projectKnowledgePaths,
                                     projectKnowledgeSnapshots = chatState.projectKnowledgeSnapshots,
                                     projectRules = chatState.projectRules,
                                     projectMemories = chatState.projectMemories,
                                     projectSkills = chatState.projectSkills,
                                     projectToolPreferences = chatState.projectToolPreferences,
+                                    repoScopedConfigs = chatState.repoScopedConfigs,
                                     mcpToolNames = mcpStatuses.flatMap { status ->
                                         status.toolNames.map { "mcp_$it" }
                                     }.distinct().sorted(),
@@ -968,11 +970,14 @@ fun MainScreen() {
                                     onOpenChat = {
                                         navigateToTopLevel(Screen.Chat)
                                     },
-                                    onUpdateProjectConfig = { rules, memories, skills ->
-                                        chatVm.updateProjectConfig(rules, memories, skills)
+                                    onProjectScopeChanged = { scopePath ->
+                                        chatVm.switchProjectScope(scopePath)
                                     },
-                                    onUpdateProjectToolPreferences = { preferences ->
-                                        chatVm.updateProjectToolPreferences(preferences)
+                                    onUpdateProjectConfig = { scopePath, rules, memories, skills ->
+                                        chatVm.updateProjectConfig(scopePath, rules, memories, skills)
+                                    },
+                                    onUpdateProjectToolPreferences = { scopePath, preferences ->
+                                        chatVm.updateProjectToolPreferences(scopePath, preferences)
                                     },
                                     onUpdateProjectKnowledgeDraftPaths = { paths ->
                                         chatVm.updateProjectKnowledgePaths(paths)

@@ -4,11 +4,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 
-internal const val KEYWORD_BLUE = 0xFF569CD6
-internal const val STRING_ORANGE = 0xFFCE9178
-internal const val COMMENT_GREEN = 0xFF6A9955
-internal const val TYPE_CYAN = 0xFF4EC9B0
-internal const val NUMBER_LIGHT = 0xFFB5CEA8
+internal const val KEYWORD_BLUE = 0xFF7FC8FF
+internal const val STRING_ORANGE = 0xFFFFC17A
+internal const val COMMENT_GREEN = 0xFF8FD18A
+internal const val TYPE_CYAN = 0xFF72E6D3
+internal const val NUMBER_LIGHT = 0xFFD9F29B
 internal const val CODE_BG = 0xFF1E1E1E
 internal const val CODE_LANG_BG = 0xFF2D2D2D
 
