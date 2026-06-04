@@ -119,9 +119,11 @@ import dev.reasonix.mobile.core.provider.ChatRequest
 import dev.reasonix.mobile.core.provider.ProviderRegistry
 import dev.reasonix.mobile.common.shell.KeepShellPublic
 import dev.reasonix.mobile.common.utils.RootFile
+import dev.reasonix.mobile.ui.ProjectSecondaryChromeState
 import dev.reasonix.mobile.ui.ReasonixAlertDialog
 import dev.reasonix.mobile.ui.ReasonixGlassSurface
 import dev.reasonix.mobile.ui.ReasonixInfoCard
+import dev.reasonix.mobile.ui.ReasonixSecondaryPageFrame
 import dev.reasonix.mobile.ui.ReasonixSecondaryPageSurface
 import dev.reasonix.mobile.ui.ReasonixTagButton
 import dev.reasonix.mobile.ui.SkillDraftImportCard
@@ -131,6 +133,9 @@ import dev.reasonix.mobile.ui.rememberReasonixChromeColor
 import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
 import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -192,8 +197,9 @@ fun ProjectScreen(
     onRenameProjectKnowledgeSnapshot: (String, String) -> Unit,
     onApplyProjectKnowledgeSnapshot: (String) -> Unit,
     onDeleteProjectKnowledgeSnapshot: (String) -> Unit,
-    onEditorPageChanged: (Boolean, String?, String?) -> Unit = { _, _, _ -> },
-    closeEditorRequestSignal: Int = 0,
+    onProjectSecondaryPageChanged: (ProjectSecondaryChromeState) -> Unit = {},
+    closeProjectSecondaryPageRequestSignal: Int = 0,
+    projectSecondaryBackProgress: Float = 0f,
     editorMenuActionSignal: Int = 0,
     editorMenuAction: ProjectEditorMenuAction? = null
 ) {
@@ -221,7 +227,13 @@ fun ProjectScreen(
         }
     }
     var selectedTab by remember(currentProjectPath) { mutableStateOf(ProjectPrimaryTab.EDITOR) }
-    var editorPageActive by remember(currentProjectPath) { mutableStateOf(false) }
+    var editorPageChromeState by remember(currentProjectPath) { mutableStateOf(ProjectSecondaryChromeState()) }
+    var gitPageChromeState by remember(currentProjectPath) { mutableStateOf(ProjectSecondaryChromeState()) }
+    val activeProjectSecondaryState = when {
+        selectedTab == ProjectPrimaryTab.EDITOR && editorPageChromeState.active -> editorPageChromeState
+        selectedTab == ProjectPrimaryTab.GIT && gitPageChromeState.active -> gitPageChromeState
+        else -> ProjectSecondaryChromeState()
+    }
     val projectPagerState = rememberPagerState(
         initialPage = selectedTab.ordinal,
         pageCount = { ProjectPrimaryTab.entries.size }
@@ -261,6 +273,9 @@ fun ProjectScreen(
         if (selectedTab != settledTab) {
             selectedTab = settledTab
         }
+    }
+    LaunchedEffect(activeProjectSecondaryState) {
+        onProjectSecondaryPageChanged(activeProjectSecondaryState)
     }
     ReasonixSecondaryPageSurface(
         modifier = Modifier
@@ -311,7 +326,7 @@ fun ProjectScreen(
                     }
                 }
             }
-            if (!(selectedTab == ProjectPrimaryTab.EDITOR && editorPageActive)) {
+            if (!activeProjectSecondaryState.active) {
                 PrimaryScrollableTabRow(
                     selectedTabIndex = selectedTab.ordinal,
                     containerColor = chromeColor.copy(alpha = 0.32f),
@@ -334,7 +349,7 @@ fun ProjectScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                userScrollEnabled = !editorPageActive
+                userScrollEnabled = !activeProjectSecondaryState.active
             ) { page ->
                 when (ProjectPrimaryTab.entries[page]) {
                     ProjectPrimaryTab.EDITOR -> ProjectEditorSection(
@@ -346,11 +361,8 @@ fun ProjectScreen(
                         sessions = sessions,
                         onOpenChat = onOpenChat,
                         onNewTask = onNewTask,
-                        onEditorPageChanged = { active, fileName, relativePath ->
-                            editorPageActive = active
-                            onEditorPageChanged(active, fileName, relativePath)
-                        },
-                        closeEditorRequestSignal = closeEditorRequestSignal,
+                        onProjectSecondaryPageChanged = { editorPageChromeState = it },
+                        closeProjectSecondaryPageRequestSignal = closeProjectSecondaryPageRequestSignal,
                         editorMenuActionSignal = editorMenuActionSignal,
                         editorMenuAction = editorMenuAction
                     )
@@ -384,7 +396,10 @@ fun ProjectScreen(
                         onSelectRepoRoot = ::selectRepoRoot,
                         draftPathCount = projectKnowledgeDraftPaths.size,
                         snapshotCount = projectKnowledgeSnapshots.size,
-                        mcpToolCount = mcpToolNames.size
+                        mcpToolCount = mcpToolNames.size,
+                        onProjectSecondaryPageChanged = { gitPageChromeState = it },
+                        closeProjectSecondaryPageRequestSignal = closeProjectSecondaryPageRequestSignal,
+                        projectSecondaryBackProgress = projectSecondaryBackProgress
                     )
                 }
             }
@@ -402,8 +417,8 @@ private fun ProjectEditorSection(
     sessions: List<SessionSummary>,
     onOpenChat: () -> Unit,
     onNewTask: () -> Unit,
-    onEditorPageChanged: (Boolean, String?, String?) -> Unit,
-    closeEditorRequestSignal: Int,
+    onProjectSecondaryPageChanged: (ProjectSecondaryChromeState) -> Unit,
+    closeProjectSecondaryPageRequestSignal: Int,
     editorMenuActionSignal: Int,
     editorMenuAction: ProjectEditorMenuAction?
 ) {
@@ -1014,10 +1029,17 @@ private fun ProjectEditorSection(
         .orEmpty()
 
     LaunchedEffect(selectedFilePath, currentFileName, currentRelativePath) {
-        onEditorPageChanged(
-            selectedFilePath != null,
-            currentFileName.takeIf { it.isNotBlank() },
-            currentRelativePath.takeIf { it.isNotBlank() }
+        onProjectSecondaryPageChanged(
+            if (selectedFilePath != null) {
+                ProjectSecondaryChromeState(
+                    active = true,
+                    title = currentFileName,
+                    subtitle = currentRelativePath,
+                    supportsEditorMenu = true
+                )
+            } else {
+                ProjectSecondaryChromeState()
+            }
         )
     }
 
@@ -1029,8 +1051,8 @@ private fun ProjectEditorSection(
         showAiCompletionDialog = false
     }
 
-    LaunchedEffect(closeEditorRequestSignal) {
-        if (closeEditorRequestSignal != 0 && selectedFilePath != null) {
+    LaunchedEffect(closeProjectSecondaryPageRequestSignal) {
+        if (closeProjectSecondaryPageRequestSignal != 0 && selectedFilePath != null) {
             exitEditorPage()
         }
     }
@@ -2355,17 +2377,22 @@ private fun ProjectGitSection(
     onSelectRepoRoot: (String) -> Unit,
     draftPathCount: Int,
     snapshotCount: Int,
-    mcpToolCount: Int
+    mcpToolCount: Int,
+    onProjectSecondaryPageChanged: (ProjectSecondaryChromeState) -> Unit,
+    closeProjectSecondaryPageRequestSignal: Int,
+    projectSecondaryBackProgress: Float
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val downloadHistory = remember(currentProjectPath) { mutableStateListOf<ProjectGitHubDownloadRecordUi>() }
     val repoStatusSummaries = remember(currentProjectPath) { mutableStateMapOf<String, ProjectGitStatusUi>() }
+    val workspaceRemoteSummaries = remember(currentProjectPath) { mutableStateMapOf<String, ProjectGitHubWorkspaceRemoteSummaryUi>() }
     val activeProjectPath = selectedRepoRoot ?: currentProjectPath
     var gitState by remember(activeProjectPath) { mutableStateOf(ProjectGitStatusUi.empty(activeProjectPath)) }
     var isGitLoading by remember(activeProjectPath) { mutableStateOf(false) }
     var isGitActionRunning by remember(activeProjectPath) { mutableStateOf(false) }
+    var isGitHubWorkspaceRemoteLoading by remember(currentProjectPath) { mutableStateOf(false) }
     var feedbackMessage by remember(activeProjectPath) { mutableStateOf<String?>(null) }
     var showCommitDialog by remember(activeProjectPath) { mutableStateOf(false) }
     var commitTitleDraft by remember(activeProjectPath) { mutableStateOf("") }
@@ -2430,6 +2457,9 @@ private fun ProjectGitSection(
     var createPullRequestHeadDraft by remember(activeProjectPath) { mutableStateOf("") }
     var createPullRequestBaseDraft by remember(activeProjectPath) { mutableStateOf("") }
     var createPullRequestDraftFlag by remember(activeProjectPath) { mutableStateOf(false) }
+    var showGitHubWorkspacePage by remember(currentProjectPath) { mutableStateOf(false) }
+    var showGitHubWorkspaceDownloadCenterPage by remember(currentProjectPath) { mutableStateOf(false) }
+    var workspaceWorkbenchRepoRoot by remember(currentProjectPath) { mutableStateOf<String?>(null) }
 
     fun resetCommitDraft() {
         commitTitleDraft = ""
@@ -2770,6 +2800,48 @@ private fun ProjectGitSection(
         }
     }
 
+    fun refreshGitHubWorkspaceRemoteSummaries() {
+        val token = config.githubToken.trim()
+        if (token.isBlank()) {
+            workspaceRemoteSummaries.clear()
+            isGitHubWorkspaceRemoteLoading = false
+            return
+        }
+        val targets = detectedRepos.mapNotNull { repo ->
+            val remoteUrl = repoStatusSummaries[repo.rootPath]?.remoteUrl
+            parseProjectGitHubRepoRef(remoteUrl)?.let { githubRepo ->
+                ProjectGitHubWorkspaceRemoteTargetUi(
+                    rootPath = repo.rootPath,
+                    repo = githubRepo
+                )
+            }
+        }.distinctBy { it.rootPath }
+        if (targets.isEmpty()) {
+            workspaceRemoteSummaries.clear()
+            isGitHubWorkspaceRemoteLoading = false
+            return
+        }
+        scope.launch {
+            isGitHubWorkspaceRemoteLoading = true
+            val summaries = withContext(Dispatchers.IO) {
+                coroutineScope {
+                    targets.map { target ->
+                        async {
+                            target.rootPath to loadProjectGitHubWorkspaceRemoteSummary(
+                                repo = target.repo,
+                                token = token,
+                                apiBaseUrl = config.getGitHubApiBaseUrl()
+                            )
+                        }
+                    }.awaitAll()
+                }
+            }
+            workspaceRemoteSummaries.clear()
+            workspaceRemoteSummaries.putAll(summaries)
+            isGitHubWorkspaceRemoteLoading = false
+        }
+    }
+
     fun refreshRemoteRepositoryBrowser(
         targetPath: String = remoteRepoState.currentPath,
         resetRefIfBlank: Boolean = false
@@ -2855,6 +2927,83 @@ private fun ProjectGitSection(
         }
     }
 
+    fun openCurrentGitHubRepoPage() {
+        openGitHubPage(
+            githubActionsState.repoHtmlUrl ?: workspaceRemoteSummaries[activeProjectPath]?.repoHtmlUrl,
+            "当前仓库还没有可打开的 GitHub 页面地址。"
+        )
+    }
+
+    fun openWorkflowArtifacts(run: ProjectGitHubWorkflowRunUi) {
+        val repo = githubActionsState.repo ?: return
+        val token = config.githubToken.trim()
+        if (token.isBlank()) {
+            feedbackMessage = "请先在设置页填写 GitHub Token。"
+            return
+        }
+        scope.launch {
+            isGitHubActionRunning = true
+            val result = withContext(Dispatchers.IO) {
+                loadProjectGitHubArtifacts(
+                    repo = repo,
+                    runId = run.id,
+                    token = token,
+                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                )
+            }
+            isGitHubActionRunning = false
+            if (result.success) {
+                artifactDialogState = ProjectGitHubArtifactDialogUi(
+                    runTitle = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
+                    artifacts = result.artifacts,
+                    runId = run.id,
+                    runHtmlUrl = run.htmlUrl
+                )
+            } else {
+                feedbackMessage = result.error ?: "读取工作流产物失败"
+            }
+        }
+    }
+
+    fun openWorkflowRunDetail(run: ProjectGitHubWorkflowRunUi) {
+        val repo = githubActionsState.repo ?: return
+        val token = config.githubToken.trim()
+        if (token.isBlank()) {
+            feedbackMessage = "请先在设置页填写 GitHub Token。"
+            return
+        }
+        scope.launch {
+            isGitHubActionRunning = true
+            val result = withContext(Dispatchers.IO) {
+                loadProjectGitHubWorkflowRunDetail(
+                    repo = repo,
+                    runId = run.id,
+                    token = token,
+                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                )
+            }
+            isGitHubActionRunning = false
+            if (result.success) {
+                workflowRunDetailDialogState = result.detail
+            } else {
+                feedbackMessage = result.error ?: "读取工作流运行详情失败"
+            }
+        }
+    }
+
+    fun openGitHubWorkspaceRepoWorkbench(rootPath: String) {
+        onSelectRepoRoot(rootPath)
+        showGitHubWorkspaceDownloadCenterPage = false
+        workspaceWorkbenchRepoRoot = rootPath
+        showGitHubWorkspacePage = true
+    }
+
+    fun openGitHubWorkspaceDownloadCenter() {
+        workspaceWorkbenchRepoRoot = null
+        showGitHubWorkspaceDownloadCenterPage = true
+        showGitHubWorkspacePage = true
+    }
+
     LaunchedEffect(activeProjectPath, gitState.remoteUrl, config.githubToken) {
         remoteFileDialogState = null
         remoteFileContentDraft = ""
@@ -2908,12 +3057,395 @@ private fun ProjectGitSection(
         repoStatusSummaries.putAll(summaries)
     }
 
+    LaunchedEffect(detectedRepos, workspaceWorkbenchRepoRoot) {
+        workspaceWorkbenchRepoRoot?.let { root ->
+            if (detectedRepos.none { it.rootPath == root }) {
+                workspaceWorkbenchRepoRoot = null
+            }
+        }
+    }
+
     LaunchedEffect(gitState.remoteUrl, gitState.isRepository, config.githubToken, config.githubApiBaseUrl) {
         if (!gitState.isRepository) {
             githubActionsState = ProjectGitHubActionsState.empty()
         } else {
             refreshGitHubActions()
         }
+    }
+
+    val workspaceRemoteSummaryInputs = remember(detectedRepos, repoStatusSummaries.toMap()) {
+        detectedRepos.map { repo ->
+            repo.rootPath to parseProjectGitHubRepoRef(repoStatusSummaries[repo.rootPath]?.remoteUrl)
+        }
+    }
+
+    LaunchedEffect(
+        showGitHubWorkspacePage,
+        workspaceRemoteSummaryInputs,
+        config.githubToken,
+        config.githubApiBaseUrl
+    ) {
+        if (showGitHubWorkspacePage) {
+            refreshGitHubWorkspaceRemoteSummaries()
+        }
+    }
+
+    val workspaceWorkbenchRepo = remember(workspaceWorkbenchRepoRoot, detectedRepos) {
+        detectedRepos.firstOrNull { it.rootPath == workspaceWorkbenchRepoRoot }
+    }
+    val workspaceWorkbenchRemoteSummary = workspaceWorkbenchRepoRoot?.let(workspaceRemoteSummaries::get)
+    val workspaceWorkbenchSubtitle = remember(
+        workspaceWorkbenchRepo,
+        workspaceWorkbenchRemoteSummary,
+        showGitHubWorkspaceDownloadCenterPage
+    ) {
+        if (showGitHubWorkspaceDownloadCenterPage) {
+            "工作区级日志、产物与 Release 下载记录"
+        } else if (workspaceWorkbenchRepo == null) {
+            "工作区总览、仓库摘要与异常聚合"
+        } else {
+            buildString {
+                append(
+                    if (workspaceWorkbenchRepo.isWorkspaceRoot) {
+                        "工作区根目录"
+                    } else {
+                        workspaceWorkbenchRepo.relativePath
+                    }
+                )
+                workspaceWorkbenchRemoteSummary?.repo?.let { repo ->
+                    append(" · ")
+                    append(repo.owner)
+                    append("/")
+                    append(repo.repo)
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(
+        showGitHubWorkspacePage,
+        workspaceWorkbenchRepo,
+        workspaceWorkbenchSubtitle,
+        showGitHubWorkspaceDownloadCenterPage
+    ) {
+        onProjectSecondaryPageChanged(
+            if (showGitHubWorkspacePage) {
+                ProjectSecondaryChromeState(
+                    active = true,
+                    title = when {
+                        showGitHubWorkspaceDownloadCenterPage -> "下载中心"
+                        workspaceWorkbenchRepo != null -> workspaceWorkbenchRepo.displayName.ifBlank { "仓库工作台" }
+                        else -> "GitHub 工作区"
+                    },
+                    subtitle = workspaceWorkbenchSubtitle,
+                    supportsEditorMenu = false
+                )
+            } else {
+                ProjectSecondaryChromeState()
+            }
+        )
+    }
+
+    LaunchedEffect(closeProjectSecondaryPageRequestSignal) {
+        if (closeProjectSecondaryPageRequestSignal != 0 && showGitHubWorkspacePage) {
+            if (workspaceWorkbenchRepoRoot != null) {
+                workspaceWorkbenchRepoRoot = null
+            } else if (showGitHubWorkspaceDownloadCenterPage) {
+                showGitHubWorkspaceDownloadCenterPage = false
+            } else {
+                showGitHubWorkspacePage = false
+            }
+        }
+    }
+
+    if (showGitHubWorkspacePage) {
+        if (showGitHubWorkspaceDownloadCenterPage) {
+            ProjectGitHubWorkspaceDownloadCenterPage(
+                downloads = downloadHistory,
+                onOpenSystemDownloads = ::openSystemDownloads,
+                onOpenDownloadSource = { item ->
+                    openGitHubPage(
+                        item.sourceUrl,
+                        "这条下载记录暂时没有可打开的来源页面。"
+                    )
+                },
+                backProgress = projectSecondaryBackProgress
+            )
+        } else if (workspaceWorkbenchRepo != null) {
+            val workbenchStatus = repoStatusSummaries[workspaceWorkbenchRepo.rootPath]
+                ?: ProjectGitStatusUi.empty(workspaceWorkbenchRepo.rootPath)
+            val workbenchSummary = ProjectGitHubWorkspaceRepoSummaryUi(
+                repo = workspaceWorkbenchRepo,
+                status = workbenchStatus,
+                githubRepo = parseProjectGitHubRepoRef(workbenchStatus.remoteUrl),
+                isSelected = workspaceWorkbenchRepo.rootPath == selectedRepoRoot
+            )
+            ProjectGitHubWorkspaceRepoWorkbenchPage(
+                summary = workbenchSummary,
+                remoteSummary = workspaceWorkbenchRemoteSummary,
+                gitState = gitState,
+                githubActionsState = githubActionsState,
+                remoteRepoState = remoteRepoState,
+                isGitLoading = isGitLoading,
+                isGitHubLoading = isGitHubLoading,
+                isGitHubActionRunning = isGitHubActionRunning,
+                isRemoteRepoLoading = isRemoteRepoLoading,
+                tokenConfigured = config.githubToken.isNotBlank(),
+                remoteRepoRefDraft = remoteRepoRefDraft,
+                onRemoteRepoRefDraftChange = { remoteRepoRefDraft = it },
+                onRefreshGitState = ::refreshGitState,
+                onRefreshGitHubActions = ::refreshGitHubActions,
+                onRefreshRemoteRepository = { refreshRemoteRepositoryBrowser(resetRefIfBlank = true) },
+                onApplyRemoteRef = { refreshRemoteRepositoryBrowser(targetPath = remoteRepoState.currentPath) },
+                onOpenRepoPage = ::openCurrentGitHubRepoPage,
+                onOpenWorkflowPage = { workflow ->
+                    openGitHubPage(
+                        workflow.htmlUrl,
+                        "当前工作流还没有可打开的 GitHub 页面地址。"
+                    )
+                },
+                onRunWorkflow = { workflow ->
+                    workflowDispatchTarget = workflow
+                    workflowDispatchRefDraft = gitState.currentBranch
+                        ?: githubActionsState.defaultBranch
+                        ?: "main"
+                },
+                onOpenArtifacts = ::openWorkflowArtifacts,
+                onOpenRunPage = { run ->
+                    openGitHubPage(
+                        run.htmlUrl,
+                        "当前运行记录还没有可打开的 GitHub 页面地址。"
+                    )
+                },
+                onDownloadRunLogs = { run ->
+                    val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                    val token = config.githubToken.trim()
+                    if (token.isBlank()) {
+                        feedbackMessage = "请先在设置页填写 GitHub Token。"
+                        return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                    }
+                    val result = enqueueProjectGitHubWorkflowLogsDownload(
+                        context = context,
+                        repo = repo,
+                        runId = run.id,
+                        runDisplayTitle = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
+                        token = token,
+                        apiBaseUrl = config.getGitHubApiBaseUrl()
+                    )
+                    recordGitHubDownload(
+                        typeLabel = "工作流日志",
+                        title = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
+                        fileName = result.fileName,
+                        downloadId = result.downloadId,
+                        sourceUrl = run.htmlUrl
+                    )
+                    feedbackMessage = "已开始下载 ${result.fileName}"
+                },
+                onOpenRunDetail = ::openWorkflowRunDetail,
+                onOpenRemoteParent = {
+                    refreshRemoteRepositoryBrowser(
+                        targetPath = parentProjectGitHubRepoPath(remoteRepoState.currentPath).orEmpty()
+                    )
+                },
+                onOpenRemoteRoot = { refreshRemoteRepositoryBrowser(targetPath = "") },
+                onOpenRemoteEntry = ::openRemoteRepositoryEntry,
+                onOpenRemoteEntryPage = { entry ->
+                    openGitHubPage(
+                        entry.htmlUrl,
+                        "当前条目还没有可打开的 GitHub 页面地址。"
+                    )
+                },
+                onCreateIssue = {
+                    resetCreateIssueDraft()
+                    showCreateIssueDialog = true
+                },
+                onOpenIssueDetail = ::openIssueDetail,
+                onToggleIssueState = { issue, shouldClose ->
+                    val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                    val token = config.githubToken.trim()
+                    if (token.isBlank()) {
+                        feedbackMessage = "请先在设置页填写 GitHub Token。"
+                        return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                    }
+                    runGitHubAction(if (shouldClose) "已关闭 Issue #${issue.number}" else "已重新打开 Issue #${issue.number}") {
+                        updateProjectGitHubIssueState(
+                            repo = repo,
+                            issueNumber = issue.number,
+                            close = shouldClose,
+                            token = token,
+                            apiBaseUrl = config.getGitHubApiBaseUrl()
+                        )
+                    }
+                },
+                onOpenIssuePage = { issue ->
+                    openGitHubPage(
+                        issue.htmlUrl,
+                        "当前 Issue 还没有可打开的 GitHub 页面地址。"
+                    )
+                },
+                onCreatePullRequest = {
+                    resetCreatePullRequestDraft()
+                    showCreatePullRequestDialog = true
+                },
+                onOpenPullRequestDetail = ::openPullRequestDetail,
+                onTogglePullRequestState = { pullRequest, shouldClose ->
+                    val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                    val token = config.githubToken.trim()
+                    if (token.isBlank()) {
+                        feedbackMessage = "请先在设置页填写 GitHub Token。"
+                        return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                    }
+                    runGitHubAction(if (shouldClose) "已关闭 PR #${pullRequest.number}" else "已重新打开 PR #${pullRequest.number}") {
+                        updateProjectGitHubPullRequestState(
+                            repo = repo,
+                            pullNumber = pullRequest.number,
+                            close = shouldClose,
+                            token = token,
+                            apiBaseUrl = config.getGitHubApiBaseUrl()
+                        )
+                    }
+                },
+                onMergePullRequest = { pullRequest ->
+                    val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                    val token = config.githubToken.trim()
+                    if (token.isBlank()) {
+                        feedbackMessage = "请先在设置页填写 GitHub Token。"
+                        return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                    }
+                    runGitHubAction("已合并 PR #${pullRequest.number}") {
+                        mergeProjectGitHubPullRequest(
+                            repo = repo,
+                            pullNumber = pullRequest.number,
+                            title = pullRequest.title,
+                            token = token,
+                            apiBaseUrl = config.getGitHubApiBaseUrl()
+                        )
+                    }
+                },
+                onOpenPullRequestPage = { pullRequest ->
+                    openGitHubPage(
+                        pullRequest.htmlUrl,
+                        "当前 Pull Request 还没有可打开的 GitHub 页面地址。"
+                    )
+                },
+                onCreateRelease = {
+                    resetReleaseDraft()
+                    releaseTagDraft = gitState.currentBranch
+                        ?.substringAfterLast('/')
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { "v-$it" }
+                        .orEmpty()
+                    showCreateReleaseDialog = true
+                },
+                onEditRelease = { release ->
+                    releaseEditTarget = release
+                    releaseNameDraft = release.name
+                    releaseTagDraft = release.tagName
+                    releaseBodyDraft = release.body
+                    releaseDraftFlag = release.isDraft
+                    releasePrereleaseFlag = release.isPrerelease
+                },
+                onToggleReleaseMode = { release, makeDraft ->
+                    val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                    val token = config.githubToken.trim()
+                    if (token.isBlank()) {
+                        feedbackMessage = "请先在设置页填写 GitHub Token。"
+                        return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                    }
+                    runGitHubAction(if (makeDraft) "已切回草稿 Release" else "已发布为正式 Release") {
+                        updateProjectGitHubRelease(
+                            repo = repo,
+                            releaseId = release.id,
+                            tagName = release.tagName,
+                            releaseName = release.name,
+                            body = release.body,
+                            isDraft = makeDraft,
+                            isPrerelease = if (makeDraft) release.isPrerelease else false,
+                            token = token,
+                            apiBaseUrl = config.getGitHubApiBaseUrl()
+                        )
+                    }
+                },
+                onTogglePrerelease = { release, makePrerelease ->
+                    val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                    val token = config.githubToken.trim()
+                    if (token.isBlank()) {
+                        feedbackMessage = "请先在设置页填写 GitHub Token。"
+                        return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                    }
+                    runGitHubAction(if (makePrerelease) "已标记为预发布 Release" else "已取消预发布标记") {
+                        updateProjectGitHubRelease(
+                            repo = repo,
+                            releaseId = release.id,
+                            tagName = release.tagName,
+                            releaseName = release.name,
+                            body = release.body,
+                            isDraft = release.isDraft,
+                            isPrerelease = makePrerelease,
+                            token = token,
+                            apiBaseUrl = config.getGitHubApiBaseUrl()
+                        )
+                    }
+                },
+                onDeleteRelease = { release ->
+                    val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                    val token = config.githubToken.trim()
+                    if (token.isBlank()) {
+                        feedbackMessage = "请先在设置页填写 GitHub Token。"
+                        return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                    }
+                    runGitHubAction("已删除 Release ${release.name.ifBlank { release.tagName }}") {
+                        deleteProjectGitHubRelease(
+                            repo = repo,
+                            releaseId = release.id,
+                            token = token,
+                            apiBaseUrl = config.getGitHubApiBaseUrl()
+                        )
+                    }
+                },
+                onOpenReleasePage = { release ->
+                    openGitHubPage(
+                        release.htmlUrl,
+                        "当前 Release 还没有可打开的 GitHub 页面地址。"
+                    )
+                },
+                onOpenReleaseAssets = { release ->
+                    releaseAssetDialogState = ProjectGitHubReleaseAssetDialogUi(
+                        releaseTitle = release.name.ifBlank { release.tagName },
+                        assets = release.assets,
+                        releaseHtmlUrl = release.htmlUrl
+                    )
+                },
+                downloads = downloadHistory,
+                onOpenSystemDownloads = ::openSystemDownloads,
+                onOpenDownloadSource = { item ->
+                    openGitHubPage(
+                        item.sourceUrl,
+                        "这条下载记录暂时没有可打开的来源页面。"
+                    )
+                },
+                onExitWorkbench = { workspaceWorkbenchRepoRoot = null },
+                backProgress = projectSecondaryBackProgress
+            )
+        } else {
+            ProjectGitHubWorkspaceOverviewPage(
+                detectedRepos = detectedRepos,
+                repoStatusSummaries = repoStatusSummaries,
+                selectedRepoRoot = selectedRepoRoot,
+                onOpenRepoWorkbench = ::openGitHubWorkspaceRepoWorkbench,
+                tokenConfigured = config.githubToken.isNotBlank(),
+                remoteSummaries = workspaceRemoteSummaries,
+                isRemoteSummaryLoading = isGitHubWorkspaceRemoteLoading,
+                onRefreshRemoteSummaries = ::refreshGitHubWorkspaceRemoteSummaries,
+                activeRepo = parseProjectGitHubRepoRef(gitState.remoteUrl),
+                activeGitHubState = githubActionsState,
+                downloads = downloadHistory,
+                onOpenDownloadCenter = ::openGitHubWorkspaceDownloadCenter,
+                onOpenSystemDownloads = ::openSystemDownloads,
+                backProgress = projectSecondaryBackProgress
+            )
+        }
+        return
     }
 
     Column(
@@ -3030,6 +3562,36 @@ private fun ProjectGitSection(
                                     )
                                 }
                             }
+                        }
+                    }
+                }
+            }
+            ProjectSectionCard(
+                shape = RoundedCornerShape(14.dp),
+                surfaceColorOverride = chromeColor.copy(alpha = 0.38f)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "GitHub 工作区",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text(
+                        text = "用工作区视角查看仓库健康度、GitHub 绑定状态和待处理事项，风格与设置页二级页面统一。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { showGitHubWorkspacePage = true },
+                            enabled = detectedRepos.isNotEmpty()
+                        ) {
+                            Text("打开工作区")
+                        }
+                        OutlinedButton(
+                            onClick = { refreshGitState() },
+                            enabled = !isGitLoading && !isGitActionRunning
+                        ) {
+                            Text("刷新当前仓库")
                         }
                     }
                 }
@@ -3236,6 +3798,7 @@ private fun ProjectGitSection(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
+                val gitHubWorkbenchRepo = parseProjectGitHubRepoRef(gitState.remoteUrl)
                 if (!gitState.hasRemote) {
                     ProjectSectionCard(
                         shape = RoundedCornerShape(12.dp),
@@ -3279,327 +3842,83 @@ private fun ProjectGitSection(
                     remoteBranchCount = gitState.remoteBranches.size,
                     tokenConfigured = config.githubToken.isNotBlank()
                 )
-                ProjectGitHubActionsSection(
-                    state = githubActionsState,
-                    isLoading = isGitHubLoading,
-                    isActionRunning = isGitHubActionRunning,
-                    tokenConfigured = config.githubToken.isNotBlank(),
-                    onRefresh = { refreshGitHubActions() },
-                    onOpenRepo = {
-                        openGitHubPage(
-                            githubActionsState.repoHtmlUrl,
-                            "当前仓库还没有可打开的 GitHub 页面地址。"
-                        )
-                    },
-                    onRunWorkflow = { workflow ->
-                        workflowDispatchTarget = workflow
-                        workflowDispatchRefDraft = gitState.currentBranch
-                            ?: githubActionsState.defaultBranch
-                            ?: "main"
-                    },
-                    onOpenWorkflowPage = { workflow ->
-                        openGitHubPage(
-                            workflow.htmlUrl,
-                            "当前工作流还没有可打开的 GitHub 页面地址。"
-                        )
-                    },
-                    onOpenArtifacts = { run ->
-                        val repo = githubActionsState.repo ?: return@ProjectGitHubActionsSection
-                        val token = config.githubToken.trim()
-                        if (token.isBlank()) {
-                            feedbackMessage = "请先在设置页填写 GitHub Token。"
-                            return@ProjectGitHubActionsSection
-                        }
-                        scope.launch {
-                            isGitHubActionRunning = true
-                            val result = withContext(Dispatchers.IO) {
-                                loadProjectGitHubArtifacts(
-                                    repo = repo,
-                                    runId = run.id,
-                                    token = token,
-                                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                ProjectSectionCard(
+                    shape = RoundedCornerShape(14.dp),
+                    surfaceColorOverride = chromeColor.copy(alpha = 0.34f)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("GitHub 主操作台", style = MaterialTheme.typography.titleSmall)
+                        when {
+                            !gitState.hasRemote -> {
+                                Text(
+                                    text = "当前仓库还没有 origin 远端，先完成远端绑定后才能进入 GitHub 工作台。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
                                 )
                             }
-                            isGitHubActionRunning = false
-                            if (result.success) {
-                                artifactDialogState = ProjectGitHubArtifactDialogUi(
-                                    runTitle = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
-                                    artifacts = result.artifacts,
-                                    runId = run.id,
-                                    runHtmlUrl = run.htmlUrl
-                                )
-                            } else {
-                                feedbackMessage = result.error ?: "读取工作流产物失败"
-                            }
-                        }
-                    },
-                    onOpenRunPage = { run ->
-                        openGitHubPage(
-                            run.htmlUrl,
-                            "当前运行记录还没有可打开的 GitHub 页面地址。"
-                        )
-                    },
-                    onDownloadRunLogs = { run ->
-                        val repo = githubActionsState.repo ?: return@ProjectGitHubActionsSection
-                        val token = config.githubToken.trim()
-                        if (token.isBlank()) {
-                            feedbackMessage = "请先在设置页填写 GitHub Token。"
-                            return@ProjectGitHubActionsSection
-                        }
-                        val result = enqueueProjectGitHubWorkflowLogsDownload(
-                            context = context,
-                            repo = repo,
-                            runId = run.id,
-                            runDisplayTitle = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
-                            token = token,
-                            apiBaseUrl = config.getGitHubApiBaseUrl()
-                        )
-                        recordGitHubDownload(
-                            typeLabel = "工作流日志",
-                            title = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
-                            fileName = result.fileName,
-                            downloadId = result.downloadId,
-                            sourceUrl = run.htmlUrl
-                        )
-                        feedbackMessage = "已开始下载 ${result.fileName}"
-                    },
-                    onOpenRunDetail = { run ->
-                        val repo = githubActionsState.repo ?: return@ProjectGitHubActionsSection
-                        val token = config.githubToken.trim()
-                        if (token.isBlank()) {
-                            feedbackMessage = "请先在设置页填写 GitHub Token。"
-                            return@ProjectGitHubActionsSection
-                        }
-                        scope.launch {
-                            isGitHubActionRunning = true
-                            val result = withContext(Dispatchers.IO) {
-                                loadProjectGitHubWorkflowRunDetail(
-                                    repo = repo,
-                                    runId = run.id,
-                                    token = token,
-                                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                            gitHubWorkbenchRepo == null -> {
+                                Text(
+                                    text = "当前 origin 远端还不能识别为 GitHub 仓库地址，工作台暂时只保留本地 Git 能力。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
                                 )
                             }
-                            isGitHubActionRunning = false
-                            if (result.success) {
-                                workflowRunDetailDialogState = result.detail
-                            } else {
-                                feedbackMessage = result.error ?: "读取工作流运行详情失败"
+                            else -> {
+                                Text(
+                                    text = buildString {
+                                        append("${gitHubWorkbenchRepo.owner}/${gitHubWorkbenchRepo.repo}")
+                                        append(" · 工作流 ${githubActionsState.workflows.size}")
+                                        append(" · 运行 ${githubActionsState.recentRuns.size}")
+                                        append(" · Issue ${githubActionsState.issues.size}")
+                                        append(" · PR ${githubActionsState.pullRequests.size}")
+                                        append(" · Release ${githubActionsState.releases.size}")
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
+                                )
+                                githubActionsState.errorMessage?.takeIf { it.isNotBlank() }?.let { error ->
+                                    Text(
+                                        text = error,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                } ?: Text(
+                                    text = "工作流、远端仓库、Issue、PR、Release 已迁入仓库工作台，主 Git 页只保留入口与本地仓库控制。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
+                                )
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    activeProjectPath?.let(::openGitHubWorkspaceRepoWorkbench)
+                                },
+                                enabled = activeProjectPath != null && gitHubWorkbenchRepo != null
+                            ) {
+                                Text("进入仓库工作台")
+                            }
+                            if (gitHubWorkbenchRepo != null) {
+                                OutlinedButton(
+                                    onClick = { refreshGitHubActions() },
+                                    enabled = !isGitHubLoading && !isGitHubActionRunning
+                                ) {
+                                    Text("刷新 GitHub")
+                                }
+                                TextButton(
+                                    onClick = ::openCurrentGitHubRepoPage,
+                                    enabled = !isGitHubLoading && !isGitHubActionRunning
+                                ) {
+                                    Text("仓库页")
+                                }
                             }
                         }
                     }
                 )
-                ProjectGitHubReleaseSection(
-                    releases = githubActionsState.releases,
-                    isActionRunning = isGitHubActionRunning,
-                    onCreateRelease = {
-                        resetReleaseDraft()
-                        releaseTagDraft = gitState.currentBranch
-                            ?.substringAfterLast('/')
-                            ?.takeIf { it.isNotBlank() }
-                            ?.let { "v-$it" }
-                            .orEmpty()
-                        showCreateReleaseDialog = true
-                    },
-                    onEditRelease = { release ->
-                        releaseEditTarget = release
-                        releaseNameDraft = release.name
-                        releaseTagDraft = release.tagName
-                        releaseBodyDraft = release.body
-                        releaseDraftFlag = release.isDraft
-                        releasePrereleaseFlag = release.isPrerelease
-                    },
-                    onToggleReleaseMode = { release, makeDraft ->
-                        val repo = githubActionsState.repo ?: return@ProjectGitHubReleaseSection
-                        val token = config.githubToken.trim()
-                        if (token.isBlank()) {
-                            feedbackMessage = "请先在设置页填写 GitHub Token。"
-                            return@ProjectGitHubReleaseSection
-                        }
-                        runGitHubAction(if (makeDraft) "已切回草稿 Release" else "已发布为正式 Release") {
-                            updateProjectGitHubRelease(
-                                repo = repo,
-                                releaseId = release.id,
-                                tagName = release.tagName,
-                                releaseName = release.name,
-                                body = release.body,
-                                isDraft = makeDraft,
-                                isPrerelease = if (makeDraft) release.isPrerelease else false,
-                                token = token,
-                                apiBaseUrl = config.getGitHubApiBaseUrl()
-                            )
-                        }
-                    },
-                    onTogglePrerelease = { release, makePrerelease ->
-                        val repo = githubActionsState.repo ?: return@ProjectGitHubReleaseSection
-                        val token = config.githubToken.trim()
-                        if (token.isBlank()) {
-                            feedbackMessage = "请先在设置页填写 GitHub Token。"
-                            return@ProjectGitHubReleaseSection
-                        }
-                        runGitHubAction(if (makePrerelease) "已标记为预发布 Release" else "已取消预发布标记") {
-                            updateProjectGitHubRelease(
-                                repo = repo,
-                                releaseId = release.id,
-                                tagName = release.tagName,
-                                releaseName = release.name,
-                                body = release.body,
-                                isDraft = release.isDraft,
-                                isPrerelease = makePrerelease,
-                                token = token,
-                                apiBaseUrl = config.getGitHubApiBaseUrl()
-                            )
-                        }
-                    },
-                    onDeleteRelease = { release ->
-                        val repo = githubActionsState.repo ?: return@ProjectGitHubReleaseSection
-                        val token = config.githubToken.trim()
-                        if (token.isBlank()) {
-                            feedbackMessage = "请先在设置页填写 GitHub Token。"
-                            return@ProjectGitHubReleaseSection
-                        }
-                        runGitHubAction("已删除 Release ${release.name.ifBlank { release.tagName }}") {
-                            deleteProjectGitHubRelease(
-                                repo = repo,
-                                releaseId = release.id,
-                                token = token,
-                                apiBaseUrl = config.getGitHubApiBaseUrl()
-                            )
-                        }
-                    },
-                    onOpenReleasePage = { release ->
-                        openGitHubPage(
-                            release.htmlUrl,
-                            "当前 Release 还没有可打开的 GitHub 页面地址。"
-                        )
-                    },
-                    onOpenAssets = { release ->
-                        releaseAssetDialogState = ProjectGitHubReleaseAssetDialogUi(
-                            releaseTitle = release.name.ifBlank { release.tagName },
-                            assets = release.assets,
-                            releaseHtmlUrl = release.htmlUrl
-                        )
-                    }
-                )
-                ProjectGitHubRemoteRepositorySection(
-                    state = remoteRepoState,
-                    isLoading = isRemoteRepoLoading,
-                    isActionRunning = isGitHubActionRunning,
-                    tokenConfigured = config.githubToken.isNotBlank(),
-                    refDraft = remoteRepoRefDraft,
-                    onRefDraftChange = { remoteRepoRefDraft = it },
-                    onRefresh = { refreshRemoteRepositoryBrowser(resetRefIfBlank = true) },
-                    onApplyRef = { refreshRemoteRepositoryBrowser(targetPath = remoteRepoState.currentPath) },
-                    onOpenRepo = {
-                        openGitHubPage(
-                            remoteRepoState.repoHtmlUrl ?: githubActionsState.repoHtmlUrl,
-                            "当前仓库还没有可打开的 GitHub 页面地址。"
-                        )
-                    },
-                    onOpenParent = {
-                        refreshRemoteRepositoryBrowser(
-                            targetPath = parentProjectGitHubRepoPath(remoteRepoState.currentPath).orEmpty()
-                        )
-                    },
-                    onOpenRoot = { refreshRemoteRepositoryBrowser(targetPath = "") },
-                    onOpenEntry = ::openRemoteRepositoryEntry,
-                    onOpenEntryPage = { entry ->
-                        openGitHubPage(
-                            entry.htmlUrl,
-                            "当前条目还没有可打开的 GitHub 页面地址。"
-                        )
-                    }
-                )
-                ProjectGitHubIssueSection(
-                    issues = githubActionsState.issues,
-                    isActionRunning = isGitHubActionRunning,
-                    onCreateIssue = {
-                        resetCreateIssueDraft()
-                        showCreateIssueDialog = true
-                    },
-                    onOpenDetail = ::openIssueDetail,
-                    onToggleIssueState = { issue, shouldClose ->
-                        val repo = githubActionsState.repo ?: return@ProjectGitHubIssueSection
-                        val token = config.githubToken.trim()
-                        if (token.isBlank()) {
-                            feedbackMessage = "请先在设置页填写 GitHub Token。"
-                            return@ProjectGitHubIssueSection
-                        }
-                        runGitHubAction(if (shouldClose) "已关闭 Issue #${issue.number}" else "已重新打开 Issue #${issue.number}") {
-                            updateProjectGitHubIssueState(
-                                repo = repo,
-                                issueNumber = issue.number,
-                                close = shouldClose,
-                                token = token,
-                                apiBaseUrl = config.getGitHubApiBaseUrl()
-                            )
-                        }
-                    },
-                    onOpenIssuePage = { issue ->
-                        openGitHubPage(
-                            issue.htmlUrl,
-                            "当前 Issue 还没有可打开的 GitHub 页面地址。"
-                        )
-                    }
-                )
-                ProjectGitHubPullRequestSection(
-                    pullRequests = githubActionsState.pullRequests,
-                    isActionRunning = isGitHubActionRunning,
-                    onCreatePullRequest = {
-                        resetCreatePullRequestDraft()
-                        showCreatePullRequestDialog = true
-                    },
-                    onOpenDetail = ::openPullRequestDetail,
-                    onTogglePullRequestState = { pullRequest, shouldClose ->
-                        val repo = githubActionsState.repo ?: return@ProjectGitHubPullRequestSection
-                        val token = config.githubToken.trim()
-                        if (token.isBlank()) {
-                            feedbackMessage = "请先在设置页填写 GitHub Token。"
-                            return@ProjectGitHubPullRequestSection
-                        }
-                        runGitHubAction(if (shouldClose) "已关闭 PR #${pullRequest.number}" else "已重新打开 PR #${pullRequest.number}") {
-                            updateProjectGitHubPullRequestState(
-                                repo = repo,
-                                pullNumber = pullRequest.number,
-                                close = shouldClose,
-                                token = token,
-                                apiBaseUrl = config.getGitHubApiBaseUrl()
-                            )
-                        }
-                    },
-                    onMergePullRequest = { pullRequest ->
-                        val repo = githubActionsState.repo ?: return@ProjectGitHubPullRequestSection
-                        val token = config.githubToken.trim()
-                        if (token.isBlank()) {
-                            feedbackMessage = "请先在设置页填写 GitHub Token。"
-                            return@ProjectGitHubPullRequestSection
-                        }
-                        runGitHubAction("已合并 PR #${pullRequest.number}") {
-                            mergeProjectGitHubPullRequest(
-                                repo = repo,
-                                pullNumber = pullRequest.number,
-                                title = pullRequest.title,
-                                token = token,
-                                apiBaseUrl = config.getGitHubApiBaseUrl()
-                            )
-                        }
-                    },
-                    onOpenPullRequestPage = { pullRequest ->
-                        openGitHubPage(
-                            pullRequest.htmlUrl,
-                            "当前 Pull Request 还没有可打开的 GitHub 页面地址。"
-                        )
-                    }
-                )
-                ProjectGitHubDownloadHistorySection(
+                ProjectGitHubDownloadCenterSummaryCard(
                     downloads = downloadHistory,
-                    onOpenSystemDownloads = { openSystemDownloads() },
-                    onOpenSource = { item ->
-                        openGitHubPage(
-                            item.sourceUrl,
-                            "这条下载记录暂时没有可打开的来源页面。"
-                        )
-                    }
+                    onOpenDownloadCenter = ::openGitHubWorkspaceDownloadCenter,
+                    onOpenSystemDownloads = ::openSystemDownloads
                 )
                 ProjectGitBranchSummaryCard(
                     currentBranch = gitState.currentBranch,
@@ -6419,6 +6738,679 @@ private fun ProjectGitSection(
 }
 
 @Composable
+private fun ProjectGitHubWorkspaceOverviewPage(
+    detectedRepos: List<ProjectDetectedRepoUi>,
+    repoStatusSummaries: Map<String, ProjectGitStatusUi>,
+    selectedRepoRoot: String?,
+    onOpenRepoWorkbench: (String) -> Unit,
+    tokenConfigured: Boolean,
+    remoteSummaries: Map<String, ProjectGitHubWorkspaceRemoteSummaryUi>,
+    isRemoteSummaryLoading: Boolean,
+    onRefreshRemoteSummaries: () -> Unit,
+    activeRepo: ProjectGitHubRepoRef?,
+    activeGitHubState: ProjectGitHubActionsState,
+    downloads: List<ProjectGitHubDownloadRecordUi>,
+    onOpenDownloadCenter: () -> Unit,
+    onOpenSystemDownloads: () -> Unit,
+    backProgress: Float
+) {
+    val chromeColor = rememberReasonixChromeColor()
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    val repoCards = remember(detectedRepos, repoStatusSummaries, selectedRepoRoot) {
+        buildProjectGitHubWorkspaceRepoSummaries(
+            repos = detectedRepos,
+            repoStatusSummaries = repoStatusSummaries,
+            selectedRepoRoot = selectedRepoRoot
+        )
+    }
+    val overview = remember(repoCards, remoteSummaries, activeRepo, activeGitHubState) {
+        buildProjectGitHubWorkspaceOverview(
+            repoCards = repoCards,
+            remoteSummaries = remoteSummaries,
+            activeRepo = activeRepo,
+            activeGitHubState = activeGitHubState
+        )
+    }
+
+    ReasonixSecondaryPageFrame(
+        title = "GitHub 工作区",
+        subtitle = "第一阶段先落工作区首页骨架，统一现有主题壳、二级页返回和仓库摘要入口。"
+    ) {
+        Column(
+            modifier = Modifier.graphicsLayer {
+                translationX = 180f * backProgress
+                alpha = 1f - (backProgress * 0.08f)
+            },
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            ProjectSectionCard(
+                shape = RoundedCornerShape(14.dp),
+                surfaceColorOverride = chromeColor.copy(alpha = 0.38f)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("工作区健康概览", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = "仓库 ${overview.repoCount} · Git ${overview.gitRepoCount} · GitHub ${overview.githubRepoCount} · 远端摘要 ${overview.remoteSummaryCount} · 脏工作区 ${overview.dirtyRepoCount} · 落后远端 ${overview.behindRepoCount} · 冲突 ${overview.conflictRepoCount}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                    if (overview.remoteSummaryCount > 0) {
+                        Text(
+                            text = "工作流异常 ${overview.failingWorkflowRepoCount} · 有开放事项 ${overview.openWorkItemRepoCount}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (overview.failingWorkflowRepoCount > 0) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                mutedTextColor
+                            }
+                        )
+                    }
+                    Text(
+                        text = if (tokenConfigured) {
+                            "GitHub Token 已配置，工作区页会并发拉取轻量远端摘要。"
+                        } else {
+                            "GitHub Token 未配置，当前先展示本地 Git 和远端绑定摘要。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    if (tokenConfigured) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (isRemoteSummaryLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier
+                                        .width(16.dp)
+                                        .height(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = onRefreshRemoteSummaries,
+                                enabled = !isRemoteSummaryLoading
+                            ) {
+                                Text(if (remoteSummaries.isEmpty()) "拉取远端摘要" else "刷新远端摘要")
+                            }
+                        }
+                    }
+                }
+            }
+            ProjectSectionCard(
+                shape = RoundedCornerShape(14.dp),
+                surfaceColorOverride = surfaceColor.copy(alpha = 0.58f)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("今日待处理", style = MaterialTheme.typography.titleSmall)
+                    overview.taskItems.forEach { task ->
+                        Text(
+                            text = "• ${task.label}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    overview.activeRepoSummary?.let { summary ->
+                        Text(
+                            text = "当前聚焦仓库：$summary",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+            ProjectGitHubDownloadCenterSummaryCard(
+                downloads = downloads,
+                onOpenDownloadCenter = onOpenDownloadCenter,
+                onOpenSystemDownloads = onOpenSystemDownloads
+            )
+            ProjectSectionCard(
+                shape = RoundedCornerShape(14.dp),
+                surfaceColorOverride = chromeColor.copy(alpha = 0.32f)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("仓库摘要", style = MaterialTheme.typography.titleSmall)
+                    repoCards.forEach { summary ->
+                        ProjectGitHubWorkspaceRepoCard(
+                            summary = summary,
+                            remoteSummary = remoteSummaries[summary.repo.rootPath],
+                            surfaceColor = surfaceColor,
+                            chromeColor = chromeColor,
+                            mutedTextColor = mutedTextColor,
+                            onClick = { onOpenRepoWorkbench(summary.repo.rootPath) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProjectGitHubWorkspaceDownloadCenterPage(
+    downloads: List<ProjectGitHubDownloadRecordUi>,
+    onOpenSystemDownloads: () -> Unit,
+    onOpenDownloadSource: (ProjectGitHubDownloadRecordUi) -> Unit,
+    backProgress: Float
+) {
+    val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    var searchQuery by remember(downloads) { mutableStateOf("") }
+    var selectedType by remember(downloads) { mutableStateOf(ProjectGitHubDownloadFilterType.ALL) }
+    var selectedRepo by remember(downloads) { mutableStateOf<String?>(null) }
+    val repoOptions = remember(downloads) {
+        downloads.mapNotNull(::projectGitHubDownloadRepoLabel).distinct()
+    }
+    val filteredDownloads = remember(downloads, searchQuery, selectedType, selectedRepo) {
+        filterProjectGitHubDownloads(
+            downloads = downloads,
+            query = searchQuery,
+            filterType = selectedType,
+            repoLabel = selectedRepo
+        )
+    }
+    val latestDownload = downloads.firstOrNull()
+    ReasonixSecondaryPageFrame(
+        title = "下载中心",
+        subtitle = "工作区级统一查看日志、产物和 Release 下载记录。"
+    ) {
+        Column(
+            modifier = Modifier.graphicsLayer {
+                translationX = 180f * backProgress
+                alpha = 1f - (backProgress * 0.08f)
+            },
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            ProjectSectionCard(
+                shape = RoundedCornerShape(14.dp),
+                surfaceColorOverride = chromeColor.copy(alpha = 0.38f)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("工作区下载中心", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = if (latestDownload == null) {
+                            "当前还没有下载记录。后续从工作流日志、产物和 Release 触发的下载都会统一收在这里。"
+                        } else {
+                            "共 ${downloads.size} 条记录，最近一条是 ${latestDownload.typeLabel} · ${latestDownload.fileName}。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                    OutlinedButton(onClick = onOpenSystemDownloads) {
+                        Text("打开系统下载")
+                    }
+                }
+            }
+            ProjectSectionCard(
+                shape = RoundedCornerShape(14.dp),
+                surfaceColorOverride = chromeColor.copy(alpha = 0.30f)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("搜索下载记录") },
+                        placeholder = { Text("按仓库、标题、文件名筛选") },
+                        singleLine = true
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ProjectGitHubDownloadFilterType.entries.forEach { type ->
+                            FilterChip(
+                                selected = selectedType == type,
+                                onClick = { selectedType = type },
+                                label = { Text(type.label) }
+                            )
+                        }
+                    }
+                    if (repoOptions.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = selectedRepo == null,
+                                onClick = { selectedRepo = null },
+                                label = { Text("全部仓库") }
+                            )
+                            repoOptions.forEach { repoLabel ->
+                                FilterChip(
+                                    selected = selectedRepo == repoLabel,
+                                    onClick = { selectedRepo = repoLabel },
+                                    label = { Text(repoLabel) }
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        text = "筛选后 ${filteredDownloads.size} / ${downloads.size} 条",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (filteredDownloads.size < downloads.size) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            mutedTextColor
+                        }
+                    )
+                }
+            }
+            ProjectGitHubDownloadHistorySection(
+                downloads = filteredDownloads,
+                onOpenSystemDownloads = onOpenSystemDownloads,
+                onOpenSource = onOpenDownloadSource
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProjectGitHubWorkspaceRepoCard(
+    summary: ProjectGitHubWorkspaceRepoSummaryUi,
+    remoteSummary: ProjectGitHubWorkspaceRemoteSummaryUi?,
+    surfaceColor: Color,
+    chromeColor: Color,
+    mutedTextColor: Color,
+    onClick: () -> Unit
+) {
+    ProjectInsetCard(
+        modifier = Modifier.clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        surfaceColorOverride = if (summary.isSelected) {
+            surfaceColor.copy(alpha = 0.80f)
+        } else {
+            chromeColor.copy(alpha = 0.28f)
+        }
+    ) {
+        Column(
+            modifier = Modifier.padding(6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = if (summary.repo.isWorkspaceRoot) {
+                    "${summary.repo.displayName}（工作区根）"
+                } else {
+                    summary.repo.relativePath
+                },
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = buildString {
+                    append(if (summary.status.branchSummary.isNotBlank()) summary.status.branchSummary else "分支未知")
+                    if (summary.githubRepo != null) {
+                        append(" · GitHub ${summary.githubRepo.owner}/${summary.githubRepo.repo}")
+                    } else if (summary.repo.hasGitMetadata) {
+                        append(" · 未识别 GitHub 远端")
+                    } else {
+                        append(" · 非 Git 仓库")
+                    }
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedTextColor
+            )
+            Text(
+                text = "暂存 ${summary.status.stagedFiles.size} · 修改 ${summary.status.modifiedFiles.size} · 未跟踪 ${summary.status.untrackedFiles.size} · 冲突 ${summary.status.conflictedFiles.size} · ↑${summary.status.aheadCount} ↓${summary.status.behindCount}",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (summary.status.hasWorkingTreeChanges || summary.status.behindCount > 0) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    mutedTextColor
+                }
+            )
+            remoteSummary?.let { remote ->
+                Text(
+                    text = buildString {
+                        append("默认分支 ")
+                        append(remote.defaultBranch ?: "未知")
+                        append(" · Issue ")
+                        append(remote.openIssueCount)
+                        append(" · PR ")
+                        append(remote.openPullRequestCount)
+                        if (remote.runningRunCount > 0) {
+                            append(" · 运行中 ")
+                            append(remote.runningRunCount)
+                        }
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (remote.latestRunHasIssue || remote.hasOpenWorkItems) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        mutedTextColor
+                    }
+                )
+                remote.errorMessage?.takeIf { it.isNotBlank() }?.let { error ->
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                } ?: remote.latestRun?.let { run ->
+                    Text(
+                        text = "最近工作流：${run.displayTitle.ifBlank { run.name }} · ${run.statusLabel}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (remote.latestRunHasIssue) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            mutedTextColor
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProjectGitHubWorkspaceRepoWorkbenchPage(
+    summary: ProjectGitHubWorkspaceRepoSummaryUi,
+    remoteSummary: ProjectGitHubWorkspaceRemoteSummaryUi?,
+    gitState: ProjectGitStatusUi,
+    githubActionsState: ProjectGitHubActionsState,
+    remoteRepoState: ProjectGitHubRemoteBrowserState,
+    isGitLoading: Boolean,
+    isGitHubLoading: Boolean,
+    isGitHubActionRunning: Boolean,
+    isRemoteRepoLoading: Boolean,
+    tokenConfigured: Boolean,
+    remoteRepoRefDraft: String,
+    onRemoteRepoRefDraftChange: (String) -> Unit,
+    onRefreshGitState: () -> Unit,
+    onRefreshGitHubActions: () -> Unit,
+    onRefreshRemoteRepository: () -> Unit,
+    onApplyRemoteRef: () -> Unit,
+    onOpenRepoPage: () -> Unit,
+    onOpenWorkflowPage: (ProjectGitHubWorkflowUi) -> Unit,
+    onRunWorkflow: (ProjectGitHubWorkflowUi) -> Unit,
+    onOpenArtifacts: (ProjectGitHubWorkflowRunUi) -> Unit,
+    onOpenRunPage: (ProjectGitHubWorkflowRunUi) -> Unit,
+    onDownloadRunLogs: (ProjectGitHubWorkflowRunUi) -> Unit,
+    onOpenRunDetail: (ProjectGitHubWorkflowRunUi) -> Unit,
+    onOpenRemoteParent: () -> Unit,
+    onOpenRemoteRoot: () -> Unit,
+    onOpenRemoteEntry: (ProjectGitHubRemoteEntryUi) -> Unit,
+    onOpenRemoteEntryPage: (ProjectGitHubRemoteEntryUi) -> Unit,
+    onCreateIssue: () -> Unit,
+    onOpenIssueDetail: (ProjectGitHubIssueUi) -> Unit,
+    onToggleIssueState: (ProjectGitHubIssueUi, Boolean) -> Unit,
+    onOpenIssuePage: (ProjectGitHubIssueUi) -> Unit,
+    onCreatePullRequest: () -> Unit,
+    onOpenPullRequestDetail: (ProjectGitHubPullRequestUi) -> Unit,
+    onTogglePullRequestState: (ProjectGitHubPullRequestUi, Boolean) -> Unit,
+    onMergePullRequest: (ProjectGitHubPullRequestUi) -> Unit,
+    onOpenPullRequestPage: (ProjectGitHubPullRequestUi) -> Unit,
+    onCreateRelease: () -> Unit,
+    onEditRelease: (ProjectGitHubReleaseUi) -> Unit,
+    onToggleReleaseMode: (ProjectGitHubReleaseUi, Boolean) -> Unit,
+    onTogglePrerelease: (ProjectGitHubReleaseUi, Boolean) -> Unit,
+    onDeleteRelease: (ProjectGitHubReleaseUi) -> Unit,
+    onOpenReleasePage: (ProjectGitHubReleaseUi) -> Unit,
+    onOpenReleaseAssets: (ProjectGitHubReleaseUi) -> Unit,
+    downloads: List<ProjectGitHubDownloadRecordUi>,
+    onOpenSystemDownloads: () -> Unit,
+    onOpenDownloadSource: (ProjectGitHubDownloadRecordUi) -> Unit,
+    onExitWorkbench: () -> Unit,
+    backProgress: Float
+) {
+    val chromeColor = rememberReasonixChromeColor()
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    var selectedTab by remember(summary.repo.rootPath) {
+        mutableStateOf(ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW)
+    }
+
+    ReasonixSecondaryPageFrame(
+        title = summary.repo.displayName.ifBlank { "仓库工作台" },
+        subtitle = "先承接仓库级概览、工作流与远端仓库，后续继续迁移 Issue / PR / Release。"
+    ) {
+        Column(
+            modifier = Modifier.graphicsLayer {
+                translationX = 180f * backProgress
+                alpha = 1f - (backProgress * 0.08f)
+            },
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            ProjectSectionCard(
+                shape = RoundedCornerShape(14.dp),
+                surfaceColorOverride = chromeColor.copy(alpha = 0.38f)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("仓库工作台", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = buildString {
+                            append(
+                                if (summary.repo.isWorkspaceRoot) {
+                                    "工作区根目录"
+                                } else {
+                                    summary.repo.relativePath
+                                }
+                            )
+                            append(" · ")
+                            append(if (gitState.branchSummary.isNotBlank()) gitState.branchSummary else "分支未知")
+                            remoteSummary?.repo?.let { repo ->
+                                append(" · ")
+                                append(repo.owner)
+                                append("/")
+                                append(repo.repo)
+                            }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                    Text(
+                        text = "暂存 ${gitState.stagedFiles.size} · 修改 ${gitState.modifiedFiles.size} · 未跟踪 ${gitState.untrackedFiles.size} · 冲突 ${gitState.conflictedFiles.size}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (gitState.hasWorkingTreeChanges || gitState.conflictedFiles.isNotEmpty()) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            mutedTextColor
+                        }
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = onExitWorkbench) {
+                            Text("返回工作区")
+                        }
+                        OutlinedButton(
+                            onClick = onRefreshGitState,
+                            enabled = !isGitLoading
+                        ) {
+                            Text("刷新本地")
+                        }
+                        if (tokenConfigured) {
+                            OutlinedButton(
+                                onClick = onRefreshGitHubActions,
+                                enabled = !isGitHubLoading && !isGitHubActionRunning
+                            ) {
+                                Text("刷新 GitHub")
+                            }
+                        }
+                    }
+                }
+            }
+            PrimaryScrollableTabRow(
+                selectedTabIndex = selectedTab.ordinal,
+                containerColor = chromeColor.copy(alpha = 0.28f)
+            ) {
+                ProjectGitHubWorkspaceRepoWorkbenchTab.entries.forEach { tab ->
+                    Tab(
+                        selected = selectedTab == tab,
+                        onClick = { selectedTab = tab },
+                        text = { Text(tab.label) }
+                    )
+                }
+            }
+            when (selectedTab) {
+                ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW -> {
+                    ProjectSectionCard(
+                        shape = RoundedCornerShape(14.dp),
+                        surfaceColorOverride = surfaceColor.copy(alpha = 0.58f)
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("仓库概览", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                text = remoteSummary?.let {
+                                    buildString {
+                                        append("默认分支 ${it.defaultBranch ?: "未知"}")
+                                        append(" · 开放 Issue ${it.openIssueCount}")
+                                        append(" · 开放 PR ${it.openPullRequestCount}")
+                                        if (it.runningRunCount > 0) {
+                                            append(" · 运行中 ${it.runningRunCount}")
+                                        }
+                                    }
+                                } ?: "当前仓库还没有工作区级远端摘要，可先刷新 GitHub。"
+                                ,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = mutedTextColor
+                            )
+                            remoteSummary?.errorMessage?.takeIf { it.isNotBlank() }?.let { error ->
+                                Text(
+                                    text = error,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                            remoteSummary?.latestRun?.let { run ->
+                                ProjectInsetCard(
+                                    shape = RoundedCornerShape(12.dp),
+                                    surfaceColorOverride = chromeColor.copy(alpha = 0.30f)
+                                ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text("最近工作流", style = MaterialTheme.typography.labelMedium)
+                                        Text(
+                                            text = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                        Text(
+                                            text = "${run.statusLabel} · ${run.headBranch.ifBlank { "分支未知" }} · ${run.updatedAt}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = if (remoteSummary.latestRunHasIssue) {
+                                                MaterialTheme.colorScheme.error
+                                            } else {
+                                                mutedTextColor
+                                            }
+                                        )
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            OutlinedButton(
+                                                onClick = { selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.WORKFLOW }
+                                            ) {
+                                                Text("切到工作流")
+                                            }
+                                            OutlinedButton(
+                                                onClick = { selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.ISSUES }
+                                            ) {
+                                                Text("切到事项")
+                                            }
+                                            TextButton(onClick = { onOpenRunDetail(run) }) {
+                                                Text("运行详情")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            ProjectGitRemoteSummaryCard(
+                                remoteUrl = gitState.remoteUrl,
+                                upstreamBranch = gitState.upstreamBranch,
+                                aheadCount = gitState.aheadCount,
+                                behindCount = gitState.behindCount,
+                                remoteBranchCount = gitState.remoteBranches.size,
+                                tokenConfigured = tokenConfigured
+                            )
+                            ProjectGitHubDownloadHistorySection(
+                                downloads = downloads,
+                                onOpenSystemDownloads = onOpenSystemDownloads,
+                                onOpenSource = onOpenDownloadSource
+                            )
+                        }
+                    }
+                }
+                ProjectGitHubWorkspaceRepoWorkbenchTab.WORKFLOW -> {
+                    ProjectGitHubActionsSection(
+                        state = githubActionsState,
+                        isLoading = isGitHubLoading,
+                        isActionRunning = isGitHubActionRunning,
+                        tokenConfigured = tokenConfigured,
+                        onRefresh = onRefreshGitHubActions,
+                        onOpenRepo = onOpenRepoPage,
+                        onRunWorkflow = onRunWorkflow,
+                        onOpenWorkflowPage = onOpenWorkflowPage,
+                        onOpenArtifacts = onOpenArtifacts,
+                        onOpenRunPage = onOpenRunPage,
+                        onDownloadRunLogs = onDownloadRunLogs,
+                        onOpenRunDetail = onOpenRunDetail
+                    )
+                }
+                ProjectGitHubWorkspaceRepoWorkbenchTab.REMOTE -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ProjectGitRemoteSummaryCard(
+                            remoteUrl = gitState.remoteUrl,
+                            upstreamBranch = gitState.upstreamBranch,
+                            aheadCount = gitState.aheadCount,
+                            behindCount = gitState.behindCount,
+                            remoteBranchCount = gitState.remoteBranches.size,
+                            tokenConfigured = tokenConfigured
+                        )
+                        ProjectGitHubRemoteRepositorySection(
+                            state = remoteRepoState,
+                            isLoading = isRemoteRepoLoading,
+                            isActionRunning = isGitHubActionRunning,
+                            tokenConfigured = tokenConfigured,
+                            refDraft = remoteRepoRefDraft,
+                            onRefDraftChange = onRemoteRepoRefDraftChange,
+                            onRefresh = onRefreshRemoteRepository,
+                            onApplyRef = onApplyRemoteRef,
+                            onOpenRepo = onOpenRepoPage,
+                            onOpenParent = onOpenRemoteParent,
+                            onOpenRoot = onOpenRemoteRoot,
+                            onOpenEntry = onOpenRemoteEntry,
+                            onOpenEntryPage = onOpenRemoteEntryPage
+                        )
+                    }
+                }
+                ProjectGitHubWorkspaceRepoWorkbenchTab.ISSUES -> {
+                    ProjectGitHubIssueSection(
+                        issues = githubActionsState.issues,
+                        isActionRunning = isGitHubActionRunning,
+                        onCreateIssue = onCreateIssue,
+                        onOpenDetail = onOpenIssueDetail,
+                        onToggleIssueState = onToggleIssueState,
+                        onOpenIssuePage = onOpenIssuePage
+                    )
+                }
+                ProjectGitHubWorkspaceRepoWorkbenchTab.PULL_REQUESTS -> {
+                    ProjectGitHubPullRequestSection(
+                        pullRequests = githubActionsState.pullRequests,
+                        isActionRunning = isGitHubActionRunning,
+                        onCreatePullRequest = onCreatePullRequest,
+                        onOpenDetail = onOpenPullRequestDetail,
+                        onTogglePullRequestState = onTogglePullRequestState,
+                        onMergePullRequest = onMergePullRequest,
+                        onOpenPullRequestPage = onOpenPullRequestPage
+                    )
+                }
+                ProjectGitHubWorkspaceRepoWorkbenchTab.RELEASES -> {
+                    ProjectGitHubReleaseSection(
+                        releases = githubActionsState.releases,
+                        isActionRunning = isGitHubActionRunning,
+                        onCreateRelease = onCreateRelease,
+                        onEditRelease = onEditRelease,
+                        onToggleReleaseMode = onToggleReleaseMode,
+                        onTogglePrerelease = onTogglePrerelease,
+                        onDeleteRelease = onDeleteRelease,
+                        onOpenReleasePage = onOpenReleasePage,
+                        onOpenAssets = onOpenReleaseAssets
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ProjectGitFileGroup(
     title: String,
     items: List<ProjectGitFileChangeUi>,
@@ -6758,6 +7750,49 @@ private fun ProjectGitHubActionsSection(
 }
 
 @Composable
+private fun ProjectGitHubDownloadCenterSummaryCard(
+    downloads: List<ProjectGitHubDownloadRecordUi>,
+    onOpenDownloadCenter: () -> Unit,
+    onOpenSystemDownloads: () -> Unit
+) {
+    val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    val latestDownload = downloads.firstOrNull()
+    ProjectSectionCard(
+        shape = RoundedCornerShape(14.dp),
+        surfaceColorOverride = chromeColor.copy(alpha = 0.30f)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("下载中心", style = MaterialTheme.typography.titleSmall)
+            Text(
+                text = if (latestDownload == null) {
+                    "详细下载记录已迁入仓库工作台概览，这里只保留工作区级入口。"
+                } else {
+                    "最近 ${downloads.size} 条下载记录已统一归到仓库工作台，方便和工作流、Release、远端操作放在一起回看。"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedTextColor
+            )
+            latestDownload?.let { item ->
+                Text(
+                    text = "${item.typeLabel} · ${item.fileName} · ${item.createdAtLabel}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onOpenDownloadCenter) {
+                    Text("打开下载中心")
+                }
+                OutlinedButton(onClick = onOpenSystemDownloads) {
+                    Text("系统下载")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ProjectGitHubDownloadHistorySection(
     downloads: List<ProjectGitHubDownloadRecordUi>,
     onOpenSystemDownloads: () -> Unit,
@@ -6796,6 +7831,13 @@ private fun ProjectGitHubDownloadHistorySection(
                             text = "${item.typeLabel} · ${item.title}",
                             style = MaterialTheme.typography.bodyMedium
                         )
+                        projectGitHubDownloadRepoLabel(item)?.let { repoLabel ->
+                            Text(
+                                text = repoLabel,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                         Text(
                             text = "${item.fileName} · ${item.createdAtLabel}",
                             style = MaterialTheme.typography.bodySmall,
@@ -10566,6 +11608,66 @@ private fun sanitizeProjectDownloadFileName(value: String): String {
     return value.replace(Regex("""[\\/:*?"<>|]"""), "_")
 }
 
+private enum class ProjectGitHubDownloadFilterType(val label: String) {
+    ALL("全部"),
+    WORKFLOW_LOG("日志"),
+    ARTIFACT("产物"),
+    RELEASE_ASSET("Release");
+
+    fun matches(item: ProjectGitHubDownloadRecordUi): Boolean {
+        return when (this) {
+            ALL -> true
+            WORKFLOW_LOG -> item.typeLabel == "工作流日志"
+            ARTIFACT -> item.typeLabel == "工作流产物"
+            RELEASE_ASSET -> item.typeLabel == "Release 资产"
+        }
+    }
+}
+
+private fun projectGitHubDownloadRepoLabel(item: ProjectGitHubDownloadRecordUi): String? {
+    val source = item.sourceUrl?.trim().orEmpty()
+    if (source.isBlank()) return null
+    val pathSegments = Uri.parse(source).path
+        .orEmpty()
+        .trim('/')
+        .split('/')
+        .filter { it.isNotBlank() }
+    return when {
+        pathSegments.firstOrNull() == "repos" && pathSegments.size >= 3 -> {
+            "${pathSegments[1]}/${pathSegments[2]}"
+        }
+        pathSegments.size >= 2 -> "${pathSegments[0]}/${pathSegments[1]}"
+        else -> null
+    }
+}
+
+private fun filterProjectGitHubDownloads(
+    downloads: List<ProjectGitHubDownloadRecordUi>,
+    query: String,
+    filterType: ProjectGitHubDownloadFilterType,
+    repoLabel: String?
+): List<ProjectGitHubDownloadRecordUi> {
+    val normalizedQuery = query.trim().lowercase(Locale.getDefault())
+    return downloads.filter { item ->
+        filterType.matches(item) &&
+            (repoLabel == null || projectGitHubDownloadRepoLabel(item) == repoLabel) &&
+            (
+                normalizedQuery.isBlank() ||
+                    buildString {
+                        append(item.typeLabel)
+                        append('\n')
+                        append(item.title)
+                        append('\n')
+                        append(item.fileName)
+                        append('\n')
+                        append(projectGitHubDownloadRepoLabel(item).orEmpty())
+                        append('\n')
+                        append(item.sourceUrl.orEmpty())
+                    }.lowercase(Locale.getDefault()).contains(normalizedQuery)
+                )
+    }
+}
+
 private fun formatProjectByteSize(bytes: Long): String {
     if (bytes < 1024) return "${bytes} B"
     val kb = bytes / 1024.0
@@ -10696,6 +11798,15 @@ private enum class ProjectPrimaryTab(val label: String) {
     EDITOR("项目"),
     CONFIG("项目配置"),
     GIT("Git")
+}
+
+private enum class ProjectGitHubWorkspaceRepoWorkbenchTab(val label: String) {
+    OVERVIEW("概览"),
+    WORKFLOW("工作流"),
+    REMOTE("远端"),
+    ISSUES("Issue"),
+    PULL_REQUESTS("PR"),
+    RELEASES("Release")
 }
 
 private enum class ProjectEditorMode(val label: String) {
@@ -12514,6 +13625,48 @@ private data class ProjectGitCommitTemplateUi(
     val prefix: String,
     val detailHint: String
 )
+private data class ProjectGitHubWorkspaceTaskUi(
+    val label: String,
+    val priority: Int
+)
+private data class ProjectGitHubWorkspaceOverviewUi(
+    val repoCount: Int,
+    val gitRepoCount: Int,
+    val githubRepoCount: Int,
+    val remoteSummaryCount: Int,
+    val dirtyRepoCount: Int,
+    val behindRepoCount: Int,
+    val conflictRepoCount: Int,
+    val failingWorkflowRepoCount: Int,
+    val openWorkItemRepoCount: Int,
+    val taskItems: List<ProjectGitHubWorkspaceTaskUi>,
+    val activeRepoSummary: String?
+)
+private data class ProjectGitHubWorkspaceRepoSummaryUi(
+    val repo: ProjectDetectedRepoUi,
+    val status: ProjectGitStatusUi,
+    val githubRepo: ProjectGitHubRepoRef?,
+    val isSelected: Boolean
+)
+private data class ProjectGitHubWorkspaceRemoteSummaryUi(
+    val repo: ProjectGitHubRepoRef,
+    val defaultBranch: String?,
+    val repoHtmlUrl: String?,
+    val latestRun: ProjectGitHubWorkflowRunUi?,
+    val runningRunCount: Int,
+    val openIssueCount: Int,
+    val openPullRequestCount: Int,
+    val errorMessage: String?
+) {
+    val latestRunHasIssue: Boolean
+        get() = latestRun?.let { isProjectGitHubIssueStatus(it.status, it.conclusion) } ?: false
+    val hasOpenWorkItems: Boolean
+        get() = openIssueCount > 0 || openPullRequestCount > 0
+}
+private data class ProjectGitHubWorkspaceRemoteTargetUi(
+    val rootPath: String,
+    val repo: ProjectGitHubRepoRef
+)
 private data class ProjectGitHubRepoRef(
     val owner: String,
     val repo: String
@@ -13010,6 +14163,216 @@ private fun isProjectGitHubIssueStatus(status: String, conclusion: String?): Boo
         null, "", "success", "skipped", "neutral" -> false
         else -> true
     }
+}
+
+private fun buildProjectGitHubWorkspaceRepoSummaries(
+    repos: List<ProjectDetectedRepoUi>,
+    repoStatusSummaries: Map<String, ProjectGitStatusUi>,
+    selectedRepoRoot: String?
+): List<ProjectGitHubWorkspaceRepoSummaryUi> {
+    return repos.map { repo ->
+        val status = repoStatusSummaries[repo.rootPath] ?: ProjectGitStatusUi.empty(repo.rootPath)
+        ProjectGitHubWorkspaceRepoSummaryUi(
+            repo = repo,
+            status = status,
+            githubRepo = parseProjectGitHubRepoRef(status.remoteUrl),
+            isSelected = repo.rootPath == selectedRepoRoot
+        )
+    }
+}
+
+private fun buildProjectGitHubWorkspaceOverview(
+    repoCards: List<ProjectGitHubWorkspaceRepoSummaryUi>,
+    remoteSummaries: Map<String, ProjectGitHubWorkspaceRemoteSummaryUi>,
+    activeRepo: ProjectGitHubRepoRef?,
+    activeGitHubState: ProjectGitHubActionsState
+): ProjectGitHubWorkspaceOverviewUi {
+    val tasks = buildList {
+        repoCards.firstOrNull { it.status.conflictedFiles.isNotEmpty() }?.let { summary ->
+            add(
+                ProjectGitHubWorkspaceTaskUi(
+                    label = "优先处理 ${summary.repo.displayName} 的冲突文件 (${summary.status.conflictedFiles.size})",
+                    priority = 100
+                )
+            )
+        }
+        repoCards.firstOrNull { remoteSummaries[it.repo.rootPath]?.latestRunHasIssue == true }?.let { summary ->
+            val remote = remoteSummaries[summary.repo.rootPath]
+            add(
+                ProjectGitHubWorkspaceTaskUi(
+                    label = "${summary.repo.displayName} 最近工作流异常：${remote?.latestRun?.displayTitle?.ifBlank { remote.latestRun.name } ?: "状态异常"}",
+                    priority = 95
+                )
+            )
+        }
+        repoCards.firstOrNull { !(remoteSummaries[it.repo.rootPath]?.errorMessage.isNullOrBlank()) }?.let { summary ->
+            add(
+                ProjectGitHubWorkspaceTaskUi(
+                    label = "检查 ${summary.repo.displayName} 的 GitHub 摘要拉取结果",
+                    priority = 85
+                )
+            )
+        }
+        repoCards.firstOrNull { it.status.behindCount > 0 }?.let { summary ->
+            add(
+                ProjectGitHubWorkspaceTaskUi(
+                    label = "${summary.repo.displayName} 落后远端 ${summary.status.behindCount} 个提交",
+                    priority = 90
+                )
+            )
+        }
+        repoCards.firstOrNull { it.status.hasWorkingTreeChanges }?.let { summary ->
+            add(
+                ProjectGitHubWorkspaceTaskUi(
+                    label = "${summary.repo.displayName} 存在未提交本地改动",
+                    priority = 80
+                )
+            )
+        }
+        repoCards.firstOrNull { it.repo.hasGitMetadata && it.githubRepo == null }?.let { summary ->
+            add(
+                ProjectGitHubWorkspaceTaskUi(
+                    label = "${summary.repo.displayName} 还没有识别出 GitHub 远端绑定",
+                    priority = 70
+                )
+            )
+        }
+        repoCards.firstOrNull { remoteSummaries[it.repo.rootPath]?.hasOpenWorkItems == true }?.let { summary ->
+            val remote = remoteSummaries[summary.repo.rootPath]
+            add(
+                ProjectGitHubWorkspaceTaskUi(
+                    label = "${summary.repo.displayName} 仍有开放事项：Issue ${remote?.openIssueCount ?: 0} / PR ${remote?.openPullRequestCount ?: 0}",
+                    priority = 60
+                )
+            )
+        }
+    }.sortedByDescending { it.priority }.ifEmpty {
+        listOf(
+            ProjectGitHubWorkspaceTaskUi(
+                label = "当前工作区暂无明显异常，可继续补强仓库级 GitHub 摘要加载器。",
+                priority = 0
+            )
+        )
+    }
+    val activeRepoSummary = activeRepo?.let { repo ->
+        buildString {
+            append(repo.owner)
+            append("/")
+            append(repo.repo)
+            if (activeGitHubState.recentRuns.any { isProjectGitHubIssueStatus(it.status, it.conclusion) }) {
+                append(" · 最近运行存在失败")
+            }
+        }
+    }
+    return ProjectGitHubWorkspaceOverviewUi(
+        repoCount = repoCards.size,
+        gitRepoCount = repoCards.count { it.repo.hasGitMetadata },
+        githubRepoCount = repoCards.count { it.githubRepo != null },
+        remoteSummaryCount = remoteSummaries.size,
+        dirtyRepoCount = repoCards.count { it.status.hasWorkingTreeChanges },
+        behindRepoCount = repoCards.count { it.status.behindCount > 0 },
+        conflictRepoCount = repoCards.count { it.status.conflictedFiles.isNotEmpty() },
+        failingWorkflowRepoCount = remoteSummaries.values.count { it.latestRunHasIssue },
+        openWorkItemRepoCount = remoteSummaries.values.count { it.hasOpenWorkItems },
+        taskItems = tasks,
+        activeRepoSummary = activeRepoSummary
+    )
+}
+
+private fun loadProjectGitHubWorkspaceRemoteSummary(
+    repo: ProjectGitHubRepoRef,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubWorkspaceRemoteSummaryUi {
+    var defaultBranch: String? = null
+    var repoHtmlUrl: String? = null
+    var latestRun: ProjectGitHubWorkflowRunUi? = null
+    var runningRunCount = 0
+    var openIssueCount = 0
+    var openPullRequestCount = 0
+    val errors = mutableListOf<String>()
+
+    val repoResult = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}"
+    )
+    if (repoResult.success) {
+        parseProjectGitHubJsonObject(repoResult.body)?.let { repoObject ->
+            defaultBranch = repoObject.string("default_branch")
+            repoHtmlUrl = repoObject.string("html_url")
+        }
+    } else {
+        errors += repoResult.error ?: "读取仓库信息失败"
+    }
+
+    val runsResult = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/actions/runs?per_page=6"
+    )
+    if (runsResult.success) {
+        val runs = parseProjectGitHubJsonObject(runsResult.body)
+            ?.jsonArrayOrEmpty("workflow_runs")
+            ?.mapNotNull { item ->
+                val obj = item.jsonObjectOrNull() ?: return@mapNotNull null
+                ProjectGitHubWorkflowRunUi(
+                    id = obj.long("id") ?: return@mapNotNull null,
+                    name = obj.string("name").orEmpty(),
+                    displayTitle = obj.string("display_title").orEmpty(),
+                    headBranch = obj.string("head_branch").orEmpty(),
+                    status = obj.string("status").orEmpty(),
+                    conclusion = obj.string("conclusion"),
+                    event = obj.string("event").orEmpty(),
+                    runNumber = obj.long("run_number") ?: 0L,
+                    updatedAt = obj.string("updated_at").orEmpty(),
+                    htmlUrl = obj.string("html_url")
+                )
+            }
+            .orEmpty()
+        latestRun = runs.firstOrNull()
+        runningRunCount = runs.count { !it.status.equals("completed", ignoreCase = true) }
+    } else {
+        errors += runsResult.error ?: "读取工作流摘要失败"
+    }
+
+    val issuesResult = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/issues?state=open&per_page=20"
+    )
+    if (issuesResult.success) {
+        openIssueCount = parseProjectGitHubJsonArray(issuesResult.body)
+            ?.count { item ->
+                val obj = item.jsonObjectOrNull() ?: return@count false
+                obj.jsonObjectOrNull("pull_request") == null
+            }
+            ?: 0
+    } else {
+        errors += issuesResult.error ?: "读取开放 Issue 摘要失败"
+    }
+
+    val pullRequestsResult = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/pulls?state=open&per_page=20"
+    )
+    if (pullRequestsResult.success) {
+        openPullRequestCount = parseProjectGitHubJsonArray(pullRequestsResult.body)?.size ?: 0
+    } else {
+        errors += pullRequestsResult.error ?: "读取开放 PR 摘要失败"
+    }
+
+    return ProjectGitHubWorkspaceRemoteSummaryUi(
+        repo = repo,
+        defaultBranch = defaultBranch,
+        repoHtmlUrl = repoHtmlUrl,
+        latestRun = latestRun,
+        runningRunCount = runningRunCount,
+        openIssueCount = openIssueCount,
+        openPullRequestCount = openPullRequestCount,
+        errorMessage = errors.firstOrNull()
+    )
 }
 
 private enum class ProjectSearchResultFilter { ALL, FILE_NAME, TEXT }

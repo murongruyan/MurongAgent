@@ -117,10 +117,11 @@ private sealed interface SettingsSubpage {
     data object About : SettingsSubpage
 }
 
-private data class ProjectEditorChromeState(
+internal data class ProjectSecondaryChromeState(
     val active: Boolean = false,
-    val fileName: String = "",
-    val relativePath: String = ""
+    val title: String = "",
+    val subtitle: String = "",
+    val supportsEditorMenu: Boolean = false
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -172,8 +173,9 @@ fun MainScreen() {
     var exportFormat by remember { mutableStateOf(ConversationExportFormat.MARKDOWN) }
     var pendingExportData by remember { mutableStateOf<ConversationExportData?>(null) }
     val uiController = LocalReasonixUiController.current
-    var projectEditorChromeState by remember { mutableStateOf(ProjectEditorChromeState()) }
-    var projectEditorCloseRequestSignal by remember { mutableIntStateOf(0) }
+    var projectSecondaryChromeState by remember { mutableStateOf(ProjectSecondaryChromeState()) }
+    var projectSecondaryCloseRequestSignal by remember { mutableIntStateOf(0) }
+    var projectSecondaryBackProgress by remember { mutableFloatStateOf(0f) }
     var projectEditorMenuAction by remember { mutableStateOf<ProjectEditorMenuAction?>(null) }
     var projectEditorMenuActionSignal by remember { mutableIntStateOf(0) }
     var showProjectEditorMenu by remember { mutableStateOf(false) }
@@ -237,7 +239,7 @@ fun MainScreen() {
         }
         drawerState.close()
         if (currentScreen !is Screen.Projects) {
-            projectEditorChromeState = ProjectEditorChromeState()
+            projectSecondaryChromeState = ProjectSecondaryChromeState()
             projectEditorMenuAction = null
         }
     }
@@ -264,10 +266,24 @@ fun MainScreen() {
         settingsSubpage = SettingsSubpage.Main
     }
 
-    val isProjectSecondaryPage = currentScreen is Screen.Projects && projectEditorChromeState.active
+    val isProjectSecondaryPage = currentScreen is Screen.Projects && projectSecondaryChromeState.active
 
     BackHandler(enabled = isProjectSecondaryPage) {
-        projectEditorCloseRequestSignal += 1
+        projectSecondaryCloseRequestSignal += 1
+    }
+
+    PredictiveBackHandler(enabled = isProjectSecondaryPage) { progress ->
+        try {
+            progress.collect { backEvent ->
+                projectSecondaryBackProgress = backEvent.progress
+            }
+            projectSecondaryBackProgress = 1f
+            projectSecondaryCloseRequestSignal += 1
+        } catch (_: CancellationException) {
+            projectSecondaryBackProgress = 0f
+        } finally {
+            projectSecondaryBackProgress = 0f
+        }
     }
 
     BackHandler(
@@ -394,7 +410,7 @@ fun MainScreen() {
         SettingsSubpage.About -> "关于"
         SettingsSubpage.Main -> when (currentScreen) {
             is Screen.Chat -> chatState.sessionTitle.ifBlank { "新对话" }
-            is Screen.Projects -> projectEditorChromeState.fileName.ifBlank { Screen.Projects.title }
+            is Screen.Projects -> projectSecondaryChromeState.title.ifBlank { Screen.Projects.title }
             is Screen.Tools -> Screen.Tools.title
             is Screen.Settings -> Screen.Settings.title
         }
@@ -404,7 +420,11 @@ fun MainScreen() {
         SettingsSubpage.About -> "应用信息与产品方向"
         SettingsSubpage.Main -> when (currentScreen) {
             is Screen.Chat -> ""
-            is Screen.Projects -> if (isProjectSecondaryPage) "" else "项目浏览、文件编辑与 Git 工作流"
+            is Screen.Projects -> if (isProjectSecondaryPage) {
+                projectSecondaryChromeState.subtitle
+            } else {
+                "项目浏览、文件编辑与 Git 工作流"
+            }
             is Screen.Tools -> "工具状态、审批与执行记录"
             is Screen.Settings -> "账号、模型与全局偏好"
         }
@@ -551,11 +571,15 @@ fun MainScreen() {
                             ) {
                                 Text(
                                     text = topBarTitle,
-                                    modifier = if (isProjectSecondaryPage && projectEditorChromeState.fileName.isNotBlank()) {
+                                    modifier = if (
+                                        isProjectSecondaryPage &&
+                                        projectSecondaryChromeState.supportsEditorMenu &&
+                                        projectSecondaryChromeState.title.isNotBlank()
+                                    ) {
                                         Modifier.combinedClickable(
                                             onClick = {},
                                             onLongClick = {
-                                                copyTextToClipboard(context, projectEditorChromeState.fileName)
+                                                copyTextToClipboard(context, projectSecondaryChromeState.title)
                                                 scope.launch {
                                                     snackbarHostState.showSnackbar("已复制文件名")
                                                 }
@@ -582,7 +606,7 @@ fun MainScreen() {
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.End
                             ) {
-                                if (isProjectSecondaryPage) {
+                                if (isProjectSecondaryPage && projectSecondaryChromeState.supportsEditorMenu) {
                                     Box {
                                         IconButton(onClick = { showProjectEditorMenu = true }) {
                                             Icon(
@@ -597,11 +621,11 @@ fun MainScreen() {
                                             DropdownMenuItem(
                                                 text = { Text("复制文件名") },
                                                 onClick = {
-                                                    copyTextToClipboard(context, projectEditorChromeState.fileName)
+                                                    copyTextToClipboard(context, projectSecondaryChromeState.title)
                                                     showProjectEditorMenu = false
                                                 }
                                             )
-                                            projectEditorChromeState.relativePath
+                                            projectSecondaryChromeState.subtitle
                                                 .takeIf { it.isNotBlank() }
                                                 ?.let { relativePath ->
                                                     DropdownMenuItem(
@@ -948,63 +972,71 @@ fun MainScreen() {
                             }
 
                             is Screen.Projects -> {
-                                ProjectScreen(
-                                    config = settingsConfig,
-                                    currentProjectPath = chatState.projectPath,
-                                    currentProjectScopePath = chatState.activeProjectScopePath,
-                                    projectKnowledgeDraftPaths = chatState.projectKnowledgePaths,
-                                    projectKnowledgeSnapshots = chatState.projectKnowledgeSnapshots,
-                                    projectRules = chatState.projectRules,
-                                    projectMemories = chatState.projectMemories,
-                                    projectSkills = chatState.projectSkills,
-                                    projectToolPreferences = chatState.projectToolPreferences,
-                                    repoScopedConfigs = chatState.repoScopedConfigs,
-                                    mcpToolNames = mcpStatuses.flatMap { status ->
-                                        status.toolNames.map { "mcp_$it" }
-                                    }.distinct().sorted(),
-                                    sessions = chatSessions,
-                                    onNewTask = {
-                                        taskProjectPath = chatState.projectPath.orEmpty()
-                                        showTaskDialog = true
-                                    },
-                                    onOpenChat = {
-                                        navigateToTopLevel(Screen.Chat)
-                                    },
-                                    onProjectScopeChanged = { scopePath ->
-                                        chatVm.switchProjectScope(scopePath)
-                                    },
-                                    onUpdateProjectConfig = { scopePath, rules, memories, skills ->
-                                        chatVm.updateProjectConfig(scopePath, rules, memories, skills)
-                                    },
-                                    onUpdateProjectToolPreferences = { scopePath, preferences ->
-                                        chatVm.updateProjectToolPreferences(scopePath, preferences)
-                                    },
-                                    onUpdateProjectKnowledgeDraftPaths = { paths ->
-                                        chatVm.updateProjectKnowledgePaths(paths)
-                                    },
-                                    onSaveProjectKnowledgeSnapshot = { name, paths ->
-                                        chatVm.saveProjectKnowledgeSnapshot(name, paths)
-                                    },
-                                    onRenameProjectKnowledgeSnapshot = { snapshotId, newName ->
-                                        chatVm.renameProjectKnowledgeSnapshot(snapshotId, newName)
-                                    },
-                                    onApplyProjectKnowledgeSnapshot = { snapshotId ->
-                                        chatVm.applyProjectKnowledgeSnapshot(snapshotId)
-                                    },
-                                    onDeleteProjectKnowledgeSnapshot = { snapshotId ->
-                                        chatVm.deleteProjectKnowledgeSnapshot(snapshotId)
-                                    },
-                                    onEditorPageChanged = { active, fileName, relativePath ->
-                                        projectEditorChromeState = ProjectEditorChromeState(
-                                            active = active,
-                                            fileName = fileName.orEmpty(),
-                                            relativePath = relativePath.orEmpty()
-                                        )
-                                    },
-                                    closeEditorRequestSignal = projectEditorCloseRequestSignal,
-                                    editorMenuActionSignal = projectEditorMenuActionSignal,
-                                    editorMenuAction = projectEditorMenuAction
-                                )
+                                Box(
+                                    modifier = if (isProjectSecondaryPage) {
+                                        Modifier.graphicsLayer {
+                                            translationX = size.width * projectSecondaryBackProgress
+                                            alpha = 1f - (projectSecondaryBackProgress * 0.08f)
+                                        }
+                                    } else {
+                                        Modifier
+                                    }
+                                ) {
+                                    ProjectScreen(
+                                        config = settingsConfig,
+                                        currentProjectPath = chatState.projectPath,
+                                        currentProjectScopePath = chatState.activeProjectScopePath,
+                                        projectKnowledgeDraftPaths = chatState.projectKnowledgePaths,
+                                        projectKnowledgeSnapshots = chatState.projectKnowledgeSnapshots,
+                                        projectRules = chatState.projectRules,
+                                        projectMemories = chatState.projectMemories,
+                                        projectSkills = chatState.projectSkills,
+                                        projectToolPreferences = chatState.projectToolPreferences,
+                                        repoScopedConfigs = chatState.repoScopedConfigs,
+                                        mcpToolNames = mcpStatuses.flatMap { status ->
+                                            status.toolNames.map { "mcp_$it" }
+                                        }.distinct().sorted(),
+                                        sessions = chatSessions,
+                                        onNewTask = {
+                                            taskProjectPath = chatState.projectPath.orEmpty()
+                                            showTaskDialog = true
+                                        },
+                                        onOpenChat = {
+                                            navigateToTopLevel(Screen.Chat)
+                                        },
+                                        onProjectScopeChanged = { scopePath ->
+                                            chatVm.switchProjectScope(scopePath)
+                                        },
+                                        onUpdateProjectConfig = { scopePath, rules, memories, skills ->
+                                            chatVm.updateProjectConfig(scopePath, rules, memories, skills)
+                                        },
+                                        onUpdateProjectToolPreferences = { scopePath, preferences ->
+                                            chatVm.updateProjectToolPreferences(scopePath, preferences)
+                                        },
+                                        onUpdateProjectKnowledgeDraftPaths = { paths ->
+                                            chatVm.updateProjectKnowledgePaths(paths)
+                                        },
+                                        onSaveProjectKnowledgeSnapshot = { name, paths ->
+                                            chatVm.saveProjectKnowledgeSnapshot(name, paths)
+                                        },
+                                        onRenameProjectKnowledgeSnapshot = { snapshotId, newName ->
+                                            chatVm.renameProjectKnowledgeSnapshot(snapshotId, newName)
+                                        },
+                                        onApplyProjectKnowledgeSnapshot = { snapshotId ->
+                                            chatVm.applyProjectKnowledgeSnapshot(snapshotId)
+                                        },
+                                        onDeleteProjectKnowledgeSnapshot = { snapshotId ->
+                                            chatVm.deleteProjectKnowledgeSnapshot(snapshotId)
+                                        },
+                                        onProjectSecondaryPageChanged = { state ->
+                                            projectSecondaryChromeState = state
+                                        },
+                                        closeProjectSecondaryPageRequestSignal = projectSecondaryCloseRequestSignal,
+                                        projectSecondaryBackProgress = projectSecondaryBackProgress,
+                                        editorMenuActionSignal = projectEditorMenuActionSignal,
+                                        editorMenuAction = projectEditorMenuAction
+                                    )
+                                }
                             }
 
                             is Screen.Tools -> {
