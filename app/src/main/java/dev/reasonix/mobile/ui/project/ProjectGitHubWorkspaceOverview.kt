@@ -7,11 +7,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LibraryAddCheck
 import androidx.compose.material.icons.filled.PlaylistAddCheck
@@ -177,48 +179,6 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                     }
                 }
             }
-            ProjectSectionCard(
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
-                surfaceColorOverride = surfaceColor.copy(alpha = 0.58f)
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("异常与待处理", style = MaterialTheme.typography.titleSmall)
-                    overview.taskItems.forEach { task ->
-                        ProjectGitHubWorkspaceTaskCard(
-                            task = task,
-                            surfaceColor = surfaceColor,
-                            chromeColor = chromeColor,
-                            mutedTextColor = mutedTextColor,
-                            onClick = task.targetRootPath?.let { rootPath ->
-                                {
-                                    val targetRun = task.targetWorkflowRun
-                                    val targetIssue = task.targetIssue
-                                    val targetPullRequest = task.targetPullRequest
-                                    if (targetRun != null) {
-                                        onOpenWorkflowRunDetailTarget(rootPath, targetRun)
-                                    } else if (targetPullRequest != null) {
-                                        onOpenPullRequestDetailTarget(rootPath, targetPullRequest)
-                                    } else if (targetIssue != null) {
-                                        onOpenIssueDetailTarget(rootPath, targetIssue)
-                                    } else {
-                                        onOpenRepoWorkbench(
-                                            rootPath,
-                                            task.targetTab ?: ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
-                                        )
-                                    }
-                                }
-                            }
-                        )
-                    }
-                    overview.activeRepoSummary?.let { summary ->
-                        Text(
-                            text = "当前聚焦仓库：$summary",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
-            }
             ProjectGitHubDownloadCenterSummaryCard(
                 downloads = downloads,
                 onOpenDownloadCenter = onOpenDownloadCenter,
@@ -253,26 +213,26 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         text = "筛选仓库",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.padding(horizontal = 4.dp)
-                )
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    items(ProjectGitHubWorkspaceFilterType.entries) { filter ->
-                        FilterChip(
-                            selected = currentFilter == filter,
-                            onClick = { onFilterChange(filter) },
-                            label = { Text(filter.label) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.padding(horizontal = 4.dp)
+                    )
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        items(ProjectGitHubWorkspaceFilterType.entries) { filter ->
+                            FilterChip(
+                                selected = currentFilter == filter,
+                                onClick = { onFilterChange(filter) },
+                                label = { Text(filter.label) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
                             )
-                        )
+                        }
                     }
                 }
-            }
 
             ProjectSectionCard(
                 shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
@@ -377,67 +337,6 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
 }
 
 @Composable
-private fun ProjectGitHubWorkspaceTaskCard(
-    task: ProjectGitHubWorkspaceTaskUi,
-    surfaceColor: Color,
-    chromeColor: Color,
-    mutedTextColor: Color,
-    onClick: (() -> Unit)?
-) {
-    val taskColor = when (task.type) {
-        ProjectGitHubWorkspaceTaskType.CONFLICT,
-        ProjectGitHubWorkspaceTaskType.WORKFLOW,
-        ProjectGitHubWorkspaceTaskType.REMOTE_ERROR -> MaterialTheme.colorScheme.error
-        ProjectGitHubWorkspaceTaskType.BEHIND,
-        ProjectGitHubWorkspaceTaskType.LOCAL_CHANGES,
-        ProjectGitHubWorkspaceTaskType.GITHUB_BINDING,
-        ProjectGitHubWorkspaceTaskType.OPEN_WORK_ITEMS -> MaterialTheme.colorScheme.primary
-        ProjectGitHubWorkspaceTaskType.HEALTHY -> mutedTextColor
-    }
-    val modifier = onClick?.let { Modifier.clickable(onClick = it) } ?: Modifier
-
-    ProjectInsetCard(
-        modifier = modifier,
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
-        surfaceColorOverride = if (onClick != null) {
-            surfaceColor.copy(alpha = 0.72f)
-        } else {
-            chromeColor.copy(alpha = 0.26f)
-        }
-    ) {
-        Column(
-            modifier = Modifier.padding(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Text(
-                text = taskPriorityLabel(task.priority),
-                style = MaterialTheme.typography.labelSmall,
-                color = taskColor
-            )
-            Text(
-                text = task.label,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            task.detail?.takeIf { it.isNotBlank() }?.let { detail ->
-                Text(
-                    text = detail,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = mutedTextColor
-                )
-            }
-            if (onClick != null) {
-                Text(
-                    text = task.actionLabel ?: "打开仓库工作台",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun ProjectGitHubWorkspaceRepoCard(
     card: ProjectGitHubWorkspaceRepoCardUi,
     surfaceColor: Color,
@@ -527,11 +426,4 @@ private fun ProjectGitHubWorkspaceRepoCard(
             }
         }
     }
-}
-
-private fun taskPriorityLabel(priority: Int): String = when {
-    priority >= 90 -> "P0"
-    priority >= 70 -> "P1"
-    priority > 0 -> "P2"
-    else -> "OK"
 }
