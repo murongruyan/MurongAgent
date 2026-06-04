@@ -5367,6 +5367,7 @@ private fun ProjectGitSection(
                         lineDraft = pullRequestReviewCommentLineDraft,
                         onLineDraftChange = { pullRequestReviewCommentLineDraft = it },
                         onPickPath = { pullRequestReviewCommentPathDraft = it },
+                        onPickLine = { pullRequestReviewCommentLineDraft = it },
                         onRefresh = {
                             loadPullRequestFiles(pullRequest.number)
                             loadPullRequestReviewComments(pullRequest.number)
@@ -6663,11 +6664,16 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
     lineDraft: String,
     onLineDraftChange: (String) -> Unit,
     onPickPath: (String) -> Unit,
+    onPickLine: (String) -> Unit,
     onRefresh: () -> Unit,
     onSubmit: () -> Unit
 ) {
     val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
+    val selectedFile = files.firstOrNull { it.path == pathDraft }
+    val suggestedLines = remember(selectedFile?.path, selectedFile?.patch) {
+        extractProjectGitHubReviewLineSuggestions(selectedFile?.patch).take(18)
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -6729,6 +6735,22 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
             placeholder = { Text("留空则作为文件级评论") },
             singleLine = true
         )
+        if (suggestedLines.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                suggestedLines.forEach { line ->
+                    FilterChip(
+                        selected = lineDraft == line.toString(),
+                        onClick = { onPickLine(line.toString()) },
+                        label = { Text("L$line") }
+                    )
+                }
+            }
+        }
         OutlinedTextField(
             value = bodyDraft,
             onValueChange = onBodyDraftChange,
@@ -6744,6 +6766,37 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                 enabled = bodyDraft.isNotBlank() && pathDraft.isNotBlank() && !isActionRunning
             ) {
                 Text("发送代码评论")
+            }
+        }
+        selectedFile?.let { file ->
+            ProjectInsetCard(
+                shape = RoundedCornerShape(12.dp),
+                surfaceColorOverride = surfaceColor.copy(alpha = 0.56f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = file.summaryLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                    val patchPreview = file.patch
+                        ?.lineSequence()
+                        ?.take(80)
+                        ?.joinToString("\n")
+                        ?.ifBlank { null }
+                    SelectionContainer {
+                        Text(
+                            text = patchPreview ?: "当前文件没有可直接显示的 diff 片段，可能是二进制文件或 patch 被 GitHub 省略。",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+                            color = if (patchPreview != null) MaterialTheme.colorScheme.onSurface else mutedTextColor,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 240.dp)
+                                .verticalScroll(rememberScrollState())
+                        )
+                    }
+                }
             }
         }
         if (isCommentsLoading) {
@@ -8526,6 +8579,32 @@ private fun parseProjectGitHubPullRequestReviewComment(obj: JsonObject): Project
         updatedAt = obj.string("updated_at").orEmpty(),
         htmlUrl = obj.string("html_url")
     )
+}
+
+private fun extractProjectGitHubReviewLineSuggestions(patch: String?): List<Int> {
+    if (patch.isNullOrBlank()) return emptyList()
+    val hunkHeader = Regex("""^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@""")
+    var nextRightLine: Int? = null
+    val lines = LinkedHashSet<Int>()
+    patch.lineSequence().forEach { rawLine ->
+        val match = hunkHeader.find(rawLine)
+        if (match != null) {
+            nextRightLine = match.groupValues.getOrNull(1)?.toIntOrNull()
+            return@forEach
+        }
+        val current = nextRightLine ?: return@forEach
+        when {
+            rawLine.startsWith("+") && !rawLine.startsWith("+++") -> {
+                lines += current
+                nextRightLine = current + 1
+            }
+            rawLine.startsWith(" ") -> {
+                nextRightLine = current + 1
+            }
+            rawLine.startsWith("-") && !rawLine.startsWith("---") -> Unit
+        }
+    }
+    return lines.toList()
 }
 
 private fun parseProjectGitHubLabels(obj: JsonObject): List<String> {
