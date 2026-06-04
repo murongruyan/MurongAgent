@@ -220,7 +220,7 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        items(ProjectGitHubWorkspaceFilterType.entries) { filter ->
+                        items(ProjectGitHubWorkspaceFilterType.values().toList()) { filter ->
                             FilterChip(
                                 selected = currentFilter == filter,
                                 onClick = { onFilterChange(filter) },
@@ -272,9 +272,11 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                     if (isSelectionMode) {
                         LazyRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 8.dp)
                         ) {
-                            items(ProjectGitHubWorkspaceBatchAction.entries) { action ->
+                            items(ProjectGitHubWorkspaceBatchAction.values().toList()) { action ->
                                 OutlinedButton(
                                     onClick = { onBatchAction(action) },
                                     enabled = selectedRepoPaths.isNotEmpty(),
@@ -398,15 +400,16 @@ private fun ProjectGitHubWorkspaceRepoCard(
                     }
                 )
             }
-            card.remoteErrorMessage?.takeIf { it.isNotBlank() }?.let { error ->
+            val remoteErrorMessage = card.remoteErrorMessage?.takeIf { it.isNotBlank() }
+            if (remoteErrorMessage != null) {
                 Text(
-                    text = error,
+                    text = remoteErrorMessage,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error
                 )
-            } ?: card.latestWorkflowSummary?.let { latestWorkflow ->
+            } else if (card.latestWorkflowSummary != null) {
                 Text(
-                    text = latestWorkflow,
+                    text = card.latestWorkflowSummary,
                     style = MaterialTheme.typography.bodySmall,
                     color = if (card.latestWorkflowHasIssue) {
                         MaterialTheme.colorScheme.error
