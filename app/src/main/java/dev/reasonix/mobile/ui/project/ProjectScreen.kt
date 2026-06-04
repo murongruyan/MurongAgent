@@ -6678,6 +6678,7 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
         mutableStateOf(pathDraft.ifBlank { files.firstOrNull()?.path.orEmpty() })
     }
     var expandedPatchLineLimit by remember(expandedFilePath) { mutableStateOf(160) }
+    var focusedHunkIndex by remember(expandedFilePath) { mutableStateOf<Int?>(null) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -6715,6 +6716,7 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                             onPickPath(file.path)
                             expandedFilePath = file.path
                             expandedPatchLineLimit = 160
+                            focusedHunkIndex = null
                         },
                         label = {
                             Text(
@@ -6807,6 +6809,7 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                                     onPickPath(file.path)
                                     expandedFilePath = file.path
                                     expandedPatchLineLimit = 160
+                                    focusedHunkIndex = null
                                 }
                             ) {
                                 Text(if (pathDraft == file.path) "已选中" else "用于评论")
@@ -6818,6 +6821,7 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                                     } else {
                                         expandedFilePath = file.path
                                         expandedPatchLineLimit = 160
+                                        focusedHunkIndex = null
                                     }
                                 }
                             ) {
@@ -6825,6 +6829,32 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                             }
                         }
                         if (isExpanded) {
+                            val visibleHunkOptions = visiblePatchHunks
+                            val displayedPatchHunks = focusedHunkIndex
+                                ?.takeIf { it in visibleHunkOptions.indices }
+                                ?.let { listOf(visibleHunkOptions[it]) }
+                                ?: visibleHunkOptions
+                            if (visibleHunkOptions.size > 1) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    FilterChip(
+                                        selected = focusedHunkIndex == null,
+                                        onClick = { focusedHunkIndex = null },
+                                        label = { Text("全部 hunk") }
+                                    )
+                                    visibleHunkOptions.forEachIndexed { index, hunk ->
+                                        FilterChip(
+                                            selected = focusedHunkIndex == index,
+                                            onClick = { focusedHunkIndex = index },
+                                            label = { Text(buildProjectGitHubPatchHunkLabel(index, hunk)) }
+                                        )
+                                    }
+                                }
+                            }
                             if (reviewLines.isNotEmpty()) {
                                 Row(
                                     modifier = Modifier
@@ -6858,7 +6888,7 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                                         .verticalScroll(rememberScrollState()),
                                     verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    visiblePatchHunks.forEach { hunk ->
+                                    displayedPatchHunks.forEach { hunk ->
                                         ProjectInsetCard(
                                             shape = RoundedCornerShape(10.dp),
                                             surfaceColorOverride = surfaceColor.copy(alpha = 0.42f),
@@ -6871,8 +6901,19 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                                                     color = mutedTextColor
                                                 )
                                                 hunk.lines.forEach { diffLine ->
+                                                    val isHighlightedLine =
+                                                        pathDraft == file.path &&
+                                                            lineDraft.toIntOrNull() == diffLine.rightLineNumber
                                                     Row(
-                                                        modifier = Modifier.fillMaxWidth(),
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .background(
+                                                                if (isHighlightedLine) {
+                                                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                                                } else {
+                                                                    Color.Transparent
+                                                                }
+                                                            ),
                                                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                                                         verticalAlignment = Alignment.Top
                                                     ) {
@@ -6936,6 +6977,7 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
             )
         } else {
             comments.forEach { comment ->
+                val canLocateComment = comment.path.isNotBlank() && comment.line != null
                 ProjectInsetCard(
                     shape = RoundedCornerShape(12.dp),
                     surfaceColorOverride = surfaceColor.copy(alpha = 0.56f),
@@ -6957,6 +6999,26 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                                 text = comment.body.ifBlank { "(空评论)" },
                                 style = MaterialTheme.typography.bodySmall
                             )
+                        }
+                        if (canLocateComment) {
+                            TextButton(
+                                onClick = {
+                                    val targetFile = files.firstOrNull { it.path == comment.path }
+                                    val targetLine = comment.line ?: return@TextButton
+                                    onPickPath(comment.path)
+                                    onPickLine(targetLine.toString())
+                                    expandedFilePath = comment.path
+                                    val targetHunks = parseProjectGitHubPatchHunks(targetFile?.patch)
+                                    val targetHunkIndex = findProjectGitHubPatchHunkIndexForLine(targetHunks, targetLine)
+                                    focusedHunkIndex = targetHunkIndex
+                                    expandedPatchLineLimit = maxOf(
+                                        expandedPatchLineLimit,
+                                        requiredProjectGitHubPatchLineLimitForHunk(targetHunks, targetHunkIndex)
+                                    )
+                                }
+                            ) {
+                                Text("定位到 diff")
+                            }
                         }
                     }
                 }
@@ -8779,6 +8841,28 @@ private fun takeProjectGitHubVisiblePatchHunks(
         }
     }
     return visible
+}
+
+private fun buildProjectGitHubPatchHunkLabel(index: Int, hunk: ProjectGitHubPatchHunkUi): String {
+    val rightStart = Regex("""\+(\d+)""").find(hunk.header)?.groupValues?.getOrNull(1)
+    return if (rightStart != null) "H${index + 1} · L$rightStart" else "H${index + 1}"
+}
+
+private fun findProjectGitHubPatchHunkIndexForLine(
+    hunks: List<ProjectGitHubPatchHunkUi>,
+    line: Int
+): Int? {
+    return hunks.indexOfFirst { hunk ->
+        hunk.lines.any { diffLine -> diffLine.rightLineNumber == line }
+    }.takeIf { it >= 0 }
+}
+
+private fun requiredProjectGitHubPatchLineLimitForHunk(
+    hunks: List<ProjectGitHubPatchHunkUi>,
+    index: Int?
+): Int {
+    if (index == null || index !in hunks.indices) return 160
+    return hunks.take(index + 1).sumOf { it.lines.size }.coerceAtLeast(160)
 }
 
 private fun extractProjectGitHubReviewLineSuggestions(patch: String?): List<Int> {
