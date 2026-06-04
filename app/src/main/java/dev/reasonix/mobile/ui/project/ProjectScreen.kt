@@ -2400,6 +2400,12 @@ private fun ProjectGitSection(
     var remoteFileCommitMessageDraft by remember(activeProjectPath) { mutableStateOf("") }
     var issueDetailDialogState by remember(activeProjectPath) { mutableStateOf<ProjectGitHubIssueUi?>(null) }
     var pullRequestDetailDialogState by remember(activeProjectPath) { mutableStateOf<ProjectGitHubPullRequestUi?>(null) }
+    var issueComments by remember(activeProjectPath) { mutableStateOf(emptyList<ProjectGitHubCommentUi>()) }
+    var isIssueCommentsLoading by remember(activeProjectPath) { mutableStateOf(false) }
+    var issueCommentDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var pullRequestComments by remember(activeProjectPath) { mutableStateOf(emptyList<ProjectGitHubCommentUi>()) }
+    var isPullRequestCommentsLoading by remember(activeProjectPath) { mutableStateOf(false) }
+    var pullRequestCommentDraft by remember(activeProjectPath) { mutableStateOf("") }
     var showCreateIssueDialog by remember(activeProjectPath) { mutableStateOf(false) }
     var createIssueTitleDraft by remember(activeProjectPath) { mutableStateOf("") }
     var createIssueBodyDraft by remember(activeProjectPath) { mutableStateOf("") }
@@ -2443,6 +2449,78 @@ private fun ProjectGitSection(
             ?: gitState.upstreamBranch?.substringAfterLast('/')
             ?: "main"
         createPullRequestDraftFlag = false
+    }
+
+    fun loadIssueComments(issueNumber: Long) {
+        val repo = githubActionsState.repo
+        val token = config.githubToken.trim()
+        issueComments = emptyList()
+        if (repo == null || token.isBlank()) {
+            isIssueCommentsLoading = false
+            return
+        }
+        scope.launch {
+            isIssueCommentsLoading = true
+            val result = withContext(Dispatchers.IO) {
+                loadProjectGitHubIssueComments(
+                    repo = repo,
+                    issueNumber = issueNumber,
+                    token = token,
+                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                )
+            }
+            if (issueDetailDialogState?.number == issueNumber) {
+                isIssueCommentsLoading = false
+                if (result.success) {
+                    issueComments = result.comments
+                } else {
+                    issueComments = emptyList()
+                    feedbackMessage = result.error ?: "读取 Issue 评论失败"
+                }
+            }
+        }
+    }
+
+    fun loadPullRequestComments(pullNumber: Long) {
+        val repo = githubActionsState.repo
+        val token = config.githubToken.trim()
+        pullRequestComments = emptyList()
+        if (repo == null || token.isBlank()) {
+            isPullRequestCommentsLoading = false
+            return
+        }
+        scope.launch {
+            isPullRequestCommentsLoading = true
+            val result = withContext(Dispatchers.IO) {
+                loadProjectGitHubIssueComments(
+                    repo = repo,
+                    issueNumber = pullNumber,
+                    token = token,
+                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                )
+            }
+            if (pullRequestDetailDialogState?.number == pullNumber) {
+                isPullRequestCommentsLoading = false
+                if (result.success) {
+                    pullRequestComments = result.comments
+                } else {
+                    pullRequestComments = emptyList()
+                    feedbackMessage = result.error ?: "读取 Pull Request 评论失败"
+                }
+            }
+        }
+    }
+
+    fun openIssueDetail(issue: ProjectGitHubIssueUi) {
+        issueDetailDialogState = issue
+        issueCommentDraft = ""
+        loadIssueComments(issue.number)
+    }
+
+    fun openPullRequestDetail(pullRequest: ProjectGitHubPullRequestUi) {
+        pullRequestDetailDialogState = pullRequest
+        pullRequestCommentDraft = ""
+        loadPullRequestComments(pullRequest.number)
     }
 
     fun openGitHubPage(url: String?, fallbackMessage: String) {
@@ -3324,7 +3402,7 @@ private fun ProjectGitSection(
                         resetCreateIssueDraft()
                         showCreateIssueDialog = true
                     },
-                    onOpenDetail = { issueDetailDialogState = it },
+                    onOpenDetail = ::openIssueDetail,
                     onToggleIssueState = { issue, shouldClose ->
                         val repo = githubActionsState.repo ?: return@ProjectGitHubIssueSection
                         val token = config.githubToken.trim()
@@ -3356,7 +3434,7 @@ private fun ProjectGitSection(
                         resetCreatePullRequestDraft()
                         showCreatePullRequestDialog = true
                     },
-                    onOpenDetail = { pullRequestDetailDialogState = it },
+                    onOpenDetail = ::openPullRequestDetail,
                     onTogglePullRequestState = { pullRequest, shouldClose ->
                         val repo = githubActionsState.repo ?: return@ProjectGitHubPullRequestSection
                         val token = config.githubToken.trim()
@@ -4857,9 +4935,21 @@ private fun ProjectGitSection(
 
     issueDetailDialogState?.let { issue ->
         ReasonixAlertDialog(
-            onDismissRequest = { issueDetailDialogState = null },
+            onDismissRequest = {
+                issueDetailDialogState = null
+                issueComments = emptyList()
+                issueCommentDraft = ""
+                isIssueCommentsLoading = false
+            },
             confirmButton = {
-                TextButton(onClick = { issueDetailDialogState = null }) {
+                TextButton(
+                    onClick = {
+                        issueDetailDialogState = null
+                        issueComments = emptyList()
+                        issueCommentDraft = ""
+                        isIssueCommentsLoading = false
+                    }
+                ) {
                     Text("关闭")
                 }
             },
@@ -4914,6 +5004,43 @@ private fun ProjectGitSection(
                         style = MaterialTheme.typography.bodySmall,
                         color = if (issue.body.isNotBlank()) MaterialTheme.colorScheme.onSurface else mutedTextColor
                     )
+                    ProjectGitHubCommentThreadSection(
+                        title = "讨论",
+                        comments = issueComments,
+                        isLoading = isIssueCommentsLoading,
+                        isActionRunning = isGitHubActionRunning,
+                        draft = issueCommentDraft,
+                        onDraftChange = { issueCommentDraft = it },
+                        onRefresh = { loadIssueComments(issue.number) },
+                        onSubmit = {
+                            val repo = githubActionsState.repo
+                            val token = config.githubToken.trim()
+                            val body = issueCommentDraft.trim()
+                            if (repo == null || token.isBlank() || body.isBlank()) return@ProjectGitHubCommentThreadSection
+                            scope.launch {
+                                isGitHubActionRunning = true
+                                val result = withContext(Dispatchers.IO) {
+                                    createProjectGitHubIssueComment(
+                                        repo = repo,
+                                        issueNumber = issue.number,
+                                        body = body,
+                                        token = token,
+                                        apiBaseUrl = config.getGitHubApiBaseUrl()
+                                    )
+                                }
+                                feedbackMessage = when {
+                                    result.success -> result.message.ifBlank { "已回复 Issue #${issue.number}" }
+                                    else -> result.error ?: result.message.ifBlank { "回复 Issue 失败" }
+                                }
+                                isGitHubActionRunning = false
+                                if (result.success) {
+                                    issueCommentDraft = ""
+                                    loadIssueComments(issue.number)
+                                    refreshGitHubActions()
+                                }
+                            }
+                        }
+                    )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         val repo = githubActionsState.repo
                         val token = config.githubToken.trim()
@@ -4945,9 +5072,21 @@ private fun ProjectGitSection(
 
     pullRequestDetailDialogState?.let { pullRequest ->
         ReasonixAlertDialog(
-            onDismissRequest = { pullRequestDetailDialogState = null },
+            onDismissRequest = {
+                pullRequestDetailDialogState = null
+                pullRequestComments = emptyList()
+                pullRequestCommentDraft = ""
+                isPullRequestCommentsLoading = false
+            },
             confirmButton = {
-                TextButton(onClick = { pullRequestDetailDialogState = null }) {
+                TextButton(
+                    onClick = {
+                        pullRequestDetailDialogState = null
+                        pullRequestComments = emptyList()
+                        pullRequestCommentDraft = ""
+                        isPullRequestCommentsLoading = false
+                    }
+                ) {
                     Text("关闭")
                 }
             },
@@ -5006,6 +5145,43 @@ private fun ProjectGitSection(
                         text = if (pullRequest.body.isNotBlank()) pullRequest.body else "这个 Pull Request 还没有正文说明。",
                         style = MaterialTheme.typography.bodySmall,
                         color = if (pullRequest.body.isNotBlank()) MaterialTheme.colorScheme.onSurface else mutedTextColor
+                    )
+                    ProjectGitHubCommentThreadSection(
+                        title = "讨论",
+                        comments = pullRequestComments,
+                        isLoading = isPullRequestCommentsLoading,
+                        isActionRunning = isGitHubActionRunning,
+                        draft = pullRequestCommentDraft,
+                        onDraftChange = { pullRequestCommentDraft = it },
+                        onRefresh = { loadPullRequestComments(pullRequest.number) },
+                        onSubmit = {
+                            val repo = githubActionsState.repo
+                            val token = config.githubToken.trim()
+                            val body = pullRequestCommentDraft.trim()
+                            if (repo == null || token.isBlank() || body.isBlank()) return@ProjectGitHubCommentThreadSection
+                            scope.launch {
+                                isGitHubActionRunning = true
+                                val result = withContext(Dispatchers.IO) {
+                                    createProjectGitHubIssueComment(
+                                        repo = repo,
+                                        issueNumber = pullRequest.number,
+                                        body = body,
+                                        token = token,
+                                        apiBaseUrl = config.getGitHubApiBaseUrl()
+                                    )
+                                }
+                                feedbackMessage = when {
+                                    result.success -> result.message.ifBlank { "已回复 PR #${pullRequest.number}" }
+                                    else -> result.error ?: result.message.ifBlank { "回复 Pull Request 失败" }
+                                }
+                                isGitHubActionRunning = false
+                                if (result.success) {
+                                    pullRequestCommentDraft = ""
+                                    loadPullRequestComments(pullRequest.number)
+                                    refreshGitHubActions()
+                                }
+                            }
+                        }
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         val repo = githubActionsState.repo
@@ -6060,6 +6236,85 @@ private fun ProjectGitHubPullRequestSection(
 }
 
 @Composable
+private fun ProjectGitHubCommentThreadSection(
+    title: String,
+    comments: List<ProjectGitHubCommentUi>,
+    isLoading: Boolean,
+    isActionRunning: Boolean,
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    onRefresh: () -> Unit,
+    onSubmit: () -> Unit
+) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(title, style = MaterialTheme.typography.labelLarge)
+            TextButton(onClick = onRefresh, enabled = !isLoading && !isActionRunning) {
+                Text("刷新")
+            }
+        }
+        if (isLoading) {
+            Text(
+                text = "正在读取评论……",
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedTextColor
+            )
+        } else if (comments.isEmpty()) {
+            Text(
+                text = "当前还没有评论。",
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedTextColor
+            )
+        } else {
+            comments.forEach { comment ->
+                ProjectInsetCard(
+                    shape = RoundedCornerShape(12.dp),
+                    surfaceColorOverride = surfaceColor.copy(alpha = 0.56f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "${comment.authorLabel} · ${comment.timeLabel}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                        SelectionContainer {
+                            Text(
+                                text = comment.body.ifBlank { "(空评论)" },
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        OutlinedTextField(
+            value = draft,
+            onValueChange = onDraftChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("回复") },
+            placeholder = { Text("直接在这里补充讨论内容") },
+            minLines = 4,
+            maxLines = 8
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = onSubmit,
+                enabled = draft.isNotBlank() && !isActionRunning
+            ) {
+                Text("发送回复")
+            }
+        }
+    }
+}
+
+@Composable
 private fun ProjectGitHistorySection(
     commits: List<ProjectGitCommitUi>,
     onOpenCommit: (ProjectGitCommitUi) -> Unit
@@ -6969,6 +7224,66 @@ private fun createProjectGitHubPullRequest(
     }
 }
 
+private fun loadProjectGitHubIssueComments(
+    repo: ProjectGitHubRepoRef,
+    issueNumber: Long,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubCommentLoadResult {
+    val result = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/issues/$issueNumber/comments?per_page=50"
+    )
+    if (!result.success) {
+        return ProjectGitHubCommentLoadResult(
+            success = false,
+            comments = emptyList(),
+            error = result.error ?: "读取评论失败"
+        )
+    }
+    val comments = parseProjectGitHubJsonArray(result.body)
+        ?.mapNotNull { item ->
+            val obj = item.jsonObjectOrNull() ?: return@mapNotNull null
+            parseProjectGitHubComment(obj)
+        }
+        .orEmpty()
+    return ProjectGitHubCommentLoadResult(
+        success = true,
+        comments = comments,
+        error = null
+    )
+}
+
+private fun createProjectGitHubIssueComment(
+    repo: ProjectGitHubRepoRef,
+    issueNumber: Long,
+    body: String,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubCommandResult {
+    val requestBody = buildJsonObject {
+        put("body", body)
+    }.toString()
+    val result = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/issues/$issueNumber/comments",
+        method = "POST",
+        jsonBody = requestBody,
+        allowedCodes = setOf(201)
+    )
+    return if (result.success) {
+        ProjectGitHubCommandResult(success = true, message = "评论已发送。")
+    } else {
+        ProjectGitHubCommandResult(
+            success = false,
+            message = "",
+            error = result.error ?: "发送评论失败"
+        )
+    }
+}
+
 private fun loadProjectGitHubRemoteDirectory(
     repo: ProjectGitHubRepoRef,
     path: String,
@@ -7509,6 +7824,17 @@ private fun parseProjectGitHubPullRequest(obj: JsonObject): ProjectGitHubPullReq
         labels = parseProjectGitHubLabels(obj),
         headBranch = obj.jsonObjectOrNull("head")?.string("ref").orEmpty(),
         baseBranch = obj.jsonObjectOrNull("base")?.string("ref").orEmpty()
+    )
+}
+
+private fun parseProjectGitHubComment(obj: JsonObject): ProjectGitHubCommentUi? {
+    return ProjectGitHubCommentUi(
+        id = obj.long("id") ?: return null,
+        authorLogin = obj.jsonObjectOrNull("user")?.string("login"),
+        body = obj.string("body").orEmpty(),
+        createdAt = obj.string("created_at").orEmpty(),
+        updatedAt = obj.string("updated_at").orEmpty(),
+        htmlUrl = obj.string("html_url")
     )
 }
 
@@ -9617,6 +9943,17 @@ private data class ProjectGitHubPullRequestUi(
             else -> "状态 ${state.lowercase(Locale.getDefault())}"
         }
 }
+private data class ProjectGitHubCommentUi(
+    val id: Long,
+    val authorLogin: String?,
+    val body: String,
+    val createdAt: String,
+    val updatedAt: String,
+    val htmlUrl: String?
+) {
+    val authorLabel: String get() = authorLogin?.takeIf { it.isNotBlank() } ?: "未知作者"
+    val timeLabel: String get() = updatedAt.ifBlank { createdAt }.ifBlank { "时间未知" }
+}
 private data class ProjectGitHubActionsState(
     val repo: ProjectGitHubRepoRef?,
     val viewerLogin: String?,
@@ -9760,6 +10097,11 @@ private data class ProjectGitHubRemoteDirectoryLoadResult(
 private data class ProjectGitHubRemoteFileLoadResult(
     val success: Boolean,
     val file: ProjectGitHubRemoteFileUi?,
+    val error: String?
+)
+private data class ProjectGitHubCommentLoadResult(
+    val success: Boolean,
+    val comments: List<ProjectGitHubCommentUi>,
     val error: String?
 )
 private data class ProjectCppClassLikeBlock(val kind: String, val startLine: Int, val expectedBraceDepth: Int)
