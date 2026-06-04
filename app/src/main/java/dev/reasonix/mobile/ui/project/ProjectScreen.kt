@@ -4396,19 +4396,62 @@ private fun ProjectGitSection(
                 var selectedIssueJobName by remember(detail.id) {
                     mutableStateOf(issueJobs.firstOrNull()?.name)
                 }
+                var selectedIssueStepName by remember(detail.id) {
+                    mutableStateOf<String?>(null)
+                }
                 var showOnlyIssueLogs by remember(detail.id) {
                     mutableStateOf(issueJobs.isNotEmpty())
+                }
+                var showOnlySelectedStepLogs by remember(detail.id) {
+                    mutableStateOf(false)
                 }
                 var expandedLogEntries by remember(detail.id) {
                     mutableStateOf(setOf<String>())
                 }
-                val visibleLogEntries = remember(detail.logEntries, selectedIssueJobName, showOnlyIssueLogs, issueJobs) {
+                val filteredLogEntries = remember(
+                    detail.logEntries,
+                    selectedIssueJobName,
+                    showOnlyIssueLogs,
+                    issueJobs
+                ) {
                     detail.logEntries.filter { entry ->
                         val matchesSelected = selectedIssueJobName.isNullOrBlank() ||
                             projectGitHubLogMatchesJob(entry, selectedIssueJobName.orEmpty())
                         val matchesIssueOnly = !showOnlyIssueLogs ||
                             issueJobs.any { job -> projectGitHubLogMatchesJob(entry, job.name) }
                         matchesSelected && matchesIssueOnly
+                    }
+                }
+                val focusedStepMatchedEntries = remember(filteredLogEntries, selectedIssueStepName) {
+                    filteredLogEntries
+                        .filter { entry ->
+                            !selectedIssueStepName.isNullOrBlank() &&
+                                projectGitHubLogMentionsStep(entry, selectedIssueStepName.orEmpty())
+                        }
+                        .map { it.entryName }
+                        .toSet()
+                }
+                val visibleLogEntries = remember(
+                    filteredLogEntries,
+                    selectedIssueStepName,
+                    showOnlySelectedStepLogs,
+                    focusedStepMatchedEntries
+                ) {
+                    val stepFocused = !selectedIssueStepName.isNullOrBlank()
+                    val hasStepMatches = focusedStepMatchedEntries.isNotEmpty()
+                    val base = if (stepFocused && showOnlySelectedStepLogs && hasStepMatches) {
+                        filteredLogEntries.filter { entry -> focusedStepMatchedEntries.contains(entry.entryName) }
+                    } else {
+                        filteredLogEntries
+                    }
+                    if (stepFocused && hasStepMatches) {
+                        base.sortedWith(
+                            compareByDescending<ProjectGitHubWorkflowLogEntryUi> { entry ->
+                                focusedStepMatchedEntries.contains(entry.entryName)
+                            }.thenBy { it.displayName }
+                        )
+                    } else {
+                        base
                     }
                 }
                 val visibleJobs = remember(detail.jobs, selectedIssueJobName) {
@@ -4558,7 +4601,11 @@ private fun ProjectGitSection(
                                 ) {
                                     FilterChip(
                                         selected = selectedIssueJobName == null,
-                                        onClick = { selectedIssueJobName = null },
+                                        onClick = {
+                                            selectedIssueJobName = null
+                                            selectedIssueStepName = null
+                                            showOnlySelectedStepLogs = false
+                                        },
                                         label = { Text("全部 Job") }
                                     )
                                     issueJobs.forEach { job ->
@@ -4567,6 +4614,8 @@ private fun ProjectGitSection(
                                             onClick = {
                                                 selectedIssueJobName =
                                                     if (selectedIssueJobName == job.name) null else job.name
+                                                selectedIssueStepName = null
+                                                showOnlySelectedStepLogs = false
                                             },
                                             label = { Text(job.name.take(24)) }
                                         )
@@ -4595,12 +4644,49 @@ private fun ProjectGitSection(
                                                     color = mutedTextColor
                                                 )
                                             } else {
-                                                job.failedSteps.take(4).forEach { step ->
-                                                    Text(
-                                                        text = "• ${step.name} · ${step.statusLabel}",
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        color = MaterialTheme.colorScheme.error
-                                                    )
+                                                Row(
+                                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    job.failedSteps.take(4).forEach { step ->
+                                                        FilterChip(
+                                                            selected = selectedIssueJobName == job.name &&
+                                                                selectedIssueStepName == step.name,
+                                                            onClick = {
+                                                                val nextSelectedStep =
+                                                                    if (selectedIssueJobName == job.name &&
+                                                                        selectedIssueStepName == step.name
+                                                                    ) {
+                                                                        null
+                                                                    } else {
+                                                                        step.name
+                                                                    }
+                                                                selectedIssueJobName = job.name
+                                                                selectedIssueStepName = nextSelectedStep
+                                                                showOnlySelectedStepLogs =
+                                                                    nextSelectedStep != null
+                                                                if (nextSelectedStep != null) {
+                                                                    expandedLogEntries =
+                                                                        expandedLogEntries +
+                                                                            detail.logEntries
+                                                                                .filter { entry ->
+                                                                                    projectGitHubLogMatchesJob(entry, job.name) &&
+                                                                                        projectGitHubLogMentionsStep(
+                                                                                            entry,
+                                                                                            nextSelectedStep
+                                                                                        )
+                                                                                }
+                                                                                .map { it.entryName }
+                                                                                .toSet()
+                                                                }
+                                                            },
+                                                            label = {
+                                                                Text(
+                                                                    "${step.name.take(28)} · ${step.statusLabel}"
+                                                                )
+                                                            }
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }
@@ -4632,10 +4718,43 @@ private fun ProjectGitSection(
                         }
                         else -> {
                             Text(
-                                "日志预览" +
-                                    if (showOnlyIssueLogs) " · 当前仅显示异常相关" else "",
+                                text = buildString {
+                                    append("日志预览")
+                                    if (showOnlyIssueLogs) {
+                                        append(" · 当前仅显示异常相关")
+                                    }
+                                    if (!selectedIssueStepName.isNullOrBlank()) {
+                                        append(" · 已聚焦步骤 ${selectedIssueStepName.orEmpty()}")
+                                    }
+                                },
                                 style = MaterialTheme.typography.titleSmall
                             )
+                            if (!selectedIssueStepName.isNullOrBlank()) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    FilterChip(
+                                        selected = showOnlySelectedStepLogs,
+                                        onClick = {
+                                            showOnlySelectedStepLogs = !showOnlySelectedStepLogs
+                                        },
+                                        label = { Text("只看该步骤日志") }
+                                    )
+                                    FilterChip(
+                                        selected = false,
+                                        onClick = {
+                                            selectedIssueStepName = null
+                                            showOnlySelectedStepLogs = false
+                                        },
+                                        label = { Text("清除步骤聚焦") }
+                                    )
+                                }
+                                if (focusedStepMatchedEntries.isEmpty()) {
+                                    Text(
+                                        text = "当前步骤名还没有直接命中日志文件，已回退为显示当前 Job 的全部日志。",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = mutedTextColor
+                                    )
+                                }
+                            }
                             if (visibleLogEntries.isEmpty()) {
                                 Text(
                                     text = "当前筛选条件下没有命中的日志文件，可以关闭“只看异常日志”或切回全部 Job。",
@@ -4645,6 +4764,8 @@ private fun ProjectGitSection(
                             }
                             visibleLogEntries.forEach { entry ->
                                 val isExpanded = expandedLogEntries.contains(entry.entryName)
+                                val matchesFocusedStep = !selectedIssueStepName.isNullOrBlank() &&
+                                    focusedStepMatchedEntries.contains(entry.entryName)
                                 val previewText = if (isExpanded) {
                                     entry.preview
                                 } else {
@@ -4652,7 +4773,11 @@ private fun ProjectGitSection(
                                 }
                                 ProjectInsetCard(
                                     shape = RoundedCornerShape(12.dp),
-                                    surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
+                                    surfaceColorOverride = if (matchesFocusedStep) {
+                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.52f)
+                                    } else {
+                                        surfaceColor.copy(alpha = 0.58f)
+                                    },
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -4661,8 +4786,15 @@ private fun ProjectGitSection(
                                             style = MaterialTheme.typography.bodyMedium
                                         )
                                         Text(
-                                            text = "共 ${entry.totalLineCount} 行" +
-                                                if (entry.truncated) " · 预览已截断" else "",
+                                            text = buildString {
+                                                append("共 ${entry.totalLineCount} 行")
+                                                if (entry.truncated) {
+                                                    append(" · 预览已截断")
+                                                }
+                                                if (matchesFocusedStep) {
+                                                    append(" · 命中当前步骤")
+                                                }
+                                            },
                                             style = MaterialTheme.typography.bodySmall,
                                             color = mutedTextColor
                                         )
@@ -8380,6 +8512,18 @@ private fun projectGitHubLogMatchesJob(
     return candidates.any { candidate ->
         val normalizedCandidate = normalizeProjectGitHubConsoleToken(candidate)
         normalizedCandidate.contains(normalizedJob) || normalizedJob.contains(normalizedCandidate)
+    }
+}
+
+private fun projectGitHubLogMentionsStep(
+    entry: ProjectGitHubWorkflowLogEntryUi,
+    stepName: String
+): Boolean {
+    val normalizedStep = normalizeProjectGitHubConsoleToken(stepName)
+    if (normalizedStep.isBlank()) return false
+    val candidates = listOf(entry.displayName, entry.entryName, entry.preview)
+    return candidates.any { candidate ->
+        normalizeProjectGitHubConsoleToken(candidate).contains(normalizedStep)
     }
 }
 
