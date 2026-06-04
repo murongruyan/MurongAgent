@@ -6674,6 +6674,10 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
     val suggestedLines = remember(selectedFile?.path, selectedFile?.patch) {
         extractProjectGitHubReviewLineSuggestions(selectedFile?.patch).take(18)
     }
+    var expandedFilePath by remember(files, pathDraft) {
+        mutableStateOf(pathDraft.ifBlank { files.firstOrNull()?.path.orEmpty() })
+    }
+    var expandedPatchLineLimit by remember(expandedFilePath) { mutableStateOf(160) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -6707,7 +6711,11 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                 files.take(12).forEach { file ->
                     FilterChip(
                         selected = pathDraft == file.path,
-                        onClick = { onPickPath(file.path) },
+                        onClick = {
+                            onPickPath(file.path)
+                            expandedFilePath = file.path
+                            expandedPatchLineLimit = 160
+                        },
                         label = {
                             Text(
                                 file.path.substringAfterLast('/'),
@@ -6768,33 +6776,91 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                 Text("发送代码评论")
             }
         }
-        selectedFile?.let { file ->
-            ProjectInsetCard(
-                shape = RoundedCornerShape(12.dp),
-                surfaceColorOverride = surfaceColor.copy(alpha = 0.56f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = file.summaryLabel,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = mutedTextColor
-                    )
-                    val patchPreview = file.patch
-                        ?.lineSequence()
-                        ?.take(80)
-                        ?.joinToString("\n")
-                        ?.ifBlank { null }
-                    SelectionContainer {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("变更文件", style = MaterialTheme.typography.labelLarge)
+            files.take(24).forEach { file ->
+                val isExpanded = expandedFilePath == file.path
+                val patchLines = remember(file.path, file.patch) { file.patch?.lines().orEmpty() }
+                val patchPreview = remember(file.path, file.patch, expandedPatchLineLimit) {
+                    if (patchLines.isEmpty()) null else patchLines.take(expandedPatchLineLimit).joinToString("\n")
+                }
+                val patchTruncated = patchLines.size > expandedPatchLineLimit
+                val reviewLines = remember(file.path, file.patch) {
+                    extractProjectGitHubReviewLineSuggestions(file.patch).take(18)
+                }
+                ProjectInsetCard(
+                    shape = RoundedCornerShape(12.dp),
+                    surfaceColorOverride = surfaceColor.copy(alpha = 0.56f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            text = patchPreview ?: "当前文件没有可直接显示的 diff 片段，可能是二进制文件或 patch 被 GitHub 省略。",
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
-                            color = if (patchPreview != null) MaterialTheme.colorScheme.onSurface else mutedTextColor,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 240.dp)
-                                .verticalScroll(rememberScrollState())
+                            text = file.summaryLabel,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
                         )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(
+                                onClick = {
+                                    onPickPath(file.path)
+                                    expandedFilePath = file.path
+                                    expandedPatchLineLimit = 160
+                                }
+                            ) {
+                                Text(if (pathDraft == file.path) "已选中" else "用于评论")
+                            }
+                            TextButton(
+                                onClick = {
+                                    if (isExpanded) {
+                                        expandedFilePath = ""
+                                    } else {
+                                        expandedFilePath = file.path
+                                        expandedPatchLineLimit = 160
+                                    }
+                                }
+                            ) {
+                                Text(if (isExpanded) "收起 diff" else "展开 diff")
+                            }
+                        }
+                        if (isExpanded) {
+                            if (reviewLines.isNotEmpty()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    reviewLines.forEach { line ->
+                                        FilterChip(
+                                            selected = pathDraft == file.path && lineDraft == line.toString(),
+                                            onClick = {
+                                                onPickPath(file.path)
+                                                onPickLine(line.toString())
+                                            },
+                                            label = { Text("L$line") }
+                                        )
+                                    }
+                                }
+                            }
+                            SelectionContainer {
+                                Text(
+                                    text = patchPreview ?: "当前文件没有可直接显示的 diff 片段，可能是二进制文件或 patch 被 GitHub 省略。",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+                                    color = if (patchPreview != null) MaterialTheme.colorScheme.onSurface else mutedTextColor,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 320.dp)
+                                        .verticalScroll(rememberScrollState())
+                                )
+                            }
+                            if (patchTruncated) {
+                                TextButton(
+                                    onClick = { expandedPatchLineLimit += 160 }
+                                ) {
+                                    Text("展开更多")
+                                }
+                            }
+                        }
                     }
                 }
             }
