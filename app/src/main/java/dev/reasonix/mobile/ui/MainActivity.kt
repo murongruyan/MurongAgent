@@ -529,7 +529,7 @@ fun MainScreen() {
                                     isProjectSecondaryPage -> {
                                         ReasonixOutlinedActionButton(
                                             text = "返回",
-                                            onClick = { projectEditorCloseRequestSignal += 1 }
+                                            onClick = { projectSecondaryCloseRequestSignal += 1 }
                                         )
                                     }
                                     currentScreen is Screen.Chat -> {

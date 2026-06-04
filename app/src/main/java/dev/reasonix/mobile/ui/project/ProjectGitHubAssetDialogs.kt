@@ -1,0 +1,181 @@
+package dev.reasonix.mobile.ui.project
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import dev.reasonix.mobile.ui.ReasonixAlertDialog
+import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
+import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
+
+@Composable
+internal fun ProjectGitHubArtifactDialog(
+    dialog: ProjectGitHubArtifactDialogUi,
+    onDismiss: () -> Unit,
+    onOpenRunPage: (String?) -> Unit,
+    onDownloadRunLogs: (ProjectGitHubArtifactDialogUi) -> Unit,
+    onDownloadArtifact: (ProjectGitHubArtifactDialogUi, ProjectGitHubArtifactUi) -> Unit
+) {
+    ReasonixAlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭")
+            }
+        },
+        title = { Text("工作流产物") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = dialog.runTitle,
+                    style = MaterialTheme.typography.titleSmall
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    dialog.runHtmlUrl?.takeIf { it.isNotBlank() }?.let {
+                        TextButton(onClick = { onOpenRunPage(dialog.runHtmlUrl) }) {
+                            Text("运行页")
+                        }
+                    }
+                    OutlinedButton(onClick = { onDownloadRunLogs(dialog) }) {
+                        Text("日志 ZIP")
+                    }
+                }
+                if (dialog.artifacts.isEmpty()) {
+                    Text(
+                        text = "这次运行暂时没有可下载的产物。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    dialog.artifacts.forEach { artifact ->
+                        ProjectInsetCard(
+                            shape = RoundedCornerShape(12.dp),
+                            surfaceColorOverride = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    text = artifact.name,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    text = "大小 ${artifact.sizeLabel} · 更新 ${artifact.updatedAt}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (artifact.expired) {
+                                    Text(
+                                        text = "该产物已过期，GitHub 不再提供下载。",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                } else {
+                                    OutlinedButton(
+                                        onClick = { onDownloadArtifact(dialog, artifact) }
+                                    ) {
+                                        Text("下载")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+}
+
+@Composable
+internal fun ProjectGitHubReleaseAssetDialog(
+    dialog: ProjectGitHubReleaseAssetDialogUi,
+    onDismiss: () -> Unit,
+    onOpenReleasePage: (String?) -> Unit,
+    onDownloadAsset: (ProjectGitHubReleaseAssetDialogUi, ProjectGitHubReleaseAssetUi) -> Unit
+) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+
+    ReasonixAlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭")
+            }
+        },
+        title = { Text("Release 资产") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = dialog.releaseTitle,
+                    style = MaterialTheme.typography.titleSmall
+                )
+                dialog.releaseHtmlUrl?.takeIf { it.isNotBlank() }?.let {
+                    TextButton(onClick = { onOpenReleasePage(dialog.releaseHtmlUrl) }) {
+                        Text("Release 页面")
+                    }
+                }
+                if (dialog.assets.isEmpty()) {
+                    Text(
+                        text = "这个 Release 还没有可下载资产。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                } else {
+                    dialog.assets.forEach { asset ->
+                        ProjectInsetCard(
+                            shape = RoundedCornerShape(12.dp),
+                            surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(asset.name, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    text = "大小 ${asset.sizeLabel} · 更新 ${asset.updatedAt}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    asset.browserDownloadUrl?.takeIf { it.isNotBlank() }?.let {
+                                        TextButton(
+                                            onClick = { onOpenReleasePage(asset.browserDownloadUrl) }
+                                        ) {
+                                            Text("网页")
+                                        }
+                                    }
+                                    OutlinedButton(
+                                        onClick = { onDownloadAsset(dialog, asset) }
+                                    ) {
+                                        Text("下载")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+}
