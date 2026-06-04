@@ -4405,6 +4405,12 @@ private fun ProjectGitSection(
                 var showOnlySelectedStepLogs by remember(detail.id) {
                     mutableStateOf(false)
                 }
+                var logSearchQuery by remember(detail.id) {
+                    mutableStateOf("")
+                }
+                var showOnlyMatchedLogs by remember(detail.id) {
+                    mutableStateOf(false)
+                }
                 var expandedLogEntries by remember(detail.id) {
                     mutableStateOf(setOf<String>())
                 }
@@ -4431,7 +4437,7 @@ private fun ProjectGitSection(
                         .map { it.entryName }
                         .toSet()
                 }
-                val visibleLogEntries = remember(
+                val scopedLogEntries = remember(
                     filteredLogEntries,
                     selectedIssueStepName,
                     showOnlySelectedStepLogs,
@@ -4448,6 +4454,35 @@ private fun ProjectGitSection(
                         base.sortedWith(
                             compareByDescending<ProjectGitHubWorkflowLogEntryUi> { entry ->
                                 focusedStepMatchedEntries.contains(entry.entryName)
+                            }.thenBy { it.displayName }
+                        )
+                    } else {
+                        base
+                    }
+                }
+                val logSearchHits = remember(scopedLogEntries, logSearchQuery) {
+                    scopedLogEntries.associate { entry ->
+                        entry.entryName to buildProjectGitHubWorkflowLogSearchHit(
+                            entry = entry,
+                            query = logSearchQuery
+                        )
+                    }
+                }
+                val visibleLogEntries = remember(scopedLogEntries, logSearchHits, logSearchQuery, showOnlyMatchedLogs) {
+                    val queryActive = logSearchQuery.isNotBlank()
+                    val base = if (queryActive && showOnlyMatchedLogs) {
+                        scopedLogEntries.filter { entry ->
+                            logSearchHits[entry.entryName]?.hasMatch == true
+                        }
+                    } else {
+                        scopedLogEntries
+                    }
+                    if (queryActive) {
+                        base.sortedWith(
+                            compareByDescending<ProjectGitHubWorkflowLogEntryUi> { entry ->
+                                logSearchHits[entry.entryName]?.hasMatch == true
+                            }.thenByDescending { entry ->
+                                logSearchHits[entry.entryName]?.matchedLineCount ?: 0
                             }.thenBy { it.displayName }
                         )
                     } else {
@@ -4729,6 +4764,41 @@ private fun ProjectGitSection(
                                 },
                                 style = MaterialTheme.typography.titleSmall
                             )
+                            OutlinedTextField(
+                                value = logSearchQuery,
+                                onValueChange = { logSearchQuery = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                label = { Text("搜索日志关键字") },
+                                placeholder = { Text("error / exception / task name") }
+                            )
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (!selectedIssueStepName.isNullOrBlank()) {
+                                    FilterChip(
+                                        selected = logSearchQuery == selectedIssueStepName,
+                                        onClick = { logSearchQuery = selectedIssueStepName.orEmpty() },
+                                        label = { Text("用当前步骤名") }
+                                    )
+                                }
+                                if (logSearchQuery.isNotBlank()) {
+                                    FilterChip(
+                                        selected = showOnlyMatchedLogs,
+                                        onClick = { showOnlyMatchedLogs = !showOnlyMatchedLogs },
+                                        label = { Text("只看搜索命中") }
+                                    )
+                                    FilterChip(
+                                        selected = false,
+                                        onClick = {
+                                            logSearchQuery = ""
+                                            showOnlyMatchedLogs = false
+                                        },
+                                        label = { Text("清空搜索") }
+                                    )
+                                }
+                            }
                             if (!selectedIssueStepName.isNullOrBlank()) {
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     FilterChip(
@@ -4755,9 +4825,23 @@ private fun ProjectGitSection(
                                     )
                                 }
                             }
+                            if (logSearchQuery.isNotBlank()) {
+                                val matchedCount = scopedLogEntries.count { entry ->
+                                    logSearchHits[entry.entryName]?.hasMatch == true
+                                }
+                                Text(
+                                    text = "搜索命中 $matchedCount / ${scopedLogEntries.size} 个日志文件",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
+                                )
+                            }
                             if (visibleLogEntries.isEmpty()) {
                                 Text(
-                                    text = "当前筛选条件下没有命中的日志文件，可以关闭“只看异常日志”或切回全部 Job。",
+                                    text = if (logSearchQuery.isNotBlank()) {
+                                        "当前筛选条件下没有命中的日志文件，可以清空搜索、关闭“只看搜索命中”，或切回全部 Job。"
+                                    } else {
+                                        "当前筛选条件下没有命中的日志文件，可以关闭“只看异常日志”或切回全部 Job。"
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = mutedTextColor
                                 )
@@ -4766,6 +4850,8 @@ private fun ProjectGitSection(
                                 val isExpanded = expandedLogEntries.contains(entry.entryName)
                                 val matchesFocusedStep = !selectedIssueStepName.isNullOrBlank() &&
                                     focusedStepMatchedEntries.contains(entry.entryName)
+                                val searchHit = logSearchHits[entry.entryName]
+                                val matchesSearch = searchHit?.hasMatch == true
                                 val previewText = if (isExpanded) {
                                     entry.preview
                                 } else {
@@ -4775,6 +4861,8 @@ private fun ProjectGitSection(
                                     shape = RoundedCornerShape(12.dp),
                                     surfaceColorOverride = if (matchesFocusedStep) {
                                         MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.52f)
+                                    } else if (matchesSearch) {
+                                        chromeColor.copy(alpha = 0.56f)
                                     } else {
                                         surfaceColor.copy(alpha = 0.58f)
                                     },
@@ -4794,10 +4882,24 @@ private fun ProjectGitSection(
                                                 if (matchesFocusedStep) {
                                                     append(" · 命中当前步骤")
                                                 }
+                                                if (logSearchQuery.isNotBlank() && matchesSearch) {
+                                                    append(" · 搜索命中 ${searchHit?.matchedLineCount ?: 0} 行")
+                                                }
                                             },
                                             style = MaterialTheme.typography.bodySmall,
                                             color = mutedTextColor
                                         )
+                                        if (logSearchQuery.isNotBlank() && matchesSearch) {
+                                            Text(
+                                                text = searchHit?.snippet?.ifBlank { "文件名命中搜索关键字" }
+                                                    ?: "文件名命中搜索关键字",
+                                                style = MaterialTheme.typography.bodySmall.copy(
+                                                    fontFamily = FontFamily.Monospace,
+                                                    lineHeight = 18.sp
+                                                ),
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
                                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                             OutlinedButton(
                                                 onClick = {
@@ -8527,6 +8629,43 @@ private fun projectGitHubLogMentionsStep(
     }
 }
 
+private fun projectGitHubConsoleContainsToken(value: String, query: String): Boolean {
+    val trimmedQuery = query.trim()
+    if (trimmedQuery.isBlank()) return false
+    if (value.contains(trimmedQuery, ignoreCase = true)) return true
+    val normalizedQuery = normalizeProjectGitHubConsoleToken(trimmedQuery)
+    if (normalizedQuery.isBlank()) return false
+    return normalizeProjectGitHubConsoleToken(value).contains(normalizedQuery)
+}
+
+private fun buildProjectGitHubWorkflowLogSearchHit(
+    entry: ProjectGitHubWorkflowLogEntryUi,
+    query: String
+): ProjectGitHubWorkflowLogSearchHitUi {
+    val trimmedQuery = query.trim()
+    if (trimmedQuery.isBlank()) {
+        return ProjectGitHubWorkflowLogSearchHitUi(
+            hasMatch = false,
+            matchedLineCount = 0,
+            snippet = ""
+        )
+    }
+    val matchedLines = entry.preview
+        .lines()
+        .filter { line -> projectGitHubConsoleContainsToken(line, trimmedQuery) }
+    val fileNameMatched = projectGitHubConsoleContainsToken(entry.displayName, trimmedQuery) ||
+        projectGitHubConsoleContainsToken(entry.entryName, trimmedQuery)
+    val snippet = matchedLines
+        .take(6)
+        .joinToString("\n")
+        .ifBlank { if (fileNameMatched) "文件名命中搜索关键字" else "" }
+    return ProjectGitHubWorkflowLogSearchHitUi(
+        hasMatch = fileNameMatched || matchedLines.isNotEmpty(),
+        matchedLineCount = matchedLines.size,
+        snippet = snippet
+    )
+}
+
 private fun projectGitHubCollapsedLogPreview(
     preview: String,
     maxLines: Int = 18
@@ -11866,6 +12005,11 @@ private data class ProjectGitHubWorkflowLogEntryUi(
     val preview: String,
     val totalLineCount: Int,
     val truncated: Boolean
+)
+private data class ProjectGitHubWorkflowLogSearchHitUi(
+    val hasMatch: Boolean,
+    val matchedLineCount: Int,
+    val snippet: String
 )
 private data class ProjectGitHubArtifactUi(
     val id: Long,
