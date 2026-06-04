@@ -4961,8 +4961,7 @@ private fun ProjectGitSection(
                             "当前将保存为预发布 Release"
                         } else {
                             "当前将保存为正式 Release"
-                        }
-                    },
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = mutedTextColor
                     )
@@ -5076,8 +5075,7 @@ private fun ProjectGitSection(
                             "创建后会标记为预发布"
                         } else {
                             "创建后会作为正式 Release 展示"
-                        }
-                    },
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = mutedTextColor
                     )
@@ -5304,8 +5302,7 @@ private fun ProjectGitSection(
                             createPullRequestDraftState = createPullRequestDraftState.copy(
                                 isDraft = !createPullRequestDraftState.isDraft
                             )
-                        }
-                    },
+                        },
                         label = { Text("草稿 PR") }
                     )
                     Text(
