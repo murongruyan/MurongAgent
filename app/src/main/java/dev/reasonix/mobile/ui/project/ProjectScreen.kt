@@ -7124,9 +7124,12 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
     lineCommentDialogTarget?.let { (dialogPath, dialogLine) ->
         val dialogComments = commentsByPathAndLine[dialogPath to dialogLine].orEmpty() +
             localLineCommentReplies[dialogPath to dialogLine].orEmpty()
+        val threadedDialogComments = remember(dialogComments) {
+            buildProjectGitHubReviewCommentThread(dialogComments)
+        }
         val dialogScrollState = rememberScrollState()
-        LaunchedEffect(lineCommentDialogTarget, dialogComments.size) {
-            if (dialogComments.isNotEmpty()) {
+        LaunchedEffect(lineCommentDialogTarget, threadedDialogComments.size) {
+            if (threadedDialogComments.isNotEmpty()) {
                 dialogScrollState.animateScrollTo(dialogScrollState.maxValue)
             }
         }
@@ -7154,18 +7157,21 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                         .verticalScroll(dialogScrollState),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    if (dialogComments.isEmpty()) {
+                    if (threadedDialogComments.isEmpty()) {
                         Text(
                             text = "当前行暂时没有可显示的评论。",
                             style = MaterialTheme.typography.bodySmall,
                             color = mutedTextColor
                         )
                     } else {
-                        dialogComments.forEach { comment ->
+                        threadedDialogComments.forEach { threadItem ->
+                            val comment = threadItem.comment
                             ProjectInsetCard(
                                 shape = RoundedCornerShape(10.dp),
                                 surfaceColorOverride = surfaceColor.copy(alpha = 0.42f),
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = (threadItem.depth * 14).dp)
                             ) {
                                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     Text(
@@ -7177,6 +7183,13 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                                         Text(
                                             text = comment.body.ifBlank { "(空评论)" },
                                             style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                    threadItem.replyToAuthorLabel?.let { replyTo ->
+                                        Text(
+                                            text = "回复 $replyTo",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = mutedTextColor
                                         )
                                     }
                                     TextButton(
@@ -7235,6 +7248,7 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                                                                     path = dialogPath,
                                                                     line = dialogLine,
                                                                     side = "RIGHT",
+                                                                    parentCommentId = replyTargetId,
                                                                     createdAt = "",
                                                                     updatedAt = "刚刚",
                                                                     htmlUrl = null
@@ -9035,10 +9049,47 @@ private fun parseProjectGitHubPullRequestReviewComment(obj: JsonObject): Project
         path = obj.string("path").orEmpty(),
         line = obj.long("line")?.toInt() ?: obj.long("original_line")?.toInt(),
         side = obj.string("side"),
+        parentCommentId = obj.long("in_reply_to_id"),
         createdAt = obj.string("created_at").orEmpty(),
         updatedAt = obj.string("updated_at").orEmpty(),
         htmlUrl = obj.string("html_url")
     )
+}
+
+private data class ProjectGitHubReviewCommentThreadItemUi(
+    val comment: ProjectGitHubPullRequestReviewCommentUi,
+    val depth: Int,
+    val replyToAuthorLabel: String?
+)
+
+private fun buildProjectGitHubReviewCommentThread(
+    comments: List<ProjectGitHubPullRequestReviewCommentUi>
+): List<ProjectGitHubReviewCommentThreadItemUi> {
+    if (comments.isEmpty()) return emptyList()
+    val byId = comments.associateBy { it.id }
+    val childrenByParent = comments
+        .mapNotNull { comment -> comment.parentCommentId?.let { it to comment } }
+        .groupBy({ it.first }, { it.second })
+    val roots = comments.filter { comment ->
+        val parentId = comment.parentCommentId
+        parentId == null || byId[parentId] == null
+    }
+    val result = mutableListOf<ProjectGitHubReviewCommentThreadItemUi>()
+    fun appendThread(comment: ProjectGitHubPullRequestReviewCommentUi, depth: Int) {
+        val parentAuthorLabel = comment.parentCommentId
+            ?.let(byId::get)
+            ?.authorLabel
+        result += ProjectGitHubReviewCommentThreadItemUi(
+            comment = comment,
+            depth = depth,
+            replyToAuthorLabel = parentAuthorLabel
+        )
+        childrenByParent[comment.id].orEmpty().forEach { child ->
+            appendThread(child, depth + 1)
+        }
+    }
+    roots.forEach { root -> appendThread(root, 0) }
+    return result
 }
 
 private data class ProjectGitHubPatchHunkUi(
