@@ -4416,6 +4416,9 @@ private fun ProjectGitSection(
                 var activeMatchedLogEntryName by remember(detail.id) {
                     mutableStateOf<String?>(null)
                 }
+                val activeMatchedLineIndexByEntry = remember(detail.id) {
+                    mutableStateMapOf<String, Int>()
+                }
                 var expandedLogEntries by remember(detail.id) {
                     mutableStateOf(setOf<String>())
                 }
@@ -4508,11 +4511,13 @@ private fun ProjectGitSection(
                 }
                 val logListScrollState = rememberScrollState()
                 LaunchedEffect(logSearchQuery, matchedVisibleLogEntries) {
+                    activeMatchedLineIndexByEntry.clear()
                     if (logSearchQuery.isBlank() || matchedVisibleLogEntries.isEmpty()) {
                         activeMatchedLogEntryName = null
                     } else {
                         val topMatchedEntryName = matchedVisibleLogEntries.first().entryName
                         activeMatchedLogEntryName = topMatchedEntryName
+                        activeMatchedLineIndexByEntry[topMatchedEntryName] = 0
                         expandedLogEntries = expandedLogEntries + topMatchedEntryName
                     }
                 }
@@ -4803,6 +4808,18 @@ private fun ProjectGitSection(
                                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
+                                PROJECT_GITHUB_WORKFLOW_LOG_SEARCH_PRESETS.forEach { preset ->
+                                    FilterChip(
+                                        selected = logSearchQuery.equals(preset, ignoreCase = true),
+                                        onClick = { logSearchQuery = preset },
+                                        label = { Text(preset) }
+                                    )
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
                                 if (!selectedIssueStepName.isNullOrBlank()) {
                                     FilterChip(
                                         selected = logSearchQuery == selectedIssueStepName,
@@ -4877,6 +4894,8 @@ private fun ProjectGitSection(
                                                 val nextIndex = (currentIndex - 1 + totalMatches) % totalMatches
                                                 val targetEntryName = matchedVisibleLogEntries[nextIndex].entryName
                                                 activeMatchedLogEntryName = targetEntryName
+                                                activeMatchedLineIndexByEntry[targetEntryName] =
+                                                    activeMatchedLineIndexByEntry[targetEntryName] ?: 0
                                                 expandedLogEntries = expandedLogEntries + targetEntryName
                                             }
                                         ) {
@@ -4892,6 +4911,8 @@ private fun ProjectGitSection(
                                                 val nextIndex = (currentIndex + 1 + totalMatches) % totalMatches
                                                 val targetEntryName = matchedVisibleLogEntries[nextIndex].entryName
                                                 activeMatchedLogEntryName = targetEntryName
+                                                activeMatchedLineIndexByEntry[targetEntryName] =
+                                                    activeMatchedLineIndexByEntry[targetEntryName] ?: 0
                                                 expandedLogEntries = expandedLogEntries + targetEntryName
                                             }
                                         ) {
@@ -4936,8 +4957,26 @@ private fun ProjectGitSection(
                                 val matchesSearch = searchHit?.hasMatch == true
                                 val isActiveSearchMatch = matchesSearch &&
                                     activeMatchedLogEntryName == entry.entryName
+                                val activeMatchedLineIndex = searchHit
+                                    ?.matchedLineIndices
+                                    ?.takeIf { it.isNotEmpty() }
+                                    ?.let { matchedLineIndices ->
+                                        activeMatchedLineIndexByEntry[entry.entryName]
+                                            ?.coerceIn(0, matchedLineIndices.lastIndex)
+                                            ?: 0
+                                    }
+                                    ?: 0
+                                val activeMatchedLineNumber = searchHit
+                                    ?.matchedLineNumbers
+                                    ?.getOrNull(activeMatchedLineIndex)
                                 val previewText = if (isExpanded) {
                                     entry.preview
+                                } else if (logSearchQuery.isNotBlank() && matchesSearch) {
+                                    projectGitHubCollapsedLogPreviewAroundMatch(
+                                        preview = entry.preview,
+                                        matchedLineIndices = searchHit?.matchedLineIndices.orEmpty(),
+                                        activeMatchIndex = activeMatchedLineIndex
+                                    )
                                 } else {
                                     projectGitHubCollapsedLogPreview(entry.preview)
                                 }
@@ -5009,6 +5048,58 @@ private fun ProjectGitSection(
                                                 ),
                                                 color = MaterialTheme.colorScheme.primary
                                             )
+                                        }
+                                        if (logSearchQuery.isNotBlank() && (searchHit?.matchedLineIndices?.isNotEmpty() == true)) {
+                                            Row(
+                                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        val totalMatches = searchHit.matchedLineIndices.size
+                                                        if (totalMatches == 0) return@OutlinedButton
+                                                        val nextIndex = (activeMatchedLineIndex - 1 + totalMatches) % totalMatches
+                                                        activeMatchedLogEntryName = entry.entryName
+                                                        activeMatchedLineIndexByEntry[entry.entryName] = nextIndex
+                                                    }
+                                                ) {
+                                                    Text("上一行")
+                                                }
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        val totalMatches = searchHit.matchedLineIndices.size
+                                                        if (totalMatches == 0) return@OutlinedButton
+                                                        val nextIndex = (activeMatchedLineIndex + 1) % totalMatches
+                                                        activeMatchedLogEntryName = entry.entryName
+                                                        activeMatchedLineIndexByEntry[entry.entryName] = nextIndex
+                                                    }
+                                                ) {
+                                                    Text("下一行")
+                                                }
+                                                FilterChip(
+                                                    selected = true,
+                                                    onClick = {},
+                                                    label = {
+                                                        Text(
+                                                            "第 ${activeMatchedLineIndex + 1} / ${searchHit.matchedLineIndices.size} 个命中行"
+                                                        )
+                                                    }
+                                                )
+                                                activeMatchedLineNumber?.let { lineNumber ->
+                                                    FilterChip(
+                                                        selected = true,
+                                                        onClick = {},
+                                                        label = { Text("L$lineNumber") }
+                                                    )
+                                                }
+                                                if (!isExpanded) {
+                                                    FilterChip(
+                                                        selected = true,
+                                                        onClick = {},
+                                                        label = { Text("折叠态显示命中片段") }
+                                                    )
+                                                }
+                                            }
                                         }
                                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                             OutlinedButton(
@@ -8757,22 +8848,29 @@ private fun buildProjectGitHubWorkflowLogSearchHit(
         return ProjectGitHubWorkflowLogSearchHitUi(
             hasMatch = false,
             matchedLineCount = 0,
-            snippet = ""
+            snippet = "",
+            matchedLineIndices = emptyList()
         )
     }
-    val matchedLines = entry.preview
-        .lines()
-        .filter { line -> projectGitHubConsoleContainsToken(line, trimmedQuery) }
+    val previewLines = entry.preview.lines()
+    val matchedLineIndices = previewLines
+        .mapIndexedNotNull { index, line ->
+            index.takeIf { projectGitHubConsoleContainsToken(line, trimmedQuery) }
+        }
+    val matchedLineLabels = matchedLineIndices
+        .take(6)
+        .joinToString("\n") { index ->
+            "L${index + 1}: ${previewLines.getOrElse(index) { "" }}"
+        }
     val fileNameMatched = projectGitHubConsoleContainsToken(entry.displayName, trimmedQuery) ||
         projectGitHubConsoleContainsToken(entry.entryName, trimmedQuery)
-    val snippet = matchedLines
-        .take(6)
-        .joinToString("\n")
+    val snippet = matchedLineLabels
         .ifBlank { if (fileNameMatched) "文件名命中搜索关键字" else "" }
     return ProjectGitHubWorkflowLogSearchHitUi(
-        hasMatch = fileNameMatched || matchedLines.isNotEmpty(),
-        matchedLineCount = matchedLines.size,
-        snippet = snippet
+        hasMatch = fileNameMatched || matchedLineIndices.isNotEmpty(),
+        matchedLineCount = matchedLineIndices.size,
+        snippet = snippet,
+        matchedLineIndices = matchedLineIndices
     )
 }
 
@@ -8838,6 +8936,40 @@ private fun projectGitHubCollapsedLogPreview(
     val lines = preview.lines()
     if (lines.size <= maxLines) return preview
     return (lines.take(maxLines) + "... 已折叠 ${lines.size - maxLines} 行 ...").joinToString("\n")
+}
+
+private fun projectGitHubCollapsedLogPreviewAroundMatch(
+    preview: String,
+    matchedLineIndices: List<Int>,
+    activeMatchIndex: Int,
+    contextLines: Int = 4,
+    maxLines: Int = 18
+): String {
+    if (matchedLineIndices.isEmpty()) {
+        return projectGitHubCollapsedLogPreview(preview, maxLines)
+    }
+    val lines = preview.lines()
+    if (lines.isEmpty()) return preview
+    val safeMatchIndex = matchedLineIndices
+        .getOrNull(activeMatchIndex.coerceIn(0, matchedLineIndices.lastIndex))
+        ?: matchedLineIndices.first()
+    var start = (safeMatchIndex - contextLines).coerceAtLeast(0)
+    var end = (safeMatchIndex + contextLines).coerceAtMost(lines.lastIndex)
+    val visibleBudget = maxLines - 2
+    while (end - start + 1 < visibleBudget && (start > 0 || end < lines.lastIndex)) {
+        if (start > 0) start--
+        if (end - start + 1 >= visibleBudget) break
+        if (end < lines.lastIndex) end++
+    }
+    val segment = mutableListOf<String>()
+    if (start > 0) {
+        segment += "... 前面省略 $start 行 ..."
+    }
+    segment += lines.subList(start, end + 1)
+    if (end < lines.lastIndex) {
+        segment += "... 后面省略 ${lines.lastIndex - end} 行 ..."
+    }
+    return segment.joinToString("\n")
 }
 
 private fun updateProjectGitHubRelease(
@@ -11893,6 +12025,14 @@ private fun findNextTextMatch(content: String, query: String, startIndex: Int): 
     )
 }
 
+private val PROJECT_GITHUB_WORKFLOW_LOG_SEARCH_PRESETS = listOf(
+    "error",
+    "exception",
+    "failed",
+    "timeout",
+    "cancelled"
+)
+
 private fun matchesQueryAtRange(content: String, range: TextRange, query: String): Boolean {
     val normalized = query.trim()
     if (normalized.isBlank()) return false
@@ -12174,8 +12314,12 @@ private data class ProjectGitHubWorkflowLogEntryUi(
 private data class ProjectGitHubWorkflowLogSearchHitUi(
     val hasMatch: Boolean,
     val matchedLineCount: Int,
-    val snippet: String
-)
+    val snippet: String,
+    val matchedLineIndices: List<Int>
+) {
+    val matchedLineNumbers: List<Int>
+        get() = matchedLineIndices.map { it + 1 }
+}
 private data class ProjectGitHubArtifactUi(
     val id: Long,
     val name: String,
