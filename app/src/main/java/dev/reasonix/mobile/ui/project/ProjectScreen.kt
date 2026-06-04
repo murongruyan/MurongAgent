@@ -4392,6 +4392,33 @@ private fun ProjectGitSection(
                 val surfaceColor = rememberReasonixSurfaceColor()
                 val chromeColor = rememberReasonixChromeColor()
                 val mutedTextColor = rememberReasonixMutedTextColor()
+                val issueJobs = remember(detail.jobs) { detail.jobs.filter { it.hasIssue } }
+                var selectedIssueJobName by remember(detail.id) {
+                    mutableStateOf(issueJobs.firstOrNull()?.name)
+                }
+                var showOnlyIssueLogs by remember(detail.id) {
+                    mutableStateOf(issueJobs.isNotEmpty())
+                }
+                var expandedLogEntries by remember(detail.id) {
+                    mutableStateOf(setOf<String>())
+                }
+                val visibleLogEntries = remember(detail.logEntries, selectedIssueJobName, showOnlyIssueLogs, issueJobs) {
+                    detail.logEntries.filter { entry ->
+                        val matchesSelected = selectedIssueJobName.isNullOrBlank() ||
+                            projectGitHubLogMatchesJob(entry, selectedIssueJobName.orEmpty())
+                        val matchesIssueOnly = !showOnlyIssueLogs ||
+                            issueJobs.any { job -> projectGitHubLogMatchesJob(entry, job.name) }
+                        matchesSelected && matchesIssueOnly
+                    }
+                }
+                val visibleJobs = remember(detail.jobs, selectedIssueJobName) {
+                    val filtered = if (selectedIssueJobName.isNullOrBlank()) {
+                        detail.jobs
+                    } else {
+                        detail.jobs.filter { it.name == selectedIssueJobName }
+                    }
+                    filtered.sortedWith(compareByDescending<ProjectGitHubWorkflowJobUi> { it.hasIssue }.thenBy { it.name })
+                }
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -4513,6 +4540,75 @@ private fun ProjectGitSection(
                             }
                         }
                     }
+                    if (issueJobs.isNotEmpty()) {
+                        ProjectInsetCard(
+                            shape = RoundedCornerShape(12.dp),
+                            surfaceColorOverride = chromeColor.copy(alpha = 0.48f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    text = "异常定位",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Row(
+                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    FilterChip(
+                                        selected = selectedIssueJobName == null,
+                                        onClick = { selectedIssueJobName = null },
+                                        label = { Text("全部 Job") }
+                                    )
+                                    issueJobs.forEach { job ->
+                                        FilterChip(
+                                            selected = selectedIssueJobName == job.name,
+                                            onClick = {
+                                                selectedIssueJobName =
+                                                    if (selectedIssueJobName == job.name) null else job.name
+                                            },
+                                            label = { Text(job.name.take(24)) }
+                                        )
+                                    }
+                                    FilterChip(
+                                        selected = showOnlyIssueLogs,
+                                        onClick = { showOnlyIssueLogs = !showOnlyIssueLogs },
+                                        label = { Text("只看异常日志") }
+                                    )
+                                }
+                                issueJobs.forEach { job ->
+                                    ProjectInsetCard(
+                                        shape = RoundedCornerShape(10.dp),
+                                        surfaceColorOverride = surfaceColor.copy(alpha = 0.46f),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Text(
+                                                text = "${job.name} · ${job.statusLabel}",
+                                                style = MaterialTheme.typography.bodyMedium
+                                            )
+                                            if (job.failedSteps.isEmpty()) {
+                                                Text(
+                                                    text = "这个 Job 状态异常，但 GitHub 还没有返回具体失败步骤。",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = mutedTextColor
+                                                )
+                                            } else {
+                                                job.failedSteps.take(4).forEach { step ->
+                                                    Text(
+                                                        text = "• ${step.name} · ${step.statusLabel}",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.error
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     when {
                         detail.logsError?.isNotBlank() == true -> {
                             ProjectInsetCard(
@@ -4535,8 +4631,25 @@ private fun ProjectGitSection(
                             )
                         }
                         else -> {
-                            Text("日志预览", style = MaterialTheme.typography.titleSmall)
-                            detail.logEntries.forEach { entry ->
+                            Text(
+                                "日志预览" +
+                                    if (showOnlyIssueLogs) " · 当前仅显示异常相关" else "",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            if (visibleLogEntries.isEmpty()) {
+                                Text(
+                                    text = "当前筛选条件下没有命中的日志文件，可以关闭“只看异常日志”或切回全部 Job。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
+                                )
+                            }
+                            visibleLogEntries.forEach { entry ->
+                                val isExpanded = expandedLogEntries.contains(entry.entryName)
+                                val previewText = if (isExpanded) {
+                                    entry.preview
+                                } else {
+                                    projectGitHubCollapsedLogPreview(entry.preview)
+                                }
                                 ProjectInsetCard(
                                     shape = RoundedCornerShape(12.dp),
                                     surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
@@ -4555,6 +4668,17 @@ private fun ProjectGitSection(
                                         )
                                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                             OutlinedButton(
+                                                onClick = {
+                                                    expandedLogEntries = if (isExpanded) {
+                                                        expandedLogEntries - entry.entryName
+                                                    } else {
+                                                        expandedLogEntries + entry.entryName
+                                                    }
+                                                }
+                                            ) {
+                                                Text(if (isExpanded) "收起" else "展开")
+                                            }
+                                            OutlinedButton(
                                                 onClick = { copyTextToClipboard(context, entry.preview) }
                                             ) {
                                                 Text("复制预览")
@@ -4562,7 +4686,7 @@ private fun ProjectGitSection(
                                         }
                                         SelectionContainer {
                                             Text(
-                                                text = entry.preview,
+                                                text = previewText,
                                                 style = MaterialTheme.typography.bodySmall.copy(
                                                     fontFamily = FontFamily.Monospace,
                                                     lineHeight = 18.sp
@@ -4652,10 +4776,14 @@ private fun ProjectGitSection(
                             color = mutedTextColor
                         )
                     } else {
-                        detail.jobs.forEach { job ->
+                        visibleJobs.forEach { job ->
                             ProjectInsetCard(
                                 shape = RoundedCornerShape(12.dp),
-                                surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
+                                surfaceColorOverride = if (job.hasIssue) {
+                                    MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.40f)
+                                } else {
+                                    surfaceColor.copy(alpha = 0.58f)
+                                },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Column(
@@ -4665,7 +4793,7 @@ private fun ProjectGitSection(
                                     Text(
                                         text = job.statusLabel,
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = mutedTextColor
+                                        color = if (job.hasIssue) MaterialTheme.colorScheme.error else mutedTextColor
                                     )
                                     if (job.startedAt.isNotBlank() || job.completedAt.isNotBlank()) {
                                         Text(
@@ -4682,6 +4810,13 @@ private fun ProjectGitSection(
                                             color = mutedTextColor
                                         )
                                     }
+                                    if (job.failedSteps.isNotEmpty()) {
+                                        Text(
+                                            text = "失败步骤 ${job.failedSteps.size}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.error
+                                        )
+                                    }
                                     job.steps.forEach { step ->
                                         Text(
                                             text = buildString {
@@ -4694,7 +4829,7 @@ private fun ProjectGitSection(
                                                 append(step.statusLabel)
                                             },
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = mutedTextColor
+                                            color = if (step.hasIssue) MaterialTheme.colorScheme.error else mutedTextColor
                                         )
                                     }
                                 }
@@ -8229,6 +8364,34 @@ private fun readProjectGitHubZipEntryBytes(
     return output.toByteArray() to truncated
 }
 
+private fun normalizeProjectGitHubConsoleToken(value: String): String {
+    return value
+        .lowercase(Locale.getDefault())
+        .replace(Regex("[^a-z0-9\\u4e00-\\u9fff]+"), "")
+}
+
+private fun projectGitHubLogMatchesJob(
+    entry: ProjectGitHubWorkflowLogEntryUi,
+    jobName: String
+): Boolean {
+    val normalizedJob = normalizeProjectGitHubConsoleToken(jobName)
+    if (normalizedJob.isBlank()) return false
+    val candidates = listOf(entry.displayName, entry.entryName)
+    return candidates.any { candidate ->
+        val normalizedCandidate = normalizeProjectGitHubConsoleToken(candidate)
+        normalizedCandidate.contains(normalizedJob) || normalizedJob.contains(normalizedCandidate)
+    }
+}
+
+private fun projectGitHubCollapsedLogPreview(
+    preview: String,
+    maxLines: Int = 18
+): String {
+    val lines = preview.lines()
+    if (lines.size <= maxLines) return preview
+    return (lines.take(maxLines) + "... 已折叠 ${lines.size - maxLines} 行 ...").joinToString("\n")
+}
+
 private fun updateProjectGitHubRelease(
     repo: ProjectGitHubRepoRef,
     releaseId: Long,
@@ -11521,6 +11684,10 @@ private data class ProjectGitHubWorkflowJobUi(
 ) {
     val statusLabel: String
         get() = buildProjectGitHubStatusLabel(status, conclusion)
+    val hasIssue: Boolean
+        get() = isProjectGitHubIssueStatus(status, conclusion) || steps.any { it.hasIssue }
+    val failedSteps: List<ProjectGitHubWorkflowStepUi>
+        get() = steps.filter { it.hasIssue }
     val issueSummaries: List<String>
         get() = steps
             .filter { it.hasIssue }
