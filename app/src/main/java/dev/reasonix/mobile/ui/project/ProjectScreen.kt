@@ -5421,6 +5421,33 @@ private fun ProjectGitSection(
                                     loadPullRequestReviewComments(pullRequest.number)
                                 }
                             }
+                        },
+                        onReplyToComment = { commentId, body, onSuccess ->
+                            val repo = githubActionsState.repo
+                            val token = config.githubToken.trim()
+                            if (repo == null || token.isBlank()) return@ProjectGitHubPullRequestReviewCommentSection
+                            scope.launch {
+                                isGitHubActionRunning = true
+                                val result = withContext(Dispatchers.IO) {
+                                    replyProjectGitHubPullRequestReviewComment(
+                                        repo = repo,
+                                        pullNumber = pullRequest.number,
+                                        commentId = commentId,
+                                        body = body,
+                                        token = token,
+                                        apiBaseUrl = config.getGitHubApiBaseUrl()
+                                    )
+                                }
+                                feedbackMessage = when {
+                                    result.success -> result.message.ifBlank { "已回复代码评审评论" }
+                                    else -> result.error ?: result.message.ifBlank { "回复代码评审评论失败" }
+                                }
+                                isGitHubActionRunning = false
+                                if (result.success) {
+                                    onSuccess()
+                                    loadPullRequestReviewComments(pullRequest.number)
+                                }
+                            }
                         }
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -6666,7 +6693,8 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
     onPickPath: (String) -> Unit,
     onPickLine: (String) -> Unit,
     onRefresh: () -> Unit,
-    onSubmit: () -> Unit
+    onSubmit: () -> Unit,
+    onReplyToComment: (Long, String, () -> Unit) -> Unit
 ) {
     val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
@@ -6688,6 +6716,8 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
     var lineCommentDialogTarget by remember {
         mutableStateOf<Pair<String, Int>?>(null)
     }
+    var lineCommentReplyTargetId by remember(lineCommentDialogTarget) { mutableStateOf<Long?>(null) }
+    var lineCommentReplyDraft by remember(lineCommentDialogTarget) { mutableStateOf("") }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -7127,6 +7157,67 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                                             text = comment.body.ifBlank { "(空评论)" },
                                             style = MaterialTheme.typography.bodySmall
                                         )
+                                    }
+                                    TextButton(
+                                        onClick = { lineCommentReplyTargetId = comment.id },
+                                        enabled = !isActionRunning
+                                    ) {
+                                        Text(if (lineCommentReplyTargetId == comment.id) "正在回复此条" else "回复此条")
+                                    }
+                                }
+                            }
+                        }
+                        lineCommentReplyTargetId?.let { replyTargetId ->
+                            val replyTarget = dialogComments.firstOrNull { it.id == replyTargetId }
+                            ProjectInsetCard(
+                                shape = RoundedCornerShape(10.dp),
+                                surfaceColorOverride = surfaceColor.copy(alpha = 0.42f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(
+                                        text = buildString {
+                                            append("回复当前行评论")
+                                            replyTarget?.authorLabel?.takeIf { it.isNotBlank() }?.let {
+                                                append(" · ")
+                                                append(it)
+                                            }
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = mutedTextColor
+                                    )
+                                    OutlinedTextField(
+                                        value = lineCommentReplyDraft,
+                                        onValueChange = { lineCommentReplyDraft = it },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        label = { Text("回复内容") },
+                                        placeholder = { Text("补充修改说明、答复或后续处理") },
+                                        minLines = 3,
+                                        maxLines = 6
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Button(
+                                            onClick = {
+                                                val body = lineCommentReplyDraft.trim()
+                                                if (body.isBlank()) return@Button
+                                                onReplyToComment(replyTargetId, body) {
+                                                    lineCommentReplyDraft = ""
+                                                    lineCommentReplyTargetId = null
+                                                }
+                                            },
+                                            enabled = lineCommentReplyDraft.isNotBlank() && !isActionRunning
+                                        ) {
+                                            Text("发送回复")
+                                        }
+                                        TextButton(
+                                            onClick = {
+                                                lineCommentReplyDraft = ""
+                                                lineCommentReplyTargetId = null
+                                            },
+                                            enabled = !isActionRunning
+                                        ) {
+                                            Text("取消")
+                                        }
                                     }
                                 }
                             }
@@ -8280,6 +8371,39 @@ private fun createProjectGitHubPullRequestReviewComment(
             success = false,
             message = "",
             error = result.error ?: "提交代码评审评论失败"
+        )
+    }
+}
+
+private fun replyProjectGitHubPullRequestReviewComment(
+    repo: ProjectGitHubRepoRef,
+    pullNumber: Long,
+    commentId: Long,
+    body: String,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubCommandResult {
+    val requestBody = buildJsonObject {
+        put("body", body)
+    }.toString()
+    val result = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/pulls/$pullNumber/comments/$commentId/replies",
+        method = "POST",
+        jsonBody = requestBody,
+        allowedCodes = setOf(200, 201)
+    )
+    return if (result.success) {
+        ProjectGitHubCommandResult(
+            success = true,
+            message = "已回复代码评审评论。"
+        )
+    } else {
+        ProjectGitHubCommandResult(
+            success = false,
+            message = "",
+            error = result.error ?: "回复代码评审评论失败"
         )
     }
 }
