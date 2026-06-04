@@ -6780,11 +6780,13 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
             Text("变更文件", style = MaterialTheme.typography.labelLarge)
             files.take(24).forEach { file ->
                 val isExpanded = expandedFilePath == file.path
-                val patchLines = remember(file.path, file.patch) { file.patch?.lines().orEmpty() }
-                val patchPreview = remember(file.path, file.patch, expandedPatchLineLimit) {
-                    if (patchLines.isEmpty()) null else patchLines.take(expandedPatchLineLimit).joinToString("\n")
+                val patchHunks = remember(file.path, file.patch) {
+                    parseProjectGitHubPatchHunks(file.patch)
                 }
-                val patchTruncated = patchLines.size > expandedPatchLineLimit
+                val visiblePatchHunks = remember(file.path, file.patch, expandedPatchLineLimit) {
+                    takeProjectGitHubVisiblePatchHunks(patchHunks, expandedPatchLineLimit)
+                }
+                val patchTruncated = patchHunks.sumOf { it.lines.size } > visiblePatchHunks.sumOf { it.lines.size }
                 val reviewLines = remember(file.path, file.patch) {
                     extractProjectGitHubReviewLineSuggestions(file.patch).take(18)
                 }
@@ -6842,16 +6844,71 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                                     }
                                 }
                             }
-                            SelectionContainer {
+                            if (visiblePatchHunks.isEmpty()) {
                                 Text(
-                                    text = patchPreview ?: "当前文件没有可直接显示的 diff 片段，可能是二进制文件或 patch 被 GitHub 省略。",
-                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
-                                    color = if (patchPreview != null) MaterialTheme.colorScheme.onSurface else mutedTextColor,
+                                    text = "当前文件没有可直接显示的 diff 片段，可能是二进制文件或 patch 被 GitHub 省略。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
+                                )
+                            } else {
+                                Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .heightIn(max = 320.dp)
-                                        .verticalScroll(rememberScrollState())
-                                )
+                                        .heightIn(max = 360.dp)
+                                        .verticalScroll(rememberScrollState()),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    visiblePatchHunks.forEach { hunk ->
+                                        ProjectInsetCard(
+                                            shape = RoundedCornerShape(10.dp),
+                                            surfaceColorOverride = surfaceColor.copy(alpha = 0.42f),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Text(
+                                                    text = hunk.header,
+                                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+                                                    color = mutedTextColor
+                                                )
+                                                hunk.lines.forEach { diffLine ->
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                        verticalAlignment = Alignment.Top
+                                                    ) {
+                                                        TextButton(
+                                                            onClick = {
+                                                                diffLine.rightLineNumber?.let { line ->
+                                                                    onPickPath(file.path)
+                                                                    onPickLine(line.toString())
+                                                                }
+                                                            },
+                                                            enabled = diffLine.isCommentable,
+                                                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = diffLine.rightLineNumber?.let { "L$it" } ?: "·",
+                                                                style = MaterialTheme.typography.bodySmall
+                                                            )
+                                                        }
+                                                        SelectionContainer {
+                                                            Text(
+                                                                text = diffLine.displayText,
+                                                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+                                                                color = when (diffLine.prefix) {
+                                                                    "+" -> Color(0xFF2E7D32)
+                                                                    "-" -> Color(0xFFC62828)
+                                                                    else -> MaterialTheme.colorScheme.onSurface
+                                                                },
+                                                                modifier = Modifier.weight(1f)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             if (patchTruncated) {
                                 TextButton(
@@ -8645,6 +8702,83 @@ private fun parseProjectGitHubPullRequestReviewComment(obj: JsonObject): Project
         updatedAt = obj.string("updated_at").orEmpty(),
         htmlUrl = obj.string("html_url")
     )
+}
+
+private data class ProjectGitHubPatchHunkUi(
+    val header: String,
+    val lines: List<ProjectGitHubPatchLineUi>
+)
+
+private data class ProjectGitHubPatchLineUi(
+    val prefix: String,
+    val text: String,
+    val rightLineNumber: Int?
+) {
+    val isCommentable: Boolean get() = rightLineNumber != null && prefix != "-"
+    val displayText: String get() = prefix + text
+}
+
+private fun parseProjectGitHubPatchHunks(patch: String?): List<ProjectGitHubPatchHunkUi> {
+    if (patch.isNullOrBlank()) return emptyList()
+    val hunkHeader = Regex("""^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@.*$""")
+    val hunks = mutableListOf<ProjectGitHubPatchHunkUi>()
+    var currentHeader: String? = null
+    var currentLines = mutableListOf<ProjectGitHubPatchLineUi>()
+    var nextRightLine: Int? = null
+    fun flush() {
+        val header = currentHeader ?: return
+        hunks += ProjectGitHubPatchHunkUi(header = header, lines = currentLines.toList())
+    }
+    patch.lineSequence().forEach { rawLine ->
+        val headerMatch = hunkHeader.find(rawLine)
+        if (headerMatch != null) {
+            flush()
+            currentHeader = rawLine
+            currentLines = mutableListOf()
+            nextRightLine = headerMatch.groupValues.getOrNull(2)?.toIntOrNull()
+            return@forEach
+        }
+        val prefix = rawLine.firstOrNull()?.toString().orEmpty()
+        val text = rawLine.drop(if (rawLine.isNotEmpty()) 1 else 0)
+        val rightLineNumber = when {
+            prefix == "+" -> nextRightLine
+            prefix == " " -> nextRightLine
+            else -> null
+        }
+        if (currentHeader == null) {
+            currentHeader = "@@ patch @@"
+        }
+        currentLines += ProjectGitHubPatchLineUi(
+            prefix = prefix,
+            text = text,
+            rightLineNumber = rightLineNumber
+        )
+        when (prefix) {
+            "+", " " -> nextRightLine = (nextRightLine ?: 0) + 1
+        }
+    }
+    flush()
+    return hunks
+}
+
+private fun takeProjectGitHubVisiblePatchHunks(
+    hunks: List<ProjectGitHubPatchHunkUi>,
+    maxLineCount: Int
+): List<ProjectGitHubPatchHunkUi> {
+    if (maxLineCount <= 0) return emptyList()
+    val visible = mutableListOf<ProjectGitHubPatchHunkUi>()
+    var remaining = maxLineCount
+    hunks.forEach { hunk ->
+        if (remaining <= 0) return@forEach
+        if (hunk.lines.size <= remaining) {
+            visible += hunk
+            remaining -= hunk.lines.size
+        } else {
+            visible += hunk.copy(lines = hunk.lines.take(remaining))
+            remaining = 0
+        }
+    }
+    return visible
 }
 
 private fun extractProjectGitHubReviewLineSuggestions(patch: String?): List<Int> {
