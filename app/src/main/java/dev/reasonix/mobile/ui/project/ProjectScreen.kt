@@ -4980,12 +4980,6 @@ private fun ProjectGitSection(
                                 } else {
                                     projectGitHubCollapsedLogPreview(entry.preview)
                                 }
-                                val highlightedPreviewText = remember(previewText, logSearchQuery) {
-                                    highlightProjectGitHubLogText(
-                                        text = previewText,
-                                        query = logSearchQuery
-                                    )
-                                }
                                 LaunchedEffect(isActiveSearchMatch) {
                                     if (isActiveSearchMatch) {
                                         bringIntoViewRequester.bringIntoView()
@@ -5061,6 +5055,7 @@ private fun ProjectGitSection(
                                                         val nextIndex = (activeMatchedLineIndex - 1 + totalMatches) % totalMatches
                                                         activeMatchedLogEntryName = entry.entryName
                                                         activeMatchedLineIndexByEntry[entry.entryName] = nextIndex
+                                                        expandedLogEntries = expandedLogEntries + entry.entryName
                                                     }
                                                 ) {
                                                     Text("上一行")
@@ -5072,6 +5067,7 @@ private fun ProjectGitSection(
                                                         val nextIndex = (activeMatchedLineIndex + 1) % totalMatches
                                                         activeMatchedLogEntryName = entry.entryName
                                                         activeMatchedLineIndexByEntry[entry.entryName] = nextIndex
+                                                        expandedLogEntries = expandedLogEntries + entry.entryName
                                                     }
                                                 ) {
                                                     Text("下一行")
@@ -5088,7 +5084,10 @@ private fun ProjectGitSection(
                                                 activeMatchedLineNumber?.let { lineNumber ->
                                                     FilterChip(
                                                         selected = true,
-                                                        onClick = {},
+                                                        onClick = {
+                                                            activeMatchedLogEntryName = entry.entryName
+                                                            expandedLogEntries = expandedLogEntries + entry.entryName
+                                                        },
                                                         label = { Text("L$lineNumber") }
                                                     )
                                                 }
@@ -5119,15 +5118,12 @@ private fun ProjectGitSection(
                                                 Text("复制预览")
                                             }
                                         }
-                                        SelectionContainer {
-                                            Text(
-                                                text = highlightedPreviewText,
-                                                style = MaterialTheme.typography.bodySmall.copy(
-                                                    fontFamily = FontFamily.Monospace,
-                                                    lineHeight = 18.sp
-                                                )
-                                            )
-                                        }
+                                        ProjectGitHubWorkflowLogPreviewBody(
+                                            preview = previewText,
+                                            query = logSearchQuery,
+                                            expanded = isExpanded,
+                                            activeLineNumber = activeMatchedLineNumber?.takeIf { isActiveSearchMatch }
+                                        )
                                     }
                                 }
                             }
@@ -8927,6 +8923,106 @@ private fun highlightProjectGitHubLogText(
             append('\n')
         }
     }
+}
+
+@Composable
+private fun ProjectGitHubWorkflowLogPreviewBody(
+    preview: String,
+    query: String,
+    expanded: Boolean,
+    activeLineNumber: Int?,
+    modifier: Modifier = Modifier
+) {
+    val bodyTextStyle = MaterialTheme.typography.bodySmall.copy(
+        fontFamily = FontFamily.Monospace,
+        lineHeight = 18.sp
+    )
+    if (!expanded) {
+        val highlightedPreviewText = remember(preview, query) {
+            highlightProjectGitHubLogText(
+                text = preview,
+                query = query
+            )
+        }
+        SelectionContainer(modifier = modifier) {
+            Text(
+                text = highlightedPreviewText,
+                style = bodyTextStyle
+            )
+        }
+        return
+    }
+
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    val lines = remember(preview) { preview.lines() }
+    val activeLineIndex = activeLineNumber?.minus(1)
+    val lineNumberWidth = remember(lines.size) {
+        maxOf(3, lines.size.toString().length)
+    }
+    val lineBringIntoViewRequesters = remember(preview) {
+        List(lines.size) { BringIntoViewRequester() }
+    }
+    val expandedScrollState = rememberScrollState()
+    LaunchedEffect(expanded, activeLineIndex, lines.size) {
+        if (expanded && activeLineIndex != null && activeLineIndex in lines.indices) {
+            lineBringIntoViewRequesters[activeLineIndex].bringIntoView()
+        }
+    }
+    SelectionContainer(modifier = modifier) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 320.dp)
+                .verticalScroll(expandedScrollState),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            lines.forEachIndexed { index, line ->
+                val annotatedLine = remember(line, query, index, lineNumberWidth, mutedTextColor) {
+                    buildProjectGitHubWorkflowAnnotatedLogLine(
+                        lineNumber = index + 1,
+                        line = line,
+                        query = query,
+                        lineNumberWidth = lineNumberWidth,
+                        lineNumberColor = mutedTextColor
+                    )
+                }
+                val isActiveLine = activeLineIndex == index
+                Text(
+                    text = annotatedLine,
+                    style = bodyTextStyle,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .bringIntoViewRequester(lineBringIntoViewRequesters[index])
+                        .background(
+                            if (isActiveLine) {
+                                MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.56f)
+                            } else {
+                                Color.Transparent
+                            }
+                        )
+                        .padding(horizontal = 6.dp, vertical = 1.dp)
+                )
+            }
+        }
+    }
+}
+
+private fun buildProjectGitHubWorkflowAnnotatedLogLine(
+    lineNumber: Int,
+    line: String,
+    query: String,
+    lineNumberWidth: Int,
+    lineNumberColor: Color
+): AnnotatedString = buildAnnotatedString {
+    pushStyle(
+        SpanStyle(
+            color = lineNumberColor,
+            fontWeight = FontWeight.Medium
+        )
+    )
+    append("L${lineNumber.toString().padStart(lineNumberWidth, ' ')} | ")
+    pop()
+    append(highlightProjectGitHubLogText(line, query))
 }
 
 private fun projectGitHubCollapsedLogPreview(
