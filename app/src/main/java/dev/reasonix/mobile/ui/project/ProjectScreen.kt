@@ -3201,6 +3201,7 @@ private fun ProjectGitSection(
         planProjectGitHubWorkspaceRemoteSummaryRefresh(
             detectedRepos = detectedRepos,
             repoStatusSummaries = repoStatusSummaries.toMap(),
+            selectedRepoRoot = selectedRepoRoot,
             token = config.githubToken.trim(),
             apiBaseUrl = config.getGitHubApiBaseUrl(),
             currentStore = workspaceRemoteSummaryStore
@@ -3478,36 +3479,42 @@ private fun ProjectGitSection(
                     releaseDraftState = editProjectGitHubReleaseDraftState(release)
                 },
                 onToggleReleaseMode = { release, makeDraft ->
-                    runGitHubMutationAction {
-                        toggleProjectGitHubReleaseModeAction(
-                            repo = githubActionsState.repo,
-                            release = release,
-                            token = config.githubToken.trim(),
-                            apiBaseUrl = config.getGitHubApiBaseUrl(),
-                            makeDraft = makeDraft
-                        )
-                    }
+                    runGitHubMutationAction(
+                        block = {
+                            toggleProjectGitHubReleaseModeAction(
+                                repo = githubActionsState.repo,
+                                release = release,
+                                token = config.githubToken.trim(),
+                                apiBaseUrl = config.getGitHubApiBaseUrl(),
+                                makeDraft = makeDraft
+                            )
+                        }
+                    )
                 },
                 onTogglePrerelease = { release, makePrerelease ->
-                    runGitHubMutationAction {
-                        toggleProjectGitHubReleasePrereleaseAction(
-                            repo = githubActionsState.repo,
-                            release = release,
-                            token = config.githubToken.trim(),
-                            apiBaseUrl = config.getGitHubApiBaseUrl(),
-                            makePrerelease = makePrerelease
-                        )
-                    }
+                    runGitHubMutationAction(
+                        block = {
+                            toggleProjectGitHubReleasePrereleaseAction(
+                                repo = githubActionsState.repo,
+                                release = release,
+                                token = config.githubToken.trim(),
+                                apiBaseUrl = config.getGitHubApiBaseUrl(),
+                                makePrerelease = makePrerelease
+                            )
+                        }
+                    )
                 },
                 onDeleteRelease = { release ->
-                    runGitHubMutationAction {
-                        deleteProjectGitHubReleaseAction(
-                            repo = githubActionsState.repo,
-                            release = release,
-                            token = config.githubToken.trim(),
-                            apiBaseUrl = config.getGitHubApiBaseUrl()
-                        )
-                    }
+                    runGitHubMutationAction(
+                        block = {
+                            deleteProjectGitHubReleaseAction(
+                                repo = githubActionsState.repo,
+                                release = release,
+                                token = config.githubToken.trim(),
+                                apiBaseUrl = config.getGitHubApiBaseUrl()
+                            )
+                        }
+                    )
                 },
                 onOpenReleasePage = { release ->
                     openGitHubPage(
@@ -3764,7 +3771,9 @@ private fun ProjectGitSection(
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
-                            onClick = { showGitHubWorkspacePage = true },
+                            onClick = {
+                                workspaceNavigationState = workspaceNavigationState.copy(isVisible = true)
+                            },
                             enabled = detectedRepos.isNotEmpty()
                         ) {
                             Text("打开工作区")
@@ -4793,7 +4802,7 @@ private fun ProjectGitSection(
         )
     }
 
-    workflowRunDetailDialogState?.let { detail ->
+    workflowRunDetailDialogState?.let { detail: ProjectGitHubWorkflowRunDetailUi ->
         ProjectGitHubWorkflowRunDetailDialog(
             detail = detail,
             onDismiss = { workflowRunDetailDialogState = null },
@@ -4803,7 +4812,7 @@ private fun ProjectGitSection(
                     "当前运行详情还没有可打开的 GitHub 页面地址。"
                 )
             },
-            onRefreshDetail = { target ->
+            onRefreshDetail = { target: ProjectGitHubWorkflowRunDetailUi ->
                 scope.launch {
                     isGitHubActionRunning = true
                     val result = withContext(Dispatchers.IO) {
@@ -4819,7 +4828,7 @@ private fun ProjectGitSection(
                     result.feedbackMessage?.let { feedbackMessage = it }
                 }
             },
-            onDownloadLogs = { target ->
+            onDownloadLogs = { target: ProjectGitHubWorkflowRunDetailUi ->
                 val result = enqueueProjectGitHubWorkflowLogsDownloadAction(
                     context = context,
                     repo = githubActionsState.repo,
@@ -4841,7 +4850,7 @@ private fun ProjectGitSection(
                 }
                 result.feedbackMessage?.let { feedbackMessage = it }
             },
-            onDownloadArtifact = { target, artifact ->
+            onDownloadArtifact = { target: ProjectGitHubWorkflowRunDetailUi, artifact ->
                 val result = enqueueProjectGitHubWorkflowArtifactDownloadAction(
                     context = context,
                     repo = githubActionsState.repo,
