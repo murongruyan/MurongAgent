@@ -62,6 +62,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -9937,7 +9938,7 @@ private fun updateProjectGitHubRemoteFile(
         apiBaseUrl = apiBaseUrl,
         method = "PUT",
         path = buildProjectGitHubContentsWriteApiPath(repo, path),
-        body = payload.toString()
+        jsonBody = payload.toString()
     )
     return if (result.success) {
         ProjectGitHubCommandResult(
@@ -12753,6 +12754,7 @@ private data class ProjectGitHubPullRequestReviewCommentUi(
     val path: String,
     val line: Int?,
     val side: String?,
+    val parentCommentId: Long?,
     val createdAt: String,
     val updatedAt: String,
     val htmlUrl: String?
