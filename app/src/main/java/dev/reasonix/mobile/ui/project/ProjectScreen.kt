@@ -6,6 +6,7 @@ import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.os.Environment
+import android.util.Base64
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
@@ -2391,6 +2392,12 @@ private fun ProjectGitSection(
     var releaseDraftFlag by remember(activeProjectPath) { mutableStateOf(false) }
     var releasePrereleaseFlag by remember(activeProjectPath) { mutableStateOf(false) }
     var releaseAssetDialogState by remember(activeProjectPath) { mutableStateOf<ProjectGitHubReleaseAssetDialogUi?>(null) }
+    var remoteRepoState by remember(activeProjectPath) { mutableStateOf(ProjectGitHubRemoteBrowserState.empty()) }
+    var isRemoteRepoLoading by remember(activeProjectPath) { mutableStateOf(false) }
+    var remoteRepoRefDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var remoteFileDialogState by remember(activeProjectPath) { mutableStateOf<ProjectGitHubRemoteFileUi?>(null) }
+    var remoteFileContentDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var remoteFileCommitMessageDraft by remember(activeProjectPath) { mutableStateOf("") }
 
     fun resetCommitDraft() {
         commitTitleDraft = ""
@@ -2509,10 +2516,14 @@ private fun ProjectGitSection(
         val repo = parseProjectGitHubRepoRef(gitState.remoteUrl)
         if (!gitState.isRepository) {
             githubActionsState = ProjectGitHubActionsState.empty()
+            remoteRepoState = ProjectGitHubRemoteBrowserState.empty()
             return
         }
         if (repo == null) {
             githubActionsState = ProjectGitHubActionsState.empty().copy(
+                errorMessage = "当前 origin 远端还不能识别成 GitHub 仓库地址。"
+            )
+            remoteRepoState = ProjectGitHubRemoteBrowserState.empty().copy(
                 errorMessage = "当前 origin 远端还不能识别成 GitHub 仓库地址。"
             )
             return
@@ -2520,6 +2531,9 @@ private fun ProjectGitSection(
         val token = config.githubToken.trim()
         if (token.isBlank()) {
             githubActionsState = ProjectGitHubActionsState.empty(repo).copy(
+                errorMessage = "请先去设置页填写 GitHub Token。"
+            )
+            remoteRepoState = ProjectGitHubRemoteBrowserState.empty(repo).copy(
                 errorMessage = "请先去设置页填写 GitHub Token。"
             )
             return
@@ -2534,6 +2548,104 @@ private fun ProjectGitSection(
                 )
             }
             isGitHubLoading = false
+        }
+    }
+
+    fun refreshRemoteRepositoryBrowser(
+        targetPath: String = remoteRepoState.currentPath,
+        resetRefIfBlank: Boolean = false
+    ) {
+        val repo = githubActionsState.repo ?: parseProjectGitHubRepoRef(gitState.remoteUrl)
+        if (repo == null) {
+            remoteRepoState = ProjectGitHubRemoteBrowserState.empty().copy(
+                errorMessage = "当前 origin 远端还不能识别成 GitHub 仓库地址。"
+            )
+            return
+        }
+        val token = config.githubToken.trim()
+        if (token.isBlank()) {
+            remoteRepoState = ProjectGitHubRemoteBrowserState.empty(repo).copy(
+                errorMessage = "请先在设置页填写 GitHub Token。"
+            )
+            return
+        }
+        val fallbackRef = gitState.currentBranch ?: githubActionsState.defaultBranch ?: "main"
+        if (resetRefIfBlank && remoteRepoRefDraft.isBlank()) {
+            remoteRepoRefDraft = fallbackRef
+        }
+        val ref = remoteRepoRefDraft.trim().ifBlank { fallbackRef }
+        val normalizedPath = normalizeProjectGitHubRepoPath(targetPath)
+        scope.launch {
+            isRemoteRepoLoading = true
+            val result = withContext(Dispatchers.IO) {
+                loadProjectGitHubRemoteDirectory(
+                    repo = repo,
+                    path = normalizedPath,
+                    ref = ref,
+                    token = token,
+                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                )
+            }
+            isRemoteRepoLoading = false
+            if (result.success && result.state != null) {
+                remoteRepoState = result.state
+            } else {
+                remoteRepoState = ProjectGitHubRemoteBrowserState.empty(repo).copy(
+                    currentRef = ref,
+                    currentPath = normalizedPath,
+                    errorMessage = result.error ?: "读取远端仓库失败"
+                )
+                feedbackMessage = result.error ?: "读取远端仓库失败"
+            }
+        }
+    }
+
+    fun openRemoteRepositoryEntry(entry: ProjectGitHubRemoteEntryUi) {
+        if (entry.isDirectory) {
+            refreshRemoteRepositoryBrowser(targetPath = entry.path)
+            return
+        }
+        val repo = githubActionsState.repo ?: parseProjectGitHubRepoRef(gitState.remoteUrl) ?: return
+        val token = config.githubToken.trim()
+        if (token.isBlank()) {
+            feedbackMessage = "请先在设置页填写 GitHub Token。"
+            return
+        }
+        val ref = remoteRepoState.currentRef.ifBlank {
+            remoteRepoRefDraft.trim().ifBlank { gitState.currentBranch ?: githubActionsState.defaultBranch ?: "main" }
+        }
+        scope.launch {
+            isGitHubActionRunning = true
+            val result = withContext(Dispatchers.IO) {
+                loadProjectGitHubRemoteFile(
+                    repo = repo,
+                    path = entry.path,
+                    ref = ref,
+                    token = token,
+                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                )
+            }
+            isGitHubActionRunning = false
+            if (result.success && result.file != null) {
+                remoteFileDialogState = result.file
+                remoteFileContentDraft = result.file.content
+                remoteFileCommitMessageDraft = "更新 ${result.file.path}"
+            } else {
+                feedbackMessage = result.error ?: "读取远端文件失败"
+            }
+        }
+    }
+
+    LaunchedEffect(activeProjectPath, gitState.remoteUrl, config.githubToken) {
+        remoteFileDialogState = null
+        remoteFileContentDraft = ""
+        remoteFileCommitMessageDraft = ""
+        val fallbackRef = gitState.currentBranch ?: githubActionsState.defaultBranch ?: "main"
+        remoteRepoRefDraft = fallbackRef
+        if (parseProjectGitHubRepoRef(gitState.remoteUrl) != null && config.githubToken.isNotBlank()) {
+            refreshRemoteRepositoryBrowser(targetPath = "", resetRefIfBlank = true)
+        } else {
+            remoteRepoState = ProjectGitHubRemoteBrowserState.empty()
         }
     }
 
@@ -3147,6 +3259,35 @@ private fun ProjectGitSection(
                             releaseTitle = release.name.ifBlank { release.tagName },
                             assets = release.assets,
                             releaseHtmlUrl = release.htmlUrl
+                        )
+                    }
+                )
+                ProjectGitHubRemoteRepositorySection(
+                    state = remoteRepoState,
+                    isLoading = isRemoteRepoLoading,
+                    isActionRunning = isGitHubActionRunning,
+                    tokenConfigured = config.githubToken.isNotBlank(),
+                    refDraft = remoteRepoRefDraft,
+                    onRefDraftChange = { remoteRepoRefDraft = it },
+                    onRefresh = { refreshRemoteRepositoryBrowser(resetRefIfBlank = true) },
+                    onApplyRef = { refreshRemoteRepositoryBrowser(targetPath = remoteRepoState.currentPath) },
+                    onOpenRepo = {
+                        openGitHubPage(
+                            remoteRepoState.repoHtmlUrl ?: githubActionsState.repoHtmlUrl,
+                            "当前仓库还没有可打开的 GitHub 页面地址。"
+                        )
+                    },
+                    onOpenParent = {
+                        refreshRemoteRepositoryBrowser(
+                            targetPath = parentProjectGitHubRepoPath(remoteRepoState.currentPath).orEmpty()
+                        )
+                    },
+                    onOpenRoot = { refreshRemoteRepositoryBrowser(targetPath = "") },
+                    onOpenEntry = ::openRemoteRepositoryEntry,
+                    onOpenEntryPage = { entry ->
+                        openGitHubPage(
+                            entry.htmlUrl,
+                            "当前条目还没有可打开的 GitHub 页面地址。"
                         )
                     }
                 )
@@ -4425,6 +4566,110 @@ private fun ProjectGitSection(
             }
         )
     }
+
+    remoteFileDialogState?.let { file ->
+        val canSubmit = remoteFileCommitMessageDraft.trim().isNotBlank() && !isGitHubActionRunning
+        ReasonixAlertDialog(
+            onDismissRequest = {
+                remoteFileDialogState = null
+                remoteFileContentDraft = ""
+                remoteFileCommitMessageDraft = ""
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val repo = githubActionsState.repo ?: parseProjectGitHubRepoRef(gitState.remoteUrl) ?: return@Button
+                        val token = config.githubToken.trim()
+                        val message = remoteFileCommitMessageDraft.trim()
+                        if (token.isBlank() || message.isBlank()) return@Button
+                        val branch = file.ref.ifBlank { remoteRepoState.currentRef.ifBlank { githubActionsState.defaultBranch ?: "main" } }
+                        scope.launch {
+                            isGitHubActionRunning = true
+                            val result = withContext(Dispatchers.IO) {
+                                updateProjectGitHubRemoteFile(
+                                    repo = repo,
+                                    path = file.path,
+                                    branch = branch,
+                                    message = message,
+                                    content = remoteFileContentDraft,
+                                    sha = file.sha,
+                                    token = token,
+                                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                                )
+                            }
+                            isGitHubActionRunning = false
+                            if (result.success) {
+                                feedbackMessage = result.message.ifBlank { "已更新远端文件 ${file.path}" }
+                                remoteFileDialogState = null
+                                refreshRemoteRepositoryBrowser(targetPath = remoteRepoState.currentPath)
+                            } else {
+                                feedbackMessage = result.error ?: result.message.ifBlank { "更新远端文件失败" }
+                            }
+                        }
+                    },
+                    enabled = canSubmit
+                ) {
+                    Text("提交到远端")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        remoteFileDialogState = null
+                        remoteFileContentDraft = ""
+                        remoteFileCommitMessageDraft = ""
+                    }
+                ) {
+                    Text("关闭")
+                }
+            },
+            title = { Text("远端文件编辑") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 520.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = file.path,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "分支/引用: ${file.ref} · 大小 ${formatProjectByteSize(file.size)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (file.truncated) {
+                        Text(
+                            text = "当前文件内容已被 GitHub 截断，提交前请注意核对。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    OutlinedTextField(
+                        value = remoteFileCommitMessageDraft,
+                        onValueChange = { remoteFileCommitMessageDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("提交说明") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = remoteFileContentDraft,
+                        onValueChange = { remoteFileContentDraft = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 240.dp),
+                        label = { Text("文件内容") },
+                        textStyle = TextStyle(fontFamily = FontFamily.Monospace),
+                        minLines = 12
+                    )
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -4944,6 +5189,191 @@ private fun ProjectGitHubReleaseSection(
                                 enabled = !isActionRunning
                             ) {
                                 Text("删除")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProjectGitHubRemoteRepositorySection(
+    state: ProjectGitHubRemoteBrowserState,
+    isLoading: Boolean,
+    isActionRunning: Boolean,
+    tokenConfigured: Boolean,
+    refDraft: String,
+    onRefDraftChange: (String) -> Unit,
+    onRefresh: () -> Unit,
+    onApplyRef: () -> Unit,
+    onOpenRepo: () -> Unit,
+    onOpenParent: () -> Unit,
+    onOpenRoot: () -> Unit,
+    onOpenEntry: (ProjectGitHubRemoteEntryUi) -> Unit,
+    onOpenEntryPage: (ProjectGitHubRemoteEntryUi) -> Unit
+) {
+    val chromeColor = rememberReasonixChromeColor()
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        ReasonixGlassSurface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            contentPadding = PaddingValues(12.dp),
+            surfaceColorOverride = chromeColor.copy(alpha = 0.58f)
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text("远端仓库", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            text = state.repo?.let { "${it.owner}/${it.repo}" } ?: "当前远端还没有解析到 owner/repo",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                        Text(
+                            text = "引用: ${state.currentRef.ifBlank { "未指定" }} · 路径: ${displayProjectGitHubRepoPath(state.currentPath)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = onRefresh,
+                        enabled = !isLoading && !isActionRunning
+                    ) {
+                        Text("刷新")
+                    }
+                }
+                OutlinedTextField(
+                    value = refDraft,
+                    onValueChange = onRefDraftChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("分支 / Tag / 提交") },
+                    placeholder = { Text("默认读取当前分支或远端默认分支") },
+                    singleLine = true
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = onApplyRef,
+                        enabled = !isLoading && !isActionRunning
+                    ) {
+                        Text("切换引用")
+                    }
+                    OutlinedButton(
+                        onClick = onOpenRoot,
+                        enabled = !isLoading && !isActionRunning
+                    ) {
+                        Text("根目录")
+                    }
+                    state.repoHtmlUrl?.takeIf { it.isNotBlank() }?.let {
+                        TextButton(
+                            onClick = onOpenRepo,
+                            enabled = !isLoading && !isActionRunning
+                        ) {
+                            Text("仓库页")
+                        }
+                    }
+                }
+                when {
+                    isLoading -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.width(16.dp), strokeWidth = 2.dp)
+                            Text(
+                                text = "正在读取远端仓库内容...",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = mutedTextColor
+                            )
+                        }
+                    }
+                    state.errorMessage?.isNotBlank() == true -> {
+                        Text(
+                            text = state.errorMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    !tokenConfigured -> {
+                        Text(
+                            text = "先去设置页填 GitHub Token，远端仓库浏览和直接改远端文件才能生效。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                    }
+                }
+            }
+        }
+        if (state.currentPath.isNotBlank()) {
+            OutlinedButton(
+                onClick = onOpenParent,
+                enabled = !isLoading && !isActionRunning
+            ) {
+                Text("返回上级")
+            }
+        }
+        if (state.entries.isEmpty()) {
+            Text(
+                text = if (state.errorMessage.isNullOrBlank()) {
+                    "当前目录还没有读取到远端文件。"
+                } else {
+                    "远端目录暂时不可用。"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedTextColor
+            )
+        } else {
+            state.entries.forEach { entry ->
+                ProjectInsetCard(
+                    shape = RoundedCornerShape(12.dp),
+                    surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = entry.name,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = buildString {
+                                append(entry.typeLabel)
+                                append(" · ")
+                                append(entry.path)
+                                if (!entry.isDirectory && entry.size > 0) {
+                                    append(" · ")
+                                    append(formatProjectByteSize(entry.size))
+                                }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { onOpenEntry(entry) },
+                                enabled = !isActionRunning
+                            ) {
+                                Text(if (entry.isDirectory) "进入" else "打开")
+                            }
+                            entry.htmlUrl?.takeIf { it.isNotBlank() }?.let {
+                                TextButton(
+                                    onClick = { onOpenEntryPage(entry) },
+                                    enabled = !isActionRunning
+                                ) {
+                                    Text("网页")
+                                }
                             }
                         }
                     }
@@ -5654,6 +6084,159 @@ private fun deleteProjectGitHubRelease(
     }
 }
 
+private fun loadProjectGitHubRemoteDirectory(
+    repo: ProjectGitHubRepoRef,
+    path: String,
+    ref: String,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubRemoteDirectoryLoadResult {
+    val result = runProjectGitHubApiRequest(
+        token = token,
+        apiBaseUrl = apiBaseUrl,
+        path = buildProjectGitHubContentsApiPath(repo, path, ref)
+    )
+    if (!result.success) {
+        return ProjectGitHubRemoteDirectoryLoadResult(
+            success = false,
+            state = null,
+            error = result.error
+        )
+    }
+    val entries = parseProjectGitHubJsonArray(result.body)?.mapNotNull { item ->
+        val obj = item.jsonObjectOrNull() ?: return@mapNotNull null
+        ProjectGitHubRemoteEntryUi(
+            name = obj.string("name").orEmpty(),
+            path = obj.string("path").orEmpty(),
+            type = obj.string("type").orEmpty(),
+            sha = obj.string("sha"),
+            size = obj.long("size") ?: 0L,
+            htmlUrl = obj.string("html_url"),
+            downloadUrl = obj.string("download_url")
+        )
+    }?.sortedWith(
+        compareBy<ProjectGitHubRemoteEntryUi> { !it.isDirectory }
+            .thenBy { it.name.lowercase(Locale.getDefault()) }
+    )
+    if (entries == null) {
+        return ProjectGitHubRemoteDirectoryLoadResult(
+            success = false,
+            state = null,
+            error = "当前远端路径不是目录，或 GitHub API 返回了非目录内容。"
+        )
+    }
+    return ProjectGitHubRemoteDirectoryLoadResult(
+        success = true,
+        state = ProjectGitHubRemoteBrowserState(
+            repo = repo,
+            currentRef = ref,
+            currentPath = normalizeProjectGitHubRepoPath(path),
+            entries = entries,
+            repoHtmlUrl = "https://github.com/${repo.owner}/${repo.repo}",
+            errorMessage = null
+        ),
+        error = null
+    )
+}
+
+private fun loadProjectGitHubRemoteFile(
+    repo: ProjectGitHubRepoRef,
+    path: String,
+    ref: String,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubRemoteFileLoadResult {
+    val result = runProjectGitHubApiRequest(
+        token = token,
+        apiBaseUrl = apiBaseUrl,
+        path = buildProjectGitHubContentsApiPath(repo, path, ref)
+    )
+    if (!result.success) {
+        return ProjectGitHubRemoteFileLoadResult(success = false, file = null, error = result.error)
+    }
+    val obj = parseProjectGitHubJsonObject(result.body)
+        ?: return ProjectGitHubRemoteFileLoadResult(
+            success = false,
+            file = null,
+            error = "GitHub 没有返回可读取的文件对象。"
+        )
+    if (obj.string("type") != "file") {
+        return ProjectGitHubRemoteFileLoadResult(
+            success = false,
+            file = null,
+            error = "当前远端条目不是普通文件。"
+        )
+    }
+    val encoding = obj.string("encoding").orEmpty()
+    val rawContent = obj.string("content").orEmpty()
+    val decodedContent = when {
+        encoding.equals("base64", ignoreCase = true) -> {
+            val normalized = rawContent.replace("\n", "").replace("\r", "")
+            runCatching {
+                String(Base64.decode(normalized, Base64.DEFAULT), Charsets.UTF_8)
+            }.getOrNull()
+        }
+        rawContent.isNotBlank() -> rawContent
+        else -> null
+    } ?: return ProjectGitHubRemoteFileLoadResult(
+        success = false,
+        file = null,
+        error = "当前文件内容没有被 GitHub 直接返回，暂时无法在应用内编辑。"
+    )
+    return ProjectGitHubRemoteFileLoadResult(
+        success = true,
+        file = ProjectGitHubRemoteFileUi(
+            path = obj.string("path").orEmpty(),
+            name = obj.string("name").orEmpty(),
+            sha = obj.string("sha"),
+            ref = ref,
+            content = decodedContent,
+            size = obj.long("size") ?: decodedContent.toByteArray().size.toLong(),
+            htmlUrl = obj.string("html_url"),
+            downloadUrl = obj.string("download_url"),
+            truncated = false
+        ),
+        error = null
+    )
+}
+
+private fun updateProjectGitHubRemoteFile(
+    repo: ProjectGitHubRepoRef,
+    path: String,
+    branch: String,
+    message: String,
+    content: String,
+    sha: String?,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubCommandResult {
+    val payload = buildJsonObject {
+        put("message", message)
+        put("content", Base64.encodeToString(content.toByteArray(Charsets.UTF_8), Base64.NO_WRAP))
+        if (!sha.isNullOrBlank()) put("sha", sha)
+        if (branch.isNotBlank()) put("branch", branch)
+    }
+    val result = runProjectGitHubApiRequest(
+        token = token,
+        apiBaseUrl = apiBaseUrl,
+        method = "PUT",
+        path = buildProjectGitHubContentsWriteApiPath(repo, path),
+        body = payload.toString()
+    )
+    return if (result.success) {
+        ProjectGitHubCommandResult(
+            success = true,
+            message = "已更新远端文件 $path"
+        )
+    } else {
+        ProjectGitHubCommandResult(
+            success = false,
+            message = "",
+            error = result.error ?: "更新远端文件失败"
+        )
+    }
+}
+
 private fun createProjectGitHubRepository(
     repoName: String,
     description: String,
@@ -6089,6 +6672,45 @@ private fun findProjectGitRoot(projectPath: String): String? {
         current = current.parentFile
     }
     return null
+}
+
+private fun buildProjectGitHubContentsApiPath(
+    repo: ProjectGitHubRepoRef,
+    path: String,
+    ref: String
+): String {
+    val encodedPath = normalizeProjectGitHubRepoPath(path)
+        .split('/')
+        .filter { it.isNotBlank() }
+        .joinToString("/") { Uri.encode(it) }
+    val suffix = if (encodedPath.isBlank()) "" else "/$encodedPath"
+    val query = Uri.encode(ref).takeIf { it.isNotBlank() }?.let { "?ref=$it" }.orEmpty()
+    return "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}/contents$suffix$query"
+}
+
+private fun buildProjectGitHubContentsWriteApiPath(
+    repo: ProjectGitHubRepoRef,
+    path: String
+): String {
+    val encodedPath = normalizeProjectGitHubRepoPath(path)
+        .split('/')
+        .filter { it.isNotBlank() }
+        .joinToString("/") { Uri.encode(it) }
+    return "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}/contents/$encodedPath"
+}
+
+private fun normalizeProjectGitHubRepoPath(path: String): String {
+    return path.trim().removePrefix("/").removeSuffix("/")
+}
+
+private fun parentProjectGitHubRepoPath(path: String): String? {
+    val normalized = normalizeProjectGitHubRepoPath(path)
+    if (normalized.isBlank()) return null
+    return normalized.substringBeforeLast('/', "").ifBlank { "" }
+}
+
+private fun displayProjectGitHubRepoPath(path: String): String {
+    return normalizeProjectGitHubRepoPath(path).ifBlank { "/" }
 }
 
 private fun normalizeGitActionPath(repoRoot: String, rawPath: String): String {
@@ -8052,6 +8674,55 @@ private data class ProjectGitHubActionsState(
         )
     }
 }
+private data class ProjectGitHubRemoteEntryUi(
+    val name: String,
+    val path: String,
+    val type: String,
+    val sha: String?,
+    val size: Long,
+    val htmlUrl: String?,
+    val downloadUrl: String?
+) {
+    val isDirectory: Boolean get() = type.equals("dir", ignoreCase = true)
+    val isFile: Boolean get() = type.equals("file", ignoreCase = true)
+    val typeLabel: String
+        get() = when {
+            isDirectory -> "目录"
+            isFile -> "文件"
+            type.isNotBlank() -> type
+            else -> "未知"
+        }
+}
+private data class ProjectGitHubRemoteBrowserState(
+    val repo: ProjectGitHubRepoRef?,
+    val currentRef: String,
+    val currentPath: String,
+    val entries: List<ProjectGitHubRemoteEntryUi>,
+    val repoHtmlUrl: String?,
+    val errorMessage: String?
+) {
+    companion object {
+        fun empty(repo: ProjectGitHubRepoRef? = null) = ProjectGitHubRemoteBrowserState(
+            repo = repo,
+            currentRef = "",
+            currentPath = "",
+            entries = emptyList(),
+            repoHtmlUrl = repo?.let { "https://github.com/${it.owner}/${it.repo}" },
+            errorMessage = null
+        )
+    }
+}
+private data class ProjectGitHubRemoteFileUi(
+    val path: String,
+    val name: String,
+    val sha: String?,
+    val ref: String,
+    val content: String,
+    val size: Long,
+    val htmlUrl: String?,
+    val downloadUrl: String?,
+    val truncated: Boolean
+)
 private data class ProjectGitHubArtifactDialogUi(
     val runTitle: String,
     val artifacts: List<ProjectGitHubArtifactUi>,
@@ -8107,6 +8778,16 @@ private data class ProjectGitHubArtifactLoadResult(
 private data class ProjectGitHubWorkflowRunDetailLoadResult(
     val success: Boolean,
     val detail: ProjectGitHubWorkflowRunDetailUi?,
+    val error: String?
+)
+private data class ProjectGitHubRemoteDirectoryLoadResult(
+    val success: Boolean,
+    val state: ProjectGitHubRemoteBrowserState?,
+    val error: String?
+)
+private data class ProjectGitHubRemoteFileLoadResult(
+    val success: Boolean,
+    val file: ProjectGitHubRemoteFileUi?,
     val error: String?
 )
 private data class ProjectCppClassLikeBlock(val kind: String, val startLine: Int, val expectedBraceDepth: Int)
