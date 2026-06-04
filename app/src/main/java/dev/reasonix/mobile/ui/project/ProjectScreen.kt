@@ -6685,6 +6685,9 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
     }
     var expandedPatchLineLimit by remember(expandedFilePath) { mutableStateOf(160) }
     var focusedHunkIndex by remember(expandedFilePath) { mutableStateOf<Int?>(null) }
+    var lineCommentDialogTarget by remember {
+        mutableStateOf<Pair<String, Int>?>(null)
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -6965,6 +6968,7 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                                                                     diffLine.rightLineNumber?.let { line ->
                                                                         onPickPath(file.path)
                                                                         onPickLine(line.toString())
+                                                                        lineCommentDialogTarget = file.path to line
                                                                     }
                                                                 },
                                                                 label = { Text("${lineComments.size}评") }
@@ -7080,6 +7084,57 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                 }
             }
         }
+    }
+    lineCommentDialogTarget?.let { (dialogPath, dialogLine) ->
+        val dialogComments = commentsByPathAndLine[dialogPath to dialogLine].orEmpty()
+        ReasonixAlertDialog(
+            onDismissRequest = { lineCommentDialogTarget = null },
+            confirmButton = {
+                TextButton(onClick = { lineCommentDialogTarget = null }) {
+                    Text("关闭")
+                }
+            },
+            title = { Text("${dialogPath.substringAfterLast('/')} · L$dialogLine") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (dialogComments.isEmpty()) {
+                        Text(
+                            text = "当前行暂时没有可显示的评论。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                    } else {
+                        dialogComments.forEach { comment ->
+                            ProjectInsetCard(
+                                shape = RoundedCornerShape(10.dp),
+                                surfaceColorOverride = surfaceColor.copy(alpha = 0.42f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(
+                                        text = "${comment.authorLabel} · ${comment.timeLabel}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = mutedTextColor
+                                    )
+                                    SelectionContainer {
+                                        Text(
+                                            text = comment.body.ifBlank { "(空评论)" },
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        )
     }
 }
 
