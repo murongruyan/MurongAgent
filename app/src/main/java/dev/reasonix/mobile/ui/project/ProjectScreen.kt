@@ -2400,6 +2400,15 @@ private fun ProjectGitSection(
     var remoteFileCommitMessageDraft by remember(activeProjectPath) { mutableStateOf("") }
     var issueDetailDialogState by remember(activeProjectPath) { mutableStateOf<ProjectGitHubIssueUi?>(null) }
     var pullRequestDetailDialogState by remember(activeProjectPath) { mutableStateOf<ProjectGitHubPullRequestUi?>(null) }
+    var showCreateIssueDialog by remember(activeProjectPath) { mutableStateOf(false) }
+    var createIssueTitleDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var createIssueBodyDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var showCreatePullRequestDialog by remember(activeProjectPath) { mutableStateOf(false) }
+    var createPullRequestTitleDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var createPullRequestBodyDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var createPullRequestHeadDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var createPullRequestBaseDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var createPullRequestDraftFlag by remember(activeProjectPath) { mutableStateOf(false) }
 
     fun resetCommitDraft() {
         commitTitleDraft = ""
@@ -2419,6 +2428,21 @@ private fun ProjectGitSection(
         createGitHubRepoDescriptionDraft = ""
         createGitHubRepoPrivateFlag = false
         createGitHubRepoBindOriginFlag = true
+    }
+
+    fun resetCreateIssueDraft() {
+        createIssueTitleDraft = ""
+        createIssueBodyDraft = ""
+    }
+
+    fun resetCreatePullRequestDraft() {
+        createPullRequestTitleDraft = ""
+        createPullRequestBodyDraft = ""
+        createPullRequestHeadDraft = gitState.currentBranch.orEmpty()
+        createPullRequestBaseDraft = githubActionsState.defaultBranch
+            ?: gitState.upstreamBranch?.substringAfterLast('/')
+            ?: "main"
+        createPullRequestDraftFlag = false
     }
 
     fun openGitHubPage(url: String?, fallbackMessage: String) {
@@ -3296,6 +3320,10 @@ private fun ProjectGitSection(
                 ProjectGitHubIssueSection(
                     issues = githubActionsState.issues,
                     isActionRunning = isGitHubActionRunning,
+                    onCreateIssue = {
+                        resetCreateIssueDraft()
+                        showCreateIssueDialog = true
+                    },
                     onOpenDetail = { issueDetailDialogState = it },
                     onToggleIssueState = { issue, shouldClose ->
                         val repo = githubActionsState.repo ?: return@ProjectGitHubIssueSection
@@ -3324,6 +3352,10 @@ private fun ProjectGitSection(
                 ProjectGitHubPullRequestSection(
                     pullRequests = githubActionsState.pullRequests,
                     isActionRunning = isGitHubActionRunning,
+                    onCreatePullRequest = {
+                        resetCreatePullRequestDraft()
+                        showCreatePullRequestDialog = true
+                    },
                     onOpenDetail = { pullRequestDetailDialogState = it },
                     onTogglePullRequestState = { pullRequest, shouldClose ->
                         val repo = githubActionsState.repo ?: return@ProjectGitHubPullRequestSection
@@ -4616,6 +4648,187 @@ private fun ProjectGitSection(
         )
     }
 
+    if (showCreateIssueDialog) {
+        ReasonixAlertDialog(
+            onDismissRequest = {
+                showCreateIssueDialog = false
+                resetCreateIssueDraft()
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val repo = githubActionsState.repo ?: return@Button
+                        val token = config.githubToken.trim()
+                        val title = createIssueTitleDraft.trim()
+                        if (token.isBlank() || title.isBlank()) return@Button
+                        showCreateIssueDialog = false
+                        runGitHubAction("已创建 Issue $title") {
+                            createProjectGitHubIssue(
+                                repo = repo,
+                                title = title,
+                                body = createIssueBodyDraft,
+                                token = token,
+                                apiBaseUrl = config.getGitHubApiBaseUrl()
+                            )
+                        }
+                        resetCreateIssueDraft()
+                    },
+                    enabled = createIssueTitleDraft.isNotBlank() && !isGitHubActionRunning
+                ) {
+                    Text("创建")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showCreateIssueDialog = false
+                        resetCreateIssueDraft()
+                    }
+                ) {
+                    Text("取消")
+                }
+            },
+            title = { Text("新建 Issue") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedTextField(
+                        value = createIssueTitleDraft,
+                        onValueChange = { createIssueTitleDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("标题") },
+                        placeholder = { Text("例如：共享存储仓库识别异常") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = createIssueBodyDraft,
+                        onValueChange = { createIssueBodyDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("正文") },
+                        placeholder = { Text("补充复现步骤、预期行为和日志") },
+                        minLines = 6,
+                        maxLines = 12
+                    )
+                }
+            }
+        )
+    }
+
+    if (showCreatePullRequestDialog) {
+        ReasonixAlertDialog(
+            onDismissRequest = {
+                showCreatePullRequestDialog = false
+                resetCreatePullRequestDraft()
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val repo = githubActionsState.repo ?: return@Button
+                        val token = config.githubToken.trim()
+                        val title = createPullRequestTitleDraft.trim()
+                        val head = createPullRequestHeadDraft.trim()
+                        val base = createPullRequestBaseDraft.trim()
+                        if (token.isBlank() || title.isBlank() || head.isBlank() || base.isBlank()) return@Button
+                        showCreatePullRequestDialog = false
+                        runGitHubAction("已创建 PR $title") {
+                            createProjectGitHubPullRequest(
+                                repo = repo,
+                                title = title,
+                                body = createPullRequestBodyDraft,
+                                head = head,
+                                base = base,
+                                isDraft = createPullRequestDraftFlag,
+                                token = token,
+                                apiBaseUrl = config.getGitHubApiBaseUrl()
+                            )
+                        }
+                        resetCreatePullRequestDraft()
+                    },
+                    enabled = createPullRequestTitleDraft.isNotBlank() &&
+                        createPullRequestHeadDraft.isNotBlank() &&
+                        createPullRequestBaseDraft.isNotBlank() &&
+                        !isGitHubActionRunning
+                ) {
+                    Text("创建")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showCreatePullRequestDialog = false
+                        resetCreatePullRequestDraft()
+                    }
+                ) {
+                    Text("取消")
+                }
+            },
+            title = { Text("新建 Pull Request") },
+            text = {
+                val mutedTextColor = rememberReasonixMutedTextColor()
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedTextField(
+                        value = createPullRequestTitleDraft,
+                        onValueChange = { createPullRequestTitleDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("标题") },
+                        placeholder = { Text("例如：修复共享存储下 Git 仓库识别") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = createPullRequestHeadDraft,
+                        onValueChange = { createPullRequestHeadDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("来源分支") },
+                        placeholder = { Text("例如：feature/storage-git-fix") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = createPullRequestBaseDraft,
+                        onValueChange = { createPullRequestBaseDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("目标分支") },
+                        placeholder = { Text("例如：main") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = createPullRequestBodyDraft,
+                        onValueChange = { createPullRequestBodyDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("说明") },
+                        placeholder = { Text("补充改动摘要、验证结果和影响范围") },
+                        minLines = 6,
+                        maxLines = 12
+                    )
+                    FilterChip(
+                        selected = createPullRequestDraftFlag,
+                        onClick = { createPullRequestDraftFlag = !createPullRequestDraftFlag },
+                        label = { Text("草稿 PR") }
+                    )
+                    Text(
+                        text = if (createPullRequestDraftFlag) {
+                            "创建后会先保留为草稿 Pull Request。"
+                        } else {
+                            "创建后会作为普通 Pull Request 提交到目标分支。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                }
+            }
+        )
+    }
+
     diffPreview?.let { preview ->
         ReasonixAlertDialog(
             onDismissRequest = { diffPreview = null },
@@ -5663,6 +5876,7 @@ private fun ProjectGitHubRemoteRepositorySection(
 private fun ProjectGitHubIssueSection(
     issues: List<ProjectGitHubIssueUi>,
     isActionRunning: Boolean,
+    onCreateIssue: () -> Unit,
     onOpenDetail: (ProjectGitHubIssueUi) -> Unit,
     onToggleIssueState: (ProjectGitHubIssueUi, Boolean) -> Unit,
     onOpenIssuePage: (ProjectGitHubIssueUi) -> Unit
@@ -5670,7 +5884,16 @@ private fun ProjectGitHubIssueSection(
     val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Issues", style = MaterialTheme.typography.titleSmall)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Issues", style = MaterialTheme.typography.titleSmall)
+            TextButton(onClick = onCreateIssue, enabled = !isActionRunning) {
+                Text("新建")
+            }
+        }
         if (issues.isEmpty()) {
             Text(
                 text = "当前仓库还没有读取到 Issue。",
@@ -5741,6 +5964,7 @@ private fun ProjectGitHubIssueSection(
 private fun ProjectGitHubPullRequestSection(
     pullRequests: List<ProjectGitHubPullRequestUi>,
     isActionRunning: Boolean,
+    onCreatePullRequest: () -> Unit,
     onOpenDetail: (ProjectGitHubPullRequestUi) -> Unit,
     onTogglePullRequestState: (ProjectGitHubPullRequestUi, Boolean) -> Unit,
     onMergePullRequest: (ProjectGitHubPullRequestUi) -> Unit,
@@ -5749,7 +5973,16 @@ private fun ProjectGitHubPullRequestSection(
     val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Pull Requests", style = MaterialTheme.typography.titleSmall)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Pull Requests", style = MaterialTheme.typography.titleSmall)
+            TextButton(onClick = onCreatePullRequest, enabled = !isActionRunning) {
+                Text("新建")
+            }
+        }
         if (pullRequests.isEmpty()) {
             Text(
                 text = "当前仓库还没有读取到 Pull Request。",
@@ -6662,6 +6895,76 @@ private fun mergeProjectGitHubPullRequest(
             success = false,
             message = "",
             error = result.error ?: "合并 PR 失败"
+        )
+    }
+}
+
+private fun createProjectGitHubIssue(
+    repo: ProjectGitHubRepoRef,
+    title: String,
+    body: String,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubCommandResult {
+    val requestBody = buildJsonObject {
+        put("title", title)
+        if (body.isNotBlank()) {
+            put("body", body)
+        }
+    }.toString()
+    val result = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/issues",
+        method = "POST",
+        jsonBody = requestBody,
+        allowedCodes = setOf(201)
+    )
+    return if (result.success) {
+        ProjectGitHubCommandResult(success = true, message = "Issue 已创建。")
+    } else {
+        ProjectGitHubCommandResult(
+            success = false,
+            message = "",
+            error = result.error ?: "创建 Issue 失败"
+        )
+    }
+}
+
+private fun createProjectGitHubPullRequest(
+    repo: ProjectGitHubRepoRef,
+    title: String,
+    body: String,
+    head: String,
+    base: String,
+    isDraft: Boolean,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubCommandResult {
+    val requestBody = buildJsonObject {
+        put("title", title)
+        put("head", head)
+        put("base", base)
+        put("draft", isDraft)
+        if (body.isNotBlank()) {
+            put("body", body)
+        }
+    }.toString()
+    val result = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/pulls",
+        method = "POST",
+        jsonBody = requestBody,
+        allowedCodes = setOf(201)
+    )
+    return if (result.success) {
+        ProjectGitHubCommandResult(success = true, message = "Pull Request 已创建。")
+    } else {
+        ProjectGitHubCommandResult(
+            success = false,
+            message = "",
+            error = result.error ?: "创建 Pull Request 失败"
         )
     }
 }
