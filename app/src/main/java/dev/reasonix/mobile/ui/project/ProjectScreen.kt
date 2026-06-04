@@ -2398,6 +2398,8 @@ private fun ProjectGitSection(
     var remoteFileDialogState by remember(activeProjectPath) { mutableStateOf<ProjectGitHubRemoteFileUi?>(null) }
     var remoteFileContentDraft by remember(activeProjectPath) { mutableStateOf("") }
     var remoteFileCommitMessageDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var issueDetailDialogState by remember(activeProjectPath) { mutableStateOf<ProjectGitHubIssueUi?>(null) }
+    var pullRequestDetailDialogState by remember(activeProjectPath) { mutableStateOf<ProjectGitHubPullRequestUi?>(null) }
 
     fun resetCommitDraft() {
         commitTitleDraft = ""
@@ -3288,6 +3290,79 @@ private fun ProjectGitSection(
                         openGitHubPage(
                             entry.htmlUrl,
                             "当前条目还没有可打开的 GitHub 页面地址。"
+                        )
+                    }
+                )
+                ProjectGitHubIssueSection(
+                    issues = githubActionsState.issues,
+                    isActionRunning = isGitHubActionRunning,
+                    onOpenDetail = { issueDetailDialogState = it },
+                    onToggleIssueState = { issue, shouldClose ->
+                        val repo = githubActionsState.repo ?: return@ProjectGitHubIssueSection
+                        val token = config.githubToken.trim()
+                        if (token.isBlank()) {
+                            feedbackMessage = "请先在设置页填写 GitHub Token。"
+                            return@ProjectGitHubIssueSection
+                        }
+                        runGitHubAction(if (shouldClose) "已关闭 Issue #${issue.number}" else "已重新打开 Issue #${issue.number}") {
+                            updateProjectGitHubIssueState(
+                                repo = repo,
+                                issueNumber = issue.number,
+                                close = shouldClose,
+                                token = token,
+                                apiBaseUrl = config.getGitHubApiBaseUrl()
+                            )
+                        }
+                    },
+                    onOpenIssuePage = { issue ->
+                        openGitHubPage(
+                            issue.htmlUrl,
+                            "当前 Issue 还没有可打开的 GitHub 页面地址。"
+                        )
+                    }
+                )
+                ProjectGitHubPullRequestSection(
+                    pullRequests = githubActionsState.pullRequests,
+                    isActionRunning = isGitHubActionRunning,
+                    onOpenDetail = { pullRequestDetailDialogState = it },
+                    onTogglePullRequestState = { pullRequest, shouldClose ->
+                        val repo = githubActionsState.repo ?: return@ProjectGitHubPullRequestSection
+                        val token = config.githubToken.trim()
+                        if (token.isBlank()) {
+                            feedbackMessage = "请先在设置页填写 GitHub Token。"
+                            return@ProjectGitHubPullRequestSection
+                        }
+                        runGitHubAction(if (shouldClose) "已关闭 PR #${pullRequest.number}" else "已重新打开 PR #${pullRequest.number}") {
+                            updateProjectGitHubPullRequestState(
+                                repo = repo,
+                                pullNumber = pullRequest.number,
+                                close = shouldClose,
+                                token = token,
+                                apiBaseUrl = config.getGitHubApiBaseUrl()
+                            )
+                        }
+                    },
+                    onMergePullRequest = { pullRequest ->
+                        val repo = githubActionsState.repo ?: return@ProjectGitHubPullRequestSection
+                        val token = config.githubToken.trim()
+                        if (token.isBlank()) {
+                            feedbackMessage = "请先在设置页填写 GitHub Token。"
+                            return@ProjectGitHubPullRequestSection
+                        }
+                        runGitHubAction("已合并 PR #${pullRequest.number}") {
+                            mergeProjectGitHubPullRequest(
+                                repo = repo,
+                                pullNumber = pullRequest.number,
+                                title = pullRequest.title,
+                                token = token,
+                                apiBaseUrl = config.getGitHubApiBaseUrl()
+                            )
+                        }
+                    },
+                    onOpenPullRequestPage = { pullRequest ->
+                        openGitHubPage(
+                            pullRequest.htmlUrl,
+                            "当前 Pull Request 还没有可打开的 GitHub 页面地址。"
                         )
                     }
                 )
@@ -4567,6 +4642,207 @@ private fun ProjectGitSection(
         )
     }
 
+    issueDetailDialogState?.let { issue ->
+        ReasonixAlertDialog(
+            onDismissRequest = { issueDetailDialogState = null },
+            confirmButton = {
+                TextButton(onClick = { issueDetailDialogState = null }) {
+                    Text("关闭")
+                }
+            },
+            dismissButton = {
+                issue.htmlUrl?.takeIf { it.isNotBlank() }?.let {
+                    TextButton(
+                        onClick = {
+                            openGitHubPage(
+                                issue.htmlUrl,
+                                "当前 Issue 还没有可打开的 GitHub 页面地址。"
+                            )
+                        }
+                    ) {
+                        Text("网页")
+                    }
+                }
+            },
+            title = { Text("Issue #${issue.number}") },
+            text = {
+                val mutedTextColor = rememberReasonixMutedTextColor()
+                val surfaceColor = rememberReasonixSurfaceColor()
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 460.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(issue.title, style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = "${issue.stateLabel} · ${issue.authorLabel} · 更新于 ${issue.updatedAt}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                    if (issue.labels.isNotEmpty()) {
+                        ProjectInsetCard(
+                            shape = RoundedCornerShape(12.dp),
+                            surfaceColorOverride = surfaceColor.copy(alpha = 0.56f)
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("标签", style = MaterialTheme.typography.labelMedium)
+                                Text(
+                                    text = issue.labels.joinToString(" · "),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        text = if (issue.body.isNotBlank()) issue.body else "这个 Issue 还没有正文说明。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (issue.body.isNotBlank()) MaterialTheme.colorScheme.onSurface else mutedTextColor
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val repo = githubActionsState.repo
+                        val token = config.githubToken.trim()
+                        OutlinedButton(
+                            onClick = {
+                                if (repo == null || token.isBlank()) return@OutlinedButton
+                                runGitHubAction(
+                                    if (issue.isOpen) "已关闭 Issue #${issue.number}" else "已重新打开 Issue #${issue.number}"
+                                ) {
+                                    updateProjectGitHubIssueState(
+                                        repo = repo,
+                                        issueNumber = issue.number,
+                                        close = issue.isOpen,
+                                        token = token,
+                                        apiBaseUrl = config.getGitHubApiBaseUrl()
+                                    )
+                                }
+                                issueDetailDialogState = null
+                            },
+                            enabled = !isGitHubActionRunning && repo != null && token.isNotBlank()
+                        ) {
+                            Text(if (issue.isOpen) "关闭 Issue" else "重新打开")
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    pullRequestDetailDialogState?.let { pullRequest ->
+        ReasonixAlertDialog(
+            onDismissRequest = { pullRequestDetailDialogState = null },
+            confirmButton = {
+                TextButton(onClick = { pullRequestDetailDialogState = null }) {
+                    Text("关闭")
+                }
+            },
+            dismissButton = {
+                pullRequest.htmlUrl?.takeIf { it.isNotBlank() }?.let {
+                    TextButton(
+                        onClick = {
+                            openGitHubPage(
+                                pullRequest.htmlUrl,
+                                "当前 Pull Request 还没有可打开的 GitHub 页面地址。"
+                            )
+                        }
+                    ) {
+                        Text("网页")
+                    }
+                }
+            },
+            title = { Text("PR #${pullRequest.number}") },
+            text = {
+                val mutedTextColor = rememberReasonixMutedTextColor()
+                val surfaceColor = rememberReasonixSurfaceColor()
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 460.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(pullRequest.title, style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = "${pullRequest.stateLabel} · ${pullRequest.authorLabel} · ${pullRequest.headBranch} -> ${pullRequest.baseBranch}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                    Text(
+                        text = "更新于 ${pullRequest.updatedAt}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                    if (pullRequest.labels.isNotEmpty()) {
+                        ProjectInsetCard(
+                            shape = RoundedCornerShape(12.dp),
+                            surfaceColorOverride = surfaceColor.copy(alpha = 0.56f)
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("标签", style = MaterialTheme.typography.labelMedium)
+                                Text(
+                                    text = pullRequest.labels.joinToString(" · "),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        text = if (pullRequest.body.isNotBlank()) pullRequest.body else "这个 Pull Request 还没有正文说明。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (pullRequest.body.isNotBlank()) MaterialTheme.colorScheme.onSurface else mutedTextColor
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val repo = githubActionsState.repo
+                        val token = config.githubToken.trim()
+                        if (pullRequest.canMerge) {
+                            Button(
+                                onClick = {
+                                    if (repo == null || token.isBlank()) return@Button
+                                    runGitHubAction("已合并 PR #${pullRequest.number}") {
+                                        mergeProjectGitHubPullRequest(
+                                            repo = repo,
+                                            pullNumber = pullRequest.number,
+                                            title = pullRequest.title,
+                                            token = token,
+                                            apiBaseUrl = config.getGitHubApiBaseUrl()
+                                        )
+                                    }
+                                    pullRequestDetailDialogState = null
+                                },
+                                enabled = !isGitHubActionRunning && repo != null && token.isNotBlank()
+                            ) {
+                                Text("合并")
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                if (repo == null || token.isBlank()) return@OutlinedButton
+                                runGitHubAction(
+                                    if (pullRequest.isOpen) "已关闭 PR #${pullRequest.number}" else "已重新打开 PR #${pullRequest.number}"
+                                ) {
+                                    updateProjectGitHubPullRequestState(
+                                        repo = repo,
+                                        pullNumber = pullRequest.number,
+                                        close = pullRequest.isOpen,
+                                        token = token,
+                                        apiBaseUrl = config.getGitHubApiBaseUrl()
+                                    )
+                                }
+                                pullRequestDetailDialogState = null
+                            },
+                            enabled = !isGitHubActionRunning && repo != null && token.isNotBlank() && !pullRequest.isMerged
+                        ) {
+                            Text(if (pullRequest.isOpen) "关闭 PR" else "重新打开")
+                        }
+                    }
+                }
+            }
+        )
+    }
+
     remoteFileDialogState?.let { file ->
         val canSubmit = remoteFileCommitMessageDraft.trim().isNotBlank() && !isGitHubActionRunning
         ReasonixAlertDialog(
@@ -5384,6 +5660,173 @@ private fun ProjectGitHubRemoteRepositorySection(
 }
 
 @Composable
+private fun ProjectGitHubIssueSection(
+    issues: List<ProjectGitHubIssueUi>,
+    isActionRunning: Boolean,
+    onOpenDetail: (ProjectGitHubIssueUi) -> Unit,
+    onToggleIssueState: (ProjectGitHubIssueUi, Boolean) -> Unit,
+    onOpenIssuePage: (ProjectGitHubIssueUi) -> Unit
+) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Issues", style = MaterialTheme.typography.titleSmall)
+        if (issues.isEmpty()) {
+            Text(
+                text = "当前仓库还没有读取到 Issue。",
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedTextColor
+            )
+        } else {
+            issues.forEach { issue ->
+                ProjectInsetCard(
+                    shape = RoundedCornerShape(12.dp),
+                    surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "#${issue.number} · ${issue.title}",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = "${issue.stateLabel} · ${issue.authorLabel} · ${issue.updatedAt}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                        if (issue.labels.isNotEmpty()) {
+                            Text(
+                                text = issue.labels.joinToString(" · "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = mutedTextColor
+                            )
+                        }
+                        issue.body.takeIf { it.isNotBlank() }?.let { body ->
+                            Text(
+                                text = body.take(140),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = mutedTextColor
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(
+                                onClick = { onOpenDetail(issue) },
+                                enabled = !isActionRunning
+                            ) {
+                                Text("详情")
+                            }
+                            OutlinedButton(
+                                onClick = { onToggleIssueState(issue, issue.isOpen) },
+                                enabled = !isActionRunning
+                            ) {
+                                Text(if (issue.isOpen) "关闭" else "重开")
+                            }
+                            issue.htmlUrl?.takeIf { it.isNotBlank() }?.let {
+                                TextButton(
+                                    onClick = { onOpenIssuePage(issue) },
+                                    enabled = !isActionRunning
+                                ) {
+                                    Text("网页")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProjectGitHubPullRequestSection(
+    pullRequests: List<ProjectGitHubPullRequestUi>,
+    isActionRunning: Boolean,
+    onOpenDetail: (ProjectGitHubPullRequestUi) -> Unit,
+    onTogglePullRequestState: (ProjectGitHubPullRequestUi, Boolean) -> Unit,
+    onMergePullRequest: (ProjectGitHubPullRequestUi) -> Unit,
+    onOpenPullRequestPage: (ProjectGitHubPullRequestUi) -> Unit
+) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Pull Requests", style = MaterialTheme.typography.titleSmall)
+        if (pullRequests.isEmpty()) {
+            Text(
+                text = "当前仓库还没有读取到 Pull Request。",
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedTextColor
+            )
+        } else {
+            pullRequests.forEach { pullRequest ->
+                ProjectInsetCard(
+                    shape = RoundedCornerShape(12.dp),
+                    surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "#${pullRequest.number} · ${pullRequest.title}",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = "${pullRequest.stateLabel} · ${pullRequest.authorLabel} · ${pullRequest.headBranch} -> ${pullRequest.baseBranch}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                        if (pullRequest.labels.isNotEmpty()) {
+                            Text(
+                                text = pullRequest.labels.joinToString(" · "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = mutedTextColor
+                            )
+                        }
+                        pullRequest.body.takeIf { it.isNotBlank() }?.let { body ->
+                            Text(
+                                text = body.take(140),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = mutedTextColor
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(
+                                onClick = { onOpenDetail(pullRequest) },
+                                enabled = !isActionRunning
+                            ) {
+                                Text("详情")
+                            }
+                            if (pullRequest.canMerge) {
+                                Button(
+                                    onClick = { onMergePullRequest(pullRequest) },
+                                    enabled = !isActionRunning
+                                ) {
+                                    Text("合并")
+                                }
+                            }
+                            if (!pullRequest.isMerged) {
+                                OutlinedButton(
+                                    onClick = { onTogglePullRequestState(pullRequest, pullRequest.isOpen) },
+                                    enabled = !isActionRunning
+                                ) {
+                                    Text(if (pullRequest.isOpen) "关闭" else "重开")
+                                }
+                            }
+                            pullRequest.htmlUrl?.takeIf { it.isNotBlank() }?.let {
+                                TextButton(
+                                    onClick = { onOpenPullRequestPage(pullRequest) },
+                                    enabled = !isActionRunning
+                                ) {
+                                    Text("网页")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ProjectGitHistorySection(
     commits: List<ProjectGitCommitUi>,
     onOpenCommit: (ProjectGitCommitUi) -> Unit
@@ -5823,10 +6266,52 @@ private fun loadProjectGitHubActions(
             )
         }
         .orEmpty()
+    val issuesResult = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/issues?state=all&per_page=20&sort=updated&direction=desc"
+    )
+    if (!issuesResult.success) {
+        return state.copy(
+            workflows = workflows,
+            recentRuns = runs,
+            releases = releases,
+            errorMessage = issuesResult.error ?: "读取 Issue 列表失败"
+        )
+    }
+    val issues = parseProjectGitHubJsonArray(issuesResult.body)
+        ?.mapNotNull { item ->
+            val obj = item.jsonObjectOrNull() ?: return@mapNotNull null
+            if (obj.jsonObjectOrNull("pull_request") != null) return@mapNotNull null
+            parseProjectGitHubIssue(obj)
+        }
+        .orEmpty()
+    val pullRequestsResult = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/pulls?state=all&per_page=20&sort=updated&direction=desc"
+    )
+    if (!pullRequestsResult.success) {
+        return state.copy(
+            workflows = workflows,
+            recentRuns = runs,
+            releases = releases,
+            issues = issues,
+            errorMessage = pullRequestsResult.error ?: "读取 Pull Request 列表失败"
+        )
+    }
+    val pullRequests = parseProjectGitHubJsonArray(pullRequestsResult.body)
+        ?.mapNotNull { item ->
+            val obj = item.jsonObjectOrNull() ?: return@mapNotNull null
+            parseProjectGitHubPullRequest(obj)
+        }
+        .orEmpty()
     return state.copy(
         workflows = workflows,
         recentRuns = runs,
         releases = releases,
+        issues = issues,
+        pullRequests = pullRequests,
         errorMessage = null
     )
 }
@@ -6080,6 +6565,103 @@ private fun deleteProjectGitHubRelease(
             success = false,
             message = "",
             error = result.error ?: "删除 Release 失败"
+        )
+    }
+}
+
+private fun updateProjectGitHubIssueState(
+    repo: ProjectGitHubRepoRef,
+    issueNumber: Long,
+    close: Boolean,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubCommandResult {
+    val requestBody = buildJsonObject {
+        put("state", if (close) "closed" else "open")
+    }.toString()
+    val result = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/issues/$issueNumber",
+        method = "PATCH",
+        jsonBody = requestBody,
+        allowedCodes = setOf(200)
+    )
+    return if (result.success) {
+        ProjectGitHubCommandResult(
+            success = true,
+            message = if (close) "Issue #$issueNumber 已关闭。" else "Issue #$issueNumber 已重新打开。"
+        )
+    } else {
+        ProjectGitHubCommandResult(
+            success = false,
+            message = "",
+            error = result.error ?: if (close) "关闭 Issue 失败" else "重新打开 Issue 失败"
+        )
+    }
+}
+
+private fun updateProjectGitHubPullRequestState(
+    repo: ProjectGitHubRepoRef,
+    pullNumber: Long,
+    close: Boolean,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubCommandResult {
+    val requestBody = buildJsonObject {
+        put("state", if (close) "closed" else "open")
+    }.toString()
+    val result = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/pulls/$pullNumber",
+        method = "PATCH",
+        jsonBody = requestBody,
+        allowedCodes = setOf(200)
+    )
+    return if (result.success) {
+        ProjectGitHubCommandResult(
+            success = true,
+            message = if (close) "PR #$pullNumber 已关闭。" else "PR #$pullNumber 已重新打开。"
+        )
+    } else {
+        ProjectGitHubCommandResult(
+            success = false,
+            message = "",
+            error = result.error ?: if (close) "关闭 PR 失败" else "重新打开 PR 失败"
+        )
+    }
+}
+
+private fun mergeProjectGitHubPullRequest(
+    repo: ProjectGitHubRepoRef,
+    pullNumber: Long,
+    title: String,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubCommandResult {
+    val requestBody = buildJsonObject {
+        put("commit_title", "合并 PR #$pullNumber: ${title.ifBlank { "更新" }}")
+        put("merge_method", "merge")
+    }.toString()
+    val result = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/pulls/$pullNumber/merge",
+        method = "PUT",
+        jsonBody = requestBody,
+        allowedCodes = setOf(200)
+    )
+    return if (result.success) {
+        ProjectGitHubCommandResult(
+            success = true,
+            message = "PR #$pullNumber 已合并。"
+        )
+    } else {
+        ProjectGitHubCommandResult(
+            success = false,
+            message = "",
+            error = result.error ?: "合并 PR 失败"
         )
     }
 }
@@ -6596,6 +7178,42 @@ private fun JsonObject.jsonArrayOrEmpty(key: String) = this[key]?.jsonArray ?: e
 private fun JsonObject.jsonObjectOrNull(key: String): JsonObject? = this[key]?.jsonObjectOrNull()
 
 private fun kotlinx.serialization.json.JsonElement.jsonObjectOrNull(): JsonObject? = runCatching { jsonObject }.getOrNull()
+
+private fun parseProjectGitHubIssue(obj: JsonObject): ProjectGitHubIssueUi? {
+    return ProjectGitHubIssueUi(
+        number = obj.long("number") ?: return null,
+        title = obj.string("title").orEmpty().ifBlank { "未命名 Issue" },
+        body = obj.string("body").orEmpty(),
+        state = obj.string("state").orEmpty(),
+        authorLogin = obj.jsonObjectOrNull("user")?.string("login"),
+        updatedAt = obj.string("updated_at").orEmpty(),
+        htmlUrl = obj.string("html_url"),
+        labels = parseProjectGitHubLabels(obj)
+    )
+}
+
+private fun parseProjectGitHubPullRequest(obj: JsonObject): ProjectGitHubPullRequestUi? {
+    return ProjectGitHubPullRequestUi(
+        number = obj.long("number") ?: return null,
+        title = obj.string("title").orEmpty().ifBlank { "未命名 Pull Request" },
+        body = obj.string("body").orEmpty(),
+        state = obj.string("state").orEmpty(),
+        isDraft = obj.boolean("draft") ?: false,
+        isMerged = !obj.string("merged_at").isNullOrBlank(),
+        authorLogin = obj.jsonObjectOrNull("user")?.string("login"),
+        updatedAt = obj.string("updated_at").orEmpty(),
+        htmlUrl = obj.string("html_url"),
+        labels = parseProjectGitHubLabels(obj),
+        headBranch = obj.jsonObjectOrNull("head")?.string("ref").orEmpty(),
+        baseBranch = obj.jsonObjectOrNull("base")?.string("ref").orEmpty()
+    )
+}
+
+private fun parseProjectGitHubLabels(obj: JsonObject): List<String> {
+    return obj.jsonArrayOrEmpty("labels").mapNotNull { labelItem ->
+        labelItem.jsonObjectOrNull()?.string("name")?.takeIf { it.isNotBlank() }
+    }
+}
 
 private fun sanitizeProjectDownloadFileName(value: String): String {
     return value.replace(Regex("""[\\/:*?"<>|]"""), "_")
@@ -8649,6 +9267,53 @@ private data class ProjectGitHubReleaseUi(
     val htmlUrl: String?,
     val assets: List<ProjectGitHubReleaseAssetUi>
 )
+private data class ProjectGitHubIssueUi(
+    val number: Long,
+    val title: String,
+    val body: String,
+    val state: String,
+    val authorLogin: String?,
+    val updatedAt: String,
+    val htmlUrl: String?,
+    val labels: List<String>
+) {
+    val isOpen: Boolean get() = state.equals("open", ignoreCase = true)
+    val authorLabel: String get() = authorLogin?.takeIf { it.isNotBlank() } ?: "未知作者"
+    val stateLabel: String
+        get() = when {
+            isOpen -> "开放"
+            state.equals("closed", ignoreCase = true) -> "已关闭"
+            state.isBlank() -> "状态未知"
+            else -> "状态 ${state.lowercase(Locale.getDefault())}"
+        }
+}
+private data class ProjectGitHubPullRequestUi(
+    val number: Long,
+    val title: String,
+    val body: String,
+    val state: String,
+    val isDraft: Boolean,
+    val isMerged: Boolean,
+    val authorLogin: String?,
+    val updatedAt: String,
+    val htmlUrl: String?,
+    val labels: List<String>,
+    val headBranch: String,
+    val baseBranch: String
+) {
+    val isOpen: Boolean get() = state.equals("open", ignoreCase = true)
+    val canMerge: Boolean get() = isOpen && !isMerged && !isDraft
+    val authorLabel: String get() = authorLogin?.takeIf { it.isNotBlank() } ?: "未知作者"
+    val stateLabel: String
+        get() = when {
+            isMerged -> "已合并"
+            isDraft && isOpen -> "草稿中"
+            isOpen -> "开放"
+            state.equals("closed", ignoreCase = true) -> "已关闭"
+            state.isBlank() -> "状态未知"
+            else -> "状态 ${state.lowercase(Locale.getDefault())}"
+        }
+}
 private data class ProjectGitHubActionsState(
     val repo: ProjectGitHubRepoRef?,
     val viewerLogin: String?,
@@ -8658,6 +9323,8 @@ private data class ProjectGitHubActionsState(
     val workflows: List<ProjectGitHubWorkflowUi>,
     val recentRuns: List<ProjectGitHubWorkflowRunUi>,
     val releases: List<ProjectGitHubReleaseUi>,
+    val issues: List<ProjectGitHubIssueUi>,
+    val pullRequests: List<ProjectGitHubPullRequestUi>,
     val errorMessage: String?
 ) {
     companion object {
@@ -8670,6 +9337,8 @@ private data class ProjectGitHubActionsState(
             workflows = emptyList(),
             recentRuns = emptyList(),
             releases = emptyList(),
+            issues = emptyList(),
+            pullRequests = emptyList(),
             errorMessage = null
         )
     }
