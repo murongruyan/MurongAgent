@@ -2406,6 +2406,9 @@ private fun ProjectGitSection(
     var pullRequestComments by remember(activeProjectPath) { mutableStateOf(emptyList<ProjectGitHubCommentUi>()) }
     var isPullRequestCommentsLoading by remember(activeProjectPath) { mutableStateOf(false) }
     var pullRequestCommentDraft by remember(activeProjectPath) { mutableStateOf("") }
+    var pullRequestReviews by remember(activeProjectPath) { mutableStateOf(emptyList<ProjectGitHubPullRequestReviewUi>()) }
+    var isPullRequestReviewsLoading by remember(activeProjectPath) { mutableStateOf(false) }
+    var pullRequestReviewDraft by remember(activeProjectPath) { mutableStateOf("") }
     var showCreateIssueDialog by remember(activeProjectPath) { mutableStateOf(false) }
     var createIssueTitleDraft by remember(activeProjectPath) { mutableStateOf("") }
     var createIssueBodyDraft by remember(activeProjectPath) { mutableStateOf("") }
@@ -2511,6 +2514,36 @@ private fun ProjectGitSection(
         }
     }
 
+    fun loadPullRequestReviews(pullNumber: Long) {
+        val repo = githubActionsState.repo
+        val token = config.githubToken.trim()
+        pullRequestReviews = emptyList()
+        if (repo == null || token.isBlank()) {
+            isPullRequestReviewsLoading = false
+            return
+        }
+        scope.launch {
+            isPullRequestReviewsLoading = true
+            val result = withContext(Dispatchers.IO) {
+                loadProjectGitHubPullRequestReviews(
+                    repo = repo,
+                    pullNumber = pullNumber,
+                    token = token,
+                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                )
+            }
+            if (pullRequestDetailDialogState?.number == pullNumber) {
+                isPullRequestReviewsLoading = false
+                if (result.success) {
+                    pullRequestReviews = result.reviews
+                } else {
+                    pullRequestReviews = emptyList()
+                    feedbackMessage = result.error ?: "读取 PR 评审失败"
+                }
+            }
+        }
+    }
+
     fun openIssueDetail(issue: ProjectGitHubIssueUi) {
         issueDetailDialogState = issue
         issueCommentDraft = ""
@@ -2520,7 +2553,9 @@ private fun ProjectGitSection(
     fun openPullRequestDetail(pullRequest: ProjectGitHubPullRequestUi) {
         pullRequestDetailDialogState = pullRequest
         pullRequestCommentDraft = ""
+        pullRequestReviewDraft = ""
         loadPullRequestComments(pullRequest.number)
+        loadPullRequestReviews(pullRequest.number)
     }
 
     fun openGitHubPage(url: String?, fallbackMessage: String) {
@@ -5076,7 +5111,10 @@ private fun ProjectGitSection(
                 pullRequestDetailDialogState = null
                 pullRequestComments = emptyList()
                 pullRequestCommentDraft = ""
+                pullRequestReviews = emptyList()
+                pullRequestReviewDraft = ""
                 isPullRequestCommentsLoading = false
+                isPullRequestReviewsLoading = false
             },
             confirmButton = {
                 TextButton(
@@ -5084,7 +5122,10 @@ private fun ProjectGitSection(
                         pullRequestDetailDialogState = null
                         pullRequestComments = emptyList()
                         pullRequestCommentDraft = ""
+                        pullRequestReviews = emptyList()
+                        pullRequestReviewDraft = ""
                         isPullRequestCommentsLoading = false
+                        isPullRequestReviewsLoading = false
                     }
                 ) {
                     Text("关闭")
@@ -5178,6 +5219,47 @@ private fun ProjectGitSection(
                                 if (result.success) {
                                     pullRequestCommentDraft = ""
                                     loadPullRequestComments(pullRequest.number)
+                                    refreshGitHubActions()
+                                }
+                            }
+                        }
+                    )
+                    ProjectGitHubPullRequestReviewSection(
+                        reviews = pullRequestReviews,
+                        isLoading = isPullRequestReviewsLoading,
+                        isActionRunning = isGitHubActionRunning,
+                        draft = pullRequestReviewDraft,
+                        onDraftChange = { pullRequestReviewDraft = it },
+                        onRefresh = { loadPullRequestReviews(pullRequest.number) },
+                        onSubmitReview = { event ->
+                            val repo = githubActionsState.repo
+                            val token = config.githubToken.trim()
+                            val body = pullRequestReviewDraft.trim()
+                            if (repo == null || token.isBlank()) return@ProjectGitHubPullRequestReviewSection
+                            if ((event == "COMMENT" || event == "REQUEST_CHANGES") && body.isBlank()) {
+                                feedbackMessage = "评论和请求修改时请先填写评审意见。"
+                                return@ProjectGitHubPullRequestReviewSection
+                            }
+                            scope.launch {
+                                isGitHubActionRunning = true
+                                val result = withContext(Dispatchers.IO) {
+                                    submitProjectGitHubPullRequestReview(
+                                        repo = repo,
+                                        pullNumber = pullRequest.number,
+                                        body = body,
+                                        event = event,
+                                        token = token,
+                                        apiBaseUrl = config.getGitHubApiBaseUrl()
+                                    )
+                                }
+                                feedbackMessage = when {
+                                    result.success -> result.message.ifBlank { "已提交 PR 评审" }
+                                    else -> result.error ?: result.message.ifBlank { "提交 PR 评审失败" }
+                                }
+                                isGitHubActionRunning = false
+                                if (result.success) {
+                                    pullRequestReviewDraft = ""
+                                    loadPullRequestReviews(pullRequest.number)
                                     refreshGitHubActions()
                                 }
                             }
@@ -6315,6 +6397,102 @@ private fun ProjectGitHubCommentThreadSection(
 }
 
 @Composable
+private fun ProjectGitHubPullRequestReviewSection(
+    reviews: List<ProjectGitHubPullRequestReviewUi>,
+    isLoading: Boolean,
+    isActionRunning: Boolean,
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    onRefresh: () -> Unit,
+    onSubmitReview: (String) -> Unit
+) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("评审", style = MaterialTheme.typography.labelLarge)
+            TextButton(onClick = onRefresh, enabled = !isLoading && !isActionRunning) {
+                Text("刷新")
+            }
+        }
+        if (isLoading) {
+            Text(
+                text = "正在读取评审……",
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedTextColor
+            )
+        } else if (reviews.isEmpty()) {
+            Text(
+                text = "当前还没有评审记录。",
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedTextColor
+            )
+        } else {
+            reviews.forEach { review ->
+                ProjectInsetCard(
+                    shape = RoundedCornerShape(12.dp),
+                    surfaceColorOverride = surfaceColor.copy(alpha = 0.56f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "${review.authorLabel} · ${review.stateLabel} · ${review.timeLabel}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                        review.body.takeIf { it.isNotBlank() }?.let { body ->
+                            SelectionContainer {
+                                Text(
+                                    text = body,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        } ?: Text(
+                            text = "这个评审没有附带正文说明。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                    }
+                }
+            }
+        }
+        OutlinedTextField(
+            value = draft,
+            onValueChange = onDraftChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("评审意见") },
+            placeholder = { Text("可填写通过原因、修改意见或补充说明") },
+            minLines = 4,
+            maxLines = 8
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = { onSubmitReview("APPROVE") },
+                enabled = !isActionRunning
+            ) {
+                Text("批准")
+            }
+            OutlinedButton(
+                onClick = { onSubmitReview("REQUEST_CHANGES") },
+                enabled = !isActionRunning
+            ) {
+                Text("请求修改")
+            }
+            TextButton(
+                onClick = { onSubmitReview("COMMENT") },
+                enabled = !isActionRunning
+            ) {
+                Text("评审评论")
+            }
+        }
+    }
+}
+
+@Composable
 private fun ProjectGitHistorySection(
     commits: List<ProjectGitCommitUi>,
     onOpenCommit: (ProjectGitCommitUi) -> Unit
@@ -7284,6 +7462,77 @@ private fun createProjectGitHubIssueComment(
     }
 }
 
+private fun loadProjectGitHubPullRequestReviews(
+    repo: ProjectGitHubRepoRef,
+    pullNumber: Long,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubPullRequestReviewLoadResult {
+    val result = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/pulls/$pullNumber/reviews?per_page=50"
+    )
+    if (!result.success) {
+        return ProjectGitHubPullRequestReviewLoadResult(
+            success = false,
+            reviews = emptyList(),
+            error = result.error ?: "读取 PR 评审失败"
+        )
+    }
+    val reviews = parseProjectGitHubJsonArray(result.body)
+        ?.mapNotNull { item ->
+            val obj = item.jsonObjectOrNull() ?: return@mapNotNull null
+            parseProjectGitHubPullRequestReview(obj)
+        }
+        .orEmpty()
+    return ProjectGitHubPullRequestReviewLoadResult(
+        success = true,
+        reviews = reviews,
+        error = null
+    )
+}
+
+private fun submitProjectGitHubPullRequestReview(
+    repo: ProjectGitHubRepoRef,
+    pullNumber: Long,
+    body: String,
+    event: String,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubCommandResult {
+    val requestBody = buildJsonObject {
+        if (body.isNotBlank()) {
+            put("body", body)
+        }
+        put("event", event)
+    }.toString()
+    val result = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/pulls/$pullNumber/reviews",
+        method = "POST",
+        jsonBody = requestBody,
+        allowedCodes = setOf(200, 201)
+    )
+    return if (result.success) {
+        ProjectGitHubCommandResult(
+            success = true,
+            message = when (event) {
+                "APPROVE" -> "PR 评审已批准。"
+                "REQUEST_CHANGES" -> "已提交请求修改。"
+                else -> "PR 评审评论已提交。"
+            }
+        )
+    } else {
+        ProjectGitHubCommandResult(
+            success = false,
+            message = "",
+            error = result.error ?: "提交 PR 评审失败"
+        )
+    }
+}
+
 private fun loadProjectGitHubRemoteDirectory(
     repo: ProjectGitHubRepoRef,
     path: String,
@@ -7834,6 +8083,18 @@ private fun parseProjectGitHubComment(obj: JsonObject): ProjectGitHubCommentUi? 
         body = obj.string("body").orEmpty(),
         createdAt = obj.string("created_at").orEmpty(),
         updatedAt = obj.string("updated_at").orEmpty(),
+        htmlUrl = obj.string("html_url")
+    )
+}
+
+private fun parseProjectGitHubPullRequestReview(obj: JsonObject): ProjectGitHubPullRequestReviewUi? {
+    return ProjectGitHubPullRequestReviewUi(
+        id = obj.long("id") ?: return null,
+        authorLogin = obj.jsonObjectOrNull("user")?.string("login"),
+        body = obj.string("body").orEmpty(),
+        state = obj.string("state").orEmpty(),
+        submittedAt = obj.string("submitted_at").orEmpty(),
+        commitId = obj.string("commit_id"),
         htmlUrl = obj.string("html_url")
     )
 }
@@ -9954,6 +10215,28 @@ private data class ProjectGitHubCommentUi(
     val authorLabel: String get() = authorLogin?.takeIf { it.isNotBlank() } ?: "未知作者"
     val timeLabel: String get() = updatedAt.ifBlank { createdAt }.ifBlank { "时间未知" }
 }
+private data class ProjectGitHubPullRequestReviewUi(
+    val id: Long,
+    val authorLogin: String?,
+    val body: String,
+    val state: String,
+    val submittedAt: String,
+    val commitId: String?,
+    val htmlUrl: String?
+) {
+    val authorLabel: String get() = authorLogin?.takeIf { it.isNotBlank() } ?: "未知评审人"
+    val timeLabel: String get() = submittedAt.ifBlank { "时间未知" }
+    val stateLabel: String
+        get() = when {
+            state.equals("APPROVED", ignoreCase = true) -> "已批准"
+            state.equals("CHANGES_REQUESTED", ignoreCase = true) -> "请求修改"
+            state.equals("COMMENTED", ignoreCase = true) -> "已评论"
+            state.equals("DISMISSED", ignoreCase = true) -> "已忽略"
+            state.equals("PENDING", ignoreCase = true) -> "待提交"
+            state.isBlank() -> "状态未知"
+            else -> state.lowercase(Locale.getDefault())
+        }
+}
 private data class ProjectGitHubActionsState(
     val repo: ProjectGitHubRepoRef?,
     val viewerLogin: String?,
@@ -10102,6 +10385,11 @@ private data class ProjectGitHubRemoteFileLoadResult(
 private data class ProjectGitHubCommentLoadResult(
     val success: Boolean,
     val comments: List<ProjectGitHubCommentUi>,
+    val error: String?
+)
+private data class ProjectGitHubPullRequestReviewLoadResult(
+    val success: Boolean,
+    val reviews: List<ProjectGitHubPullRequestReviewUi>,
     val error: String?
 )
 private data class ProjectCppClassLikeBlock(val kind: String, val startLine: Int, val expectedBraceDepth: Int)
