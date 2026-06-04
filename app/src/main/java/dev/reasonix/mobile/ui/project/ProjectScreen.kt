@@ -144,6 +144,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.charset.MalformedInputException
 import java.text.SimpleDateFormat
@@ -151,6 +152,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.util.zip.ZipInputStream
 
 private fun findOwningRepo(
     filePath: String,
@@ -4183,6 +4185,11 @@ private fun ProjectGitSection(
             },
             title = { Text("运行工作流") },
             text = {
+                val quickRefs = listOfNotNull(
+                    gitState.currentBranch?.takeIf { it.isNotBlank() },
+                    githubActionsState.defaultBranch?.takeIf { it.isNotBlank() },
+                    gitState.upstreamBranch?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+                ).distinct()
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
                         text = workflow.name.ifBlank { workflow.path },
@@ -4203,8 +4210,22 @@ private fun ProjectGitSection(
                         },
                         singleLine = true
                     )
+                    if (quickRefs.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            quickRefs.forEach { ref ->
+                                FilterChip(
+                                    selected = workflowDispatchRefDraft == ref,
+                                    onClick = { workflowDispatchRefDraft = ref },
+                                    label = { Text(ref) }
+                                )
+                            }
+                        }
+                    }
                     Text(
-                        text = "通常填当前分支或默认分支，例如 `${gitState.currentBranch ?: githubActionsState.defaultBranch ?: "main"}`。",
+                        text = "会对你填写的 ref 执行 `workflow_dispatch`。通常填当前分支或默认分支，例如 `${gitState.currentBranch ?: githubActionsState.defaultBranch ?: "main"}`。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -4392,7 +4413,41 @@ private fun ProjectGitSection(
                         style = MaterialTheme.typography.bodySmall,
                         color = mutedTextColor
                     )
+                    Text(
+                        text = "Job ${detail.jobs.size} · 日志 ${detail.logEntries.size} · 产物 ${detail.artifacts.size}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                val repo = githubActionsState.repo ?: return@OutlinedButton
+                                val token = config.githubToken.trim()
+                                if (token.isBlank()) {
+                                    feedbackMessage = "请先在设置页填写 GitHub Token。"
+                                    return@OutlinedButton
+                                }
+                                scope.launch {
+                                    isGitHubActionRunning = true
+                                    val result = withContext(Dispatchers.IO) {
+                                        loadProjectGitHubWorkflowRunDetail(
+                                            repo = repo,
+                                            runId = detail.id,
+                                            token = token,
+                                            apiBaseUrl = config.getGitHubApiBaseUrl()
+                                        )
+                                    }
+                                    isGitHubActionRunning = false
+                                    if (result.success) {
+                                        workflowRunDetailDialogState = result.detail
+                                    } else {
+                                        feedbackMessage = result.error ?: "刷新工作流运行详情失败"
+                                    }
+                                }
+                            }
+                        ) {
+                            Text("刷新详情")
+                        }
                         detail.htmlUrl?.takeIf { it.isNotBlank() }?.let {
                             TextButton(
                                 onClick = {
@@ -4454,6 +4509,138 @@ private fun ProjectGitSection(
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
+                                }
+                            }
+                        }
+                    }
+                    when {
+                        detail.logsError?.isNotBlank() == true -> {
+                            ProjectInsetCard(
+                                shape = RoundedCornerShape(12.dp),
+                                surfaceColorOverride = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.52f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = detail.logsError,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+                        }
+                        detail.logEntries.isEmpty() -> {
+                            Text(
+                                text = "GitHub 还没有返回可预览的日志，通常是运行刚启动、还没产生日志文件。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = mutedTextColor
+                            )
+                        }
+                        else -> {
+                            Text("日志预览", style = MaterialTheme.typography.titleSmall)
+                            detail.logEntries.forEach { entry ->
+                                ProjectInsetCard(
+                                    shape = RoundedCornerShape(12.dp),
+                                    surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text(
+                                            text = entry.displayName,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                        Text(
+                                            text = "共 ${entry.totalLineCount} 行" +
+                                                if (entry.truncated) " · 预览已截断" else "",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = mutedTextColor
+                                        )
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            OutlinedButton(
+                                                onClick = { copyTextToClipboard(context, entry.preview) }
+                                            ) {
+                                                Text("复制预览")
+                                            }
+                                        }
+                                        SelectionContainer {
+                                            Text(
+                                                text = entry.preview,
+                                                style = MaterialTheme.typography.bodySmall.copy(
+                                                    fontFamily = FontFamily.Monospace,
+                                                    lineHeight = 18.sp
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (detail.artifacts.isNotEmpty() || !detail.artifactsError.isNullOrBlank()) {
+                        Text("运行产物", style = MaterialTheme.typography.titleSmall)
+                        detail.artifactsError?.takeIf { it.isNotBlank() }?.let { artifactError ->
+                            Text(
+                                text = artifactError,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        if (detail.artifacts.isEmpty()) {
+                            Text(
+                                text = "这次运行暂时还没有可下载的产物。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = mutedTextColor
+                            )
+                        } else {
+                            detail.artifacts.forEach { artifact ->
+                                ProjectInsetCard(
+                                    shape = RoundedCornerShape(12.dp),
+                                    surfaceColorOverride = chromeColor.copy(alpha = 0.52f),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text(
+                                            text = artifact.name,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                        Text(
+                                            text = "大小 ${artifact.sizeLabel} · 更新 ${artifact.updatedAt}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = mutedTextColor
+                                        )
+                                        if (artifact.expired) {
+                                            Text(
+                                                text = "该产物已过期，GitHub 不再提供下载。",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.error
+                                            )
+                                        } else {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    val repo = githubActionsState.repo ?: return@OutlinedButton
+                                                    val token = config.githubToken.trim()
+                                                    if (token.isBlank()) {
+                                                        feedbackMessage = "请先在设置页填写 GitHub Token。"
+                                                        return@OutlinedButton
+                                                    }
+                                                    val result = enqueueProjectGitHubArtifactDownload(
+                                                        context = context,
+                                                        repo = repo,
+                                                        artifact = artifact,
+                                                        token = token
+                                                    )
+                                                    recordGitHubDownload(
+                                                        typeLabel = "工作流产物",
+                                                        title = artifact.name,
+                                                        fileName = result.fileName,
+                                                        downloadId = result.downloadId,
+                                                        sourceUrl = detail.htmlUrl
+                                                    )
+                                                    feedbackMessage = "已开始下载 ${result.fileName}"
+                                                }
+                                            ) {
+                                                Text("下载产物")
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -5921,13 +6108,13 @@ private fun ProjectGitHubActionsSection(
                                 onClick = { onDownloadRunLogs(run) },
                                 enabled = !isActionRunning
                             ) {
-                                Text("日志")
+                                Text("日志 ZIP")
                             }
                             TextButton(
                                 onClick = { onOpenRunDetail(run) },
                                 enabled = !isActionRunning
                             ) {
-                                Text("详情")
+                                Text("控制台")
                             }
                             OutlinedButton(
                                 onClick = { onOpenArtifacts(run) },
@@ -7874,6 +8061,18 @@ private fun loadProjectGitHubWorkflowRunDetail(
             error = jobsResult.error ?: "读取工作流 job 详情失败"
         )
     }
+    val artifactsResult = loadProjectGitHubArtifacts(
+        repo = repo,
+        runId = runId,
+        token = token,
+        apiBaseUrl = apiBaseUrl
+    )
+    val logsResult = loadProjectGitHubWorkflowRunLogsPreview(
+        repo = repo,
+        runId = runId,
+        token = token,
+        apiBaseUrl = apiBaseUrl
+    )
     val runObject = parseProjectGitHubJsonObject(runResult.body)
         ?: return ProjectGitHubWorkflowRunDetailLoadResult(
             success = false,
@@ -7919,13 +8118,115 @@ private fun loadProjectGitHubWorkflowRunDetail(
         createdAt = runObject.string("created_at").orEmpty(),
         updatedAt = runObject.string("updated_at").orEmpty(),
         htmlUrl = runObject.string("html_url"),
-        jobs = jobs
+        jobs = jobs,
+        artifacts = artifactsResult.artifacts,
+        artifactsError = artifactsResult.error,
+        logEntries = logsResult.entries,
+        logsError = logsResult.error
     )
     return ProjectGitHubWorkflowRunDetailLoadResult(
         success = true,
         detail = detail,
         error = null
     )
+}
+
+private fun loadProjectGitHubWorkflowRunLogsPreview(
+    repo: ProjectGitHubRepoRef,
+    runId: Long,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubWorkflowLogLoadResult {
+    return runCatching {
+        val request = Request.Builder()
+            .url(buildProjectGitHubApiUrl(apiBaseUrl, "/repos/${repo.owner}/${repo.repo}/actions/runs/$runId/logs"))
+            .addHeader("Authorization", "Bearer $token")
+            .addHeader("Accept", "application/vnd.github+json")
+            .addHeader("X-GitHub-Api-Version", "2022-11-28")
+            .addHeader("User-Agent", "Reasonix-Mobile/1.0")
+            .get()
+            .build()
+        PROJECT_GITHUB_HTTP.newCall(request).execute().use { response ->
+            if (response.code !in setOf(200)) {
+                val errorBody = response.body?.string().orEmpty()
+                return@use ProjectGitHubWorkflowLogLoadResult(
+                    success = false,
+                    entries = emptyList(),
+                    error = parseProjectGitHubApiError(errorBody, response.code)
+                )
+            }
+            val entries = mutableListOf<ProjectGitHubWorkflowLogEntryUi>()
+            val bodyStream = response.body?.byteStream()
+                ?: return@use ProjectGitHubWorkflowLogLoadResult(
+                    success = false,
+                    entries = emptyList(),
+                    error = "工作流日志内容为空"
+                )
+            ZipInputStream(bodyStream).use { zip ->
+                var entry = zip.nextEntry
+                while (entry != null && entries.size < 12) {
+                    if (!entry.isDirectory) {
+                        val raw = readProjectGitHubZipEntryBytes(zip, maxBytes = 96 * 1024)
+                        val normalized = raw.first.toString(Charsets.UTF_8)
+                            .replace("\r\n", "\n")
+                            .trimEnd()
+                        val lines = normalized.lines().filterNot { it.isEmpty() }
+                        val previewLines = when {
+                            lines.size <= 120 -> lines
+                            else -> {
+                                val hiddenCount = (lines.size - 84).coerceAtLeast(0)
+                                lines.take(36) + listOf("... 已折叠 $hiddenCount 行 ...") + lines.takeLast(48)
+                            }
+                        }
+                        entries += ProjectGitHubWorkflowLogEntryUi(
+                            entryName = entry.name,
+                            displayName = entry.name.substringAfterLast('/').ifBlank { entry.name },
+                            preview = previewLines.joinToString("\n").ifBlank { "(当前日志文件为空)" },
+                            totalLineCount = lines.size,
+                            truncated = raw.second || lines.size > previewLines.size
+                        )
+                    }
+                    zip.closeEntry()
+                    entry = zip.nextEntry
+                }
+            }
+            ProjectGitHubWorkflowLogLoadResult(
+                success = true,
+                entries = entries,
+                error = null
+            )
+        }
+    }.getOrElse { error ->
+        ProjectGitHubWorkflowLogLoadResult(
+            success = false,
+            entries = emptyList(),
+            error = error.message ?: "读取工作流日志失败"
+        )
+    }
+}
+
+private fun readProjectGitHubZipEntryBytes(
+    zip: ZipInputStream,
+    maxBytes: Int
+): Pair<ByteArray, Boolean> {
+    val buffer = ByteArray(4096)
+    val output = ByteArrayOutputStream()
+    var truncated = false
+    while (true) {
+        val read = zip.read(buffer)
+        if (read <= 0) break
+        val remaining = maxBytes - output.size()
+        if (remaining <= 0) {
+            truncated = true
+            continue
+        }
+        val toWrite = read.coerceAtMost(remaining)
+        output.write(buffer, 0, toWrite)
+        if (toWrite < read) {
+            truncated = true
+        }
+    }
+    return output.toByteArray() to truncated
 }
 
 private fun updateProjectGitHubRelease(
@@ -11237,13 +11538,24 @@ private data class ProjectGitHubWorkflowRunDetailUi(
     val createdAt: String,
     val updatedAt: String,
     val htmlUrl: String?,
-    val jobs: List<ProjectGitHubWorkflowJobUi>
+    val jobs: List<ProjectGitHubWorkflowJobUi>,
+    val artifacts: List<ProjectGitHubArtifactUi>,
+    val artifactsError: String?,
+    val logEntries: List<ProjectGitHubWorkflowLogEntryUi>,
+    val logsError: String?
 ) {
     val statusLabel: String
         get() = buildProjectGitHubStatusLabel(status, conclusion)
     val issueSummaries: List<String>
         get() = jobs.flatMap { it.issueSummaries }.take(8)
 }
+private data class ProjectGitHubWorkflowLogEntryUi(
+    val entryName: String,
+    val displayName: String,
+    val preview: String,
+    val totalLineCount: Int,
+    val truncated: Boolean
+)
 private data class ProjectGitHubArtifactUi(
     val id: Long,
     val name: String,
@@ -11526,6 +11838,11 @@ private data class ProjectGitHubArtifactLoadResult(
 private data class ProjectGitHubWorkflowRunDetailLoadResult(
     val success: Boolean,
     val detail: ProjectGitHubWorkflowRunDetailUi?,
+    val error: String?
+)
+private data class ProjectGitHubWorkflowLogLoadResult(
+    val success: Boolean,
+    val entries: List<ProjectGitHubWorkflowLogEntryUi>,
     val error: String?
 )
 private data class ProjectGitHubRemoteDirectoryLoadResult(
