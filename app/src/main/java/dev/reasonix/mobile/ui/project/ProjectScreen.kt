@@ -6671,8 +6671,14 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
     val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
     val selectedFile = files.firstOrNull { it.path == pathDraft }
+    val selectedLine = lineDraft.toIntOrNull()
     val suggestedLines = remember(selectedFile?.path, selectedFile?.patch) {
         extractProjectGitHubReviewLineSuggestions(selectedFile?.patch).take(18)
+    }
+    val commentsByPathAndLine = remember(comments) {
+        comments
+            .filter { it.path.isNotBlank() && it.line != null }
+            .groupBy { it.path to (it.line ?: -1) }
     }
     var expandedFilePath by remember(files, pathDraft) {
         mutableStateOf(pathDraft.ifBlank { files.firstOrNull()?.path.orEmpty() })
@@ -6834,6 +6840,10 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                                 ?.takeIf { it in visibleHunkOptions.indices }
                                 ?.let { listOf(visibleHunkOptions[it]) }
                                 ?: visibleHunkOptions
+                            val selectedLineComments = remember(commentsByPathAndLine, file.path, selectedLine) {
+                                if (selectedLine == null) emptyList()
+                                else commentsByPathAndLine[file.path to selectedLine].orEmpty()
+                            }
                             if (visibleHunkOptions.size > 1) {
                                 Row(
                                     modifier = Modifier
@@ -6901,9 +6911,14 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                                                     color = mutedTextColor
                                                 )
                                                 hunk.lines.forEach { diffLine ->
+                                                    val lineComments = remember(commentsByPathAndLine, file.path, diffLine.rightLineNumber) {
+                                                        diffLine.rightLineNumber?.let { line ->
+                                                            commentsByPathAndLine[file.path to line].orEmpty()
+                                                        }.orEmpty()
+                                                    }
                                                     val isHighlightedLine =
                                                         pathDraft == file.path &&
-                                                            lineDraft.toIntOrNull() == diffLine.rightLineNumber
+                                                            selectedLine == diffLine.rightLineNumber
                                                     Row(
                                                         modifier = Modifier
                                                             .fillMaxWidth()
@@ -6944,6 +6959,47 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                                                                 modifier = Modifier.weight(1f)
                                                             )
                                                         }
+                                                        if (lineComments.isNotEmpty()) {
+                                                            AssistChip(
+                                                                onClick = {
+                                                                    diffLine.rightLineNumber?.let { line ->
+                                                                        onPickPath(file.path)
+                                                                        onPickLine(line.toString())
+                                                                    }
+                                                                },
+                                                                label = { Text("${lineComments.size}评") }
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if (selectedLineComments.isNotEmpty()) {
+                                    ProjectInsetCard(
+                                        shape = RoundedCornerShape(10.dp),
+                                        surfaceColorOverride = surfaceColor.copy(alpha = 0.42f),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Text(
+                                                text = "当前行评论 · ${file.path.substringAfterLast('/')} · L$selectedLine",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = mutedTextColor
+                                            )
+                                            selectedLineComments.forEach { comment ->
+                                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                                    Text(
+                                                        text = "${comment.authorLabel} · ${comment.timeLabel}",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = mutedTextColor
+                                                    )
+                                                    SelectionContainer {
+                                                        Text(
+                                                            text = comment.body.ifBlank { "(空评论)" },
+                                                            style = MaterialTheme.typography.bodySmall
+                                                        )
                                                     }
                                                 }
                                             }
