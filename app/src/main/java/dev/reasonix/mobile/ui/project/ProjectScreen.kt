@@ -6718,6 +6718,12 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
     }
     var lineCommentReplyTargetId by remember(lineCommentDialogTarget) { mutableStateOf<Long?>(null) }
     var lineCommentReplyDraft by remember(lineCommentDialogTarget) { mutableStateOf("") }
+    var localLineCommentReplies by remember {
+        mutableStateOf<Map<Pair<String, Int>, List<ProjectGitHubPullRequestReviewCommentUi>>>(emptyMap())
+    }
+    LaunchedEffect(comments) {
+        localLineCommentReplies = emptyMap()
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -7116,11 +7122,26 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
         }
     }
     lineCommentDialogTarget?.let { (dialogPath, dialogLine) ->
-        val dialogComments = commentsByPathAndLine[dialogPath to dialogLine].orEmpty()
+        val dialogComments = commentsByPathAndLine[dialogPath to dialogLine].orEmpty() +
+            localLineCommentReplies[dialogPath to dialogLine].orEmpty()
+        val dialogScrollState = rememberScrollState()
+        LaunchedEffect(lineCommentDialogTarget, dialogComments.size) {
+            if (dialogComments.isNotEmpty()) {
+                dialogScrollState.animateScrollTo(dialogScrollState.maxValue)
+            }
+        }
         ReasonixAlertDialog(
-            onDismissRequest = { lineCommentDialogTarget = null },
+            onDismissRequest = {
+                lineCommentDialogTarget = null
+                lineCommentReplyTargetId = null
+                lineCommentReplyDraft = ""
+            },
             confirmButton = {
-                TextButton(onClick = { lineCommentDialogTarget = null }) {
+                TextButton(onClick = {
+                    lineCommentDialogTarget = null
+                    lineCommentReplyTargetId = null
+                    lineCommentReplyDraft = ""
+                }) {
                     Text("关闭")
                 }
             },
@@ -7130,7 +7151,7 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = 420.dp)
-                        .verticalScroll(rememberScrollState()),
+                        .verticalScroll(dialogScrollState),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     if (dialogComments.isEmpty()) {
@@ -7201,6 +7222,25 @@ private fun ProjectGitHubPullRequestReviewCommentSection(
                                                 val body = lineCommentReplyDraft.trim()
                                                 if (body.isBlank()) return@Button
                                                 onReplyToComment(replyTargetId, body) {
+                                                    localLineCommentReplies =
+                                                        localLineCommentReplies.toMutableMap().apply {
+                                                            val key = dialogPath to dialogLine
+                                                            val existing = get(key).orEmpty()
+                                                            put(
+                                                                key,
+                                                                existing + ProjectGitHubPullRequestReviewCommentUi(
+                                                                    id = -System.currentTimeMillis(),
+                                                                    authorLogin = "我",
+                                                                    body = body,
+                                                                    path = dialogPath,
+                                                                    line = dialogLine,
+                                                                    side = "RIGHT",
+                                                                    createdAt = "",
+                                                                    updatedAt = "刚刚",
+                                                                    htmlUrl = null
+                                                                )
+                                                            )
+                                                        }
                                                     lineCommentReplyDraft = ""
                                                     lineCommentReplyTargetId = null
                                                 }
