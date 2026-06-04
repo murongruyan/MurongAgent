@@ -38,6 +38,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -4411,6 +4413,9 @@ private fun ProjectGitSection(
                 var showOnlyMatchedLogs by remember(detail.id) {
                     mutableStateOf(false)
                 }
+                var activeMatchedLogEntryName by remember(detail.id) {
+                    mutableStateOf<String?>(null)
+                }
                 var expandedLogEntries by remember(detail.id) {
                     mutableStateOf(setOf<String>())
                 }
@@ -4489,6 +4494,28 @@ private fun ProjectGitSection(
                         base
                     }
                 }
+                val matchedVisibleLogEntries = remember(visibleLogEntries, logSearchHits, logSearchQuery) {
+                    if (logSearchQuery.isBlank()) {
+                        emptyList()
+                    } else {
+                        visibleLogEntries.filter { entry ->
+                            logSearchHits[entry.entryName]?.hasMatch == true
+                        }
+                    }
+                }
+                val activeMatchedLogEntryIndex = remember(matchedVisibleLogEntries, activeMatchedLogEntryName) {
+                    matchedVisibleLogEntries.indexOfFirst { it.entryName == activeMatchedLogEntryName }
+                }
+                val logListScrollState = rememberScrollState()
+                LaunchedEffect(logSearchQuery, matchedVisibleLogEntries) {
+                    if (logSearchQuery.isBlank() || matchedVisibleLogEntries.isEmpty()) {
+                        activeMatchedLogEntryName = null
+                    } else {
+                        val topMatchedEntryName = matchedVisibleLogEntries.first().entryName
+                        activeMatchedLogEntryName = topMatchedEntryName
+                        expandedLogEntries = expandedLogEntries + topMatchedEntryName
+                    }
+                }
                 val visibleJobs = remember(detail.jobs, selectedIssueJobName) {
                     val filtered = if (selectedIssueJobName.isNullOrBlank()) {
                         detail.jobs
@@ -4501,7 +4528,7 @@ private fun ProjectGitSection(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = 460.dp)
-                        .verticalScroll(rememberScrollState()),
+                        .verticalScroll(logListScrollState),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
@@ -4794,6 +4821,7 @@ private fun ProjectGitSection(
                                         onClick = {
                                             logSearchQuery = ""
                                             showOnlyMatchedLogs = false
+                                            activeMatchedLogEntryName = null
                                         },
                                         label = { Text("清空搜索") }
                                     )
@@ -4834,6 +4862,57 @@ private fun ProjectGitSection(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = mutedTextColor
                                 )
+                                if (matchedVisibleLogEntries.isNotEmpty()) {
+                                    Row(
+                                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                val totalMatches = matchedVisibleLogEntries.size
+                                                if (totalMatches == 0) return@OutlinedButton
+                                                val currentIndex = activeMatchedLogEntryIndex
+                                                    .takeIf { it >= 0 }
+                                                    ?: 0
+                                                val nextIndex = (currentIndex - 1 + totalMatches) % totalMatches
+                                                val targetEntryName = matchedVisibleLogEntries[nextIndex].entryName
+                                                activeMatchedLogEntryName = targetEntryName
+                                                expandedLogEntries = expandedLogEntries + targetEntryName
+                                            }
+                                        ) {
+                                            Text("上一处")
+                                        }
+                                        OutlinedButton(
+                                            onClick = {
+                                                val totalMatches = matchedVisibleLogEntries.size
+                                                if (totalMatches == 0) return@OutlinedButton
+                                                val currentIndex = activeMatchedLogEntryIndex
+                                                    .takeIf { it >= 0 }
+                                                    ?: -1
+                                                val nextIndex = (currentIndex + 1 + totalMatches) % totalMatches
+                                                val targetEntryName = matchedVisibleLogEntries[nextIndex].entryName
+                                                activeMatchedLogEntryName = targetEntryName
+                                                expandedLogEntries = expandedLogEntries + targetEntryName
+                                            }
+                                        ) {
+                                            Text("下一处")
+                                        }
+                                        FilterChip(
+                                            selected = true,
+                                            onClick = {},
+                                            label = {
+                                                Text(
+                                                    text = "第 ${(activeMatchedLogEntryIndex.takeIf { it >= 0 } ?: 0) + 1} / ${matchedVisibleLogEntries.size} 个命中"
+                                                )
+                                            }
+                                        )
+                                        FilterChip(
+                                            selected = true,
+                                            onClick = {},
+                                            label = { Text("最相关日志已自动展开") }
+                                        )
+                                    }
+                                }
                             }
                             if (visibleLogEntries.isEmpty()) {
                                 Text(
@@ -4847,11 +4926,16 @@ private fun ProjectGitSection(
                                 )
                             }
                             visibleLogEntries.forEach { entry ->
+                                val bringIntoViewRequester = remember(entry.entryName) {
+                                    BringIntoViewRequester()
+                                }
                                 val isExpanded = expandedLogEntries.contains(entry.entryName)
                                 val matchesFocusedStep = !selectedIssueStepName.isNullOrBlank() &&
                                     focusedStepMatchedEntries.contains(entry.entryName)
                                 val searchHit = logSearchHits[entry.entryName]
                                 val matchesSearch = searchHit?.hasMatch == true
+                                val isActiveSearchMatch = matchesSearch &&
+                                    activeMatchedLogEntryName == entry.entryName
                                 val previewText = if (isExpanded) {
                                     entry.preview
                                 } else {
@@ -4863,16 +4947,27 @@ private fun ProjectGitSection(
                                         query = logSearchQuery
                                     )
                                 }
+                                LaunchedEffect(isActiveSearchMatch) {
+                                    if (isActiveSearchMatch) {
+                                        bringIntoViewRequester.bringIntoView()
+                                    }
+                                }
                                 ProjectInsetCard(
                                     shape = RoundedCornerShape(12.dp),
-                                    surfaceColorOverride = if (matchesFocusedStep) {
+                                    surfaceColorOverride = if (matchesFocusedStep && isActiveSearchMatch) {
+                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
+                                    } else if (matchesFocusedStep) {
                                         MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.52f)
+                                    } else if (isActiveSearchMatch) {
+                                        MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.66f)
                                     } else if (matchesSearch) {
                                         chromeColor.copy(alpha = 0.56f)
                                     } else {
                                         surfaceColor.copy(alpha = 0.58f)
                                     },
-                                    modifier = Modifier.fillMaxWidth()
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .bringIntoViewRequester(bringIntoViewRequester)
                                 ) {
                                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                         Text(
@@ -4890,6 +4985,9 @@ private fun ProjectGitSection(
                                                 }
                                                 if (logSearchQuery.isNotBlank() && matchesSearch) {
                                                     append(" · 搜索命中 ${searchHit?.matchedLineCount ?: 0} 行")
+                                                }
+                                                if (isActiveSearchMatch) {
+                                                    append(" · 当前搜索焦点")
                                                 }
                                             },
                                             style = MaterialTheme.typography.bodySmall,
