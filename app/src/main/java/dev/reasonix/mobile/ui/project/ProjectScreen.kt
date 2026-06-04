@@ -4857,6 +4857,12 @@ private fun ProjectGitSection(
                                 } else {
                                     projectGitHubCollapsedLogPreview(entry.preview)
                                 }
+                                val highlightedPreviewText = remember(previewText, logSearchQuery) {
+                                    highlightProjectGitHubLogText(
+                                        text = previewText,
+                                        query = logSearchQuery
+                                    )
+                                }
                                 ProjectInsetCard(
                                     shape = RoundedCornerShape(12.dp),
                                     surfaceColorOverride = if (matchesFocusedStep) {
@@ -4890,9 +4896,15 @@ private fun ProjectGitSection(
                                             color = mutedTextColor
                                         )
                                         if (logSearchQuery.isNotBlank() && matchesSearch) {
+                                            val highlightedSnippet = remember(searchHit?.snippet, logSearchQuery) {
+                                                highlightProjectGitHubLogText(
+                                                    text = searchHit?.snippet?.ifBlank { "文件名命中搜索关键字" }
+                                                        ?: "文件名命中搜索关键字",
+                                                    query = logSearchQuery
+                                                )
+                                            }
                                             Text(
-                                                text = searchHit?.snippet?.ifBlank { "文件名命中搜索关键字" }
-                                                    ?: "文件名命中搜索关键字",
+                                                text = highlightedSnippet,
                                                 style = MaterialTheme.typography.bodySmall.copy(
                                                     fontFamily = FontFamily.Monospace,
                                                     lineHeight = 18.sp
@@ -4920,7 +4932,7 @@ private fun ProjectGitSection(
                                         }
                                         SelectionContainer {
                                             Text(
-                                                text = previewText,
+                                                text = highlightedPreviewText,
                                                 style = MaterialTheme.typography.bodySmall.copy(
                                                     fontFamily = FontFamily.Monospace,
                                                     lineHeight = 18.sp
@@ -8664,6 +8676,61 @@ private fun buildProjectGitHubWorkflowLogSearchHit(
         matchedLineCount = matchedLines.size,
         snippet = snippet
     )
+}
+
+private fun highlightProjectGitHubLogText(
+    text: String,
+    query: String
+): AnnotatedString = buildAnnotatedString {
+    val normalizedQuery = query.trim()
+    if (normalizedQuery.isBlank()) {
+        append(text)
+        return@buildAnnotatedString
+    }
+    val lowerQuery = normalizedQuery.lowercase(Locale.getDefault())
+    text.lines().forEachIndexed { index, line ->
+        val lowerLine = line.lowercase(Locale.getDefault())
+        val hasRawMatch = lowerLine.contains(lowerQuery)
+        when {
+            hasRawMatch -> {
+                var startIndex = 0
+                while (startIndex < line.length) {
+                    val matchIndex = lowerLine.indexOf(lowerQuery, startIndex)
+                    if (matchIndex < 0) {
+                        append(line.substring(startIndex))
+                        break
+                    }
+                    append(line.substring(startIndex, matchIndex))
+                    pushStyle(
+                        SpanStyle(
+                            background = Color(0x88FFB300),
+                            color = Color(0xFF111111),
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
+                    append(line.substring(matchIndex, matchIndex + normalizedQuery.length))
+                    pop()
+                    startIndex = matchIndex + normalizedQuery.length
+                }
+            }
+
+            projectGitHubConsoleContainsToken(line, normalizedQuery) -> {
+                pushStyle(
+                    SpanStyle(
+                        background = Color(0x33FFD54F),
+                        fontWeight = FontWeight.Medium
+                    )
+                )
+                append(line)
+                pop()
+            }
+
+            else -> append(line)
+        }
+        if (index < text.lines().lastIndex) {
+            append('\n')
+        }
+    }
 }
 
 private fun projectGitHubCollapsedLogPreview(
