@@ -4410,6 +4410,12 @@ private fun ProjectGitSection(
                 var logSearchQuery by remember(detail.id) {
                     mutableStateOf("")
                 }
+                var selectedLogSearchPresets by remember(detail.id) {
+                    mutableStateOf(setOf<String>())
+                }
+                var logSearchRequireAllTerms by remember(detail.id) {
+                    mutableStateOf(false)
+                }
                 var showOnlyMatchedLogs by remember(detail.id) {
                     mutableStateOf(false)
                 }
@@ -4468,24 +4474,31 @@ private fun ProjectGitSection(
                         base
                     }
                 }
-                val logSearchHits = remember(scopedLogEntries, logSearchQuery) {
+                val logSearchTerms = remember(logSearchQuery, selectedLogSearchPresets) {
+                    buildProjectGitHubWorkflowLogSearchTerms(
+                        query = logSearchQuery,
+                        selectedPresets = selectedLogSearchPresets
+                    )
+                }
+                val searchActive = logSearchTerms.isNotEmpty()
+                val logSearchHits = remember(scopedLogEntries, logSearchTerms, logSearchRequireAllTerms) {
                     scopedLogEntries.associate { entry ->
                         entry.entryName to buildProjectGitHubWorkflowLogSearchHit(
                             entry = entry,
-                            query = logSearchQuery
+                            queries = logSearchTerms,
+                            requireAllTerms = logSearchRequireAllTerms
                         )
                     }
                 }
-                val visibleLogEntries = remember(scopedLogEntries, logSearchHits, logSearchQuery, showOnlyMatchedLogs) {
-                    val queryActive = logSearchQuery.isNotBlank()
-                    val base = if (queryActive && showOnlyMatchedLogs) {
+                val visibleLogEntries = remember(scopedLogEntries, logSearchHits, searchActive, showOnlyMatchedLogs) {
+                    val base = if (searchActive && showOnlyMatchedLogs) {
                         scopedLogEntries.filter { entry ->
                             logSearchHits[entry.entryName]?.hasMatch == true
                         }
                     } else {
                         scopedLogEntries
                     }
-                    if (queryActive) {
+                    if (searchActive) {
                         base.sortedWith(
                             compareByDescending<ProjectGitHubWorkflowLogEntryUi> { entry ->
                                 logSearchHits[entry.entryName]?.hasMatch == true
@@ -4497,8 +4510,8 @@ private fun ProjectGitSection(
                         base
                     }
                 }
-                val matchedVisibleLogEntries = remember(visibleLogEntries, logSearchHits, logSearchQuery) {
-                    if (logSearchQuery.isBlank()) {
+                val matchedVisibleLogEntries = remember(visibleLogEntries, logSearchHits, searchActive) {
+                    if (!searchActive) {
                         emptyList()
                     } else {
                         visibleLogEntries.filter { entry ->
@@ -4510,9 +4523,9 @@ private fun ProjectGitSection(
                     matchedVisibleLogEntries.indexOfFirst { it.entryName == activeMatchedLogEntryName }
                 }
                 val logListScrollState = rememberScrollState()
-                LaunchedEffect(logSearchQuery, matchedVisibleLogEntries) {
+                LaunchedEffect(logSearchTerms, logSearchRequireAllTerms, matchedVisibleLogEntries) {
                     activeMatchedLineIndexByEntry.clear()
-                    if (logSearchQuery.isBlank() || matchedVisibleLogEntries.isEmpty()) {
+                    if (!searchActive || matchedVisibleLogEntries.isEmpty()) {
                         activeMatchedLogEntryName = null
                     } else {
                         val topMatchedEntryName = matchedVisibleLogEntries.first().entryName
@@ -4802,16 +4815,27 @@ private fun ProjectGitSection(
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
                                 label = { Text("搜索日志关键字") },
-                                placeholder = { Text("error / exception / task name") }
+                                placeholder = { Text("空格、/、, 分词，或用引号保留完整短语") }
                             )
                             Row(
                                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 PROJECT_GITHUB_WORKFLOW_LOG_SEARCH_PRESETS.forEach { preset ->
+                                    val presetSelected = selectedLogSearchPresets.any {
+                                        it.equals(preset, ignoreCase = true)
+                                    }
                                     FilterChip(
-                                        selected = logSearchQuery.equals(preset, ignoreCase = true),
-                                        onClick = { logSearchQuery = preset },
+                                        selected = presetSelected,
+                                        onClick = {
+                                            selectedLogSearchPresets = if (presetSelected) {
+                                                selectedLogSearchPresets.filterNot {
+                                                    it.equals(preset, ignoreCase = true)
+                                                }.toSet()
+                                            } else {
+                                                selectedLogSearchPresets + preset
+                                            }
+                                        },
                                         label = { Text(preset) }
                                     )
                                 }
@@ -4827,7 +4851,19 @@ private fun ProjectGitSection(
                                         label = { Text("用当前步骤名") }
                                     )
                                 }
-                                if (logSearchQuery.isNotBlank()) {
+                                if (logSearchTerms.size > 1) {
+                                    FilterChip(
+                                        selected = !logSearchRequireAllTerms,
+                                        onClick = { logSearchRequireAllTerms = false },
+                                        label = { Text("任一命中") }
+                                    )
+                                    FilterChip(
+                                        selected = logSearchRequireAllTerms,
+                                        onClick = { logSearchRequireAllTerms = true },
+                                        label = { Text("全部命中") }
+                                    )
+                                }
+                                if (searchActive) {
                                     FilterChip(
                                         selected = showOnlyMatchedLogs,
                                         onClick = { showOnlyMatchedLogs = !showOnlyMatchedLogs },
@@ -4837,12 +4873,30 @@ private fun ProjectGitSection(
                                         selected = false,
                                         onClick = {
                                             logSearchQuery = ""
+                                            selectedLogSearchPresets = emptySet()
+                                            logSearchRequireAllTerms = false
                                             showOnlyMatchedLogs = false
                                             activeMatchedLogEntryName = null
                                         },
                                         label = { Text("清空搜索") }
                                     )
                                 }
+                            }
+                            if (selectedLogSearchPresets.isNotEmpty()) {
+                                Text(
+                                    text = "已选预设 ${selectedLogSearchPresets.size} 个：${
+                                        selectedLogSearchPresets.joinToString(" / ")
+                                    }",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
+                                )
+                            }
+                            if (searchActive) {
+                                Text(
+                                    text = "当前关键词：${logSearchTerms.joinToString(" / ")}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
+                                )
                             }
                             if (!selectedIssueStepName.isNullOrBlank()) {
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -4870,12 +4924,18 @@ private fun ProjectGitSection(
                                     )
                                 }
                             }
-                            if (logSearchQuery.isNotBlank()) {
+                            if (searchActive) {
                                 val matchedCount = scopedLogEntries.count { entry ->
                                     logSearchHits[entry.entryName]?.hasMatch == true
                                 }
                                 Text(
-                                    text = "搜索命中 $matchedCount / ${scopedLogEntries.size} 个日志文件",
+                                    text = buildString {
+                                        append("搜索命中 $matchedCount / ${scopedLogEntries.size} 个日志文件")
+                                        append(" · 关键词 ${logSearchTerms.size} 个")
+                                        if (logSearchTerms.size > 1) {
+                                            append(if (logSearchRequireAllTerms) " · 全部命中" else " · 任一命中")
+                                        }
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = mutedTextColor
                                 )
@@ -4937,7 +4997,7 @@ private fun ProjectGitSection(
                             }
                             if (visibleLogEntries.isEmpty()) {
                                 Text(
-                                    text = if (logSearchQuery.isNotBlank()) {
+                                    text = if (searchActive) {
                                         "当前筛选条件下没有命中的日志文件，可以清空搜索、关闭“只看搜索命中”，或切回全部 Job。"
                                     } else {
                                         "当前筛选条件下没有命中的日志文件，可以关闭“只看异常日志”或切回全部 Job。"
@@ -4971,7 +5031,7 @@ private fun ProjectGitSection(
                                     ?.getOrNull(activeMatchedLineIndex)
                                 val previewText = if (isExpanded) {
                                     entry.preview
-                                } else if (logSearchQuery.isNotBlank() && matchesSearch) {
+                                } else if (searchActive && matchesSearch) {
                                     projectGitHubCollapsedLogPreviewAroundMatch(
                                         preview = entry.preview,
                                         matchedLineIndices = searchHit?.matchedLineIndices.orEmpty(),
@@ -5016,7 +5076,7 @@ private fun ProjectGitSection(
                                                 if (matchesFocusedStep) {
                                                     append(" · 命中当前步骤")
                                                 }
-                                                if (logSearchQuery.isNotBlank() && matchesSearch) {
+                                                if (searchActive && matchesSearch) {
                                                     append(" · 搜索命中 ${searchHit?.matchedLineCount ?: 0} 行")
                                                 }
                                                 if (isActiveSearchMatch) {
@@ -5026,12 +5086,12 @@ private fun ProjectGitSection(
                                             style = MaterialTheme.typography.bodySmall,
                                             color = mutedTextColor
                                         )
-                                        if (logSearchQuery.isNotBlank() && matchesSearch) {
-                                            val highlightedSnippet = remember(searchHit?.snippet, logSearchQuery) {
+                                        if (searchActive && matchesSearch) {
+                                            val highlightedSnippet = remember(searchHit?.snippet, logSearchTerms) {
                                                 highlightProjectGitHubLogText(
                                                     text = searchHit?.snippet?.ifBlank { "文件名命中搜索关键字" }
                                                         ?: "文件名命中搜索关键字",
-                                                    query = logSearchQuery
+                                                    queries = logSearchTerms
                                                 )
                                             }
                                             Text(
@@ -5043,7 +5103,7 @@ private fun ProjectGitSection(
                                                 color = MaterialTheme.colorScheme.primary
                                             )
                                         }
-                                        if (logSearchQuery.isNotBlank() && (searchHit?.matchedLineIndices?.isNotEmpty() == true)) {
+                                        if (searchActive && (searchHit?.matchedLineIndices?.isNotEmpty() == true)) {
                                             Row(
                                                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -5120,7 +5180,7 @@ private fun ProjectGitSection(
                                         }
                                         ProjectGitHubWorkflowLogPreviewBody(
                                             preview = previewText,
-                                            query = logSearchQuery,
+                                            queries = logSearchTerms,
                                             expanded = isExpanded,
                                             activeLineNumber = activeMatchedLineNumber?.takeIf { isActiveSearchMatch }
                                         )
@@ -8835,12 +8895,128 @@ private fun projectGitHubConsoleContainsToken(value: String, query: String): Boo
     return normalizeProjectGitHubConsoleToken(value).contains(normalizedQuery)
 }
 
+private fun buildProjectGitHubWorkflowLogSearchTerms(
+    query: String,
+    selectedPresets: Set<String>
+): List<String> {
+    return normalizeProjectGitHubWorkflowLogSearchTerms(
+        buildList {
+            addAll(parseProjectGitHubWorkflowLogSearchQuery(query))
+            selectedPresets.forEach(::add)
+        }
+    )
+}
+
+private fun parseProjectGitHubWorkflowLogSearchQuery(
+    query: String
+): List<String> {
+    val trimmed = query.trim()
+    if (trimmed.isBlank()) return emptyList()
+    val terms = mutableListOf<String>()
+    val current = StringBuilder()
+    var quoteChar: Char? = null
+    fun flushCurrent() {
+        val token = current.toString().trim()
+        if (token.isNotBlank()) {
+            terms += token
+        }
+        current.clear()
+    }
+    trimmed.forEach { char ->
+        when {
+            quoteChar != null && char == quoteChar -> {
+                flushCurrent()
+                quoteChar = null
+            }
+
+            quoteChar != null -> current.append(char)
+            char == '"' || char == '\'' -> {
+                flushCurrent()
+                quoteChar = char
+            }
+
+            char.isWhitespace() || char == ',' || char == ';' || char == '/' ||
+                char == '|' || char == '，' || char == '；' || char == '、' || char == '｜' -> {
+                flushCurrent()
+            }
+
+            else -> current.append(char)
+        }
+    }
+    flushCurrent()
+    return if (terms.isNotEmpty()) terms else listOf(trimmed)
+}
+
+private fun normalizeProjectGitHubWorkflowLogSearchTerms(
+    queries: List<String>
+): List<String> {
+    val normalized = mutableListOf<String>()
+    queries.forEach { query ->
+        val trimmed = query.trim()
+        if (trimmed.isNotBlank() && normalized.none { it.equals(trimmed, ignoreCase = true) }) {
+            normalized += trimmed
+        }
+    }
+    return normalized
+}
+
+private fun matchesProjectGitHubWorkflowSearchTerms(
+    text: String,
+    queries: List<String>,
+    requireAllTerms: Boolean
+): Boolean {
+    if (queries.isEmpty()) return false
+    return if (requireAllTerms) {
+        queries.all { query -> projectGitHubConsoleContainsToken(text, query) }
+    } else {
+        queries.any { query -> projectGitHubConsoleContainsToken(text, query) }
+    }
+}
+
+private fun buildProjectGitHubWorkflowHighlightRanges(
+    line: String,
+    queries: List<String>
+): List<IntRange> {
+    if (line.isEmpty() || queries.isEmpty()) return emptyList()
+    val lowerLine = line.lowercase(Locale.getDefault())
+    val candidates = queries
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinctBy { it.lowercase(Locale.getDefault()) }
+        .sortedByDescending { it.length }
+        .flatMap { query ->
+            val lowerQuery = query.lowercase(Locale.getDefault())
+            buildList {
+                var startIndex = 0
+                while (startIndex < line.length) {
+                    val matchIndex = lowerLine.indexOf(lowerQuery, startIndex)
+                    if (matchIndex < 0) break
+                    add(matchIndex until (matchIndex + query.length))
+                    startIndex = matchIndex + query.length
+                }
+            }
+        }
+        .sortedWith(compareBy<IntRange> { it.first }.thenByDescending { it.last - it.first })
+
+    val merged = mutableListOf<IntRange>()
+    candidates.forEach { candidate ->
+        val overlapsExisting = merged.any { existing ->
+            candidate.first <= existing.last && existing.first <= candidate.last
+        }
+        if (!overlapsExisting) {
+            merged += candidate
+        }
+    }
+    return merged
+}
+
 private fun buildProjectGitHubWorkflowLogSearchHit(
     entry: ProjectGitHubWorkflowLogEntryUi,
-    query: String
+    queries: List<String>,
+    requireAllTerms: Boolean
 ): ProjectGitHubWorkflowLogSearchHitUi {
-    val trimmedQuery = query.trim()
-    if (trimmedQuery.isBlank()) {
+    val normalizedQueries = normalizeProjectGitHubWorkflowLogSearchTerms(queries)
+    if (normalizedQueries.isEmpty()) {
         return ProjectGitHubWorkflowLogSearchHitUi(
             hasMatch = false,
             matchedLineCount = 0,
@@ -8851,15 +9027,28 @@ private fun buildProjectGitHubWorkflowLogSearchHit(
     val previewLines = entry.preview.lines()
     val matchedLineIndices = previewLines
         .mapIndexedNotNull { index, line ->
-            index.takeIf { projectGitHubConsoleContainsToken(line, trimmedQuery) }
+            index.takeIf {
+                matchesProjectGitHubWorkflowSearchTerms(
+                    text = line,
+                    queries = normalizedQueries,
+                    requireAllTerms = requireAllTerms
+                )
+            }
         }
     val matchedLineLabels = matchedLineIndices
         .take(6)
         .joinToString("\n") { index ->
             "L${index + 1}: ${previewLines.getOrElse(index) { "" }}"
         }
-    val fileNameMatched = projectGitHubConsoleContainsToken(entry.displayName, trimmedQuery) ||
-        projectGitHubConsoleContainsToken(entry.entryName, trimmedQuery)
+    val fileNameMatched = matchesProjectGitHubWorkflowSearchTerms(
+        text = entry.displayName,
+        queries = normalizedQueries,
+        requireAllTerms = requireAllTerms
+    ) || matchesProjectGitHubWorkflowSearchTerms(
+        text = entry.entryName,
+        queries = normalizedQueries,
+        requireAllTerms = requireAllTerms
+    )
     val snippet = matchedLineLabels
         .ifBlank { if (fileNameMatched) "文件名命中搜索关键字" else "" }
     return ProjectGitHubWorkflowLogSearchHitUi(
@@ -8873,26 +9062,32 @@ private fun buildProjectGitHubWorkflowLogSearchHit(
 private fun highlightProjectGitHubLogText(
     text: String,
     query: String
+): AnnotatedString {
+    return highlightProjectGitHubLogText(
+        text = text,
+        queries = listOf(query)
+    )
+}
+
+private fun highlightProjectGitHubLogText(
+    text: String,
+    queries: List<String>
 ): AnnotatedString = buildAnnotatedString {
-    val normalizedQuery = query.trim()
-    if (normalizedQuery.isBlank()) {
+    val normalizedQueries = normalizeProjectGitHubWorkflowLogSearchTerms(queries)
+    if (normalizedQueries.isEmpty()) {
         append(text)
         return@buildAnnotatedString
     }
-    val lowerQuery = normalizedQuery.lowercase(Locale.getDefault())
     text.lines().forEachIndexed { index, line ->
-        val lowerLine = line.lowercase(Locale.getDefault())
-        val hasRawMatch = lowerLine.contains(lowerQuery)
+        val highlightRanges = buildProjectGitHubWorkflowHighlightRanges(
+            line = line,
+            queries = normalizedQueries
+        )
         when {
-            hasRawMatch -> {
+            highlightRanges.isNotEmpty() -> {
                 var startIndex = 0
-                while (startIndex < line.length) {
-                    val matchIndex = lowerLine.indexOf(lowerQuery, startIndex)
-                    if (matchIndex < 0) {
-                        append(line.substring(startIndex))
-                        break
-                    }
-                    append(line.substring(startIndex, matchIndex))
+                highlightRanges.forEach { range ->
+                    append(line.substring(startIndex, range.first))
                     pushStyle(
                         SpanStyle(
                             background = Color(0x88FFB300),
@@ -8900,13 +9095,16 @@ private fun highlightProjectGitHubLogText(
                             fontWeight = FontWeight.Bold
                         )
                     )
-                    append(line.substring(matchIndex, matchIndex + normalizedQuery.length))
+                    append(line.substring(range.first, range.last + 1))
                     pop()
-                    startIndex = matchIndex + normalizedQuery.length
+                    startIndex = range.last + 1
                 }
+                append(line.substring(startIndex))
             }
 
-            projectGitHubConsoleContainsToken(line, normalizedQuery) -> {
+            normalizedQueries.any { queryToken ->
+                projectGitHubConsoleContainsToken(line, queryToken)
+            } -> {
                 pushStyle(
                     SpanStyle(
                         background = Color(0x33FFD54F),
@@ -8928,7 +9126,7 @@ private fun highlightProjectGitHubLogText(
 @Composable
 private fun ProjectGitHubWorkflowLogPreviewBody(
     preview: String,
-    query: String,
+    queries: List<String>,
     expanded: Boolean,
     activeLineNumber: Int?,
     modifier: Modifier = Modifier
@@ -8938,10 +9136,10 @@ private fun ProjectGitHubWorkflowLogPreviewBody(
         lineHeight = 18.sp
     )
     if (!expanded) {
-        val highlightedPreviewText = remember(preview, query) {
+        val highlightedPreviewText = remember(preview, queries) {
             highlightProjectGitHubLogText(
                 text = preview,
-                query = query
+                queries = queries
             )
         }
         SelectionContainer(modifier = modifier) {
@@ -8977,11 +9175,11 @@ private fun ProjectGitHubWorkflowLogPreviewBody(
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             lines.forEachIndexed { index, line ->
-                val annotatedLine = remember(line, query, index, lineNumberWidth, mutedTextColor) {
+                val annotatedLine = remember(line, queries, index, lineNumberWidth, mutedTextColor) {
                     buildProjectGitHubWorkflowAnnotatedLogLine(
                         lineNumber = index + 1,
                         line = line,
-                        query = query,
+                        queries = queries,
                         lineNumberWidth = lineNumberWidth,
                         lineNumberColor = mutedTextColor
                     )
@@ -9010,7 +9208,7 @@ private fun ProjectGitHubWorkflowLogPreviewBody(
 private fun buildProjectGitHubWorkflowAnnotatedLogLine(
     lineNumber: Int,
     line: String,
-    query: String,
+    queries: List<String>,
     lineNumberWidth: Int,
     lineNumberColor: Color
 ): AnnotatedString = buildAnnotatedString {
@@ -9022,7 +9220,7 @@ private fun buildProjectGitHubWorkflowAnnotatedLogLine(
     )
     append("L${lineNumber.toString().padStart(lineNumberWidth, ' ')} | ")
     pop()
-    append(highlightProjectGitHubLogText(line, query))
+    append(highlightProjectGitHubLogText(line, queries))
 }
 
 private fun projectGitHubCollapsedLogPreview(
