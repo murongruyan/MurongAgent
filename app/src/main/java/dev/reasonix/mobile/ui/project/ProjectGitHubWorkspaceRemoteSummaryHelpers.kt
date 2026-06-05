@@ -545,12 +545,11 @@ internal fun buildProjectGitHubWorkspaceOverview(
         repoCards.firstOrNull { it.conflictCount > 0 }?.let { summary ->
             add(
                 ProjectGitHubWorkspaceTaskUi(
-                    label = "优先处理 ${summary.title} 的冲突文件",
-                    detail = "当前有 ${summary.conflictCount} 个冲突文件，建议先进入仓库工作台处理。",
-                    priority = 100,
-                    type = ProjectGitHubWorkspaceTaskType.CONFLICT,
+                    title = "优先处理 ${summary.title} 的冲突文件",
+                    subtitle = "当前有 ${summary.conflictCount} 个冲突文件，建议先进入仓库工作台处理。",
+                    repoRoot = summary.rootPath,
+                    isCritical = true,
                     actionLabel = "处理冲突",
-                    targetRootPath = summary.rootPath,
                     targetTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
                 )
             )
@@ -558,13 +557,12 @@ internal fun buildProjectGitHubWorkspaceOverview(
         repoCards.firstOrNull { it.latestRunHasIssue }?.let { summary ->
             add(
                 ProjectGitHubWorkspaceTaskUi(
-                    label = "${summary.title} 最近工作流异常",
-                    detail = summary.latestWorkflowTitle?.let { "最近异常工作流：$it" }
+                    title = "${summary.title} 最近工作流异常",
+                    subtitle = summary.latestWorkflowTitle?.let { "最近异常工作流：$it" }
                         ?: "最近一次工作流运行状态异常。",
-                    priority = 95,
-                    type = ProjectGitHubWorkspaceTaskType.WORKFLOW,
+                    repoRoot = summary.rootPath,
+                    isCritical = true,
                     actionLabel = "运行详情",
-                    targetRootPath = summary.rootPath,
                     targetTab = ProjectGitHubWorkspaceRepoWorkbenchTab.WORKFLOW,
                     targetWorkflowRun = summary.latestRun
                 )
@@ -573,12 +571,11 @@ internal fun buildProjectGitHubWorkspaceOverview(
         repoCards.firstOrNull { !it.remoteErrorMessage.isNullOrBlank() }?.let { summary ->
             add(
                 ProjectGitHubWorkspaceTaskUi(
-                    label = "检查 ${summary.title} 的远端摘要结果",
-                    detail = summary.remoteErrorMessage,
-                    priority = 85,
-                    type = ProjectGitHubWorkspaceTaskType.REMOTE_ERROR,
+                    title = "检查 ${summary.title} 的远端摘要结果",
+                    subtitle = summary.remoteErrorMessage.orEmpty(),
+                    repoRoot = summary.rootPath,
+                    isCritical = false,
                     actionLabel = "检查仓库",
-                    targetRootPath = summary.rootPath,
                     targetTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
                 )
             )
@@ -586,12 +583,11 @@ internal fun buildProjectGitHubWorkspaceOverview(
         repoCards.firstOrNull { it.behindCount > 0 }?.let { summary ->
             add(
                 ProjectGitHubWorkspaceTaskUi(
-                    label = "${summary.title} 落后远端 ${summary.behindCount} 个提交",
-                    detail = "建议先同步远端状态，再处理本地工作。",
-                    priority = 90,
-                    type = ProjectGitHubWorkspaceTaskType.BEHIND,
+                    title = "${summary.title} 落后远端 ${summary.behindCount} 个提交",
+                    subtitle = "建议先同步远端状态，再处理本地工作。",
+                    repoRoot = summary.rootPath,
+                    isCritical = true,
                     actionLabel = "同步远端",
-                    targetRootPath = summary.rootPath,
                     targetTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
                 )
             )
@@ -599,12 +595,11 @@ internal fun buildProjectGitHubWorkspaceOverview(
         repoCards.firstOrNull { it.hasWorkingTreeChanges }?.let { summary ->
             add(
                 ProjectGitHubWorkspaceTaskUi(
-                    label = "${summary.title} 存在未提交本地改动",
-                    detail = "建议先整理暂存区和提交说明，避免后续协作状态混乱。",
-                    priority = 80,
-                    type = ProjectGitHubWorkspaceTaskType.LOCAL_CHANGES,
+                    title = "${summary.title} 存在未提交本地改动",
+                    subtitle = "建议先整理暂存区和提交说明，避免后续协作状态混乱。",
+                    repoRoot = summary.rootPath,
+                    isCritical = false,
                     actionLabel = "整理改动",
-                    targetRootPath = summary.rootPath,
                     targetTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
                 )
             )
@@ -612,12 +607,11 @@ internal fun buildProjectGitHubWorkspaceOverview(
         repoCards.firstOrNull { it.hasGitMetadata && !it.hasGitHubRepo }?.let { summary ->
             add(
                 ProjectGitHubWorkspaceTaskUi(
-                    label = "${summary.title} 还没有识别出 GitHub 远端绑定",
-                    detail = "当前只能用本地 Git 能力，建议检查 origin 地址或重新绑定远端。",
-                    priority = 70,
-                    type = ProjectGitHubWorkspaceTaskType.GITHUB_BINDING,
+                    title = "${summary.title} 还没有识别出 GitHub 远端绑定",
+                    subtitle = "当前只能用本地 Git 能力，建议检查 origin 地址或重新绑定远端。",
+                    repoRoot = summary.rootPath,
+                    isCritical = false,
                     actionLabel = "检查绑定",
-                    targetRootPath = summary.rootPath,
                     targetTab = ProjectGitHubWorkspaceRepoWorkbenchTab.REMOTE
                 )
             )
@@ -625,23 +619,22 @@ internal fun buildProjectGitHubWorkspaceOverview(
         repoCards.firstOrNull { it.hasOpenWorkItems }?.let { summary ->
             add(
                 ProjectGitHubWorkspaceTaskUi(
-                    label = "${summary.title} 仍有开放事项",
-                    detail = when {
+                    title = "${summary.title} 仍有开放事项",
+                    subtitle = when {
                         summary.latestOpenPullRequest != null ->
                             "最近开放 PR：#${summary.latestOpenPullRequest.number} ${summary.latestOpenPullRequest.title}"
                         summary.latestOpenIssue != null ->
                             "最近开放 Issue：#${summary.latestOpenIssue.number} ${summary.latestOpenIssue.title}"
                         else -> "Issue ${summary.openIssueCount} / PR ${summary.openPullRequestCount}"
                     },
-                    priority = 60,
-                    type = ProjectGitHubWorkspaceTaskType.OPEN_WORK_ITEMS,
+                    repoRoot = summary.rootPath,
+                    isCritical = false,
                     actionLabel = when {
                         summary.latestOpenPullRequest != null -> "PR 详情"
                         summary.latestOpenIssue != null -> "Issue 详情"
                         summary.openPullRequestCount > 0 -> "查看 PR"
                         else -> "查看 Issue"
                     },
-                    targetRootPath = summary.rootPath,
                     targetTab = if (summary.openPullRequestCount > 0) {
                         ProjectGitHubWorkspaceRepoWorkbenchTab.PULL_REQUESTS
                     } else {
@@ -652,25 +645,15 @@ internal fun buildProjectGitHubWorkspaceOverview(
                 )
             )
         }
-    }.sortedByDescending { it.priority }.ifEmpty {
+    }.sortedByDescending { it.isCritical }.ifEmpty {
         listOf(
             ProjectGitHubWorkspaceTaskUi(
-                label = "当前工作区暂无明显异常，可继续补强仓库级 GitHub 摘要加载器。",
-                detail = "工作区状态整体平稳，可以继续做搜索、任务中心和下载能力增强。",
-                priority = 0,
-                type = ProjectGitHubWorkspaceTaskType.HEALTHY
+                title = "当前工作区暂无明显异常，可继续补强仓库级 GitHub 摘要加载器。",
+                subtitle = "工作区状态整体平稳，可以继续做搜索、任务中心和下载能力增强。",
+                repoRoot = "",
+                isCritical = false
             )
         )
-    }
-    val activeRepoSummary = activeRepo?.let { repo ->
-        buildString {
-            append(repo.owner)
-            append("/")
-            append(repo.repo)
-            if (activeGitHubState.recentRuns.any { isProjectGitHubIssueStatus(it.status, it.conclusion) }) {
-                append(" · 最近运行存在失败")
-            }
-        }
     }
     return ProjectGitHubWorkspaceOverviewUi(
         repoCount = repoCards.size,
@@ -682,8 +665,8 @@ internal fun buildProjectGitHubWorkspaceOverview(
         conflictRepoCount = repoCards.count { it.conflictCount > 0 },
         failingWorkflowRepoCount = repoCards.count { it.latestRunHasIssue },
         openWorkItemRepoCount = repoCards.count { it.hasOpenWorkItems },
-        criticalTaskCount = tasks.count { it.priority >= 90 },
-        attentionTaskCount = tasks.count { it.priority in 1..89 },
+        criticalTaskCount = tasks.count { it.isCritical },
+        attentionTaskCount = tasks.count { !it.isCritical && it.repoRoot.isNotBlank() },
         healthyRepoCount = repoCards.count { it.severityScore <= 0 },
         lastUpdatedLabel = if (lastUpdatedMillis == 0L) "从未更新" else formatProjectDateTime(lastUpdatedMillis)
     )

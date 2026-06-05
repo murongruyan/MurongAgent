@@ -2800,6 +2800,19 @@ private fun ProjectGitSection(
         }
     }
 
+    fun openGitHubWorkspaceRepoWorkbench(
+        rootPath: String,
+        selectedTab: ProjectGitHubWorkspaceRepoWorkbenchTab =
+            ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
+    ) {
+        onSelectRepoRoot(rootPath)
+        workspaceNavigationState = openProjectGitHubWorkspaceRepoWorkbench(
+            currentState = workspaceNavigationState,
+            rootPath = rootPath,
+            selectedTab = selectedTab
+        )
+    }
+
     fun openWorkflowRunDetailForRepo(
         rootPath: String,
         run: ProjectGitHubWorkflowRunUi
@@ -3016,19 +3029,6 @@ private fun ProjectGitSection(
                 }
             }
         }
-    }
-
-    fun openGitHubWorkspaceRepoWorkbench(
-        rootPath: String,
-        selectedTab: ProjectGitHubWorkspaceRepoWorkbenchTab =
-            ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
-    ) {
-        onSelectRepoRoot(rootPath)
-        workspaceNavigationState = openProjectGitHubWorkspaceRepoWorkbench(
-            currentState = workspaceNavigationState,
-            rootPath = rootPath,
-            selectedTab = selectedTab
-        )
     }
 
     fun openGitHubWorkspaceDownloadCenter() {
