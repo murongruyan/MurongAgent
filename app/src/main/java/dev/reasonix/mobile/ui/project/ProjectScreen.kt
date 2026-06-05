@@ -2222,19 +2222,27 @@ private fun ProjectLocalGitRepositoryCard(
     onStageAll: (() -> Unit)? = null,
     onSyncAll: (() -> Unit)? = null
 ) {
-    val githubColors = rememberGitHubColors()
+    val chromeColor = rememberReasonixChromeColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
     val pendingChanges = remember(status.modifiedFiles, status.untrackedFiles) {
         status.modifiedFiles + status.untrackedFiles
     }
     val operationSummary = remember(recentOperationRecords) {
         buildProjectGitOperationSummary(recentOperationRecords)
     }
-    GitHubCard {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    ProjectSectionCard(
+        shape = RoundedCornerShape(14.dp),
+        surfaceColorOverride = if (isActive) {
+            chromeColor.copy(alpha = 0.46f)
+        } else {
+            chromeColor.copy(alpha = 0.28f)
+        }
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (repoLabel != null) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(
@@ -2243,52 +2251,59 @@ private fun ProjectLocalGitRepositoryCard(
                     ) {
                         Text(
                             text = repoLabel,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = githubColors.text
+                            style = MaterialTheme.typography.titleSmall
                         )
                         repoSubtitle?.takeIf { it.isNotBlank() }?.let { subtitle ->
                             Text(
                                 text = subtitle,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = githubColors.mutedText
+                                color = mutedTextColor
                             )
                         }
                     }
                     if (isActive) {
-                        GitHubLabel("当前仓库", githubColors.primary)
+                        Text(
+                            text = "当前仓库",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     } else {
                         onSelectRepo?.let {
-                            TextButton(onClick = it) {
-                                Text("切换", color = githubColors.accent)
+                            OutlinedButton(onClick = it) {
+                                Text("切换")
                             }
                         }
                     }
                 }
-                androidx.compose.material3.HorizontalDivider(color = githubColors.border)
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("更改", style = MaterialTheme.typography.titleMedium, color = githubColors.text)
-                Text(
-                    text = if (status.branchSummary.isNotBlank()) "分支: ${status.branchSummary}" else "分支: 未知",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = githubColors.mutedText
-                )
-            }
+            Text(
+                text = "更改:",
+                style = MaterialTheme.typography.titleSmall
+            )
+            Text(
+                text = if (status.branchSummary.isNotBlank()) {
+                    "当前分支: ${status.branchSummary}"
+                } else {
+                    "当前分支: 未知"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedTextColor
+            )
             if (pendingChanges.isEmpty()) {
                 Text(
                     text = "当前没有未暂存更改。",
                     style = MaterialTheme.typography.bodySmall,
-                    color = githubColors.mutedText
+                    color = mutedTextColor
                 )
             } else {
                 pendingChanges.forEach { change ->
                     ProjectLocalGitChangeRow(
                         change = change,
-                        badgeLabel = if (status.untrackedFiles.any { it.actionPath == change.actionPath }) "未跟踪" else "已修改",
+                        badgeLabel = if (status.untrackedFiles.any { it.actionPath == change.actionPath }) {
+                            "未跟踪"
+                        } else {
+                            "已修改"
+                        },
                         actionLabel = "暂存",
                         actionEnabled = !isBusy,
                         onOpenDiff = { onOpenDiff(change) },
@@ -2300,7 +2315,7 @@ private fun ProjectLocalGitRepositoryCard(
                 Text(
                     text = "已暂存 ${status.stagedFiles.size} 个文件",
                     style = MaterialTheme.typography.labelMedium,
-                    color = githubColors.primary
+                    color = MaterialTheme.colorScheme.primary
                 )
                 status.stagedFiles.take(6).forEach { change ->
                     ProjectLocalGitChangeRow(
@@ -2317,7 +2332,7 @@ private fun ProjectLocalGitRepositoryCard(
                 Text(
                     text = "冲突 ${status.conflictedFiles.size} 个文件",
                     style = MaterialTheme.typography.labelMedium,
-                    color = githubColors.danger
+                    color = MaterialTheme.colorScheme.error
                 )
                 status.conflictedFiles.take(4).forEach { change ->
                     ProjectLocalGitChangeRow(
@@ -2331,20 +2346,39 @@ private fun ProjectLocalGitRepositoryCard(
                 }
             }
             Row(
-                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                TextButton(onClick = onRefresh, enabled = !isBusy) { Text("刷新", color = githubColors.accent) }
-                TextButton(onClick = { onStageAll?.invoke() }, enabled = onStageAll != null && !isBusy) { Text("全部暂存", color = githubColors.accent) }
-                TextButton(onClick = { onSyncAll?.invoke() }, enabled = onSyncAll != null && !isBusy) { Text("全部同步", color = githubColors.accent) }
+                OutlinedButton(
+                    onClick = onRefresh,
+                    enabled = !isBusy
+                ) {
+                    Text("刷新")
+                }
+                OutlinedButton(
+                    onClick = { onStageAll?.invoke() },
+                    enabled = onStageAll != null && !isBusy
+                ) {
+                    Text("全部暂存")
+                }
+                OutlinedButton(
+                    onClick = { onSyncAll?.invoke() },
+                    enabled = onSyncAll != null && !isBusy
+                ) {
+                    Text("全部同步")
+                }
             }
-            androidx.compose.material3.HorizontalDivider(color = githubColors.border)
-            Text("推送拉取记录", style = MaterialTheme.typography.titleMedium, color = githubColors.text)
+            Text(
+                text = "推送拉取记录",
+                style = MaterialTheme.typography.titleSmall
+            )
             if (recentOperationRecords.isEmpty()) {
                 Text(
                     text = "当前仓库还没有记录，后续的暂存、同步、提交和分支操作都会显示在这里。",
                     style = MaterialTheme.typography.bodySmall,
-                    color = githubColors.mutedText
+                    color = mutedTextColor
                 )
             } else {
                 Text(
@@ -2355,42 +2389,45 @@ private fun ProjectLocalGitRepositoryCard(
                         operationSummary.latestTimeLabel?.let { append(" · 最近 $it") }
                     },
                     style = MaterialTheme.typography.bodySmall,
-                    color = githubColors.mutedText
+                    color = mutedTextColor
                 )
                 recentOperationRecords.firstOrNull()?.let { record ->
                     Text(
                         text = "${record.categoryLabel} · ${record.title}",
                         style = MaterialTheme.typography.labelMedium,
-                        color = if (record.isSuccess) githubColors.primary else githubColors.danger
+                        color = if (record.isSuccess) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        }
                     )
                     Text(
                         text = record.detail,
                         style = MaterialTheme.typography.bodySmall,
-                        color = githubColors.mutedText,
+                        color = mutedTextColor,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
             }
-            androidx.compose.material3.HorizontalDivider(color = githubColors.border)
             Text(
                 text = buildString {
                     append("上游: ")
                     append(status.upstreamBranch?.takeIf { it.isNotBlank() } ?: "未绑定")
                 },
                 style = MaterialTheme.typography.bodySmall,
-                color = githubColors.mutedText
+                color = mutedTextColor
             )
             Text(
                 text = "领先 ${status.aheadCount} · 落后 ${status.behindCount} · 远端分支 ${status.remoteBranches.size}",
                 style = MaterialTheme.typography.bodySmall,
-                color = githubColors.mutedText
+                color = mutedTextColor
             )
             status.remoteUrl?.takeIf { it.isNotBlank() }?.let { remote ->
                 Text(
                     text = remote,
                     style = MaterialTheme.typography.bodySmall,
-                    color = githubColors.mutedText,
+                    color = mutedTextColor,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -2540,7 +2577,7 @@ private fun ProjectGitSection(
         mutableStateOf<ProjectGitHubRepoRef?>(null)
     }
     var selectedViewerSection by remember(currentProjectPath) {
-        mutableStateOf(ProjectGitHubStandaloneSection.REPOSITORIES)
+        mutableStateOf(ProjectGitHubStandaloneSection.OVERVIEW)
     }
     var selectedViewerReadme by remember(currentProjectPath) {
         mutableStateOf<ProjectGitHubReadmeUi?>(null)
@@ -3943,7 +3980,7 @@ private fun ProjectGitSection(
         if (
             activeProjectPath.isNullOrBlank() &&
             selectedRepo != null &&
-            selectedViewerSection == ProjectGitHubStandaloneSection.REPOSITORIES
+            selectedViewerSection == ProjectGitHubStandaloneSection.OVERVIEW
         ) {
             val currentRepo = remoteRepoState.repo
             if (
@@ -4033,6 +4070,7 @@ private fun ProjectGitSection(
     val workspaceWorkbenchRepo = remember(workspaceWorkbenchRepoRoot, detectedRepos) {
         detectedRepos.firstOrNull { it.rootPath == workspaceWorkbenchRepoRoot }
     }
+    val showStandaloneViewerSecondaryPage = activeProjectPath.isNullOrBlank() && selectedViewerRepository != null
     val workspaceWorkbenchRemoteSummary = workspaceWorkbenchRepoRoot?.let(workspaceRemoteSummaryStore.summaries::get)
     val workspaceWorkbenchSubtitle = remember(
         workspaceWorkbenchRepo,
@@ -4064,6 +4102,9 @@ private fun ProjectGitSection(
 
     LaunchedEffect(
         showGitHubWorkspacePage,
+        showStandaloneViewerSecondaryPage,
+        selectedViewerRepository?.fullName,
+        selectedViewerSection,
         workspaceWorkbenchRepo,
         workspaceWorkbenchSubtitle,
         showGitHubWorkspaceDownloadCenterPage
@@ -4080,6 +4121,20 @@ private fun ProjectGitSection(
                     subtitle = workspaceWorkbenchSubtitle,
                     supportsEditorMenu = false
                 )
+            } else if (showStandaloneViewerSecondaryPage) {
+                ProjectSecondaryChromeState(
+                    active = true,
+                    title = when (selectedViewerSection) {
+                        ProjectGitHubStandaloneSection.OVERVIEW -> {
+                            selectedViewerRepository?.name?.ifBlank { "仓库详情" } ?: "仓库详情"
+                        }
+                        else -> {
+                            selectedViewerSection.label
+                        }
+                    },
+                    subtitle = selectedViewerRepository?.fullName?.ifBlank { "GitHub 仓库详情" } ?: "GitHub 仓库详情",
+                    supportsEditorMenu = false
+                )
             } else {
                 ProjectSecondaryChromeState()
             }
@@ -4091,6 +4146,17 @@ private fun ProjectGitSection(
             workspaceNavigationState = closeProjectGitHubWorkspaceNavigationLayer(
                 currentState = workspaceNavigationState
             )
+        } else if (closeProjectSecondaryPageRequestSignal != 0 && showStandaloneViewerSecondaryPage) {
+            if (selectedViewerSection != ProjectGitHubStandaloneSection.OVERVIEW) {
+                selectedViewerSection = ProjectGitHubStandaloneSection.OVERVIEW
+            } else {
+                selectedViewerRepository = null
+                selectedViewerReadme = null
+                selectedViewerReadmeErrorMessage = null
+                selectedViewerSection = ProjectGitHubStandaloneSection.OVERVIEW
+                remoteRepoState = ProjectGitHubRemoteBrowserState.empty()
+                remoteRepoRefDraft = ""
+            }
         }
     }
 
@@ -4459,7 +4525,7 @@ private fun ProjectGitSection(
                 onRefreshRepoList = ::refreshViewerRepositories,
                 onSelectRepo = { repo ->
                     selectedViewerRepository = repo
-                    selectedViewerSection = ProjectGitHubStandaloneSection.REPOSITORIES
+                    selectedViewerSection = ProjectGitHubStandaloneSection.OVERVIEW
                     remoteRepoState = ProjectGitHubRemoteBrowserState.empty(repo.repoRef)
                     remoteRepoRefDraft = ""
                 },
@@ -4471,7 +4537,7 @@ private fun ProjectGitSection(
                     selectedViewerRepository = null
                     selectedViewerReadme = null
                     selectedViewerReadmeErrorMessage = null
-                    selectedViewerSection = ProjectGitHubStandaloneSection.REPOSITORIES
+                    selectedViewerSection = ProjectGitHubStandaloneSection.OVERVIEW
                     remoteRepoState = ProjectGitHubRemoteBrowserState.empty()
                     remoteRepoRefDraft = ""
                 },
@@ -4691,6 +4757,8 @@ private fun ProjectGitSection(
                     )
                 },
                 onEditReadme = ::openStandaloneReadmeEditor
+                ,
+                backProgress = projectSecondaryBackProgress
             )
             feedbackMessage?.takeIf { it.isNotBlank() }?.let { message ->
                 ProjectSectionCard(
