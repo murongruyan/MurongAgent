@@ -83,7 +83,7 @@ internal fun ProjectGitHubStandaloneBrowserSection(
     onOpenReleasePage: (ProjectGitHubReleaseUi) -> Unit,
     onOpenReleaseAssets: (ProjectGitHubReleaseUi) -> Unit,
     onCreateIssue: () -> Unit,
-    onOpenDetail: (ProjectGitHubIssueUi) -> Unit,
+    onOpenIssueDetail: (ProjectGitHubIssueUi) -> Unit,
     onToggleIssueState: (ProjectGitHubIssueUi, Boolean) -> Unit,
     onOpenIssuePage: (ProjectGitHubIssueUi) -> Unit,
     onCreatePullRequest: () -> Unit,

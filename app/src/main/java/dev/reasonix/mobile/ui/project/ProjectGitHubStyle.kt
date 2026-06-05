@@ -1,10 +1,15 @@
 package dev.reasonix.mobile.ui.project
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
@@ -94,7 +99,7 @@ internal fun GitHubCard(
         ),
         border = BorderStroke(1.dp, colors.border)
     ) {
-        androidx.compose.foundation.layout.Column(
+        Column(
             modifier = Modifier.padding(contentPadding),
             content = content
         )
@@ -107,11 +112,11 @@ internal fun GitHubLabel(
     color: Color,
     modifier: Modifier = Modifier
 ) {
-    androidx.compose.foundation.layout.Box(
+    Box(
         modifier = modifier
-            .androidx.compose.foundation.border(1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
-            .androidx.compose.foundation.background(color.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
-            .androidx.compose.foundation.layout.padding(horizontal = 8.dp, vertical = 2.dp)
+            .border(1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+            .background(color.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
+            .padding(horizontal = 8.dp, vertical = 2.dp)
     ) {
         Text(
             text = text,

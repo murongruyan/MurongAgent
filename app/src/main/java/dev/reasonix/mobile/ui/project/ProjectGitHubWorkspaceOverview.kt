@@ -183,35 +183,34 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                 onOpenSystemDownloads = onOpenSystemDownloads
             )
 
-            ProjectSectionCard(
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
-                surfaceColorOverride = chromeColor.copy(alpha = 0.24f)
-            ) {
+            GitHubCard {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = onSearchQueryChange,
                         modifier = Modifier.fillMaxWidth(),
                         placeholder = {
-                            Text("搜索仓库名称或路径...", style = MaterialTheme.typography.bodyMedium)
+                            Text("搜索仓库名称或路径...", style = MaterialTheme.typography.bodyMedium, color = githubColors.mutedText)
                         },
                         leadingIcon = {
-                            Icon(Icons.Default.Search, contentDescription = null)
+                            Icon(Icons.Default.Search, contentDescription = null, tint = githubColors.mutedText)
                         },
                         trailingIcon = {
                             if (searchQuery.isNotEmpty()) {
                                 IconButton(onClick = { onSearchQueryChange("") }) {
-                                    Icon(Icons.Default.Clear, contentDescription = "清除搜索")
+                                    Icon(Icons.Default.Clear, contentDescription = "清除搜索", tint = githubColors.mutedText)
                                 }
                             }
                         },
                         singleLine = true,
                         shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = chromeColor.copy(alpha = 0.15f),
-                            unfocusedContainerColor = chromeColor.copy(alpha = 0.10f),
-                            focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.50f),
-                            unfocusedBorderColor = chromeColor.copy(alpha = 0.30f)
+                            focusedContainerColor = githubColors.background,
+                            unfocusedContainerColor = githubColors.background,
+                            focusedBorderColor = githubColors.accent,
+                            unfocusedBorderColor = githubColors.border,
+                            focusedTextColor = githubColors.text,
+                            unfocusedTextColor = githubColors.text
                         ),
                         textStyle = MaterialTheme.typography.bodyMedium
                     )
@@ -219,7 +218,8 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                     Text(
                         text = "筛选仓库",
                         style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(horizontal = 4.dp)
+                        modifier = Modifier.padding(horizontal = 4.dp),
+                        color = githubColors.text
                     )
                     LazyRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -231,8 +231,9 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                                 onClick = { onFilterChange(filter) },
                                 label = { Text(filter.label) },
                                 colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                    selectedContainerColor = githubColors.accent.copy(alpha = 0.2f),
+                                    selectedLabelColor = githubColors.accent,
+                                    labelColor = githubColors.mutedText
                                 )
                             )
                         }
@@ -240,23 +241,20 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                 }
             }
 
-            ProjectSectionCard(
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
-                surfaceColorOverride = chromeColor.copy(alpha = 0.32f)
-            ) {
+            GitHubCard {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("仓库摘要", style = MaterialTheme.typography.titleSmall)
+                        Text("仓库摘要", style = MaterialTheme.typography.titleMedium, color = githubColors.text)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (currentFilter != ProjectGitHubWorkspaceFilterType.ALL) {
                                 Text(
                                     text = "已过滤 (${repoCards.size})",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
+                                    color = githubColors.primary,
                                     modifier = Modifier.padding(end = 8.dp)
                                 )
                             }
@@ -266,14 +264,9 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                                 modifier = Modifier.height(32.dp)
                             ) {
                                 Text(
-                                    text = if (isSelectionMode) "M" else "B",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
                                     text = if (isSelectionMode) "取消多选" else "批量操作",
-                                    style = MaterialTheme.typography.labelMedium
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = githubColors.accent
                                 )
                             }
                         }
@@ -294,7 +287,7 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                                     shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
                                 ) {
-                                    Text(action.label, style = MaterialTheme.typography.labelMedium)
+                                    Text(action.label, style = MaterialTheme.typography.labelMedium, color = githubColors.accent)
                                 }
                             }
                         }
@@ -315,9 +308,7 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 ProjectGitHubWorkspaceRepoCard(
                                     card = card,
-                                    surfaceColor = surfaceColor,
-                                    chromeColor = chromeColor,
-                                    mutedTextColor = mutedTextColor,
+                                    githubColors = githubColors,
                                     onClick = {
                                         if (isSelectionMode) {
                                             onToggleRepoSelection(card.rootPath)
