@@ -2,6 +2,7 @@ package dev.reasonix.mobile.ui.project
 
 import kotlinx.serialization.Serializable
 import java.text.SimpleDateFormat
+import java.time.Instant
 import java.util.Date
 import java.util.Locale
 
@@ -19,6 +20,49 @@ internal data class ProjectGitHubRepoRef(
     val repo: String
 )
 
+internal data class ProjectGitHubAccountRepoUi(
+    val id: Long,
+    val owner: String,
+    val name: String,
+    val description: String,
+    val isPrivate: Boolean,
+    val stargazerCount: Long,
+    val forkCount: Long,
+    val htmlUrl: String?,
+    val defaultBranch: String,
+    val updatedAt: String
+) {
+    val repoRef: ProjectGitHubRepoRef
+        get() = ProjectGitHubRepoRef(owner = owner, repo = name)
+    val fullName: String
+        get() = "$owner/$name"
+    val visibilityLabel: String
+        get() = if (isPrivate) "私人" else "公开"
+}
+
+internal data class ProjectGitHubViewerRepositoriesState(
+    val viewerLogin: String?,
+    val viewerName: String?,
+    val repositories: List<ProjectGitHubAccountRepoUi>,
+    val errorMessage: String?
+) {
+    companion object {
+        fun empty() = ProjectGitHubViewerRepositoriesState(
+            viewerLogin = null,
+            viewerName = null,
+            repositories = emptyList(),
+            errorMessage = null
+        )
+    }
+}
+
+internal data class ProjectGitHubReadmeUi(
+    val name: String,
+    val path: String,
+    val htmlUrl: String?,
+    val content: String
+)
+
 internal data class ProjectGitHubWorkflowUi(
     val id: Long,
     val name: String,
@@ -29,6 +73,11 @@ internal data class ProjectGitHubWorkflowUi(
     val canDispatch: Boolean get() = state.equals("active", ignoreCase = true)
     val stateLabel: String get() = if (state.isBlank()) "状态未知" else "状态 ${state.lowercase(Locale.getDefault())}"
 }
+
+internal data class ProjectGitHubWorkflowDispatchInputUi(
+    val key: String = "",
+    val value: String = ""
+)
 
 @Serializable
 internal data class ProjectGitHubWorkflowRunUi(
@@ -61,6 +110,12 @@ internal data class ProjectGitHubWorkflowStepUi(
         get() = buildProjectGitHubStatusLabel(status, conclusion)
     val hasIssue: Boolean
         get() = projectGitHubRunHasIssue(status, conclusion)
+    val durationLabel: String
+        get() = buildProjectGitHubDurationLabel(
+            startedAt = startedAt,
+            completedAt = completedAt,
+            status = status
+        )
 }
 
 internal data class ProjectGitHubWorkflowJobUi(
@@ -78,6 +133,12 @@ internal data class ProjectGitHubWorkflowJobUi(
         get() = steps.filter { it.hasIssue }
     val hasIssue: Boolean
         get() = projectGitHubRunHasIssue(status, conclusion) || failedSteps.isNotEmpty()
+    val durationLabel: String
+        get() = buildProjectGitHubDurationLabel(
+            startedAt = startedAt,
+            completedAt = completedAt,
+            status = status
+        )
 }
 
 internal data class ProjectGitHubWorkflowLogEntryUi(
@@ -100,6 +161,7 @@ internal data class ProjectGitHubWorkflowLogSearchHitUi(
 
 internal data class ProjectGitHubWorkflowRunDetailUi(
     val id: Long,
+    val repo: ProjectGitHubRepoRef,
     val title: String,
     val workflowName: String,
     val headBranch: String,
@@ -118,6 +180,18 @@ internal data class ProjectGitHubWorkflowRunDetailUi(
 ) {
     val statusLabel: String
         get() = buildProjectGitHubStatusLabel(status, conclusion)
+    val eventLabel: String
+        get() = event.ifBlank { "未知触发方式" }
+    val durationLabel: String
+        get() = buildProjectGitHubDurationLabel(
+            startedAt = createdAt,
+            completedAt = updatedAt,
+            status = status
+        )
+    val createdAtLabel: String
+        get() = formatProjectGitHubIsoDateTime(createdAt)
+    val updatedAtLabel: String
+        get() = formatProjectGitHubIsoDateTime(updatedAt)
     val issueSummaries: List<String>
         get() = buildList {
             jobs.filter { it.hasIssue }.take(4).forEach { job ->
@@ -696,4 +770,33 @@ internal fun formatProjectByteSize(bytes: Long): String {
 
 internal fun formatProjectDateTime(millis: Long): String {
     return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(millis))
+}
+
+internal fun formatProjectGitHubIsoDateTime(raw: String): String {
+    val millis = parseProjectGitHubIsoMillis(raw) ?: return raw.ifBlank { "时间未知" }
+    return formatProjectDateTime(millis)
+}
+
+internal fun buildProjectGitHubDurationLabel(
+    startedAt: String,
+    completedAt: String,
+    status: String
+): String {
+    val startMillis = parseProjectGitHubIsoMillis(startedAt) ?: return "耗时未知"
+    val endMillis = parseProjectGitHubIsoMillis(completedAt)
+        ?: if (status.equals("completed", ignoreCase = true)) null else System.currentTimeMillis()
+        ?: return "耗时未知"
+    val durationMillis = (endMillis - startMillis).coerceAtLeast(0L)
+    val minutes = durationMillis / 60_000L
+    val seconds = (durationMillis % 60_000L) / 1_000L
+    return if (minutes > 0) {
+        "${minutes}分${seconds}秒"
+    } else {
+        "${seconds}秒"
+    }
+}
+
+private fun parseProjectGitHubIsoMillis(raw: String): Long? {
+    if (raw.isBlank()) return null
+    return runCatching { Instant.parse(raw).toEpochMilli() }.getOrNull()
 }

@@ -41,6 +41,7 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
     onDismiss: () -> Unit,
     onOpenRunPage: (String?) -> Unit,
     onRefreshDetail: (ProjectGitHubWorkflowRunDetailUi) -> Unit,
+    onRerun: (ProjectGitHubWorkflowRunDetailUi) -> Unit,
     onDownloadLogs: (ProjectGitHubWorkflowRunDetailUi) -> Unit,
     onDownloadArtifact: (ProjectGitHubWorkflowRunDetailUi, ProjectGitHubArtifactUi) -> Unit
 ) {
@@ -98,6 +99,20 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
             }
             var expandedLogEntries by remember(detail.id) {
                 mutableStateOf(setOf<String>())
+            }
+            val autoExpandedLogEntries = remember(
+                detail.status,
+                detail.jobs,
+                detail.logEntries
+            ) {
+                buildProjectGitHubAutoExpandedLogEntries(detail)
+            }
+            val autoExpandHint = remember(
+                detail.status,
+                detail.jobs,
+                detail.logEntries
+            ) {
+                buildProjectGitHubAutoExpandHint(detail)
             }
             val filteredLogEntries = remember(
                 detail.logEntries,
@@ -206,6 +221,9 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                 matchedVisibleLogEntries.indexOfFirst { it.entryName == activeMatchedLogEntryName }
             }
             val logListScrollState = rememberScrollState()
+            LaunchedEffect(detail.status, detail.jobs, detail.logEntries) {
+                expandedLogEntries = autoExpandedLogEntries
+            }
             LaunchedEffect(logSearchTerms, logSearchRequireAllTerms, matchedVisibleLogEntries) {
                 activeMatchedLineIndexByEntry.clear()
                 if (!searchActive || matchedVisibleLogEntries.isEmpty()) {
@@ -236,27 +254,44 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    text = detail.title,
+                    text = "${detail.repo.owner}/${detail.repo.repo} / ${detail.workflowName.ifBlank { detail.title }}",
                     style = MaterialTheme.typography.titleSmall
                 )
                 Text(
-                    text = "${detail.statusLabel} · ${detail.headBranch} · ${detail.event}",
+                    text = "第 ${detail.runNumber} 次运行",
                     style = MaterialTheme.typography.bodySmall,
                     color = mutedTextColor
                 )
                 Text(
-                    text = "更新于 ${detail.updatedAt}",
+                    text = "触发方式: ${detail.eventLabel}",
                     style = MaterialTheme.typography.bodySmall,
                     color = mutedTextColor
                 )
                 Text(
-                    text = "Job ${detail.jobs.size} · 日志 ${detail.logEntries.size} · 产物 ${detail.artifacts.size}",
+                    text = "当前状态: ${detail.statusLabel} · 持续时间: ${detail.durationLabel}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (detail.hasIssue) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        mutedTextColor
+                    }
+                )
+                Text(
+                    text = "分支 ${detail.headBranch.ifBlank { "未知" }} · 开始 ${detail.createdAtLabel} · 更新 ${detail.updatedAtLabel}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = mutedTextColor
+                )
+                Text(
+                    text = "作业 ${detail.jobs.size} · 日志 ${detail.logEntries.size} · 产物 ${detail.artifacts.size}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { onRefreshDetail(detail) }) {
                         Text("刷新详情")
+                    }
+                    OutlinedButton(onClick = { onRerun(detail) }) {
+                        Text("重新运行")
                     }
                     detail.htmlUrl?.takeIf { it.isNotBlank() }?.let {
                         TextButton(onClick = { onOpenRunPage(detail.htmlUrl) }) {
@@ -340,9 +375,18 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                                 ) {
                                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                         Text(
-                                            text = "${job.name} · ${job.statusLabel}",
+                                        text = job.name,
                                             style = MaterialTheme.typography.bodyMedium
                                         )
+                                    Text(
+                                        text = "${job.statusLabel} · ${job.durationLabel}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (job.hasIssue) {
+                                            MaterialTheme.colorScheme.error
+                                        } else {
+                                            mutedTextColor
+                                        }
+                                    )
                                         if (job.failedSteps.isEmpty()) {
                                             Text(
                                                 text = "这个 Job 状态异常，但 GitHub 还没有返回具体失败步骤。",
@@ -441,6 +485,17 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                             },
                             style = MaterialTheme.typography.titleSmall
                         )
+                        autoExpandHint?.let { hint ->
+                            Text(
+                                text = hint,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (detail.status.equals("completed", ignoreCase = true)) {
+                                    mutedTextColor
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                }
+                            )
+                        }
                         OutlinedTextField(
                             value = logSearchQuery,
                             onValueChange = { logSearchQuery = it },
@@ -535,7 +590,11 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                                 FilterChip(
                                     selected = showOnlySelectedStepLogs,
                                     onClick = {
-                                        showOnlySelectedStepLogs = !showOnlySelectedStepLogs
+                                        val nextValue = !showOnlySelectedStepLogs
+                                        showOnlySelectedStepLogs = nextValue
+                                        if (nextValue) {
+                                            expandedLogEntries = focusedStepMatchedEntries
+                                        }
                                     },
                                     label = { Text("只看该步骤日志") }
                                 )
@@ -544,6 +603,7 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                                     onClick = {
                                         selectedIssueStepName = null
                                         showOnlySelectedStepLogs = false
+                                        expandedLogEntries = autoExpandedLogEntries
                                     },
                                     label = { Text("清除步骤聚焦") }
                                 )
@@ -809,11 +869,11 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                                     Text(
                                         text = buildString {
                                             if (job.startedAt.isNotBlank()) {
-                                                append("开始 ${job.startedAt}")
+                                                append("开始 ${formatProjectGitHubIsoDateTime(job.startedAt)}")
                                             }
                                             if (job.completedAt.isNotBlank()) {
                                                 if (isNotEmpty()) append(" · ")
-                                                append("结束 ${job.completedAt}")
+                                                append("结束 ${formatProjectGitHubIsoDateTime(job.completedAt)}")
                                             }
                                         },
                                         style = MaterialTheme.typography.bodySmall,
@@ -837,6 +897,8 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                                             append(step.name)
                                             append(" · ")
                                             append(step.statusLabel)
+                                            append(" · ")
+                                            append(step.durationLabel)
                                         },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = if (step.hasIssue) {

@@ -67,6 +67,71 @@ internal fun projectGitHubLogMentionsStep(
     }
 }
 
+internal fun buildProjectGitHubAutoExpandedLogEntries(
+    detail: ProjectGitHubWorkflowRunDetailUi
+): Set<String> {
+    if (detail.status.equals("completed", ignoreCase = true)) return emptySet()
+    val activeJob = findProjectGitHubActiveJob(detail.jobs) ?: return emptySet()
+    val activeStep = findProjectGitHubActiveStep(activeJob.steps)
+    val stepMatches = if (activeStep == null) {
+        emptySet()
+    } else {
+        detail.logEntries
+            .filter { entry ->
+                projectGitHubLogMatchesJob(entry, activeJob.name) &&
+                    projectGitHubLogMentionsStep(entry, activeStep.name)
+            }
+            .map { it.entryName }
+            .toSet()
+    }
+    if (stepMatches.isNotEmpty()) return stepMatches
+    return detail.logEntries
+        .filter { entry -> projectGitHubLogMatchesJob(entry, activeJob.name) }
+        .map { it.entryName }
+        .toSet()
+}
+
+internal fun buildProjectGitHubAutoExpandHint(
+    detail: ProjectGitHubWorkflowRunDetailUi
+): String? {
+    if (detail.status.equals("completed", ignoreCase = true)) {
+        return "当前运行已结束，日志默认全部折叠。"
+    }
+    val activeJob = findProjectGitHubActiveJob(detail.jobs) ?: return null
+    val activeStep = findProjectGitHubActiveStep(activeJob.steps)
+    return if (activeStep != null) {
+        "运行中自动展开: ${activeJob.name} / ${activeStep.name}"
+    } else {
+        "运行中自动展开: ${activeJob.name}"
+    }
+}
+
+private fun findProjectGitHubActiveJob(
+    jobs: List<ProjectGitHubWorkflowJobUi>
+): ProjectGitHubWorkflowJobUi? {
+    return jobs
+        .filterNot { it.status.equals("completed", ignoreCase = true) }
+        .minByOrNull { projectGitHubWorkflowStatusRank(it.status) }
+        ?: jobs.minByOrNull { projectGitHubWorkflowStatusRank(it.status) }
+}
+
+private fun findProjectGitHubActiveStep(
+    steps: List<ProjectGitHubWorkflowStepUi>
+): ProjectGitHubWorkflowStepUi? {
+    return steps
+        .filterNot { it.status.equals("completed", ignoreCase = true) }
+        .minByOrNull { projectGitHubWorkflowStatusRank(it.status) }
+}
+
+private fun projectGitHubWorkflowStatusRank(status: String): Int {
+    return when (status.trim().lowercase(Locale.getDefault())) {
+        "in_progress", "running" -> 0
+        "queued", "pending", "waiting", "requested" -> 1
+        "completed" -> 3
+        else -> 2
+    }
+}
+
 private fun projectGitHubConsoleContainsToken(value: String, query: String): Boolean {
     val trimmedQuery = query.trim()
     if (trimmedQuery.isBlank()) return false

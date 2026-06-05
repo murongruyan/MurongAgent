@@ -28,6 +28,146 @@ private val PROJECT_GITHUB_HTTP = OkHttpClient.Builder()
     .writeTimeout(30, TimeUnit.SECONDS)
     .build()
 
+internal data class ProjectGitHubReadmeLoadResult(
+    val readme: ProjectGitHubReadmeUi?,
+    val error: String?
+)
+
+internal fun loadProjectGitHubViewerRepositories(
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubViewerRepositoriesState {
+    if (token.isBlank()) {
+        return ProjectGitHubViewerRepositoriesState.empty().copy(
+            errorMessage = "请先在设置页填写 GitHub Token。"
+        )
+    }
+    val viewerResult = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/user"
+    )
+    if (!viewerResult.success) {
+        return ProjectGitHubViewerRepositoriesState.empty().copy(
+            errorMessage = viewerResult.error ?: "GitHub 登录状态校验失败"
+        )
+    }
+    val viewer = parseProjectGitHubJsonObject(viewerResult.body)
+    val reposResult = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/user/repos?sort=updated&per_page=100"
+    )
+    if (!reposResult.success) {
+        return ProjectGitHubViewerRepositoriesState(
+            viewerLogin = viewer?.string("login"),
+            viewerName = viewer?.string("name"),
+            repositories = emptyList(),
+            errorMessage = reposResult.error ?: "读取账号仓库列表失败"
+        )
+    }
+    val repositories = parseProjectGitHubJsonArray(reposResult.body)
+        ?.mapNotNull { item ->
+            val obj = item.jsonObjectOrNull() ?: return@mapNotNull null
+            parseProjectGitHubAccountRepo(item = obj)
+        }
+        .orEmpty()
+    return ProjectGitHubViewerRepositoriesState(
+        viewerLogin = viewer?.string("login"),
+        viewerName = viewer?.string("name"),
+        repositories = repositories,
+        errorMessage = null
+    )
+}
+
+internal fun updateProjectGitHubRepositoryDescription(
+    repo: ProjectGitHubRepoRef,
+    description: String,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubMutationResult<ProjectGitHubAccountRepoUi> {
+    if (token.isBlank()) {
+        return ProjectGitHubMutationResult(
+            success = false,
+            value = null,
+            error = "请先在设置页填写 GitHub Token。"
+        )
+    }
+    val body = buildJsonObject {
+        put("description", description)
+    }.toString()
+    val result = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}",
+        method = "PATCH",
+        jsonBody = body
+    )
+    if (!result.success) {
+        return ProjectGitHubMutationResult(
+            success = false,
+            value = null,
+            error = result.error ?: "更新仓库简介失败"
+        )
+    }
+    val updatedRepo = parseProjectGitHubJsonObject(result.body)?.let(::parseProjectGitHubAccountRepo)
+        ?: return ProjectGitHubMutationResult(
+            success = false,
+            value = null,
+            error = "GitHub 返回的仓库信息无法解析"
+        )
+    return ProjectGitHubMutationResult(
+        success = true,
+        value = updatedRepo,
+        error = null
+    )
+}
+
+internal fun loadProjectGitHubReadme(
+    repo: ProjectGitHubRepoRef,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubReadmeLoadResult {
+    if (token.isBlank()) {
+        return ProjectGitHubReadmeLoadResult(
+            readme = null,
+            error = "请先在设置页填写 GitHub Token。"
+        )
+    }
+    val result = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/readme"
+    )
+    if (!result.success) {
+        return ProjectGitHubReadmeLoadResult(
+            readme = null,
+            error = result.error ?: "读取 README 失败"
+        )
+    }
+    val obj = parseProjectGitHubJsonObject(result.body)
+        ?: return ProjectGitHubReadmeLoadResult(readme = null, error = "README 数据格式无效")
+    val encodedContent = obj.string("content").orEmpty()
+    val decodedContent = runCatching {
+        String(
+            Base64.decode(
+                encodedContent.replace("\n", ""),
+                Base64.DEFAULT
+            ),
+            Charsets.UTF_8
+        )
+    }.getOrDefault("")
+    return ProjectGitHubReadmeLoadResult(
+        readme = ProjectGitHubReadmeUi(
+            name = obj.string("name").orEmpty().ifBlank { "README.md" },
+            path = obj.string("path").orEmpty().ifBlank { "README.md" },
+            htmlUrl = obj.string("html_url"),
+            content = decodedContent
+        ),
+        error = null
+    )
+}
+
 internal fun loadProjectGitHubActions(
     repo: ProjectGitHubRepoRef,
     token: String,
@@ -204,11 +344,22 @@ internal fun dispatchProjectGitHubWorkflow(
     repo: ProjectGitHubRepoRef,
     workflowId: Long,
     ref: String,
+    inputs: Map<String, String> = emptyMap(),
     token: String,
     apiBaseUrl: String
 ): ProjectGitHubCommandResult {
     val body = buildJsonObject {
         put("ref", ref)
+        if (inputs.isNotEmpty()) {
+            put(
+                "inputs",
+                buildJsonObject {
+                    inputs.forEach { (key, value) ->
+                        put(key, value)
+                    }
+                }
+            )
+        }
     }.toString()
     val result = runProjectGitHubApiRequest(
         apiBaseUrl = apiBaseUrl,
@@ -346,6 +497,7 @@ internal fun loadProjectGitHubWorkflowRunDetail(
         .orEmpty()
     val detail = ProjectGitHubWorkflowRunDetailUi(
         id = runId,
+        repo = repo,
         title = runObject.string("display_title")
             .orEmpty()
             .ifBlank { runObject.string("name").orEmpty().ifBlank { "运行 #${runObject.long("run_number") ?: runId}" } },
@@ -1412,6 +1564,26 @@ private fun runProjectGitHubApiRequest(
             error = error.message ?: "GitHub API 请求失败"
         )
     }
+}
+
+private fun parseProjectGitHubAccountRepo(
+    item: JsonObject
+): ProjectGitHubAccountRepoUi? {
+    val ownerLogin = item.jsonObjectOrNull("owner")?.string("login").orEmpty()
+    val name = item.string("name").orEmpty()
+    if (ownerLogin.isBlank() || name.isBlank()) return null
+    return ProjectGitHubAccountRepoUi(
+        id = item.long("id") ?: return null,
+        owner = ownerLogin,
+        name = name,
+        description = item.string("description").orEmpty(),
+        isPrivate = item.boolean("private") ?: false,
+        stargazerCount = item.long("stargazers_count") ?: 0L,
+        forkCount = item.long("forks_count") ?: 0L,
+        htmlUrl = item.string("html_url"),
+        defaultBranch = item.string("default_branch").orEmpty(),
+        updatedAt = item.string("updated_at").orEmpty()
+    )
 }
 
 internal fun buildProjectGitHubApiUrl(apiBaseUrl: String, path: String): String {
