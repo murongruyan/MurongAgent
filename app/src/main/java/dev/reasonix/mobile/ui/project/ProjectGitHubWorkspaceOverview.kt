@@ -9,17 +9,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.Language
-import androidx.compose.material.icons.filled.LibraryAddCheck
-import androidx.compose.material.icons.filled.PlaylistAddCheck
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Task
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
@@ -104,7 +99,7 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                 modifier = Modifier.height(32.dp)
                             ) {
-                                Icon(Icons.Default.Task, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Text("T", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text("任务中心", style = MaterialTheme.typography.labelMedium)
                             }
@@ -114,7 +109,7 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                 modifier = Modifier.height(32.dp)
                             ) {
-                                Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Text("G", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text("全局搜索", style = MaterialTheme.typography.labelMedium)
                             }
@@ -257,14 +252,10 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                 modifier = Modifier.height(32.dp)
                             ) {
-                                Icon(
-                                    imageVector = if (isSelectionMode) {
-                                        Icons.Default.PlaylistAddCheck
-                                    } else {
-                                        Icons.Default.LibraryAddCheck
-                                    },
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
+                                Text(
+                                    text = if (isSelectionMode) "M" else "B",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
@@ -308,7 +299,7 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                                     modifier = Modifier.padding(end = 4.dp)
                                 )
                             }
-                            Column(modifier = Modifier.weight(1f)) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
                                 ProjectGitHubWorkspaceRepoCard(
                                     card = card,
                                     surfaceColor = surfaceColor,

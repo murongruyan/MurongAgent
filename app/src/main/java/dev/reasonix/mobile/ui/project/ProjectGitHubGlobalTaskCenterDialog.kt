@@ -171,11 +171,11 @@ private fun GlobalTaskItem(
             modifier = Modifier.padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            val icon = when {
-                task.isCritical -> Icons.Default.Warning
-                task.targetPullRequest != null -> Icons.Default.MergeType
-                task.targetIssue != null -> Icons.Default.Info
-                else -> Icons.Default.Task
+            val iconLabel = when {
+                task.isCritical -> "!"
+                task.targetPullRequest != null -> "PR"
+                task.targetIssue != null -> "I"
+                else -> "T"
             }
             
             val iconTint = when {
@@ -191,7 +191,11 @@ private fun GlobalTaskItem(
                     .background(iconTint.copy(alpha = 0.1f), RoundedCornerShape(8.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(20.dp))
+                Text(
+                    text = iconLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = iconTint
+                )
             }
             
             Spacer(modifier = Modifier.width(16.dp))
@@ -221,11 +225,10 @@ private fun GlobalTaskItem(
                 fontWeight = FontWeight.Bold
             )
             
-            Icon(
-                Icons.Default.ChevronRight,
-                contentDescription = null,
-                tint = chromeColor.copy(alpha = 0.3f),
-                modifier = Modifier.size(16.dp)
+            Text(
+                text = ">",
+                color = chromeColor.copy(alpha = 0.45f),
+                style = MaterialTheme.typography.titleMedium
             )
         }
     }

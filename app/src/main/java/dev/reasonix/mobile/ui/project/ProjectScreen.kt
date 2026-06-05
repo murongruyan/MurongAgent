@@ -4812,12 +4812,12 @@ private fun ProjectGitSection(
                     "当前运行详情还没有可打开的 GitHub 页面地址。"
                 )
             },
-            onRefreshDetail = {
+            onRefreshDetail = { currentDetail ->
                 scope.launch {
                     isGitHubActionRunning = true
                     val result = withContext(Dispatchers.IO) {
                         refreshProjectGitHubWorkflowRunDetailAction(
-                            currentDetail = detail,
+                            currentDetail = currentDetail,
                             repo = githubActionsState.repo,
                             token = config.githubToken.trim(),
                             apiBaseUrl = config.getGitHubApiBaseUrl()
@@ -4828,13 +4828,13 @@ private fun ProjectGitSection(
                     result.feedbackMessage?.let { feedbackMessage = it }
                 }
             },
-            onDownloadLogs = {
+            onDownloadLogs = { currentDetail ->
                 val result = enqueueProjectGitHubWorkflowLogsDownloadAction(
                     context = context,
                     repo = githubActionsState.repo,
-                    runId = detail.id,
-                    runDisplayTitle = detail.title,
-                    sourceUrl = detail.htmlUrl,
+                    runId = currentDetail.id,
+                    runDisplayTitle = currentDetail.title,
+                    sourceUrl = currentDetail.htmlUrl,
                     token = config.githubToken.trim(),
                     apiBaseUrl = config.getGitHubApiBaseUrl()
                 )
@@ -4850,12 +4850,12 @@ private fun ProjectGitSection(
                 }
                 result.feedbackMessage?.let { feedbackMessage = it }
             },
-            onDownloadArtifact = { _, artifact ->
+            onDownloadArtifact = { currentDetail, artifact ->
                 val result = enqueueProjectGitHubWorkflowArtifactDownloadAction(
                     context = context,
                     repo = githubActionsState.repo,
                     artifact = artifact,
-                    sourceUrl = detail.htmlUrl,
+                    sourceUrl = currentDetail.htmlUrl,
                     token = config.githubToken.trim()
                 )
                 result.downloadRecord?.let { record ->

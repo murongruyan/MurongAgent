@@ -117,11 +117,10 @@ internal fun ProjectGitHubGlobalSearchDialog(
                             verticalArrangement = Arrangement.Center,
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Icon(
-                                Icons.Default.ErrorOutline,
-                                contentDescription = null,
-                                modifier = Modifier.size(48.dp),
-                                tint = MaterialTheme.colorScheme.error
+                            Text(
+                                text = "!",
+                                style = MaterialTheme.typography.displaySmall,
+                                color = MaterialTheme.colorScheme.error
                             )
                             Spacer(modifier = Modifier.height(16.dp))
                             Text(
@@ -164,10 +163,10 @@ private fun GlobalSearchResultItem(
     onClick: () -> Unit,
     chromeColor: Color
 ) {
-    val icon = when (result.type) {
-        ProjectGitHubGlobalSearchResultType.ISSUE -> Icons.Default.Info
-        ProjectGitHubGlobalSearchResultType.PULL_REQUEST -> Icons.Default.MergeType
-        ProjectGitHubGlobalSearchResultType.FILE -> Icons.Default.Description
+    val iconLabel = when (result.type) {
+        ProjectGitHubGlobalSearchResultType.ISSUE -> "I"
+        ProjectGitHubGlobalSearchResultType.PULL_REQUEST -> "PR"
+        ProjectGitHubGlobalSearchResultType.FILE -> "F"
     }
 
     val iconTint = when (result.type) {
@@ -189,7 +188,11 @@ private fun GlobalSearchResultItem(
                 .background(iconTint.copy(alpha = 0.1f), RoundedCornerShape(8.dp)),
             contentAlignment = Alignment.Center
         ) {
-            Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(20.dp))
+            Text(
+                text = iconLabel,
+                style = MaterialTheme.typography.labelMedium,
+                color = iconTint
+            )
         }
         Spacer(modifier = Modifier.width(16.dp))
         Column(modifier = Modifier.weight(1f)) {
@@ -207,11 +210,10 @@ private fun GlobalSearchResultItem(
                 overflow = TextOverflow.Ellipsis
             )
         }
-        Icon(
-            Icons.Default.ChevronRight,
-            contentDescription = null,
-            tint = chromeColor.copy(alpha = 0.3f),
-            modifier = Modifier.size(20.dp)
+        Text(
+            text = ">",
+            color = chromeColor.copy(alpha = 0.45f),
+            style = MaterialTheme.typography.titleMedium
         )
     }
 }

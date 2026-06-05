@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -331,12 +332,10 @@ internal fun ProjectGitHubDownloadHistorySection(
                                     }
                                 }
                             }
-                            IconButton(onClick = { onDeleteRecord(item.id) }) {
-                                Icon(
-                                    imageVector = androidx.compose.material.icons.Icons.Default.Delete,
-                                    contentDescription = "删除记录",
-                                    tint = MaterialTheme.colorScheme.error.copy(alpha = 0.6f),
-                                    modifier = Modifier.size(18.dp)
+                            TextButton(onClick = { onDeleteRecord(item.id) }) {
+                                Text(
+                                    text = "删除",
+                                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
                                 )
                             }
                         }

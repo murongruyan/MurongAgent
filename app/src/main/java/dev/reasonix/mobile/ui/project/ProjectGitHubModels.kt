@@ -45,6 +45,98 @@ internal data class ProjectGitHubWorkflowRunUi(
 ) {
     val statusLabel: String
         get() = buildProjectGitHubStatusLabel(status, conclusion)
+    val hasIssue: Boolean
+        get() = projectGitHubRunHasIssue(status, conclusion)
+}
+
+internal data class ProjectGitHubWorkflowStepUi(
+    val number: Int,
+    val name: String,
+    val status: String,
+    val conclusion: String?,
+    val startedAt: String,
+    val completedAt: String
+) {
+    val statusLabel: String
+        get() = buildProjectGitHubStatusLabel(status, conclusion)
+    val hasIssue: Boolean
+        get() = projectGitHubRunHasIssue(status, conclusion)
+}
+
+internal data class ProjectGitHubWorkflowJobUi(
+    val id: Long,
+    val name: String,
+    val status: String,
+    val conclusion: String?,
+    val startedAt: String,
+    val completedAt: String,
+    val steps: List<ProjectGitHubWorkflowStepUi>
+) {
+    val statusLabel: String
+        get() = buildProjectGitHubStatusLabel(status, conclusion)
+    val failedSteps: List<ProjectGitHubWorkflowStepUi>
+        get() = steps.filter { it.hasIssue }
+    val hasIssue: Boolean
+        get() = projectGitHubRunHasIssue(status, conclusion) || failedSteps.isNotEmpty()
+}
+
+internal data class ProjectGitHubWorkflowLogEntryUi(
+    val entryName: String,
+    val displayName: String,
+    val preview: String,
+    val totalLineCount: Int,
+    val truncated: Boolean
+)
+
+internal data class ProjectGitHubWorkflowLogSearchHitUi(
+    val hasMatch: Boolean,
+    val matchedLineCount: Int,
+    val snippet: String,
+    val matchedLineIndices: List<Int>
+)
+
+internal data class ProjectGitHubWorkflowRunDetailUi(
+    val id: Long,
+    val title: String,
+    val workflowName: String,
+    val headBranch: String,
+    val status: String,
+    val conclusion: String?,
+    val event: String,
+    val runNumber: Long,
+    val createdAt: String,
+    val updatedAt: String,
+    val htmlUrl: String?,
+    val jobs: List<ProjectGitHubWorkflowJobUi>,
+    val artifacts: List<ProjectGitHubArtifactUi>,
+    val artifactsError: String?,
+    val logEntries: List<ProjectGitHubWorkflowLogEntryUi>,
+    val logsError: String?
+) {
+    val statusLabel: String
+        get() = buildProjectGitHubStatusLabel(status, conclusion)
+    val issueSummaries: List<String>
+        get() = buildList {
+            jobs.filter { it.hasIssue }.take(4).forEach { job ->
+                val failedStepSummary = job.failedSteps
+                    .take(2)
+                    .joinToString("、") { it.name }
+                    .takeIf { it.isNotBlank() }
+                add(
+                    buildString {
+                        append(job.name)
+                        append("：")
+                        append(job.statusLabel)
+                        failedStepSummary?.let {
+                            append("，步骤 ")
+                            append(it)
+                        }
+                    }
+                )
+            }
+            logsError?.takeIf { it.isNotBlank() }?.let { add("日志：$it") }
+            artifactsError?.takeIf { it.isNotBlank() }?.let { add("产物：$it") }
+        }
 }
 
 internal data class ProjectGitHubArtifactUi(
@@ -182,23 +274,38 @@ internal data class ProjectGitHubRemoteEntryUi(
     val type: String,
     val sha: String?,
     val size: Long,
-    val htmlUrl: String?
-)
+    val htmlUrl: String?,
+    val downloadUrl: String? = null
+) {
+    val isDirectory: Boolean
+        get() = type.equals("dir", ignoreCase = true)
+    val typeLabel: String
+        get() = when {
+            isDirectory -> "目录"
+            type.equals("file", ignoreCase = true) -> "文件"
+            type.equals("symlink", ignoreCase = true) -> "符号链接"
+            type.equals("submodule", ignoreCase = true) -> "子模块"
+            type.isBlank() -> "未知类型"
+            else -> type
+        }
+}
 
 internal data class ProjectGitHubRemoteBrowserState(
     val repo: ProjectGitHubRepoRef?,
     val currentPath: String,
     val currentRef: String,
     val entries: List<ProjectGitHubRemoteEntryUi>,
-    val isLoading: Boolean,
+    val repoHtmlUrl: String? = null,
+    val isLoading: Boolean = false,
     val errorMessage: String?
 ) {
     companion object {
-        fun empty() = ProjectGitHubRemoteBrowserState(
-            repo = null,
+        fun empty(repo: ProjectGitHubRepoRef? = null) = ProjectGitHubRemoteBrowserState(
+            repo = repo,
             currentPath = "",
             currentRef = "",
             entries = emptyList(),
+            repoHtmlUrl = repo?.let { "https://github.com/${it.owner}/${it.repo}" },
             isLoading = false,
             errorMessage = null
         )
@@ -208,51 +315,113 @@ internal data class ProjectGitHubRemoteBrowserState(
 internal data class ProjectGitHubRemoteFileUi(
     val name: String,
     val path: String,
-    val sha: String,
+    val sha: String?,
+    val ref: String,
     val size: Long,
-    val content: String?,
-    val htmlUrl: String?
+    val content: String,
+    val htmlUrl: String?,
+    val downloadUrl: String? = null,
+    val truncated: Boolean = false
 )
 
 internal data class ProjectGitHubCommentUi(
     val id: Long,
     val body: String,
-    val authorLogin: String,
+    val authorLogin: String?,
+    val createdAt: String,
     val updatedAt: String,
     val htmlUrl: String?
-)
+) {
+    val authorLabel: String
+        get() = authorLogin?.takeIf { it.isNotBlank() } ?: "未知作者"
+    val timeLabel: String
+        get() = updatedAt.ifBlank { createdAt }.ifBlank { "时间未知" }
+}
 
 internal data class ProjectGitHubPullRequestReviewUi(
     val id: Long,
     val body: String,
     val state: String,
-    val authorLogin: String,
-    val updatedAt: String,
+    val authorLogin: String?,
+    val submittedAt: String,
+    val commitId: String?,
     val htmlUrl: String?
-)
+) {
+    val authorLabel: String
+        get() = authorLogin?.takeIf { it.isNotBlank() } ?: "未知作者"
+    val stateLabel: String
+        get() = when {
+            state.equals("APPROVED", ignoreCase = true) -> "已批准"
+            state.equals("CHANGES_REQUESTED", ignoreCase = true) -> "请求修改"
+            state.equals("COMMENTED", ignoreCase = true) -> "已评论"
+            state.isBlank() -> "状态未知"
+            else -> state
+        }
+    val timeLabel: String
+        get() = submittedAt.ifBlank { "时间未知" }
+}
 
 internal data class ProjectGitHubPullRequestFileUi(
-    val sha: String,
-    val fileName: String,
+    val path: String,
     val status: String,
-    val additions: Int,
-    val deletions: Int,
-    val changes: Int,
-    val blobUrl: String?,
-    val rawUrl: String?,
-    val contentsUrl: String?,
-    val patch: String?
-)
+    val additions: Long,
+    val deletions: Long,
+    val changes: Long,
+    val patch: String?,
+    val sha: String? = null,
+    val blobUrl: String? = null,
+    val rawUrl: String? = null,
+    val contentsUrl: String? = null,
+    val fileName: String = path.substringAfterLast('/')
+) {
+    val displayPath: String
+        get() = path
+    val statusLabel: String
+        get() = when {
+            status.equals("added", ignoreCase = true) -> "新增"
+            status.equals("modified", ignoreCase = true) -> "修改"
+            status.equals("removed", ignoreCase = true) -> "删除"
+            status.equals("renamed", ignoreCase = true) -> "重命名"
+            status.equals("copied", ignoreCase = true) -> "复制"
+            status.equals("changed", ignoreCase = true) -> "变更"
+            status.isBlank() -> "未知状态"
+            else -> status
+        }
+    val summaryLabel: String
+        get() = buildString {
+            append(statusLabel)
+            append(" · ")
+            append(path)
+            if (changes > 0) {
+                append(" · +")
+                append(additions)
+                append(" / -")
+                append(deletions)
+            }
+        }
+}
 
 internal data class ProjectGitHubPullRequestReviewCommentUi(
     val id: Long,
     val body: String,
-    val authorLogin: String,
+    val authorLogin: String?,
     val path: String,
     val line: Int?,
+    val side: String? = null,
+    val parentCommentId: Long? = null,
+    val createdAt: String,
     val updatedAt: String,
     val htmlUrl: String?
-)
+) {
+    val authorLabel: String
+        get() = authorLogin?.takeIf { it.isNotBlank() } ?: "未知作者"
+    val timeLabel: String
+        get() = updatedAt.ifBlank { createdAt }.ifBlank { "时间未知" }
+    val pathLabel: String
+        get() = path.ifBlank { "文件未知" }
+    val positionLabel: String
+        get() = line?.let { "L$it" } ?: "文件级评论"
+}
 
 internal enum class ProjectGitHubGlobalSearchResultType {
     ISSUE,
@@ -505,6 +674,14 @@ internal fun buildProjectGitHubStatusLabel(status: String, conclusion: String?):
         append(it)
         append(")")
     }
+}
+
+private fun projectGitHubRunHasIssue(status: String, conclusion: String?): Boolean {
+    if (!status.equals("completed", ignoreCase = true)) return true
+    if (conclusion.isNullOrBlank()) return false
+    return !conclusion.equals("success", ignoreCase = true) &&
+        !conclusion.equals("neutral", ignoreCase = true) &&
+        !conclusion.equals("skipped", ignoreCase = true)
 }
 
 internal fun formatProjectByteSize(bytes: Long): String {
