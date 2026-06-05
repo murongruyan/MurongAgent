@@ -1005,6 +1005,7 @@ private fun ProjectGitHubStandaloneHeaderCard(
     }
 }
 
+@Composable
 private fun ProjectGitHubStandaloneTopActions(
     onShowReleases: () -> Unit,
     onShowWorkflows: () -> Unit,
