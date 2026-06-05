@@ -83,7 +83,7 @@ internal fun ProjectGitHubStandaloneBrowserSection(
     onOpenReleasePage: (ProjectGitHubReleaseUi) -> Unit,
     onOpenReleaseAssets: (ProjectGitHubReleaseUi) -> Unit,
     onCreateIssue: () -> Unit,
-    onOpenIssueDetail: (ProjectGitHubIssueUi) -> Unit,
+    onOpenDetail: (ProjectGitHubIssueUi) -> Unit,
     onToggleIssueState: (ProjectGitHubIssueUi, Boolean) -> Unit,
     onOpenIssuePage: (ProjectGitHubIssueUi) -> Unit,
     onCreatePullRequest: () -> Unit,
@@ -93,17 +93,12 @@ internal fun ProjectGitHubStandaloneBrowserSection(
     onOpenPullRequestPage: (ProjectGitHubPullRequestUi) -> Unit,
     onEditReadme: (ProjectGitHubReadmeUi) -> Unit
 ) {
-    val chromeColor = rememberReasonixChromeColor()
-    val surfaceColor = rememberReasonixSurfaceColor()
-    val mutedTextColor = rememberReasonixMutedTextColor()
+    val githubColors = rememberGitHubColors()
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        ProjectSectionCard(
-            shape = RoundedCornerShape(14.dp),
-            surfaceColorOverride = chromeColor.copy(alpha = 0.38f)
-        ) {
+        GitHubCard {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("GitHub 账号仓库", style = MaterialTheme.typography.titleSmall)
+                Text("GitHub 账号仓库", style = MaterialTheme.typography.titleMedium, color = githubColors.text)
                 Text(
                     text = buildString {
                         append(repoListState.viewerLogin?.let { "@$it" } ?: "未识别账号")
@@ -116,7 +111,7 @@ internal fun ProjectGitHubStandaloneBrowserSection(
                         }
                     },
                     style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor
+                    color = githubColors.mutedText
                 )
                 Text(
                     text = if (selectedRepo == null) {
@@ -125,18 +120,18 @@ internal fun ProjectGitHubStandaloneBrowserSection(
                         "当前查看 ${selectedRepo.fullName}，未被设为任务仓库的项目只允许浏览，修改前需确认。"
                     },
                     style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor
+                    color = githubColors.mutedText
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
+                    TextButton(
                         onClick = onRefreshRepoList,
                         enabled = tokenConfigured && !isRepoListLoading
                     ) {
-                        Text("刷新仓库")
+                        Text("刷新仓库", color = githubColors.accent)
                     }
                     if (selectedRepo != null) {
                         TextButton(onClick = onBackToRepoList) {
-                            Text("返回列表")
+                            Text("返回列表", color = githubColors.accent)
                         }
                     }
                 }
@@ -144,14 +139,14 @@ internal fun ProjectGitHubStandaloneBrowserSection(
                     Text(
                         text = "请先在设置页填写 GitHub Token，未选择本地项目时才能直接浏览账号仓库。",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error
+                        color = githubColors.danger
                     )
                 }
                 repoListState.errorMessage?.takeIf { it.isNotBlank() }?.let { error ->
                     Text(
                         text = error,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error
+                        color = githubColors.danger
                     )
                 }
             }
@@ -162,14 +157,11 @@ internal fun ProjectGitHubStandaloneBrowserSection(
                 ProjectGitHubStandaloneLoadingCard("正在读取当前账号下的仓库列表...")
             }
             if (repoListState.repositories.isEmpty() && !isRepoListLoading && tokenConfigured) {
-                ProjectSectionCard(
-                    shape = RoundedCornerShape(14.dp),
-                    surfaceColorOverride = surfaceColor.copy(alpha = 0.55f)
-                ) {
+                GitHubCard {
                     Text(
                         text = "当前账号下还没有读取到仓库，或该 Token 没有仓库读取权限。",
                         style = MaterialTheme.typography.bodySmall,
-                        color = mutedTextColor
+                        color = githubColors.mutedText
                     )
                 }
             }
@@ -184,15 +176,10 @@ internal fun ProjectGitHubStandaloneBrowserSection(
             return
         }
 
-        ProjectSectionCard(
-            shape = RoundedCornerShape(14.dp),
-            surfaceColorOverride = surfaceColor.copy(alpha = 0.58f)
-        ) {
+        GitHubCard {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(selectedRepo.fullName, style = MaterialTheme.typography.titleSmall)
-                ProjectInsetCard(
-                    shape = RoundedCornerShape(12.dp),
-                    surfaceColorOverride = surfaceColor.copy(alpha = 0.42f),
+                Text(selectedRepo.fullName, style = MaterialTheme.typography.titleMedium, color = githubColors.text)
+                GitHubCard(
                     modifier = Modifier.combinedClickable(
                         onClick = {},
                         onLongClick = { onEditRepoDescription(selectedRepo) }
@@ -201,14 +188,17 @@ internal fun ProjectGitHubStandaloneBrowserSection(
                     Text(
                         text = selectedRepo.description.ifBlank { "这个仓库暂时还没有简介。长按这里可编辑。" },
                         style = MaterialTheme.typography.bodySmall,
-                        color = mutedTextColor
+                        color = githubColors.mutedText
                     )
                 }
-                Text(
-                    text = "${selectedRepo.visibilityLabel} · ${selectedRepo.stargazerCount} 星标 · ${selectedRepo.forkCount} 复刻",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor
-                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    GitHubLabel(selectedRepo.visibilityLabel, githubColors.mutedText)
+                    Text(
+                        text = "${selectedRepo.stargazerCount} 星标 · ${selectedRepo.forkCount} 复刻",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = githubColors.mutedText
+                    )
+                }
                 Text(
                     text = if (selectedTaskRepo == selectedRepo.repoRef) {
                         "当前任务仓库，可直接编辑源码。"
@@ -216,11 +206,7 @@ internal fun ProjectGitHubStandaloneBrowserSection(
                         "当前不是任务仓库，可浏览；若要修改该仓库，后续需要用户确认。"
                     },
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (selectedTaskRepo == selectedRepo.repoRef) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        mutedTextColor
-                    }
+                    color = if (selectedTaskRepo == selectedRepo.repoRef) githubColors.primary else githubColors.mutedText
                 )
             }
         }
@@ -369,34 +355,30 @@ private fun ProjectGitHubStandaloneProjectSection(
     onShowReadme: () -> Unit,
     onOpenLatestRunDetail: (() -> Unit)?
 ) {
-    val chromeColor = rememberReasonixChromeColor()
-    val mutedTextColor = rememberReasonixMutedTextColor()
+    val githubColors = rememberGitHubColors()
     val latestRun = remember(repoDetailState.recentRuns) { repoDetailState.recentRuns.firstOrNull() }
     val latestRelease = remember(repoDetailState.releases) { repoDetailState.releases.firstOrNull() }
     val latestIssue = remember(repoDetailState.issues) { repoDetailState.issues.firstOrNull() }
     val latestPullRequest = remember(repoDetailState.pullRequests) {
         repoDetailState.pullRequests.firstOrNull()
     }
-    ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
-        surfaceColorOverride = chromeColor.copy(alpha = 0.28f)
-    ) {
+    GitHubCard {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("项目概览", style = MaterialTheme.typography.titleSmall)
+            Text("项目概览", style = MaterialTheme.typography.titleMedium, color = githubColors.text)
             Text(
                 text = "这里先提供远端仓库树浏览、网页入口和直接编辑链路。当前任务仓库会保留“可直接编辑”标记。",
                 style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor
+                color = githubColors.mutedText
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
+                TextButton(
                     onClick = onRefreshRepoDetail,
                     enabled = tokenConfigured && !isRepoDetailLoading
                 ) {
-                    Text("刷新详情")
+                    Text("刷新详情", color = githubColors.accent)
                 }
                 TextButton(onClick = onOpenRepoPage) {
-                    Text("打开网页")
+                    Text("打开网页", color = githubColors.accent)
                 }
             }
             Text(
@@ -406,74 +388,44 @@ private fun ProjectGitHubStandaloneProjectSection(
                         ?: selectedRepo.defaultBranch.ifBlank { "未知" }
                 }",
                 style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor
+                color = githubColors.mutedText
             )
             Row(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                FilterChip(
-                    selected = true,
-                    onClick = onShowWorkflows,
-                    label = { Text("工作流 ${repoDetailState.workflows.size}") }
-                )
-                FilterChip(
-                    selected = true,
-                    onClick = onShowWorkflows,
-                    label = { Text("运行 ${repoDetailState.recentRuns.size}") }
-                )
-                FilterChip(
-                    selected = true,
-                    onClick = onShowReleases,
-                    label = { Text("Release ${repoDetailState.releases.size}") }
-                )
-                FilterChip(
-                    selected = true,
-                    onClick = onShowReadme,
-                    label = { Text("README") }
-                )
-                FilterChip(
-                    selected = true,
-                    onClick = onShowIssues,
-                    label = { Text("Issue ${repoDetailState.issues.size}") }
-                )
-                FilterChip(
-                    selected = true,
-                    onClick = onShowPullRequests,
-                    label = { Text("PR ${repoDetailState.pullRequests.size}") }
-                )
+                GitHubLabel("工作流 ${repoDetailState.workflows.size}", githubColors.mutedText, Modifier.clickable { onShowWorkflows() })
+                GitHubLabel("运行 ${repoDetailState.recentRuns.size}", githubColors.mutedText, Modifier.clickable { onShowWorkflows() })
+                GitHubLabel("Release ${repoDetailState.releases.size}", githubColors.mutedText, Modifier.clickable { onShowReleases() })
+                GitHubLabel("README", githubColors.mutedText, Modifier.clickable { onShowReadme() })
+                GitHubLabel("Issue ${repoDetailState.issues.size}", githubColors.mutedText, Modifier.clickable { onShowIssues() })
+                GitHubLabel("PR ${repoDetailState.pullRequests.size}", githubColors.mutedText, Modifier.clickable { onShowPullRequests() })
             }
             latestRun?.let { run ->
-                ProjectInsetCard(
-                    shape = RoundedCornerShape(12.dp),
-                    surfaceColorOverride = chromeColor.copy(alpha = 0.40f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
+                GitHubCard {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
                             text = "最近工作流活动",
-                            style = MaterialTheme.typography.labelMedium
+                            style = MaterialTheme.typography.labelMedium,
+                            color = githubColors.accent
                         )
                         Text(
                             text = run.displayTitle.ifBlank { run.name.ifBlank { "最近一次运行" } },
-                            style = MaterialTheme.typography.bodyMedium
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = githubColors.text
                         )
                         Text(
                             text = "${run.statusLabel} · 分支 ${run.headBranch.ifBlank { "未知" }} · 更新 ${run.updatedAt}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (run.hasIssue) {
-                                MaterialTheme.colorScheme.error
-                            } else {
-                                mutedTextColor
-                            }
+                            color = if (run.hasIssue) githubColors.danger else githubColors.mutedText
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = onShowWorkflows) {
-                                Text("切到工作流")
+                            TextButton(onClick = onShowWorkflows) {
+                                Text("切到工作流", color = githubColors.accent)
                             }
                             onOpenLatestRunDetail?.let { openDetail ->
                                 TextButton(onClick = openDetail) {
-                                    Text("运行详情")
+                                    Text("运行详情", color = githubColors.accent)
                                 }
                             }
                         }
@@ -481,19 +433,17 @@ private fun ProjectGitHubStandaloneProjectSection(
                 }
             }
             latestRelease?.let { release ->
-                ProjectInsetCard(
-                    shape = RoundedCornerShape(12.dp),
-                    surfaceColorOverride = chromeColor.copy(alpha = 0.34f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
+                GitHubCard {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
                             text = "最近 Release",
-                            style = MaterialTheme.typography.labelMedium
+                            style = MaterialTheme.typography.labelMedium,
+                            color = githubColors.accent
                         )
                         Text(
                             text = release.name.ifBlank { release.tagName },
-                            style = MaterialTheme.typography.bodyMedium
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = githubColors.text
                         )
                         Text(
                             text = buildString {
@@ -514,65 +464,57 @@ private fun ProjectGitHubStandaloneProjectSection(
                                 )
                             },
                             style = MaterialTheme.typography.bodySmall,
-                            color = mutedTextColor
+                            color = githubColors.mutedText
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = onShowReleases) {
-                                Text("切到 Release")
+                            TextButton(onClick = onShowReleases) {
+                                Text("切到 Release", color = githubColors.accent)
                             }
                             TextButton(onClick = onShowReadme) {
-                                Text("README")
+                                Text("README", color = githubColors.accent)
                             }
                         }
                     }
                 }
             }
             latestIssue?.let { issue ->
-                ProjectInsetCard(
-                    shape = RoundedCornerShape(12.dp),
-                    surfaceColorOverride = chromeColor.copy(alpha = 0.32f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
+                GitHubCard {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
                             text = "最近 Issue",
-                            style = MaterialTheme.typography.labelMedium
+                            style = MaterialTheme.typography.labelMedium,
+                            color = githubColors.accent
                         )
                         Text(
                             text = "#${issue.number} · ${issue.title}",
-                            style = MaterialTheme.typography.bodyMedium
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = githubColors.text
                         )
                         Text(
                             text = "${issue.stateLabel} · ${issue.authorLabel} · 更新 ${issue.updatedAt}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (issue.isOpen) {
-                                mutedTextColor
-                            } else {
-                                MaterialTheme.colorScheme.primary
-                            }
+                            color = if (issue.isOpen) githubColors.primary else githubColors.purple
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = onShowIssues) {
-                                Text("切到 Issue")
+                            TextButton(onClick = onShowIssues) {
+                                Text("切到 Issue", color = githubColors.accent)
                             }
                         }
                     }
                 }
             }
             latestPullRequest?.let { pullRequest ->
-                ProjectInsetCard(
-                    shape = RoundedCornerShape(12.dp),
-                    surfaceColorOverride = chromeColor.copy(alpha = 0.30f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
+                GitHubCard {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
                             text = "最近 PR",
-                            style = MaterialTheme.typography.labelMedium
+                            style = MaterialTheme.typography.labelMedium,
+                            color = githubColors.accent
                         )
                         Text(
                             text = "#${pullRequest.number} · ${pullRequest.title}",
-                            style = MaterialTheme.typography.bodyMedium
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = githubColors.text
                         )
                         Text(
                             text = buildString {
@@ -585,15 +527,11 @@ private fun ProjectGitHubStandaloneProjectSection(
                                 append(pullRequest.updatedAt)
                             },
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (pullRequest.canMerge) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                mutedTextColor
-                            }
+                            color = if (pullRequest.canMerge) githubColors.primary else githubColors.mutedText
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = onShowPullRequests) {
-                                Text("切到 PR")
+                            TextButton(onClick = onShowPullRequests) {
+                                Text("切到 PR", color = githubColors.accent)
                             }
                         }
                     }
@@ -603,7 +541,7 @@ private fun ProjectGitHubStandaloneProjectSection(
                 Text(
                     text = error,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
+                    color = githubColors.danger
                 )
             }
         }
@@ -680,42 +618,36 @@ private fun ProjectGitHubStandaloneRepoRow(
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
-    val surfaceColor = rememberReasonixSurfaceColor()
-    val mutedTextColor = rememberReasonixMutedTextColor()
-    ProjectInsetCard(
-        shape = RoundedCornerShape(12.dp),
-        surfaceColorOverride = surfaceColor.copy(alpha = 0.56f),
+    val githubColors = rememberGitHubColors()
+    GitHubCard(
         modifier = Modifier
-            .fillMaxWidth()
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick
             )
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(repo.fullName, style = MaterialTheme.typography.bodyMedium)
+            Text(repo.fullName, style = MaterialTheme.typography.titleMedium, color = githubColors.accent)
             Text(
                 text = repo.description.ifBlank { "暂无仓库简介" },
                 style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor,
+                color = githubColors.mutedText,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Text(
-                text = buildString {
-                    append(repo.visibilityLabel)
-                    append(" · ")
-                    append(repo.updatedAt.ifBlank { "更新时间未知" })
-                    if (isTaskRepo) {
-                        append(" · 可直接编辑")
-                    }
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = if (isTaskRepo) MaterialTheme.colorScheme.primary else mutedTextColor
-            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                GitHubLabel(repo.visibilityLabel, githubColors.mutedText)
+                Text(
+                    text = "更新于 ${repo.updatedAt.ifBlank { "未知" }}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = githubColors.mutedText
+                )
+                if (isTaskRepo) {
+                    GitHubLabel("可直接编辑", githubColors.primary)
+                }
+            }
         }
     }
 }

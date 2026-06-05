@@ -100,45 +100,37 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchHeader(
     onRefreshGitState: () -> Unit,
     onRefreshGitHubActions: () -> Unit
 ) {
-    val chromeColor = rememberReasonixChromeColor()
-    val mutedTextColor = rememberReasonixMutedTextColor()
+    val githubColors = rememberGitHubColors()
 
-    ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
-        surfaceColorOverride = chromeColor.copy(alpha = 0.38f)
-    ) {
+    GitHubCard {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(header.title, style = MaterialTheme.typography.titleSmall)
+            Text(header.title, style = MaterialTheme.typography.titleMedium, color = githubColors.text)
             Text(
                 text = header.subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor
+                color = githubColors.mutedText
             )
             Text(
                 text = header.changeSummary,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (header.highlightChanges) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    mutedTextColor
-                }
+                color = if (header.highlightChanges) githubColors.primary else githubColors.mutedText
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onExitWorkbench) {
-                    Text("返回工作区")
+                TextButton(onClick = onExitWorkbench) {
+                    Text("返回", color = githubColors.accent)
                 }
-                OutlinedButton(
+                TextButton(
                     onClick = onRefreshGitState,
                     enabled = !isGitLoading
                 ) {
-                    Text("刷新本地")
+                    Text("刷新本地", color = githubColors.accent)
                 }
                 if (tokenConfigured) {
-                    OutlinedButton(
+                    TextButton(
                         onClick = onRefreshGitHubActions,
                         enabled = !isGitHubLoading && !isGitHubActionRunning
                     ) {
-                        Text("刷新 GitHub")
+                        Text("刷新 GitHub", color = githubColors.accent)
                     }
                 }
             }
@@ -159,70 +151,40 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchOverviewTab(
     onOpenSystemDownloads: () -> Unit,
     onOpenDownloadSource: (ProjectGitHubDownloadRecordUi) -> Unit
 ) {
-    val chromeColor = rememberReasonixChromeColor()
-    val surfaceColor = rememberReasonixSurfaceColor()
-    val mutedTextColor = rememberReasonixMutedTextColor()
+    val githubColors = rememberGitHubColors()
 
-    ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
-        surfaceColorOverride = surfaceColor.copy(alpha = 0.58f)
-    ) {
+    GitHubCard {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("仓库概览", style = MaterialTheme.typography.titleSmall)
+            Text("仓库概览", style = MaterialTheme.typography.titleMedium, color = githubColors.text)
             Text(
                 text = overview.remoteSummaryText,
                 style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor
+                color = githubColors.mutedText
             )
             Row(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                FilterChip(
-                    selected = true,
-                    onClick = onShowWorkflowTab,
-                    label = { Text("工作流 ${overview.workflowCount}") }
-                )
-                FilterChip(
-                    selected = true,
-                    onClick = onShowWorkflowTab,
-                    label = { Text("运行 ${overview.recentRunCount}") }
-                )
-                FilterChip(
-                    selected = true,
-                    onClick = onShowIssuesTab,
-                    label = { Text("Issue ${overview.issueCount}") }
-                )
-                FilterChip(
-                    selected = true,
-                    onClick = onShowPullRequestsTab,
-                    label = { Text("PR ${overview.pullRequestCount}") }
-                )
-                FilterChip(
-                    selected = true,
-                    onClick = onShowReleaseTab,
-                    label = { Text("Release ${overview.releaseCount}") }
-                )
+                GitHubLabel("工作流 ${overview.workflowCount}", githubColors.mutedText, Modifier.clickable { onShowWorkflowTab() })
+                GitHubLabel("运行 ${overview.recentRunCount}", githubColors.mutedText, Modifier.clickable { onShowWorkflowTab() })
+                GitHubLabel("Issue ${overview.issueCount}", githubColors.mutedText, Modifier.clickable { onShowIssuesTab() })
+                GitHubLabel("PR ${overview.pullRequestCount}", githubColors.mutedText, Modifier.clickable { onShowPullRequestsTab() })
+                GitHubLabel("Release ${overview.releaseCount}", githubColors.mutedText, Modifier.clickable { onShowReleaseTab() })
                 if (overview.hasReadme) {
-                    FilterChip(
-                        selected = true,
-                        onClick = onShowReadmeTab,
-                        label = { Text("README") }
-                    )
+                    GitHubLabel("README", githubColors.mutedText, Modifier.clickable { onShowReadmeTab() })
                 }
             }
             overview.remoteErrorMessage?.takeIf { it.isNotBlank() }?.let { error ->
                 Text(
                     text = error,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
+                    color = githubColors.danger
                 )
             }
             overview.latestWorkflow?.let { run ->
                 ProjectGitHubWorkspaceLatestWorkflowCard(
                     run = run,
-                    chromeColor = chromeColor,
-                    mutedTextColor = mutedTextColor,
+                    githubColors = githubColors,
                     onShowWorkflowTab = onShowWorkflowTab,
                     onShowIssuesTab = onShowIssuesTab,
                     onOpenLatestRunDetail = onOpenLatestRunDetail
@@ -231,24 +193,21 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchOverviewTab(
             overview.latestIssue?.let { issue ->
                 ProjectGitHubWorkspaceLatestIssueCard(
                     issue = issue,
-                    chromeColor = chromeColor,
-                    mutedTextColor = mutedTextColor,
+                    githubColors = githubColors,
                     onShowIssuesTab = onShowIssuesTab
                 )
             }
             overview.latestPullRequest?.let { pullRequest ->
                 ProjectGitHubWorkspaceLatestPullRequestCard(
                     pullRequest = pullRequest,
-                    chromeColor = chromeColor,
-                    mutedTextColor = mutedTextColor,
+                    githubColors = githubColors,
                     onShowPullRequestsTab = onShowPullRequestsTab
                 )
             }
             overview.latestRelease?.let { release ->
                 ProjectGitHubWorkspaceLatestReleaseCard(
                     release = release,
-                    chromeColor = chromeColor,
-                    mutedTextColor = mutedTextColor,
+                    githubColors = githubColors,
                     onShowReleaseTab = onShowReleaseTab,
                     onShowReadmeTab = onShowReadmeTab
                 )
@@ -274,41 +233,34 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchOverviewTab(
 @Composable
 private fun ProjectGitHubWorkspaceLatestWorkflowCard(
     run: ProjectGitHubWorkspaceWorkbenchLatestWorkflowUi,
-    chromeColor: Color,
-    mutedTextColor: Color,
+    githubColors: GitHubColorPalette,
     onShowWorkflowTab: () -> Unit,
     onShowIssuesTab: () -> Unit,
     onOpenLatestRunDetail: (() -> Unit)?
 ) {
-    ProjectInsetCard(
-        shape = RoundedCornerShape(12.dp),
-        surfaceColorOverride = chromeColor.copy(alpha = 0.30f)
-    ) {
+    GitHubCard {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("最近工作流", style = MaterialTheme.typography.labelMedium)
+            Text("最近工作流", style = MaterialTheme.typography.labelMedium, color = githubColors.accent)
             Text(
                 text = run.title,
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyMedium,
+                color = githubColors.text
             )
             Text(
                 text = run.detail,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (run.hasIssue) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    mutedTextColor
-                }
+                color = if (run.hasIssue) githubColors.danger else githubColors.mutedText
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onShowWorkflowTab) {
-                    Text("切到工作流")
+                TextButton(onClick = onShowWorkflowTab) {
+                    Text("切到工作流", color = githubColors.accent)
                 }
-                OutlinedButton(onClick = onShowIssuesTab) {
-                    Text("切到事项")
+                TextButton(onClick = onShowIssuesTab) {
+                    Text("切到事项", color = githubColors.accent)
                 }
                 onOpenLatestRunDetail?.let { openDetail ->
                     TextButton(onClick = openDetail) {
-                        Text("运行详情")
+                        Text("运行详情", color = githubColors.accent)
                     }
                 }
             }
@@ -319,28 +271,25 @@ private fun ProjectGitHubWorkspaceLatestWorkflowCard(
 @Composable
 private fun ProjectGitHubWorkspaceLatestIssueCard(
     issue: ProjectGitHubIssueUi,
-    chromeColor: Color,
-    mutedTextColor: Color,
+    githubColors: GitHubColorPalette,
     onShowIssuesTab: () -> Unit
 ) {
-    ProjectInsetCard(
-        shape = RoundedCornerShape(12.dp),
-        surfaceColorOverride = chromeColor.copy(alpha = 0.28f)
-    ) {
+    GitHubCard {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("最近 Issue", style = MaterialTheme.typography.labelMedium)
+            Text("最近 Issue", style = MaterialTheme.typography.labelMedium, color = githubColors.accent)
             Text(
                 text = "#${issue.number} · ${issue.title}",
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyMedium,
+                color = githubColors.text
             )
             Text(
                 text = "${issue.stateLabel} · ${issue.authorLabel} · 更新 ${issue.updatedAt}",
                 style = MaterialTheme.typography.bodySmall,
-                color = if (issue.isOpen) mutedTextColor else MaterialTheme.colorScheme.primary
+                color = if (issue.isOpen) githubColors.primary else githubColors.purple
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onShowIssuesTab) {
-                    Text("切到 Issue")
+                TextButton(onClick = onShowIssuesTab) {
+                    Text("切到 Issue", color = githubColors.accent)
                 }
             }
         }
@@ -350,19 +299,16 @@ private fun ProjectGitHubWorkspaceLatestIssueCard(
 @Composable
 private fun ProjectGitHubWorkspaceLatestPullRequestCard(
     pullRequest: ProjectGitHubPullRequestUi,
-    chromeColor: Color,
-    mutedTextColor: Color,
+    githubColors: GitHubColorPalette,
     onShowPullRequestsTab: () -> Unit
 ) {
-    ProjectInsetCard(
-        shape = RoundedCornerShape(12.dp),
-        surfaceColorOverride = chromeColor.copy(alpha = 0.26f)
-    ) {
+    GitHubCard {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("最近 PR", style = MaterialTheme.typography.labelMedium)
+            Text("最近 PR", style = MaterialTheme.typography.labelMedium, color = githubColors.accent)
             Text(
                 text = "#${pullRequest.number} · ${pullRequest.title}",
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyMedium,
+                color = githubColors.text
             )
             Text(
                 text = buildString {
@@ -375,15 +321,11 @@ private fun ProjectGitHubWorkspaceLatestPullRequestCard(
                     append(pullRequest.updatedAt)
                 },
                 style = MaterialTheme.typography.bodySmall,
-                color = if (pullRequest.canMerge) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    mutedTextColor
-                }
+                color = if (pullRequest.canMerge) githubColors.primary else githubColors.mutedText
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onShowPullRequestsTab) {
-                    Text("切到 PR")
+                TextButton(onClick = onShowPullRequestsTab) {
+                    Text("切到 PR", color = githubColors.accent)
                 }
             }
         }
@@ -393,20 +335,17 @@ private fun ProjectGitHubWorkspaceLatestPullRequestCard(
 @Composable
 private fun ProjectGitHubWorkspaceLatestReleaseCard(
     release: ProjectGitHubReleaseUi,
-    chromeColor: Color,
-    mutedTextColor: Color,
+    githubColors: GitHubColorPalette,
     onShowReleaseTab: () -> Unit,
     onShowReadmeTab: () -> Unit
 ) {
-    ProjectInsetCard(
-        shape = RoundedCornerShape(12.dp),
-        surfaceColorOverride = chromeColor.copy(alpha = 0.24f)
-    ) {
+    GitHubCard {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("最近 Release", style = MaterialTheme.typography.labelMedium)
+            Text("最近 Release", style = MaterialTheme.typography.labelMedium, color = githubColors.accent)
             Text(
                 text = release.name.ifBlank { release.tagName },
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyMedium,
+                color = githubColors.text
             )
             Text(
                 text = buildString {
@@ -427,14 +366,14 @@ private fun ProjectGitHubWorkspaceLatestReleaseCard(
                     )
                 },
                 style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor
+                color = githubColors.mutedText
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onShowReleaseTab) {
-                    Text("切到 Release")
+                TextButton(onClick = onShowReleaseTab) {
+                    Text("切到 Release", color = githubColors.accent)
                 }
                 TextButton(onClick = onShowReadmeTab) {
-                    Text("README")
+                    Text("README", color = githubColors.accent)
                 }
             }
         }

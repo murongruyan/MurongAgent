@@ -2222,27 +2222,19 @@ private fun ProjectLocalGitRepositoryCard(
     onStageAll: (() -> Unit)? = null,
     onSyncAll: (() -> Unit)? = null
 ) {
-    val chromeColor = rememberReasonixChromeColor()
-    val mutedTextColor = rememberReasonixMutedTextColor()
+    val githubColors = rememberGitHubColors()
     val pendingChanges = remember(status.modifiedFiles, status.untrackedFiles) {
         status.modifiedFiles + status.untrackedFiles
     }
     val operationSummary = remember(recentOperationRecords) {
         buildProjectGitOperationSummary(recentOperationRecords)
     }
-    ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
-        surfaceColorOverride = if (isActive) {
-            chromeColor.copy(alpha = 0.46f)
-        } else {
-            chromeColor.copy(alpha = 0.28f)
-        }
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    GitHubCard {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (repoLabel != null) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(
@@ -2251,59 +2243,52 @@ private fun ProjectLocalGitRepositoryCard(
                     ) {
                         Text(
                             text = repoLabel,
-                            style = MaterialTheme.typography.titleSmall
+                            style = MaterialTheme.typography.titleMedium,
+                            color = githubColors.text
                         )
                         repoSubtitle?.takeIf { it.isNotBlank() }?.let { subtitle ->
                             Text(
                                 text = subtitle,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = mutedTextColor
+                                color = githubColors.mutedText
                             )
                         }
                     }
                     if (isActive) {
-                        Text(
-                            text = "当前仓库",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
+                        GitHubLabel("当前仓库", githubColors.primary)
                     } else {
                         onSelectRepo?.let {
-                            OutlinedButton(onClick = it) {
-                                Text("切换")
+                            TextButton(onClick = it) {
+                                Text("切换", color = githubColors.accent)
                             }
                         }
                     }
                 }
+                androidx.compose.material3.HorizontalDivider(color = githubColors.border)
             }
-            Text(
-                text = "更改:",
-                style = MaterialTheme.typography.titleSmall
-            )
-            Text(
-                text = if (status.branchSummary.isNotBlank()) {
-                    "当前分支: ${status.branchSummary}"
-                } else {
-                    "当前分支: 未知"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("更改", style = MaterialTheme.typography.titleMedium, color = githubColors.text)
+                Text(
+                    text = if (status.branchSummary.isNotBlank()) "分支: ${status.branchSummary}" else "分支: 未知",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = githubColors.mutedText
+                )
+            }
             if (pendingChanges.isEmpty()) {
                 Text(
                     text = "当前没有未暂存更改。",
                     style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor
+                    color = githubColors.mutedText
                 )
             } else {
                 pendingChanges.forEach { change ->
                     ProjectLocalGitChangeRow(
                         change = change,
-                        badgeLabel = if (status.untrackedFiles.any { it.actionPath == change.actionPath }) {
-                            "未跟踪"
-                        } else {
-                            "已修改"
-                        },
+                        badgeLabel = if (status.untrackedFiles.any { it.actionPath == change.actionPath }) "未跟踪" else "已修改",
                         actionLabel = "暂存",
                         actionEnabled = !isBusy,
                         onOpenDiff = { onOpenDiff(change) },
@@ -2315,7 +2300,7 @@ private fun ProjectLocalGitRepositoryCard(
                 Text(
                     text = "已暂存 ${status.stagedFiles.size} 个文件",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
+                    color = githubColors.primary
                 )
                 status.stagedFiles.take(6).forEach { change ->
                     ProjectLocalGitChangeRow(
@@ -2332,7 +2317,7 @@ private fun ProjectLocalGitRepositoryCard(
                 Text(
                     text = "冲突 ${status.conflictedFiles.size} 个文件",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.error
+                    color = githubColors.danger
                 )
                 status.conflictedFiles.take(4).forEach { change ->
                     ProjectLocalGitChangeRow(
@@ -2346,39 +2331,20 @@ private fun ProjectLocalGitRepositoryCard(
                 }
             }
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedButton(
-                    onClick = onRefresh,
-                    enabled = !isBusy
-                ) {
-                    Text("刷新")
-                }
-                OutlinedButton(
-                    onClick = { onStageAll?.invoke() },
-                    enabled = onStageAll != null && !isBusy
-                ) {
-                    Text("全部暂存")
-                }
-                OutlinedButton(
-                    onClick = { onSyncAll?.invoke() },
-                    enabled = onSyncAll != null && !isBusy
-                ) {
-                    Text("全部同步")
-                }
+                TextButton(onClick = onRefresh, enabled = !isBusy) { Text("刷新", color = githubColors.accent) }
+                TextButton(onClick = { onStageAll?.invoke() }, enabled = onStageAll != null && !isBusy) { Text("全部暂存", color = githubColors.accent) }
+                TextButton(onClick = { onSyncAll?.invoke() }, enabled = onSyncAll != null && !isBusy) { Text("全部同步", color = githubColors.accent) }
             }
-            Text(
-                text = "推送拉取记录",
-                style = MaterialTheme.typography.titleSmall
-            )
+            androidx.compose.material3.HorizontalDivider(color = githubColors.border)
+            Text("推送拉取记录", style = MaterialTheme.typography.titleMedium, color = githubColors.text)
             if (recentOperationRecords.isEmpty()) {
                 Text(
                     text = "当前仓库还没有记录，后续的暂存、同步、提交和分支操作都会显示在这里。",
                     style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor
+                    color = githubColors.mutedText
                 )
             } else {
                 Text(
@@ -2389,45 +2355,42 @@ private fun ProjectLocalGitRepositoryCard(
                         operationSummary.latestTimeLabel?.let { append(" · 最近 $it") }
                     },
                     style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor
+                    color = githubColors.mutedText
                 )
                 recentOperationRecords.firstOrNull()?.let { record ->
                     Text(
                         text = "${record.categoryLabel} · ${record.title}",
                         style = MaterialTheme.typography.labelMedium,
-                        color = if (record.isSuccess) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.error
-                        }
+                        color = if (record.isSuccess) githubColors.primary else githubColors.danger
                     )
                     Text(
                         text = record.detail,
                         style = MaterialTheme.typography.bodySmall,
-                        color = mutedTextColor,
+                        color = githubColors.mutedText,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
             }
+            androidx.compose.material3.HorizontalDivider(color = githubColors.border)
             Text(
                 text = buildString {
                     append("上游: ")
                     append(status.upstreamBranch?.takeIf { it.isNotBlank() } ?: "未绑定")
                 },
                 style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor
+                color = githubColors.mutedText
             )
             Text(
                 text = "领先 ${status.aheadCount} · 落后 ${status.behindCount} · 远端分支 ${status.remoteBranches.size}",
                 style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor
+                color = githubColors.mutedText
             )
             status.remoteUrl?.takeIf { it.isNotBlank() }?.let { remote ->
                 Text(
                     text = remote,
                     style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor,
+                    color = githubColors.mutedText,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )

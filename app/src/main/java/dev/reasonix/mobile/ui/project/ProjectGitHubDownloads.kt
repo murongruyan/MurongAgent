@@ -213,37 +213,29 @@ internal fun ProjectGitHubDownloadCenterSummaryCard(
     onOpenDownloadCenter: () -> Unit,
     onOpenSystemDownloads: () -> Unit
 ) {
-    val chromeColor = rememberReasonixChromeColor()
-    val mutedTextColor = rememberReasonixMutedTextColor()
-    val latestDownload = downloads.firstOrNull()
-    ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
-        surfaceColorOverride = chromeColor.copy(alpha = 0.30f)
-    ) {
+    if (downloads.isEmpty()) return
+    val githubColors = rememberGitHubColors()
+
+    GitHubCard {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("下载中心", style = MaterialTheme.typography.titleSmall)
-            Text(
-                text = if (latestDownload == null) {
-                    "详细下载记录已迁入仓库工作台概览，这里只保留工作区级入口。"
-                } else {
-                    "最近 ${downloads.size} 条下载记录已统一归到仓库工作台，方便和工作流、Release、远端操作放在一起回看。"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor
-            )
-            latestDownload?.let { item ->
-                Text(
-                    text = "${item.typeLabel} · ${item.fileName} · ${item.createdAtLabel}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onOpenDownloadCenter) {
-                    Text("打开下载中心")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("下载中心", style = MaterialTheme.typography.titleSmall)
+                TextButton(onClick = onOpenSystemDownloads) {
+                    Text("系统下载", color = githubColors.accent)
                 }
-                OutlinedButton(onClick = onOpenSystemDownloads) {
-                    Text("系统下载")
+            }
+            Text(
+                text = "已保存 ${downloads.size} 条历史记录，包含工作流日志和 Release 产物。",
+                style = MaterialTheme.typography.bodySmall,
+                color = githubColors.mutedText
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onOpenDownloadCenter) {
+                    Text("查看全部下载", color = githubColors.accent)
                 }
             }
         }

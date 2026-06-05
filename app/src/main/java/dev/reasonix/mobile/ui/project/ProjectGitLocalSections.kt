@@ -116,37 +116,31 @@ internal fun ProjectGitRemoteSummaryCard(
     remoteBranchCount: Int,
     tokenConfigured: Boolean
 ) {
-    val surfaceColor = rememberReasonixSurfaceColor()
-    val mutedTextColor = rememberReasonixMutedTextColor()
+    val githubColors = rememberGitHubColors()
     val transportHint = remember(remoteUrl, tokenConfigured) {
         summarizeProjectGitRemoteTransport(remoteUrl, tokenConfigured)
     }
-    ReasonixGlassSurface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
-        surfaceColorOverride = surfaceColor.copy(alpha = 0.62f)
-    ) {
+    GitHubCard {
         Column(
             modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text("远端", style = MaterialTheme.typography.titleSmall)
+            Text("远端", style = MaterialTheme.typography.titleMedium, color = githubColors.text)
             Text(
                 remoteUrl ?: "未配置 origin 远端",
                 style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor
+                color = githubColors.mutedText
             )
             Text(
                 "上游: ${upstreamBranch ?: "未设置"} · ahead $aheadCount / behind $behindCount · 远端分支 $remoteBranchCount",
                 style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor
+                color = githubColors.mutedText
             )
             transportHint?.let { hint ->
                 Text(
                     text = hint,
                     style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor
+                    color = githubColors.mutedText
                 )
             }
         }

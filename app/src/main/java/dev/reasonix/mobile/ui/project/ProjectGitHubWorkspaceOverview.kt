@@ -69,9 +69,7 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
     onBatchAction: (ProjectGitHubWorkspaceBatchAction) -> Unit,
     backProgress: Float
 ) {
-    val chromeColor = rememberReasonixChromeColor()
-    val surfaceColor = rememberReasonixSurfaceColor()
-    val mutedTextColor = rememberReasonixMutedTextColor()
+    val githubColors = rememberGitHubColors()
     val priorityCards = repoCards
         .filter { it.severityScore > 0 || it.conflictCount > 0 || it.latestRunHasIssue || it.behindCount > 0 }
         .sortedByDescending { it.severityScore }
@@ -79,84 +77,72 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
 
     ReasonixSecondaryPageFrame(
         title = "GitHub 工作区",
-        subtitle = "优先回答整个工作区哪里有问题、先处理什么，再进入仓库工作台。"
+        subtitle = "工作区概览与异常聚合"
     ) {
         Column(
             modifier = Modifier.graphicsLayer {
                 translationX = 180f * backProgress
                 alpha = 1f - (backProgress * 0.08f)
             },
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            ProjectSectionCard(
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
-                surfaceColorOverride = chromeColor.copy(alpha = 0.38f)
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            GitHubCard {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("工作区健康概览", style = MaterialTheme.typography.titleSmall)
+                        Text("健康概览", style = MaterialTheme.typography.titleMedium)
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            TextButton(
-                                onClick = onOpenGlobalTaskCenter,
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                modifier = Modifier.height(32.dp)
-                            ) {
-                                Text("T", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("任务中心", style = MaterialTheme.typography.labelMedium)
+                            TextButton(onClick = onOpenGlobalTaskCenter) {
+                                Text("任务中心", color = githubColors.accent)
                             }
-                            Spacer(modifier = Modifier.width(4.dp))
-                            TextButton(
-                                onClick = onOpenGlobalSearch,
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                modifier = Modifier.height(32.dp)
-                            ) {
-                                Text("G", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("全局搜索", style = MaterialTheme.typography.labelMedium)
+                            TextButton(onClick = onOpenGlobalSearch) {
+                                Text("全局搜索", color = githubColors.accent)
                             }
                         }
                     }
-                    Text(
-                        text = "仓库 ${overview.repoCount} · Git ${overview.gitRepoCount} · GitHub ${overview.githubRepoCount} · 远端摘要 ${overview.remoteSummaryCount} · 健康 ${overview.healthyRepoCount}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = mutedTextColor
-                    )
-                    Text(
-                        text = "脏工作区 ${overview.dirtyRepoCount} · 落后远端 ${overview.behindRepoCount} · 冲突 ${overview.conflictRepoCount} · 工作流异常 ${overview.failingWorkflowRepoCount}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (overview.criticalTaskCount > 0) MaterialTheme.colorScheme.error else mutedTextColor
-                    )
-                    Text(
-                        text = "待优先处理 ${overview.criticalTaskCount} · 待跟进 ${overview.attentionTaskCount} · 有开放事项 ${overview.openWorkItemRepoCount}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (overview.attentionTaskCount > 0) MaterialTheme.colorScheme.primary else mutedTextColor
-                    )
-                    Text(
-                        text = "数据更新于 ${overview.lastUpdatedLabel} · $remoteSummaryStatusLabel",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (tokenConfigured) MaterialTheme.colorScheme.primary else mutedTextColor
-                    )
-                    if (tokenConfigured) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            if (isRemoteSummaryLoading) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.height(16.dp),
-                                    strokeWidth = 2.dp
-                                )
-                            }
-                            OutlinedButton(
-                                onClick = onRefreshRemoteSummaries,
-                                enabled = !isRemoteSummaryLoading
-                            ) {
-                                Text(if (overview.remoteSummaryCount == 0) "拉取远端摘要" else "刷新远端摘要")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text("仓库总数", style = MaterialTheme.typography.labelSmall, color = githubColors.mutedText)
+                            Text("${overview.repoCount}", style = MaterialTheme.typography.titleMedium)
+                        }
+                        Column {
+                            Text("Git 仓库", style = MaterialTheme.typography.labelSmall, color = githubColors.mutedText)
+                            Text("${overview.gitRepoCount}", style = MaterialTheme.typography.titleMedium)
+                        }
+                        Column {
+                            Text("健康", style = MaterialTheme.typography.labelSmall, color = githubColors.mutedText)
+                            Text("${overview.healthyRepoCount}", style = MaterialTheme.typography.titleMedium, color = githubColors.primary)
+                        }
+                        Column {
+                            Text("异常", style = MaterialTheme.typography.labelSmall, color = githubColors.mutedText)
+                            Text("${overview.dirtyRepoCount}", style = MaterialTheme.typography.titleMedium, color = if(overview.dirtyRepoCount > 0) githubColors.danger else githubColors.text)
+                        }
+                    }
+                    androidx.compose.material3.HorizontalDivider(color = githubColors.border)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "更新于 ${overview.lastUpdatedLabel}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = githubColors.mutedText
+                        )
+                        if (tokenConfigured) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (isRemoteSummaryLoading) {
+                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = githubColors.accent)
+                                }
+                                TextButton(onClick = onRefreshRemoteSummaries, enabled = !isRemoteSummaryLoading) {
+                                    Text("刷新摘要", color = githubColors.accent)
+                                }
                             }
                         }
                     }
@@ -164,51 +150,30 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                         Text(
                             text = remoteSummaryErrorMessage,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error
+                            color = githubColors.danger
                         )
                     }
                 }
             }
 
             if (priorityCards.isNotEmpty()) {
-                ProjectSectionCard(
-                    shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
-                    surfaceColorOverride = chromeColor.copy(alpha = 0.26f)
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("异常优先", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            text = "先看最需要处理的仓库，优先把冲突、工作流异常、远端落后和开放协作事项收掉。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = mutedTextColor
-                        )
-                        priorityCards.forEach { card ->
-                            ProjectGitHubWorkspacePriorityRepoCard(
-                                card = card,
-                                chromeColor = chromeColor,
-                                mutedTextColor = mutedTextColor,
-                                onOpenRepoWorkbench = { tab ->
-                                    onOpenRepoWorkbench(card.rootPath, tab)
-                                },
-                                onOpenQuickAction = { action ->
-                                    when {
-                                        action.targetWorkflowRun != null -> {
-                                            onOpenWorkflowRunDetailTarget(card.rootPath, action.targetWorkflowRun)
-                                        }
-                                        action.targetPullRequest != null -> {
-                                            onOpenPullRequestDetailTarget(card.rootPath, action.targetPullRequest)
-                                        }
-                                        action.targetIssue != null -> {
-                                            onOpenIssueDetailTarget(card.rootPath, action.targetIssue)
-                                        }
-                                        else -> {
-                                            onOpenRepoWorkbench(card.rootPath, action.targetTab)
-                                        }
-                                    }
-                                }
-                            )
+                Text("异常优先", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 8.dp))
+                priorityCards.forEach { card ->
+                    ProjectGitHubWorkspacePriorityRepoCard(
+                        card = card,
+                        githubColors = githubColors,
+                        onOpenRepoWorkbench = { tab ->
+                            onOpenRepoWorkbench(card.rootPath, tab)
+                        },
+                        onOpenQuickAction = { action ->
+                            when {
+                                action.targetWorkflowRun != null -> onOpenWorkflowRunDetailTarget(card.rootPath, action.targetWorkflowRun)
+                                action.targetPullRequest != null -> onOpenPullRequestDetailTarget(card.rootPath, action.targetPullRequest)
+                                action.targetIssue != null -> onOpenIssueDetailTarget(card.rootPath, action.targetIssue)
+                                else -> onOpenRepoWorkbench(card.rootPath, action.targetTab)
+                            }
                         }
-                    }
+                    )
                 }
             }
 
@@ -392,97 +357,59 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
 @Composable
 private fun ProjectGitHubWorkspaceRepoCard(
     card: ProjectGitHubWorkspaceRepoCardUi,
-    surfaceColor: Color,
-    chromeColor: Color,
-    mutedTextColor: Color,
+    githubColors: GitHubColorPalette,
     onClick: () -> Unit,
     onOpenQuickAction: (ProjectGitHubWorkspaceQuickActionUi) -> Unit
 ) {
-    ProjectInsetCard(
-        modifier = Modifier.clickable(onClick = onClick),
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
-        surfaceColorOverride = if (card.isSelected) {
-            surfaceColor.copy(alpha = 0.80f)
-        } else {
-            chromeColor.copy(alpha = 0.28f)
-        }
+    GitHubCard(
+        modifier = Modifier.clickable(onClick = onClick)
     ) {
         Column(
-            modifier = Modifier.padding(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                text = card.severityLabel,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (card.severityScore >= 90) {
-                    MaterialTheme.colorScheme.error
-                } else if (card.severityScore > 0) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    mutedTextColor
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = card.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = githubColors.accent
+                )
+                if (card.severityScore > 0) {
+                    GitHubLabel(
+                        text = card.severityLabel,
+                        color = if (card.severityScore >= 90) githubColors.danger else githubColors.primary
+                    )
                 }
-            )
-            Text(text = card.title, style = MaterialTheme.typography.bodyMedium)
+            }
             Text(
                 text = card.subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor
+                color = githubColors.mutedText
             )
             Text(
                 text = card.changeSummary,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (card.highlightChanges) MaterialTheme.colorScheme.primary else mutedTextColor
+                style = MaterialTheme.typography.bodySmall,
+                color = if (card.highlightChanges) githubColors.primary else githubColors.mutedText
             )
             Row(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                if (card.conflictCount > 0) {
-                    FilterChip(
-                        selected = true,
-                        onClick = {},
-                        label = { Text("冲突 ${card.conflictCount}") }
-                    )
-                }
-                if (card.behindCount > 0) {
-                    FilterChip(
-                        selected = true,
-                        onClick = {},
-                        label = { Text("落后 ${card.behindCount}") }
-                    )
-                }
-                if (card.openIssueCount > 0) {
-                    FilterChip(
-                        selected = true,
-                        onClick = {},
-                        label = { Text("Issue ${card.openIssueCount}") }
-                    )
-                }
-                if (card.openPullRequestCount > 0) {
-                    FilterChip(
-                        selected = true,
-                        onClick = {},
-                        label = { Text("PR ${card.openPullRequestCount}") }
-                    )
-                }
-                if (card.hasWorkingTreeChanges) {
-                    FilterChip(
-                        selected = true,
-                        onClick = {},
-                        label = { Text("本地改动") }
-                    )
-                }
+                if (card.conflictCount > 0) GitHubLabel("冲突 ${card.conflictCount}", githubColors.danger)
+                if (card.behindCount > 0) GitHubLabel("落后 ${card.behindCount}", githubColors.danger)
+                if (card.openIssueCount > 0) GitHubLabel("Issue ${card.openIssueCount}", githubColors.primary)
+                if (card.openPullRequestCount > 0) GitHubLabel("PR ${card.openPullRequestCount}", githubColors.primary)
+                if (card.hasWorkingTreeChanges) GitHubLabel("本地改动", githubColors.accent)
             }
 
             if (!card.remoteSummary.isNullOrBlank()) {
                 Text(
                     text = card.remoteSummary,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (card.highlightRemoteSummary) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        mutedTextColor
-                    }
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (card.highlightRemoteSummary) githubColors.primary else githubColors.mutedText
                 )
             }
 
@@ -490,17 +417,13 @@ private fun ProjectGitHubWorkspaceRepoCard(
                 Text(
                     text = card.remoteErrorMessage,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
+                    color = githubColors.danger
                 )
             } else if (!card.latestWorkflowSummary.isNullOrBlank()) {
                 Text(
                     text = card.latestWorkflowSummary,
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (card.latestWorkflowHasIssue) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        mutedTextColor
-                    }
+                    color = if (card.latestWorkflowHasIssue) githubColors.danger else githubColors.mutedText
                 )
             }
 
@@ -508,7 +431,7 @@ private fun ProjectGitHubWorkspaceRepoCard(
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     card.recommendedActions.forEach { action ->
                         TextButton(onClick = { onOpenQuickAction(action) }) {
-                            Text(action.label)
+                            Text(action.label, color = githubColors.accent)
                         }
                     }
                 }
@@ -520,32 +443,33 @@ private fun ProjectGitHubWorkspaceRepoCard(
 @Composable
 private fun ProjectGitHubWorkspacePriorityRepoCard(
     card: ProjectGitHubWorkspaceRepoCardUi,
-    chromeColor: Color,
-    mutedTextColor: Color,
+    githubColors: GitHubColorPalette,
     onOpenRepoWorkbench: (ProjectGitHubWorkspaceRepoWorkbenchTab) -> Unit,
     onOpenQuickAction: (ProjectGitHubWorkspaceQuickActionUi) -> Unit
 ) {
-    ProjectInsetCard(
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
-        surfaceColorOverride = chromeColor.copy(alpha = 0.24f)
-    ) {
+    GitHubCard {
         Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                text = "${card.severityLabel} · ${card.title}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (card.severityScore >= 90) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.primary
-                }
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = card.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = githubColors.accent
+                )
+                GitHubLabel(
+                    text = card.severityLabel,
+                    color = if (card.severityScore >= 90) githubColors.danger else githubColors.primary
+                )
+            }
             Text(
                 text = card.subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor
+                color = githubColors.mutedText
             )
             Text(
                 text = card.remoteErrorMessage
@@ -554,58 +478,28 @@ private fun ProjectGitHubWorkspacePriorityRepoCard(
                     ?: card.changeSummary,
                 style = MaterialTheme.typography.bodySmall,
                 color = if (!card.remoteErrorMessage.isNullOrBlank() || card.latestRunHasIssue) {
-                    MaterialTheme.colorScheme.error
+                    githubColors.danger
                 } else {
-                    mutedTextColor
+                    githubColors.mutedText
                 }
             )
             Row(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                if (card.conflictCount > 0) {
-                    FilterChip(
-                        selected = true,
-                        onClick = { onOpenRepoWorkbench(ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW) },
-                        label = { Text("冲突 ${card.conflictCount}") }
-                    )
-                }
-                if (card.behindCount > 0) {
-                    FilterChip(
-                        selected = true,
-                        onClick = { onOpenRepoWorkbench(ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW) },
-                        label = { Text("落后 ${card.behindCount}") }
-                    )
-                }
-                if (card.openIssueCount > 0) {
-                    FilterChip(
-                        selected = true,
-                        onClick = { onOpenRepoWorkbench(ProjectGitHubWorkspaceRepoWorkbenchTab.ISSUES) },
-                        label = { Text("Issue ${card.openIssueCount}") }
-                    )
-                }
-                if (card.openPullRequestCount > 0) {
-                    FilterChip(
-                        selected = true,
-                        onClick = { onOpenRepoWorkbench(ProjectGitHubWorkspaceRepoWorkbenchTab.PULL_REQUESTS) },
-                        label = { Text("PR ${card.openPullRequestCount}") }
-                    )
-                }
-                if (card.latestRunHasIssue) {
-                    FilterChip(
-                        selected = true,
-                        onClick = { onOpenRepoWorkbench(ProjectGitHubWorkspaceRepoWorkbenchTab.WORKFLOW) },
-                        label = { Text("工作流异常") }
-                    )
-                }
+                if (card.conflictCount > 0) GitHubLabel("冲突 ${card.conflictCount}", githubColors.danger)
+                if (card.behindCount > 0) GitHubLabel("落后 ${card.behindCount}", githubColors.danger)
+                if (card.openIssueCount > 0) GitHubLabel("Issue ${card.openIssueCount}", githubColors.primary)
+                if (card.openPullRequestCount > 0) GitHubLabel("PR ${card.openPullRequestCount}", githubColors.primary)
+                if (card.latestRunHasIssue) GitHubLabel("工作流异常", githubColors.danger)
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { onOpenRepoWorkbench(ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW) }) {
-                    Text("打开仓库")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { onOpenRepoWorkbench(ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW) }) {
+                    Text("打开仓库", color = githubColors.accent)
                 }
                 card.recommendedActions.take(2).forEach { action ->
                     TextButton(onClick = { onOpenQuickAction(action) }) {
-                        Text(action.label)
+                        Text(action.label, color = githubColors.accent)
                     }
                 }
             }
