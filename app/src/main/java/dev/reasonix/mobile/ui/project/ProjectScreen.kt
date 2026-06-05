@@ -2592,28 +2592,6 @@ private fun ProjectGitSection(
         }
     }
 
-    fun refreshGitHubWorkspaceRemoteSummariesForRoots(
-        rootPaths: List<String>
-    ) {
-        val token = config.githubToken.trim()
-        if (token.isBlank()) return
-
-        val repoSnapshot = detectedRepos.filter { it.rootPath in rootPaths }
-        val repoStatusSnapshot = repoStatusSummaries.filterKeys { it in rootPaths }
-        val apiBaseUrl = config.getGitHubApiBaseUrl()
-
-        val plan = planProjectGitHubWorkspaceRemoteSummaryRefresh(
-            detectedRepos = repoSnapshot,
-            repoStatusSummaries = repoStatusSnapshot,
-            selectedRepoRoot = null,
-            token = token,
-            apiBaseUrl = apiBaseUrl,
-            currentStore = workspaceRemoteSummaryStore,
-            forceRefreshTargets = true
-        )
-        refreshGitHubWorkspaceRemoteSummaries(plan)
-    }
-
     fun refreshGitHubWorkspaceRemoteSummaries(
         refreshPlan: ProjectGitHubWorkspaceRemoteSummaryRefreshPlan? = null
     ) {
@@ -2679,6 +2657,28 @@ private fun ProjectGitSection(
                 )
             }
         }
+    }
+
+    fun refreshGitHubWorkspaceRemoteSummariesForRoots(
+        rootPaths: List<String>
+    ) {
+        val token = config.githubToken.trim()
+        if (token.isBlank()) return
+
+        val repoSnapshot = detectedRepos.filter { it.rootPath in rootPaths }
+        val repoStatusSnapshot = repoStatusSummaries.filterKeys { it in rootPaths }
+        val apiBaseUrl = config.getGitHubApiBaseUrl()
+
+        val plan = planProjectGitHubWorkspaceRemoteSummaryRefresh(
+            detectedRepos = repoSnapshot,
+            repoStatusSummaries = repoStatusSnapshot,
+            selectedRepoRoot = null,
+            token = token,
+            apiBaseUrl = apiBaseUrl,
+            currentStore = workspaceRemoteSummaryStore,
+            forceRefreshTargets = true
+        )
+        refreshGitHubWorkspaceRemoteSummaries(plan)
     }
 
     fun refreshRemoteRepositoryBrowser(
