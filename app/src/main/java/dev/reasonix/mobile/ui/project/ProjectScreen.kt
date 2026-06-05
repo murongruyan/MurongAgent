@@ -2985,7 +2985,9 @@ private fun ProjectGitSection(
                 ProjectGitHubWorkspaceBatchAction.FETCH -> {
                     feedbackMessage = "正在对 ${selectedPaths.size} 个仓库执行 Fetch..."
                     selectedPaths.forEach { path ->
-                        withContext(Dispatchers.IO) { runProjectGitFetch(path) }
+                        withContext(Dispatchers.IO) {
+                            embeddedGitFetch(path, config.githubToken.trim())
+                        }
                         val status = withContext(Dispatchers.IO) { loadProjectGitStatus(path) }
                         repoStatusSummaries[path] = status
                     }
@@ -2996,8 +2998,12 @@ private fun ProjectGitSection(
                     var successCount = 0
                     var failCount = 0
                     selectedPaths.forEach { path ->
-                        val result = withContext(Dispatchers.IO) { runProjectGitPull(path) }
-                        if (result.success) successCount++ else failCount++
+                        val success = withContext(Dispatchers.IO) {
+                            runCatching {
+                                embeddedGitPull(path, config.githubToken.trim())
+                            }.isSuccess
+                        }
+                        if (success) successCount++ else failCount++
                         val status = withContext(Dispatchers.IO) { loadProjectGitStatus(path) }
                         repoStatusSummaries[path] = status
                     }
