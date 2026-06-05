@@ -4,11 +4,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -127,29 +128,17 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                     Text(
                         text = "脏工作区 ${overview.dirtyRepoCount} · 落后远端 ${overview.behindRepoCount} · 冲突 ${overview.conflictRepoCount} · 工作流异常 ${overview.failingWorkflowRepoCount}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (overview.criticalTaskCount > 0) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            mutedTextColor
-                        }
+                        color = if (overview.criticalTaskCount > 0) MaterialTheme.colorScheme.error else mutedTextColor
                     )
                     Text(
                         text = "待优先处理 ${overview.criticalTaskCount} · 待跟进 ${overview.attentionTaskCount} · 有开放事项 ${overview.openWorkItemRepoCount}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (overview.attentionTaskCount > 0) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            mutedTextColor
-                        }
+                        color = if (overview.attentionTaskCount > 0) MaterialTheme.colorScheme.primary else mutedTextColor
                     )
                     Text(
                         text = "数据更新于 ${overview.lastUpdatedLabel} · $remoteSummaryStatusLabel",
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (tokenConfigured) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            mutedTextColor
-                        }
+                        color = if (tokenConfigured) MaterialTheme.colorScheme.primary else mutedTextColor
                     )
                     if (tokenConfigured) {
                         Row(
@@ -169,48 +158,56 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                                 Text(if (overview.remoteSummaryCount == 0) "拉取远端摘要" else "刷新远端摘要")
                             }
                         }
-                        remoteSummaryErrorMessage?.takeIf { it.isNotBlank() }?.let { error ->
-                            Text(
-                                text = error,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                        }
+                    }
+                    if (!remoteSummaryErrorMessage.isNullOrBlank()) {
+                        Text(
+                            text = remoteSummaryErrorMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
                     }
                 }
             }
+
             ProjectGitHubDownloadCenterSummaryCard(
                 downloads = downloads,
                 onOpenDownloadCenter = onOpenDownloadCenter,
                 onOpenSystemDownloads = onOpenSystemDownloads
             )
 
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = onSearchQueryChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("搜索仓库名称或路径...", style = MaterialTheme.typography.bodyMedium) },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { onSearchQueryChange("") }) {
-                                Icon(Icons.Default.Clear, contentDescription = "清除搜索")
+            ProjectSectionCard(
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+                surfaceColorOverride = chromeColor.copy(alpha = 0.24f)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = onSearchQueryChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = {
+                            Text("搜索仓库名称或路径...", style = MaterialTheme.typography.bodyMedium)
+                        },
+                        leadingIcon = {
+                            Icon(Icons.Default.Search, contentDescription = null)
+                        },
+                        trailingIcon = {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { onSearchQueryChange("") }) {
+                                    Icon(Icons.Default.Clear, contentDescription = "清除搜索")
+                                }
                             }
-                        }
-                    },
-                    singleLine = true,
-                    shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = chromeColor.copy(alpha = 0.15f),
-                        unfocusedContainerColor = chromeColor.copy(alpha = 0.1f),
-                        focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
-                        unfocusedBorderColor = chromeColor.copy(alpha = 0.3f)
-                    ),
-                    textStyle = MaterialTheme.typography.bodyMedium
-                )
+                        },
+                        singleLine = true,
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = chromeColor.copy(alpha = 0.15f),
+                            unfocusedContainerColor = chromeColor.copy(alpha = 0.10f),
+                            focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.50f),
+                            unfocusedBorderColor = chromeColor.copy(alpha = 0.30f)
+                        ),
+                        textStyle = MaterialTheme.typography.bodyMedium
+                    )
 
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         text = "筛选仓库",
                         style = MaterialTheme.typography.titleSmall,
@@ -233,6 +230,7 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                         }
                     }
                 }
+            }
 
             ProjectSectionCard(
                 shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
@@ -260,15 +258,23 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                                 modifier = Modifier.height(32.dp)
                             ) {
                                 Icon(
-                                    if (isSelectionMode) Icons.Default.PlaylistAddCheck else Icons.Default.LibraryAddCheck,
+                                    imageVector = if (isSelectionMode) {
+                                        Icons.Default.PlaylistAddCheck
+                                    } else {
+                                        Icons.Default.LibraryAddCheck
+                                    },
                                     contentDescription = null,
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text(if (isSelectionMode) "取消多选" else "批量操作", style = MaterialTheme.typography.labelMedium)
+                                Text(
+                                    text = if (isSelectionMode) "取消多选" else "批量操作",
+                                    style = MaterialTheme.typography.labelMedium
+                                )
                             }
                         }
                     }
+
                     if (isSelectionMode) {
                         LazyRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -289,6 +295,7 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                             }
                         }
                     }
+
                     repoCards.forEach { card ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -319,13 +326,18 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
                                     },
                                     onOpenQuickAction = { action ->
                                         when {
-                                            action.targetWorkflowRun != null ->
+                                            action.targetWorkflowRun != null -> {
                                                 onOpenWorkflowRunDetailTarget(card.rootPath, action.targetWorkflowRun)
-                                            action.targetPullRequest != null ->
+                                            }
+                                            action.targetPullRequest != null -> {
                                                 onOpenPullRequestDetailTarget(card.rootPath, action.targetPullRequest)
-                                            action.targetIssue != null ->
+                                            }
+                                            action.targetIssue != null -> {
                                                 onOpenIssueDetailTarget(card.rootPath, action.targetIssue)
-                                            else -> onOpenRepoWorkbench(card.rootPath, action.targetTab)
+                                            }
+                                            else -> {
+                                                onOpenRepoWorkbench(card.rootPath, action.targetTab)
+                                            }
                                         }
                                     }
                                 )
@@ -371,10 +383,7 @@ private fun ProjectGitHubWorkspaceRepoCard(
                     mutedTextColor
                 }
             )
-            Text(
-                text = card.title,
-                style = MaterialTheme.typography.bodyMedium
-            )
+            Text(text = card.title, style = MaterialTheme.typography.bodyMedium)
             Text(
                 text = card.subtitle,
                 style = MaterialTheme.typography.bodySmall,
@@ -383,15 +392,12 @@ private fun ProjectGitHubWorkspaceRepoCard(
             Text(
                 text = card.changeSummary,
                 style = MaterialTheme.typography.labelSmall,
-                color = if (card.highlightChanges) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    mutedTextColor
-                }
+                color = if (card.highlightChanges) MaterialTheme.colorScheme.primary else mutedTextColor
             )
-            card.remoteSummary?.let { remoteSummary ->
+
+            if (!card.remoteSummary.isNullOrBlank()) {
                 Text(
-                    text = remoteSummary,
+                    text = card.remoteSummary,
                     style = MaterialTheme.typography.labelSmall,
                     color = if (card.highlightRemoteSummary) {
                         MaterialTheme.colorScheme.primary
@@ -400,14 +406,14 @@ private fun ProjectGitHubWorkspaceRepoCard(
                     }
                 )
             }
-            val remoteErrorMessage = card.remoteErrorMessage?.takeIf { it.isNotBlank() }
-            if (remoteErrorMessage != null) {
+
+            if (!card.remoteErrorMessage.isNullOrBlank()) {
                 Text(
-                    text = remoteErrorMessage,
+                    text = card.remoteErrorMessage,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error
                 )
-            } else if (card.latestWorkflowSummary != null) {
+            } else if (!card.latestWorkflowSummary.isNullOrBlank()) {
                 Text(
                     text = card.latestWorkflowSummary,
                     style = MaterialTheme.typography.bodySmall,
@@ -418,6 +424,7 @@ private fun ProjectGitHubWorkspaceRepoCard(
                     }
                 )
             }
+
             if (card.recommendedActions.isNotEmpty()) {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     card.recommendedActions.forEach { action ->
