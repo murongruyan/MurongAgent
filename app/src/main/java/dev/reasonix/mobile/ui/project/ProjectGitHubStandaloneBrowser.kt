@@ -33,8 +33,7 @@ internal enum class ProjectGitHubStandaloneSection(val label: String) {
     OVERVIEW("项目"),
     WORKFLOWS("工作流"),
     ISSUES("Issue"),
-    PULL_REQUESTS("PR"),
-    README("README")
+    PULL_REQUESTS("PR")
 }
 
 @Composable
@@ -185,141 +184,317 @@ internal fun ProjectGitHubStandaloneBrowserSection(
             return
         }
 
-        ReasonixSecondaryPageFrame(
-            title = when (activeSection) {
-                ProjectGitHubStandaloneSection.OVERVIEW -> selectedRepo.fullName
-                else -> "${selectedRepo.name} · ${activeSection.label}"
-            },
-            subtitle = when (activeSection) {
-                ProjectGitHubStandaloneSection.OVERVIEW -> "仓库详情页默认展示固定信息与 Release，工作流 / 协作 / README 进入三级页。"
-                ProjectGitHubStandaloneSection.WORKFLOWS -> "工作流三级页"
-                ProjectGitHubStandaloneSection.ISSUES -> "Issue 三级页"
-                ProjectGitHubStandaloneSection.PULL_REQUESTS -> "PR 三级页"
-                ProjectGitHubStandaloneSection.README -> "README 三级页"
-            }
-        ) {
-            Column(
-                modifier = Modifier.graphicsLayer {
-                    translationX = 180f * backProgress
-                    alpha = 1f - (backProgress * 0.08f)
-                },
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                ProjectGitHubStandaloneHeaderCard(
+        when (activeSection) {
+            ProjectGitHubStandaloneSection.OVERVIEW -> {
+                ProjectGitHubStandaloneOverviewPage(
                     selectedRepo = selectedRepo,
                     selectedTaskRepo = selectedTaskRepo,
-                    onEditRepoDescription = { onEditRepoDescription(selectedRepo) }
-                )
-                ProjectGitHubStandaloneTopActions(
-                    selectedRepo = selectedRepo,
-                    activeSection = activeSection,
-                    onBack = {
-                        if (activeSection == ProjectGitHubStandaloneSection.OVERVIEW) {
-                            onBackToRepoList()
-                        } else {
-                            onChangeSection(ProjectGitHubStandaloneSection.OVERVIEW)
-                        }
+                    tokenConfigured = tokenConfigured,
+                    repoDetailState = repoDetailState,
+                    isRepoDetailLoading = isRepoDetailLoading,
+                    remoteRepoState = remoteRepoState,
+                    isRemoteRepoLoading = isRemoteRepoLoading,
+                    isActionRunning = isActionRunning,
+                    remoteRepoRefDraft = remoteRepoRefDraft,
+                    onEditRepoDescription = { onEditRepoDescription(selectedRepo) },
+                    onBackToRepoList = onBackToRepoList,
+                    onRefreshRepoDetail = onRefreshRepoDetail,
+                    onOpenRepoPage = onOpenRepoPage,
+                    onRemoteRepoRefDraftChange = onRemoteRepoRefDraftChange,
+                    onRefreshRemoteRepository = onRefreshRemoteRepository,
+                    onApplyRemoteRef = onApplyRemoteRef,
+                    onOpenRemoteParent = onOpenRemoteParent,
+                    onOpenRemoteRoot = onOpenRemoteRoot,
+                    onOpenRemoteEntry = onOpenRemoteEntry,
+                    onOpenRemoteEntryPage = onOpenRemoteEntryPage,
+                    onShowWorkflows = {
+                        onChangeSection(ProjectGitHubStandaloneSection.WORKFLOWS)
                     },
-                    onChangeSection = onChangeSection
+                    onShowIssues = {
+                        onChangeSection(ProjectGitHubStandaloneSection.ISSUES)
+                    },
+                    onShowPullRequests = {
+                        onChangeSection(ProjectGitHubStandaloneSection.PULL_REQUESTS)
+                    },
+                    onOpenLatestRunDetail = repoDetailState.recentRuns.firstOrNull()?.let { run ->
+                        { onOpenRunDetail(run) }
+                    },
+                    releases = repoDetailState.releases,
+                    readme = readme,
+                    isReadmeLoading = isReadmeLoading,
+                    readmeErrorMessage = readmeErrorMessage,
+                    onEditReadme = onEditReadme,
+                    onCreateRelease = onCreateRelease,
+                    onEditRelease = onEditRelease,
+                    onToggleReleaseMode = onToggleReleaseMode,
+                    onTogglePrerelease = onTogglePrerelease,
+                    onDeleteRelease = onDeleteRelease,
+                    onOpenReleasePage = onOpenReleasePage,
+                    onOpenReleaseAssets = onOpenReleaseAssets,
+                    backProgress = backProgress
                 )
-                when (activeSection) {
-                    ProjectGitHubStandaloneSection.OVERVIEW -> {
-                        ProjectGitHubStandaloneOverviewSection(
-                            tokenConfigured = tokenConfigured,
-                            selectedRepo = selectedRepo,
-                            repoDetailState = repoDetailState,
-                            isRepoDetailLoading = isRepoDetailLoading,
-                            remoteRepoState = remoteRepoState,
-                            isRemoteRepoLoading = isRemoteRepoLoading,
-                            isActionRunning = isActionRunning,
-                            remoteRepoRefDraft = remoteRepoRefDraft,
-                            onRefreshRepoDetail = onRefreshRepoDetail,
-                            onOpenRepoPage = onOpenRepoPage,
-                            onRemoteRepoRefDraftChange = onRemoteRepoRefDraftChange,
-                            onRefreshRemoteRepository = onRefreshRemoteRepository,
-                            onApplyRemoteRef = onApplyRemoteRef,
-                            onOpenRemoteParent = onOpenRemoteParent,
-                            onOpenRemoteRoot = onOpenRemoteRoot,
-                            onOpenRemoteEntry = onOpenRemoteEntry,
-                            onOpenRemoteEntryPage = onOpenRemoteEntryPage,
-                            onShowWorkflows = {
-                                onChangeSection(ProjectGitHubStandaloneSection.WORKFLOWS)
-                            },
-                            onShowIssues = {
-                                onChangeSection(ProjectGitHubStandaloneSection.ISSUES)
-                            },
-                            onShowPullRequests = {
-                                onChangeSection(ProjectGitHubStandaloneSection.PULL_REQUESTS)
-                            },
-                            onShowReadme = {
-                                onChangeSection(ProjectGitHubStandaloneSection.README)
-                            },
-                            onOpenLatestRunDetail = repoDetailState.recentRuns.firstOrNull()?.let { run ->
-                                { onOpenRunDetail(run) }
-                            },
-                            releases = repoDetailState.releases,
-                            onCreateRelease = onCreateRelease,
-                            onEditRelease = onEditRelease,
-                            onToggleReleaseMode = onToggleReleaseMode,
-                            onTogglePrerelease = onTogglePrerelease,
-                            onDeleteRelease = onDeleteRelease,
-                            onOpenReleasePage = onOpenReleasePage,
-                            onOpenReleaseAssets = onOpenReleaseAssets
-                        )
-                    }
-
-                    ProjectGitHubStandaloneSection.WORKFLOWS -> {
-                        ProjectGitHubActionsSection(
-                            state = repoDetailState,
-                            isLoading = isRepoDetailLoading,
-                            isActionRunning = false,
-                            tokenConfigured = tokenConfigured,
-                            onRefresh = onRefreshRepoDetail,
-                            onOpenRepo = onOpenRepoPage,
-                            onRunWorkflow = onRunWorkflow,
-                            onOpenWorkflowPage = onOpenWorkflowPage,
-                            onOpenArtifacts = onOpenArtifacts,
-                            onOpenRunPage = onOpenRunPage,
-                            onDownloadRunLogs = onDownloadRunLogs,
-                            onOpenRunDetail = onOpenRunDetail
-                        )
-                    }
-
-                    ProjectGitHubStandaloneSection.ISSUES -> {
-                        ProjectGitHubIssueSection(
-                            issues = repoDetailState.issues,
-                            isActionRunning = isActionRunning,
-                            onCreateIssue = onCreateIssue,
-                            onOpenDetail = onOpenIssueDetail,
-                            onToggleIssueState = onToggleIssueState,
-                            onOpenIssuePage = onOpenIssuePage
-                        )
-                    }
-
-                    ProjectGitHubStandaloneSection.PULL_REQUESTS -> {
-                        ProjectGitHubPullRequestSection(
-                            pullRequests = repoDetailState.pullRequests,
-                            isActionRunning = isActionRunning,
-                            onCreatePullRequest = onCreatePullRequest,
-                            onOpenDetail = onOpenPullRequestDetail,
-                            onTogglePullRequestState = onTogglePullRequestState,
-                            onMergePullRequest = onMergePullRequest,
-                            onOpenPullRequestPage = onOpenPullRequestPage
-                        )
-                    }
-
-                    ProjectGitHubStandaloneSection.README -> {
-                        ProjectGitHubReadmeSection(
-                            readme = readme,
-                            isLoading = isReadmeLoading,
-                            errorMessage = readmeErrorMessage,
-                            onRefresh = onRefreshRepoDetail,
-                            onOpenRepoPage = onOpenRepoPage,
-                            onEditReadme = onEditReadme
-                        )
-                    }
-                }
             }
+
+            ProjectGitHubStandaloneSection.WORKFLOWS -> {
+                ProjectGitHubStandaloneWorkflowPage(
+                    selectedRepo = selectedRepo,
+                    state = repoDetailState,
+                    isLoading = isRepoDetailLoading,
+                    tokenConfigured = tokenConfigured,
+                    onRefreshRepoDetail = onRefreshRepoDetail,
+                    onOpenRepoPage = onOpenRepoPage,
+                    onRunWorkflow = onRunWorkflow,
+                    onOpenWorkflowPage = onOpenWorkflowPage,
+                    onOpenArtifacts = onOpenArtifacts,
+                    onOpenRunPage = onOpenRunPage,
+                    onDownloadRunLogs = onDownloadRunLogs,
+                    onOpenRunDetail = onOpenRunDetail,
+                    backProgress = backProgress
+                )
+            }
+
+            ProjectGitHubStandaloneSection.ISSUES -> {
+                ProjectGitHubStandaloneIssuePage(
+                    selectedRepo = selectedRepo,
+                    issues = repoDetailState.issues,
+                    isActionRunning = isActionRunning,
+                    onCreateIssue = onCreateIssue,
+                    onOpenIssueDetail = onOpenIssueDetail,
+                    onToggleIssueState = onToggleIssueState,
+                    onOpenIssuePage = onOpenIssuePage,
+                    backProgress = backProgress
+                )
+            }
+
+            ProjectGitHubStandaloneSection.PULL_REQUESTS -> {
+                ProjectGitHubStandalonePullRequestPage(
+                    selectedRepo = selectedRepo,
+                    pullRequests = repoDetailState.pullRequests,
+                    isActionRunning = isActionRunning,
+                    onCreatePullRequest = onCreatePullRequest,
+                    onOpenPullRequestDetail = onOpenPullRequestDetail,
+                    onTogglePullRequestState = onTogglePullRequestState,
+                    onMergePullRequest = onMergePullRequest,
+                    onOpenPullRequestPage = onOpenPullRequestPage,
+                    backProgress = backProgress
+                )
+            }
+
+        }
+    }
+}
+
+@Composable
+private fun ProjectGitHubStandaloneOverviewPage(
+    selectedRepo: ProjectGitHubAccountRepoUi,
+    selectedTaskRepo: ProjectGitHubRepoRef?,
+    tokenConfigured: Boolean,
+    repoDetailState: ProjectGitHubActionsState,
+    isRepoDetailLoading: Boolean,
+    remoteRepoState: ProjectGitHubRemoteBrowserState,
+    isRemoteRepoLoading: Boolean,
+    isActionRunning: Boolean,
+    remoteRepoRefDraft: String,
+    onEditRepoDescription: () -> Unit,
+    onBackToRepoList: () -> Unit,
+    onRefreshRepoDetail: () -> Unit,
+    onOpenRepoPage: () -> Unit,
+    onRemoteRepoRefDraftChange: (String) -> Unit,
+    onRefreshRemoteRepository: () -> Unit,
+    onApplyRemoteRef: () -> Unit,
+    onOpenRemoteParent: () -> Unit,
+    onOpenRemoteRoot: () -> Unit,
+    onOpenRemoteEntry: (ProjectGitHubRemoteEntryUi) -> Unit,
+    onOpenRemoteEntryPage: (ProjectGitHubRemoteEntryUi) -> Unit,
+    onShowWorkflows: () -> Unit,
+    onShowIssues: () -> Unit,
+    onShowPullRequests: () -> Unit,
+    onOpenLatestRunDetail: (() -> Unit)?,
+    releases: List<ProjectGitHubReleaseUi>,
+    readme: ProjectGitHubReadmeUi?,
+    isReadmeLoading: Boolean,
+    readmeErrorMessage: String?,
+    onEditReadme: (ProjectGitHubReadmeUi) -> Unit,
+    onCreateRelease: () -> Unit,
+    onEditRelease: (ProjectGitHubReleaseUi) -> Unit,
+    onToggleReleaseMode: (ProjectGitHubReleaseUi, Boolean) -> Unit,
+    onTogglePrerelease: (ProjectGitHubReleaseUi, Boolean) -> Unit,
+    onDeleteRelease: (ProjectGitHubReleaseUi) -> Unit,
+    onOpenReleasePage: (ProjectGitHubReleaseUi) -> Unit,
+    onOpenReleaseAssets: (ProjectGitHubReleaseUi) -> Unit,
+    backProgress: Float
+) {
+    ReasonixSecondaryPageFrame(
+        title = selectedRepo.fullName,
+        subtitle = "仓库详情页默认展示固定信息、Release 与远端仓库内容。"
+    ) {
+        Column(
+            modifier = Modifier.graphicsLayer {
+                translationX = 180f * backProgress
+                alpha = 1f - (backProgress * 0.08f)
+            },
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            ProjectGitHubStandaloneHeaderCard(
+                selectedRepo = selectedRepo,
+                selectedTaskRepo = selectedTaskRepo,
+                onEditRepoDescription = onEditRepoDescription
+            )
+            ProjectGitHubStandaloneTopActions(
+                onShowWorkflows = onShowWorkflows,
+                onShowIssues = onShowIssues,
+                onShowPullRequests = onShowPullRequests
+            )
+            ProjectGitHubStandaloneOverviewSection(
+                tokenConfigured = tokenConfigured,
+                selectedRepo = selectedRepo,
+                repoDetailState = repoDetailState,
+                isRepoDetailLoading = isRepoDetailLoading,
+                remoteRepoState = remoteRepoState,
+                isRemoteRepoLoading = isRemoteRepoLoading,
+                isActionRunning = isActionRunning,
+                remoteRepoRefDraft = remoteRepoRefDraft,
+                onRefreshRepoDetail = onRefreshRepoDetail,
+                onOpenRepoPage = onOpenRepoPage,
+                onRemoteRepoRefDraftChange = onRemoteRepoRefDraftChange,
+                onRefreshRemoteRepository = onRefreshRemoteRepository,
+                onApplyRemoteRef = onApplyRemoteRef,
+                onOpenRemoteParent = onOpenRemoteParent,
+                onOpenRemoteRoot = onOpenRemoteRoot,
+                onOpenRemoteEntry = onOpenRemoteEntry,
+                onOpenRemoteEntryPage = onOpenRemoteEntryPage,
+                onShowWorkflows = onShowWorkflows,
+                onShowIssues = onShowIssues,
+                onShowPullRequests = onShowPullRequests,
+                onOpenLatestRunDetail = onOpenLatestRunDetail,
+                releases = releases,
+                readme = readme,
+                isReadmeLoading = isReadmeLoading,
+                readmeErrorMessage = readmeErrorMessage,
+                onEditReadme = onEditReadme,
+                onCreateRelease = onCreateRelease,
+                onEditRelease = onEditRelease,
+                onToggleReleaseMode = onToggleReleaseMode,
+                onTogglePrerelease = onTogglePrerelease,
+                onDeleteRelease = onDeleteRelease,
+                onOpenReleasePage = onOpenReleasePage,
+                onOpenReleaseAssets = onOpenReleaseAssets
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProjectGitHubStandaloneWorkflowPage(
+    selectedRepo: ProjectGitHubAccountRepoUi,
+    state: ProjectGitHubActionsState,
+    isLoading: Boolean,
+    tokenConfigured: Boolean,
+    onRefreshRepoDetail: () -> Unit,
+    onOpenRepoPage: () -> Unit,
+    onRunWorkflow: (ProjectGitHubWorkflowUi) -> Unit,
+    onOpenWorkflowPage: (ProjectGitHubWorkflowUi) -> Unit,
+    onOpenArtifacts: (ProjectGitHubWorkflowRunUi) -> Unit,
+    onOpenRunPage: (ProjectGitHubWorkflowRunUi) -> Unit,
+    onDownloadRunLogs: (ProjectGitHubWorkflowRunUi) -> Unit,
+    onOpenRunDetail: (ProjectGitHubWorkflowRunUi) -> Unit,
+    backProgress: Float
+) {
+    ReasonixSecondaryPageFrame(
+        title = "${selectedRepo.name} · 工作流",
+        subtitle = "独立三级页，只显示工作流与运行记录。"
+    ) {
+        Column(
+            modifier = Modifier.graphicsLayer {
+                translationX = 180f * backProgress
+                alpha = 1f - (backProgress * 0.08f)
+            },
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            ProjectGitHubActionsSection(
+                state = state,
+                isLoading = isLoading,
+                isActionRunning = false,
+                tokenConfigured = tokenConfigured,
+                onRefresh = onRefreshRepoDetail,
+                onOpenRepo = onOpenRepoPage,
+                onRunWorkflow = onRunWorkflow,
+                onOpenWorkflowPage = onOpenWorkflowPage,
+                onOpenArtifacts = onOpenArtifacts,
+                onOpenRunPage = onOpenRunPage,
+                onDownloadRunLogs = onDownloadRunLogs,
+                onOpenRunDetail = onOpenRunDetail
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProjectGitHubStandaloneIssuePage(
+    selectedRepo: ProjectGitHubAccountRepoUi,
+    issues: List<ProjectGitHubIssueUi>,
+    isActionRunning: Boolean,
+    onCreateIssue: () -> Unit,
+    onOpenIssueDetail: (ProjectGitHubIssueUi) -> Unit,
+    onToggleIssueState: (ProjectGitHubIssueUi, Boolean) -> Unit,
+    onOpenIssuePage: (ProjectGitHubIssueUi) -> Unit,
+    backProgress: Float
+) {
+    ReasonixSecondaryPageFrame(
+        title = "${selectedRepo.name} · Issue",
+        subtitle = "独立三级页，只显示当前仓库的 Issue。"
+    ) {
+        Column(
+            modifier = Modifier.graphicsLayer {
+                translationX = 180f * backProgress
+                alpha = 1f - (backProgress * 0.08f)
+            },
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            ProjectGitHubIssueSection(
+                issues = issues,
+                isActionRunning = isActionRunning,
+                onCreateIssue = onCreateIssue,
+                onOpenDetail = onOpenIssueDetail,
+                onToggleIssueState = onToggleIssueState,
+                onOpenIssuePage = onOpenIssuePage
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProjectGitHubStandalonePullRequestPage(
+    selectedRepo: ProjectGitHubAccountRepoUi,
+    pullRequests: List<ProjectGitHubPullRequestUi>,
+    isActionRunning: Boolean,
+    onCreatePullRequest: () -> Unit,
+    onOpenPullRequestDetail: (ProjectGitHubPullRequestUi) -> Unit,
+    onTogglePullRequestState: (ProjectGitHubPullRequestUi, Boolean) -> Unit,
+    onMergePullRequest: (ProjectGitHubPullRequestUi) -> Unit,
+    onOpenPullRequestPage: (ProjectGitHubPullRequestUi) -> Unit,
+    backProgress: Float
+) {
+    ReasonixSecondaryPageFrame(
+        title = "${selectedRepo.name} · PR",
+        subtitle = "独立三级页，只显示当前仓库的 Pull Request。"
+    ) {
+        Column(
+            modifier = Modifier.graphicsLayer {
+                translationX = 180f * backProgress
+                alpha = 1f - (backProgress * 0.08f)
+            },
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            ProjectGitHubPullRequestSection(
+                pullRequests = pullRequests,
+                isActionRunning = isActionRunning,
+                onCreatePullRequest = onCreatePullRequest,
+                onOpenDetail = onOpenPullRequestDetail,
+                onTogglePullRequestState = onTogglePullRequestState,
+                onMergePullRequest = onMergePullRequest,
+                onOpenPullRequestPage = onOpenPullRequestPage
+            )
         }
     }
 }
@@ -396,9 +571,12 @@ private fun ProjectGitHubStandaloneOverviewSection(
     onShowWorkflows: () -> Unit,
     onShowIssues: () -> Unit,
     onShowPullRequests: () -> Unit,
-    onShowReadme: () -> Unit,
     onOpenLatestRunDetail: (() -> Unit)?,
     releases: List<ProjectGitHubReleaseUi>,
+    readme: ProjectGitHubReadmeUi?,
+    isReadmeLoading: Boolean,
+    readmeErrorMessage: String?,
+    onEditReadme: (ProjectGitHubReadmeUi) -> Unit,
     onCreateRelease: () -> Unit,
     onEditRelease: (ProjectGitHubReleaseUi) -> Unit,
     onToggleReleaseMode: (ProjectGitHubReleaseUi, Boolean) -> Unit,
@@ -421,20 +599,15 @@ private fun ProjectGitHubStandaloneOverviewSection(
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("项目概览", style = MaterialTheme.typography.titleSmall)
             Text(
-                text = "这里先提供远端仓库树浏览、网页入口和直接编辑链路。当前任务仓库会保留“可直接编辑”标记。",
+                text = "这里默认展示仓库固定信息、Release、README 和远端仓库内容。当前任务仓库会保留“可直接编辑”标记。",
                 style = MaterialTheme.typography.bodySmall,
                 color = mutedTextColor
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = onRefreshRepoDetail,
-                    enabled = tokenConfigured && !isRepoDetailLoading
-                ) {
-                    Text("刷新详情")
-                }
-                TextButton(onClick = onOpenRepoPage) {
-                    Text("打开网页")
-                }
+            OutlinedButton(
+                onClick = onRefreshRepoDetail,
+                enabled = tokenConfigured && !isRepoDetailLoading
+            ) {
+                Text("刷新详情")
             }
             Text(
                 text = "默认分支: ${
@@ -463,11 +636,6 @@ private fun ProjectGitHubStandaloneOverviewSection(
                     selected = true,
                     onClick = {},
                     label = { Text("Release ${repoDetailState.releases.size}") }
-                )
-                FilterChip(
-                    selected = true,
-                    onClick = onShowReadme,
-                    label = { Text("README") }
                 )
                 FilterChip(
                     selected = true,
@@ -611,6 +779,19 @@ private fun ProjectGitHubStandaloneOverviewSection(
         onOpenReleasePage = onOpenReleasePage,
         onOpenReleaseAssets = onOpenReleaseAssets
     )
+    ProjectSectionCard(
+        shape = RoundedCornerShape(14.dp),
+        surfaceColorOverride = rememberReasonixSurfaceColor().copy(alpha = 0.58f)
+    ) {
+        ProjectGitHubReadmeSection(
+            readme = readme,
+            isLoading = isReadmeLoading,
+            errorMessage = readmeErrorMessage,
+            onRefresh = onRefreshRepoDetail,
+            onOpenRepoPage = onOpenRepoPage,
+            onEditReadme = onEditReadme
+        )
+    }
     ProjectGitHubRemoteRepositorySection(
         state = remoteRepoState,
         isLoading = isRemoteRepoLoading,
@@ -631,37 +812,26 @@ private fun ProjectGitHubStandaloneOverviewSection(
 
 @Composable
 private fun ProjectGitHubStandaloneTopActions(
-    selectedRepo: ProjectGitHubAccountRepoUi,
-    activeSection: ProjectGitHubStandaloneSection,
-    onBack: () -> Unit,
-    onChangeSection: (ProjectGitHubStandaloneSection) -> Unit
+    onShowWorkflows: () -> Unit,
+    onShowIssues: () -> Unit,
+    onShowPullRequests: () -> Unit
 ) {
     val buttonRows = listOf(
-        listOf("返回" to null, ProjectGitHubStandaloneSection.OVERVIEW.label to ProjectGitHubStandaloneSection.OVERVIEW),
-        listOf(ProjectGitHubStandaloneSection.WORKFLOWS.label to ProjectGitHubStandaloneSection.WORKFLOWS, ProjectGitHubStandaloneSection.ISSUES.label to ProjectGitHubStandaloneSection.ISSUES),
-        listOf(ProjectGitHubStandaloneSection.PULL_REQUESTS.label to ProjectGitHubStandaloneSection.PULL_REQUESTS, ProjectGitHubStandaloneSection.README.label to ProjectGitHubStandaloneSection.README)
+        listOf(ProjectGitHubStandaloneSection.WORKFLOWS.label to onShowWorkflows, ProjectGitHubStandaloneSection.ISSUES.label to onShowIssues),
+        listOf(ProjectGitHubStandaloneSection.PULL_REQUESTS.label to onShowPullRequests)
     )
     buttonRows.forEach { row ->
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            row.forEach { (label, section) ->
-                if (section == null) {
-                    ProjectGitHubStandaloneActionButton(
-                        label = "返回",
-                        selected = false,
-                        modifier = Modifier.weight(1f),
-                        onClick = onBack
-                    )
-                } else {
-                    ProjectGitHubStandaloneActionButton(
-                        label = if (section == activeSection) "${selectedRepo.name} · $label" else label,
-                        selected = section == activeSection,
-                        modifier = Modifier.weight(1f),
-                        onClick = { onChangeSection(section) }
-                    )
-                }
+            row.forEach { (label, onClick) ->
+                ProjectGitHubStandaloneActionButton(
+                    label = label,
+                    selected = false,
+                    modifier = Modifier.weight(1f),
+                    onClick = onClick
+                )
             }
             if (row.size == 1) {
                 Row(modifier = Modifier.weight(1f)) {}
