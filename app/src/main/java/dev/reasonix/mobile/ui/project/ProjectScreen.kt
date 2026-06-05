@@ -4802,7 +4802,7 @@ private fun ProjectGitSection(
         )
     }
 
-    workflowRunDetailDialogState?.let { detail: ProjectGitHubWorkflowRunDetailUi ->
+    workflowRunDetailDialogState?.let { detail ->
         ProjectGitHubWorkflowRunDetailDialog(
             detail = detail,
             onDismiss = { workflowRunDetailDialogState = null },
@@ -4812,12 +4812,12 @@ private fun ProjectGitSection(
                     "当前运行详情还没有可打开的 GitHub 页面地址。"
                 )
             },
-            onRefreshDetail = { target: ProjectGitHubWorkflowRunDetailUi ->
+            onRefreshDetail = {
                 scope.launch {
                     isGitHubActionRunning = true
                     val result = withContext(Dispatchers.IO) {
                         refreshProjectGitHubWorkflowRunDetailAction(
-                            currentDetail = target,
+                            currentDetail = detail,
                             repo = githubActionsState.repo,
                             token = config.githubToken.trim(),
                             apiBaseUrl = config.getGitHubApiBaseUrl()
@@ -4828,13 +4828,13 @@ private fun ProjectGitSection(
                     result.feedbackMessage?.let { feedbackMessage = it }
                 }
             },
-            onDownloadLogs = { target: ProjectGitHubWorkflowRunDetailUi ->
+            onDownloadLogs = {
                 val result = enqueueProjectGitHubWorkflowLogsDownloadAction(
                     context = context,
                     repo = githubActionsState.repo,
-                    runId = target.id,
-                    runDisplayTitle = target.title,
-                    sourceUrl = target.htmlUrl,
+                    runId = detail.id,
+                    runDisplayTitle = detail.title,
+                    sourceUrl = detail.htmlUrl,
                     token = config.githubToken.trim(),
                     apiBaseUrl = config.getGitHubApiBaseUrl()
                 )
@@ -4850,12 +4850,12 @@ private fun ProjectGitSection(
                 }
                 result.feedbackMessage?.let { feedbackMessage = it }
             },
-            onDownloadArtifact = { target: ProjectGitHubWorkflowRunDetailUi, artifact ->
+            onDownloadArtifact = { _, artifact ->
                 val result = enqueueProjectGitHubWorkflowArtifactDownloadAction(
                     context = context,
                     repo = githubActionsState.repo,
                     artifact = artifact,
-                    sourceUrl = target.htmlUrl,
+                    sourceUrl = detail.htmlUrl,
                     token = config.githubToken.trim()
                 )
                 result.downloadRecord?.let { record ->
