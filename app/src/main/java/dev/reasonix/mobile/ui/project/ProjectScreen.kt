@@ -3554,6 +3554,65 @@ private fun ProjectGitSection(
         }
     }
 
+    fun requestWorkflowRunDetail(
+        run: ProjectGitHubWorkflowRunUi,
+        onLoaded: (ProjectGitHubWorkflowRunDetailUi?) -> Unit
+    ) {
+        val repo = githubActionsState.repo
+        if (repo == null) {
+            feedbackMessage = "当前还没有可用的 GitHub 仓库。"
+            onLoaded(null)
+            return
+        }
+        val token = config.githubToken.trim()
+        if (token.isBlank()) {
+            feedbackMessage = "请先在设置页填写 GitHub Token。"
+            onLoaded(null)
+            return
+        }
+        scope.launch {
+            isGitHubActionRunning = true
+            val result = withContext(Dispatchers.IO) {
+                loadProjectGitHubWorkflowRunDetail(
+                    repo = repo,
+                    runId = run.id,
+                    token = token,
+                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                )
+            }
+            isGitHubActionRunning = false
+            if (result.success) {
+                onLoaded(result.detail)
+            } else {
+                feedbackMessage = result.error ?: "读取工作流运行详情失败"
+                onLoaded(null)
+            }
+        }
+    }
+
+    fun refreshStandaloneWorkflowRunDetail(
+        currentDetail: ProjectGitHubWorkflowRunDetailUi,
+        onLoaded: (ProjectGitHubWorkflowRunDetailUi?) -> Unit
+    ) {
+        scope.launch {
+            isGitHubActionRunning = true
+            val result = withContext(Dispatchers.IO) {
+                refreshProjectGitHubWorkflowRunDetailAction(
+                    currentDetail = currentDetail,
+                    repo = githubActionsState.repo,
+                    token = config.githubToken.trim(),
+                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                )
+            }
+            isGitHubActionRunning = false
+            result.updatedDetail?.let(onLoaded)
+            result.feedbackMessage?.let { feedbackMessage = it }
+            if (result.updatedDetail == null) {
+                onLoaded(null)
+            }
+        }
+    }
+
     fun openGitHubWorkspaceRepoWorkbench(
         rootPath: String,
         selectedTab: ProjectGitHubWorkspaceRepoWorkbenchTab =
@@ -4622,6 +4681,28 @@ private fun ProjectGitSection(
                     feedbackMessage = "已开始下载 ${result.fileName}"
                 },
                 onOpenRunDetail = ::openWorkflowRunDetail,
+                onLoadRunDetail = ::requestWorkflowRunDetail,
+                onRefreshRunDetail = ::refreshStandaloneWorkflowRunDetail,
+                onDownloadWorkflowArtifact = { detail, artifact ->
+                    val result = enqueueProjectGitHubWorkflowArtifactDownloadAction(
+                        context = context,
+                        repo = githubActionsState.repo,
+                        artifact = artifact,
+                        sourceUrl = detail.htmlUrl,
+                        token = config.githubToken.trim()
+                    )
+                    result.downloadRecord?.let { record ->
+                        recordGitHubDownload(
+                            typeLabel = record.typeLabel,
+                            title = record.title,
+                            fileName = record.fileName,
+                            downloadId = record.downloadId,
+                            sourceUrl = record.sourceUrl,
+                            repo = record.repo
+                        )
+                    }
+                    result.feedbackMessage?.let { feedbackMessage = it }
+                },
                 onCreateRelease = {
                     releaseDraftState = createProjectGitHubReleaseDraftState(
                         githubActionsState.defaultBranch ?: selectedViewerRepository?.defaultBranch
