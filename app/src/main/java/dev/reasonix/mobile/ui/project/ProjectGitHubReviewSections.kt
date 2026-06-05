@@ -50,6 +50,13 @@ internal fun ProjectGitHubCommentThreadSection(
 ) {
     val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
+    val summaryText = remember(comments, isLoading) {
+        when {
+            isLoading -> "正在同步评论数据"
+            comments.isEmpty() -> "当前还没有评论"
+            else -> "共 ${comments.size} 条评论 · 最近更新 ${comments.firstOrNull()?.timeLabel ?: "时间未知"}"
+        }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -61,6 +68,11 @@ internal fun ProjectGitHubCommentThreadSection(
                 Text("刷新")
             }
         }
+        Text(
+            text = summaryText,
+            style = MaterialTheme.typography.bodySmall,
+            color = mutedTextColor
+        )
         if (isLoading) {
             Text(
                 text = "正在读取评论……",
@@ -128,6 +140,18 @@ internal fun ProjectGitHubPullRequestReviewSection(
 ) {
     val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
+    val reviewSummary = remember(reviews, isLoading) {
+        ProjectGitHubReviewSummaryUi(
+            totalCount = reviews.size,
+            approvedCount = reviews.count { it.state.equals("APPROVED", ignoreCase = true) },
+            requestedChangesCount = reviews.count {
+                it.state.equals("CHANGES_REQUESTED", ignoreCase = true)
+            },
+            commentedCount = reviews.count { it.state.equals("COMMENTED", ignoreCase = true) },
+            latestTimeLabel = reviews.firstOrNull()?.timeLabel ?: "时间未知",
+            isLoading = isLoading
+        )
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -139,6 +163,21 @@ internal fun ProjectGitHubPullRequestReviewSection(
                 Text("刷新")
             }
         }
+        Text(
+            text = when {
+                reviewSummary.isLoading -> "正在同步评审状态"
+                reviewSummary.totalCount == 0 -> "当前还没有评审记录"
+                else -> buildString {
+                    append("共 ${reviewSummary.totalCount} 条评审")
+                    append(" · 批准 ${reviewSummary.approvedCount}")
+                    append(" · 请求修改 ${reviewSummary.requestedChangesCount}")
+                    append(" · 评论 ${reviewSummary.commentedCount}")
+                    append(" · 最近 ${reviewSummary.latestTimeLabel}")
+                }
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = mutedTextColor
+        )
         if (isLoading) {
             Text(
                 text = "正在读取评审……",
@@ -259,6 +298,16 @@ internal fun ProjectGitHubPullRequestReviewCommentSection(
     LaunchedEffect(comments) {
         localLineCommentReplies = emptyMap()
     }
+    val reviewCommentSummary = remember(files, comments, pathDraft, lineDraft, isFilesLoading, isCommentsLoading) {
+        ProjectGitHubReviewCommentSummaryUi(
+            fileCount = files.size,
+            commentCount = comments.size,
+            selectedPath = pathDraft,
+            selectedLine = lineDraft,
+            isFilesLoading = isFilesLoading,
+            isCommentsLoading = isCommentsLoading
+        )
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -270,6 +319,24 @@ internal fun ProjectGitHubPullRequestReviewCommentSection(
                 Text("刷新")
             }
         }
+        Text(
+            text = when {
+                reviewCommentSummary.isFilesLoading -> "正在同步变更文件"
+                reviewCommentSummary.isCommentsLoading -> "正在同步代码评审评论"
+                else -> buildString {
+                    append("变更文件 ${reviewCommentSummary.fileCount}")
+                    append(" · 代码评论 ${reviewCommentSummary.commentCount}")
+                    reviewCommentSummary.selectedPath.takeIf { it.isNotBlank() }?.let { path ->
+                        append(" · 当前文件 ${path.substringAfterLast('/')}")
+                    }
+                    reviewCommentSummary.selectedLine.takeIf { it.isNotBlank() }?.let { line ->
+                        append(" · L$line")
+                    }
+                }
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = mutedTextColor
+        )
         if (isFilesLoading) {
             Text(
                 text = "正在读取变更文件……",
@@ -823,6 +890,24 @@ private data class ProjectGitHubReviewCommentThreadItemUi(
     val comment: ProjectGitHubPullRequestReviewCommentUi,
     val depth: Int,
     val replyToAuthorLabel: String?
+)
+
+private data class ProjectGitHubReviewSummaryUi(
+    val totalCount: Int,
+    val approvedCount: Int,
+    val requestedChangesCount: Int,
+    val commentedCount: Int,
+    val latestTimeLabel: String,
+    val isLoading: Boolean
+)
+
+private data class ProjectGitHubReviewCommentSummaryUi(
+    val fileCount: Int,
+    val commentCount: Int,
+    val selectedPath: String,
+    val selectedLine: String,
+    val isFilesLoading: Boolean,
+    val isCommentsLoading: Boolean
 )
 
 private fun buildProjectGitHubReviewCommentThread(

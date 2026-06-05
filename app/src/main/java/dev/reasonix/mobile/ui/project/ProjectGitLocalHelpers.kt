@@ -2,6 +2,9 @@ package dev.reasonix.mobile.ui.project
 
 import dev.reasonix.mobile.common.utils.RootFile
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 internal data class ProjectGitStatusUi(
     val projectPath: String?,
@@ -85,6 +88,26 @@ internal data class ProjectGitCommitUi(
     val subject: String,
     val relativeTime: String,
     val author: String
+)
+
+internal data class ProjectGitOperationRecordUi(
+    val title: String,
+    val detail: String,
+    val repoRoot: String?,
+    val repoLabel: String,
+    val timeLabel: String,
+    val isSuccess: Boolean,
+    val categoryLabel: String
+)
+
+internal data class ProjectGitOperationSummaryUi(
+    val totalCount: Int,
+    val successCount: Int,
+    val failureCount: Int,
+    val repoCount: Int,
+    val latestTimeLabel: String?,
+    val latestTitle: String?,
+    val syncCount: Int
 )
 
 internal data class ProjectGitCommandResult(
@@ -288,6 +311,59 @@ internal fun bindProjectGitHubRemote(
 
 internal fun sanitizeProjectDownloadFileName(value: String): String {
     return value.replace(Regex("""[\\/:*?"<>|]"""), "_")
+}
+
+internal fun createProjectGitOperationRecord(
+    title: String,
+    detail: String,
+    repoRoot: String?,
+    isSuccess: Boolean
+): ProjectGitOperationRecordUi {
+    return ProjectGitOperationRecordUi(
+        title = title,
+        detail = detail.trim().ifBlank { if (isSuccess) "操作已完成" else "操作失败" },
+        repoRoot = repoRoot,
+        repoLabel = repoRoot
+            ?.let(::File)
+            ?.name
+            ?.ifBlank { repoRoot }
+            ?: "当前仓库",
+        timeLabel = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date()),
+        isSuccess = isSuccess,
+        categoryLabel = inferProjectGitOperationCategory(title)
+    )
+}
+
+internal fun buildProjectGitOperationSummary(
+    records: List<ProjectGitOperationRecordUi>
+): ProjectGitOperationSummaryUi {
+    return ProjectGitOperationSummaryUi(
+        totalCount = records.size,
+        successCount = records.count { it.isSuccess },
+        failureCount = records.count { !it.isSuccess },
+        repoCount = records.mapNotNull { it.repoRoot ?: it.repoLabel }.distinct().size,
+        latestTimeLabel = records.firstOrNull()?.timeLabel,
+        latestTitle = records.firstOrNull()?.title,
+        syncCount = records.count { it.categoryLabel == "同步" }
+    )
+}
+
+private fun inferProjectGitOperationCategory(title: String): String {
+    val normalized = title.trim()
+    return when {
+        normalized.contains("推送") ||
+            normalized.contains("拉取") ||
+            normalized.contains("抓取") ||
+            normalized.contains("同步") -> "同步"
+        normalized.contains("提交") -> "提交"
+        normalized.contains("分支") ||
+            normalized.contains("切换") ||
+            normalized.contains("跟踪") -> "分支"
+        normalized.contains("暂存") -> "暂存"
+        normalized.contains("初始化") ||
+            normalized.contains("绑定") -> "仓库"
+        else -> "其他"
+    }
 }
 
 internal fun loadProjectGitDiffPreview(

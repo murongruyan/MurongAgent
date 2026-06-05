@@ -1,22 +1,28 @@
 package dev.reasonix.mobile.ui.project
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.reasonix.mobile.ui.ReasonixGlassSurface
 import dev.reasonix.mobile.ui.rememberReasonixChromeColor
@@ -36,12 +42,19 @@ internal fun ProjectGitHubRemoteRepositorySection(
     onOpenRepo: () -> Unit,
     onOpenParent: () -> Unit,
     onOpenRoot: () -> Unit,
+    onOpenPath: (String) -> Unit,
     onOpenEntry: (ProjectGitHubRemoteEntryUi) -> Unit,
     onOpenEntryPage: (ProjectGitHubRemoteEntryUi) -> Unit
 ) {
     val chromeColor = rememberReasonixChromeColor()
     val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
+    val directorySummary = remember(state.entries) {
+        buildProjectGitHubRemoteDirectorySummary(state.entries)
+    }
+    val breadcrumbSegments = remember(state.currentPath) {
+        buildProjectGitHubRemotePathSegments(state.currentPath)
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         ReasonixGlassSurface(
             modifier = Modifier.fillMaxWidth(),
@@ -73,6 +86,23 @@ internal fun ProjectGitHubRemoteRepositorySection(
                             style = MaterialTheme.typography.bodySmall,
                             color = mutedTextColor
                         )
+                        if (state.entries.isNotEmpty()) {
+                            Text(
+                                text = buildString {
+                                    append("目录 ${directorySummary.directoryCount}")
+                                    append(" · 文件 ${directorySummary.fileCount}")
+                                    if (directorySummary.otherCount > 0) {
+                                        append(" · 其他 ${directorySummary.otherCount}")
+                                    }
+                                    if (directorySummary.totalFileSize > 0L) {
+                                        append(" · 约 ")
+                                        append(formatProjectByteSize(directorySummary.totalFileSize))
+                                    }
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                     OutlinedButton(
                         onClick = onRefresh,
@@ -89,7 +119,10 @@ internal fun ProjectGitHubRemoteRepositorySection(
                     placeholder = { Text("默认读取当前分支或远端默认分支") },
                     singleLine = true
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     OutlinedButton(
                         onClick = onApplyRef,
                         enabled = !isLoading && !isActionRunning
@@ -102,6 +135,22 @@ internal fun ProjectGitHubRemoteRepositorySection(
                     ) {
                         Text("根目录")
                     }
+                    if (state.currentPath.isNotBlank()) {
+                        OutlinedButton(
+                            onClick = onOpenParent,
+                            enabled = !isLoading && !isActionRunning
+                        ) {
+                            Text("上级")
+                        }
+                    }
+                    directorySummary.readmeEntry?.let { readmeEntry ->
+                        OutlinedButton(
+                            onClick = { onOpenEntry(readmeEntry) },
+                            enabled = !isLoading && !isActionRunning
+                        ) {
+                            Text("README")
+                        }
+                    }
                     state.repoHtmlUrl?.takeIf { it.isNotBlank() }?.let {
                         TextButton(
                             onClick = onOpenRepo,
@@ -109,6 +158,43 @@ internal fun ProjectGitHubRemoteRepositorySection(
                         ) {
                             Text("仓库页")
                         }
+                    }
+                }
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = true,
+                        onClick = { onOpenRoot() },
+                        label = { Text(state.currentRef.ifBlank { "默认引用" }) }
+                    )
+                    FilterChip(
+                        selected = state.currentPath.isBlank(),
+                        onClick = { onOpenRoot() },
+                        label = { Text(displayProjectGitHubRepoPath(state.currentPath)) }
+                    )
+                    FilterChip(
+                        selected = true,
+                        onClick = {},
+                        label = { Text("条目 ${state.entries.size}") }
+                    )
+                }
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = state.currentPath.isBlank(),
+                        onClick = { onOpenRoot() },
+                        label = { Text("/") }
+                    )
+                    breadcrumbSegments.forEach { segment ->
+                        FilterChip(
+                            selected = segment.path == state.currentPath,
+                            onClick = { onOpenPath(segment.path) },
+                            label = { Text(segment.label) }
+                        )
                     }
                 }
                 when {
@@ -142,18 +228,10 @@ internal fun ProjectGitHubRemoteRepositorySection(
                 }
             }
         }
-        if (state.currentPath.isNotBlank()) {
-            OutlinedButton(
-                onClick = onOpenParent,
-                enabled = !isLoading && !isActionRunning
-            ) {
-                Text("返回上级")
-            }
-        }
         if (state.entries.isEmpty()) {
             Text(
                 text = if (state.errorMessage.isNullOrBlank()) {
-                    "当前目录还没有读取到远端文件。"
+                    "当前目录 ${displayProjectGitHubRepoPath(state.currentPath)} 还没有读取到远端文件。"
                 } else {
                     "远端目录暂时不可用。"
                 },
@@ -170,7 +248,9 @@ internal fun ProjectGitHubRemoteRepositorySection(
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
                             text = entry.name,
-                            style = MaterialTheme.typography.bodyMedium
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
                             text = buildString {
@@ -185,6 +265,30 @@ internal fun ProjectGitHubRemoteRepositorySection(
                             style = MaterialTheme.typography.bodySmall,
                             color = mutedTextColor
                         )
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = true,
+                                onClick = {},
+                                label = { Text(entry.typeLabel) }
+                            )
+                            if (!entry.isDirectory && entry.size > 0) {
+                                FilterChip(
+                                    selected = true,
+                                    onClick = {},
+                                    label = { Text(formatProjectByteSize(entry.size)) }
+                                )
+                            }
+                            if (entry.isDirectory) {
+                                FilterChip(
+                                    selected = false,
+                                    onClick = { onOpenPath(entry.path) },
+                                    label = { Text("进入目录") }
+                                )
+                            }
+                        }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = { onOpenEntry(entry) },
@@ -206,4 +310,68 @@ internal fun ProjectGitHubRemoteRepositorySection(
             }
         }
     }
+}
+
+private data class ProjectGitHubRemoteDirectorySummaryUi(
+    val directoryCount: Int,
+    val fileCount: Int,
+    val otherCount: Int,
+    val totalFileSize: Long,
+    val readmeEntry: ProjectGitHubRemoteEntryUi?
+)
+
+private data class ProjectGitHubRemotePathSegmentUi(
+    val label: String,
+    val path: String
+)
+
+private fun buildProjectGitHubRemoteDirectorySummary(
+    entries: List<ProjectGitHubRemoteEntryUi>
+): ProjectGitHubRemoteDirectorySummaryUi {
+    return ProjectGitHubRemoteDirectorySummaryUi(
+        directoryCount = entries.count { it.isDirectory },
+        fileCount = entries.count { it.type.equals("file", ignoreCase = true) },
+        otherCount = entries.count {
+            !it.isDirectory && !it.type.equals("file", ignoreCase = true)
+        },
+        totalFileSize = entries
+            .filterNot { it.isDirectory }
+            .sumOf { it.size.coerceAtLeast(0L) },
+        readmeEntry = entries.firstOrNull { entry ->
+            entry.type.equals("file", ignoreCase = true) &&
+                entry.name.equals("README.md", ignoreCase = true)
+        }
+    )
+}
+
+private fun buildProjectGitHubRemotePathSegments(
+    currentPath: String
+): List<ProjectGitHubRemotePathSegmentUi> {
+    val normalizedPath = normalizeProjectGitHubRepoPath(currentPath)
+    if (normalizedPath.isBlank()) return emptyList()
+    val segments = mutableListOf<ProjectGitHubRemotePathSegmentUi>()
+    var current = ""
+    normalizedPath.split('/').filter { it.isNotBlank() }.forEach { segment ->
+        current = if (current.isBlank()) segment else "$current/$segment"
+        segments += ProjectGitHubRemotePathSegmentUi(
+            label = segment,
+            path = current
+        )
+    }
+    return segments
+}
+
+internal fun composeProjectGitHubRemoteDirectoryPathOpener(
+    onOpenEntry: (ProjectGitHubRemoteEntryUi) -> Unit
+): (String) -> Unit = { path ->
+    onOpenEntry(
+        ProjectGitHubRemoteEntryUi(
+            name = path.substringAfterLast('/', "").ifBlank { "/" },
+            path = path,
+            type = "dir",
+            sha = null,
+            size = 0L,
+            htmlUrl = null
+        )
+    )
 }

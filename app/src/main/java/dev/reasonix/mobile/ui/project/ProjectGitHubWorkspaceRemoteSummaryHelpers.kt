@@ -483,7 +483,10 @@ internal fun buildProjectGitHubGlobalTaskCenter(
                 title = "工作流失败: ${card.title}",
                 subtitle = card.latestWorkflowSummary ?: "最近运行失败",
                 repoRoot = card.rootPath,
+                repoTitle = card.title,
                 isCritical = true,
+                kind = ProjectGitHubWorkspaceTaskKind.WORKFLOW,
+                destinationLabel = "运行详情",
                 targetWorkflowRun = card.latestRun,
                 actionLabel = "查看详情"
             ))
@@ -495,7 +498,10 @@ internal fun buildProjectGitHubGlobalTaskCenter(
                 title = "Git 冲突: ${card.title}",
                 subtitle = "发现 ${card.conflictCount} 个冲突文件，请尽快处理。",
                 repoRoot = card.rootPath,
+                repoTitle = card.title,
                 isCritical = true,
+                kind = ProjectGitHubWorkspaceTaskKind.LOCAL_CONFLICT,
+                destinationLabel = "仓库概览",
                 actionLabel = "处理冲突"
             ))
         }
@@ -506,7 +512,10 @@ internal fun buildProjectGitHubGlobalTaskCenter(
                 title = "落后远端: ${card.title}",
                 subtitle = "落后 ${card.behindCount} 个提交，建议同步。",
                 repoRoot = card.rootPath,
+                repoTitle = card.title,
                 isCritical = false,
+                kind = ProjectGitHubWorkspaceTaskKind.SYNC,
+                destinationLabel = "仓库概览",
                 targetTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW,
                 actionLabel = "去同步"
             ))
@@ -518,7 +527,10 @@ internal fun buildProjectGitHubGlobalTaskCenter(
                 title = "待合并 PR: ${card.title}",
                 subtitle = "最新 PR #${card.latestOpenPullRequest.number}: ${card.latestOpenPullRequest.title}",
                 repoRoot = card.rootPath,
+                repoTitle = card.title,
                 isCritical = false,
+                kind = ProjectGitHubWorkspaceTaskKind.COLLABORATION,
+                destinationLabel = "PR 详情",
                 targetPullRequest = card.latestOpenPullRequest,
                 actionLabel = "查看 PR"
             ))
@@ -527,7 +539,10 @@ internal fun buildProjectGitHubGlobalTaskCenter(
                 title = "开放 Issue: ${card.title}",
                 subtitle = "最新 Issue #${card.latestOpenIssue.number}: ${card.latestOpenIssue.title}",
                 repoRoot = card.rootPath,
+                repoTitle = card.title,
                 isCritical = false,
+                kind = ProjectGitHubWorkspaceTaskKind.COLLABORATION,
+                destinationLabel = "Issue 详情",
                 targetIssue = card.latestOpenIssue,
                 actionLabel = "查看 Issue"
             ))
@@ -554,7 +569,10 @@ internal fun buildProjectGitHubWorkspaceOverview(
                     title = "优先处理 ${summary.title} 的冲突文件",
                     subtitle = "当前有 ${summary.conflictCount} 个冲突文件，建议先进入仓库工作台处理。",
                     repoRoot = summary.rootPath,
+                    repoTitle = summary.title,
                     isCritical = true,
+                    kind = ProjectGitHubWorkspaceTaskKind.LOCAL_CONFLICT,
+                    destinationLabel = "仓库概览",
                     actionLabel = "处理冲突",
                     targetTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
                 )
@@ -567,7 +585,10 @@ internal fun buildProjectGitHubWorkspaceOverview(
                     subtitle = summary.latestWorkflowTitle?.let { "最近异常工作流：$it" }
                         ?: "最近一次工作流运行状态异常。",
                     repoRoot = summary.rootPath,
+                    repoTitle = summary.title,
                     isCritical = true,
+                    kind = ProjectGitHubWorkspaceTaskKind.WORKFLOW,
+                    destinationLabel = "运行详情",
                     actionLabel = "运行详情",
                     targetTab = ProjectGitHubWorkspaceRepoWorkbenchTab.WORKFLOW,
                     targetWorkflowRun = summary.latestRun
@@ -580,7 +601,10 @@ internal fun buildProjectGitHubWorkspaceOverview(
                     title = "检查 ${summary.title} 的远端摘要结果",
                     subtitle = summary.remoteErrorMessage.orEmpty(),
                     repoRoot = summary.rootPath,
+                    repoTitle = summary.title,
                     isCritical = false,
+                    kind = ProjectGitHubWorkspaceTaskKind.REMOTE_ERROR,
+                    destinationLabel = "仓库概览",
                     actionLabel = "检查仓库",
                     targetTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
                 )
@@ -592,7 +616,10 @@ internal fun buildProjectGitHubWorkspaceOverview(
                     title = "${summary.title} 落后远端 ${summary.behindCount} 个提交",
                     subtitle = "建议先同步远端状态，再处理本地工作。",
                     repoRoot = summary.rootPath,
+                    repoTitle = summary.title,
                     isCritical = true,
+                    kind = ProjectGitHubWorkspaceTaskKind.SYNC,
+                    destinationLabel = "仓库概览",
                     actionLabel = "同步远端",
                     targetTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
                 )
@@ -604,7 +631,10 @@ internal fun buildProjectGitHubWorkspaceOverview(
                     title = "${summary.title} 存在未提交本地改动",
                     subtitle = "建议先整理暂存区和提交说明，避免后续协作状态混乱。",
                     repoRoot = summary.rootPath,
+                    repoTitle = summary.title,
                     isCritical = false,
+                    kind = ProjectGitHubWorkspaceTaskKind.LOCAL_CHANGES,
+                    destinationLabel = "仓库概览",
                     actionLabel = "整理改动",
                     targetTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
                 )
@@ -616,7 +646,10 @@ internal fun buildProjectGitHubWorkspaceOverview(
                     title = "${summary.title} 还没有识别出 GitHub 远端绑定",
                     subtitle = "当前只能用本地 Git 能力，建议检查 origin 地址或重新绑定远端。",
                     repoRoot = summary.rootPath,
+                    repoTitle = summary.title,
                     isCritical = false,
+                    kind = ProjectGitHubWorkspaceTaskKind.REMOTE_BINDING,
+                    destinationLabel = "远端页",
                     actionLabel = "检查绑定",
                     targetTab = ProjectGitHubWorkspaceRepoWorkbenchTab.REMOTE
                 )
@@ -634,7 +667,15 @@ internal fun buildProjectGitHubWorkspaceOverview(
                         else -> "Issue ${summary.openIssueCount} / PR ${summary.openPullRequestCount}"
                     },
                     repoRoot = summary.rootPath,
+                    repoTitle = summary.title,
                     isCritical = false,
+                    kind = ProjectGitHubWorkspaceTaskKind.COLLABORATION,
+                    destinationLabel = when {
+                        summary.latestOpenPullRequest != null -> "PR 详情"
+                        summary.latestOpenIssue != null -> "Issue 详情"
+                        summary.openPullRequestCount > 0 -> "PR 列表"
+                        else -> "Issue 列表"
+                    },
                     actionLabel = when {
                         summary.latestOpenPullRequest != null -> "PR 详情"
                         summary.latestOpenIssue != null -> "Issue 详情"
@@ -657,6 +698,7 @@ internal fun buildProjectGitHubWorkspaceOverview(
                 title = "当前工作区暂无明显异常，可继续补强仓库级 GitHub 摘要加载器。",
                 subtitle = "工作区状态整体平稳，可以继续做搜索、任务中心和下载能力增强。",
                 repoRoot = "",
+                repoTitle = "当前工作区",
                 isCritical = false
             )
         )

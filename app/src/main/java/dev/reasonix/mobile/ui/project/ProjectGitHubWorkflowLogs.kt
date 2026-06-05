@@ -106,6 +106,73 @@ internal fun buildProjectGitHubAutoExpandHint(
     }
 }
 
+internal fun buildProjectGitHubWorkflowLogScopeLabel(
+    selectedJobName: String?,
+    selectedStepName: String?,
+    showOnlyIssueLogs: Boolean,
+    showOnlySelectedStepLogs: Boolean
+): String {
+    val labels = buildList {
+        selectedJobName?.takeIf { it.isNotBlank() }?.let { add("Job $it") }
+        selectedStepName?.takeIf { it.isNotBlank() }?.let { add("步骤 $it") }
+        if (showOnlyIssueLogs) add("仅异常日志")
+        if (showOnlySelectedStepLogs) add("仅当前步骤")
+    }
+    return if (labels.isEmpty()) {
+        "当前范围: 全部日志"
+    } else {
+        "当前范围: ${labels.joinToString(" / ")}"
+    }
+}
+
+internal fun buildProjectGitHubWorkflowVisibleLogSummary(
+    visibleCount: Int,
+    totalCount: Int,
+    matchedCount: Int = 0,
+    searchTermCount: Int = 0,
+    expandedCount: Int = 0
+): String {
+    return buildString {
+        append("当前显示 $visibleCount / $totalCount 个日志文件")
+        if (expandedCount > 0) {
+            append(" · 已展开 $expandedCount 个")
+        }
+        if (searchTermCount > 0) {
+            append(" · 搜索词 $searchTermCount 个")
+            append(" · 命中 $matchedCount 个")
+        }
+    }
+}
+
+internal fun buildProjectGitHubWorkflowEmptyLogMessage(
+    searchActive: Boolean,
+    showOnlyMatchedLogs: Boolean,
+    selectedJobName: String?,
+    selectedStepName: String?,
+    showOnlyIssueLogs: Boolean
+): String {
+    return when {
+        searchActive && showOnlyMatchedLogs -> {
+            "当前筛选范围内没有搜索命中的日志文件，可清空搜索、关闭“只看搜索命中”，或放宽 Job / 步骤范围。"
+        }
+        searchActive -> {
+            "当前搜索没有命中，可修改关键字、切回全部日志，或重新定位 Job / 步骤。"
+        }
+        !selectedStepName.isNullOrBlank() -> {
+            "当前步骤范围内没有可预览日志，可清除步骤聚焦，回退到 Job 或全部日志。"
+        }
+        !selectedJobName.isNullOrBlank() -> {
+            "当前 Job 范围内没有可预览日志，可清除 Job 聚焦后查看全部日志。"
+        }
+        showOnlyIssueLogs -> {
+            "当前没有异常相关日志，可关闭“只看异常日志”查看全部内容。"
+        }
+        else -> {
+            "当前范围内没有可预览日志，可重新刷新详情或切换日志范围。"
+        }
+    }
+}
+
 private fun findProjectGitHubActiveJob(
     jobs: List<ProjectGitHubWorkflowJobUi>
 ): ProjectGitHubWorkflowJobUi? {

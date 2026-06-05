@@ -2211,6 +2211,7 @@ private fun ProjectLocalGitRepositoryCard(
     repoLabel: String?,
     repoSubtitle: String?,
     status: ProjectGitStatusUi,
+    recentOperationRecords: List<ProjectGitOperationRecordUi>,
     isActive: Boolean,
     isBusy: Boolean,
     onSelectRepo: (() -> Unit)?,
@@ -2225,6 +2226,9 @@ private fun ProjectLocalGitRepositoryCard(
     val mutedTextColor = rememberReasonixMutedTextColor()
     val pendingChanges = remember(status.modifiedFiles, status.untrackedFiles) {
         status.modifiedFiles + status.untrackedFiles
+    }
+    val operationSummary = remember(recentOperationRecords) {
+        buildProjectGitOperationSummary(recentOperationRecords)
     }
     ProjectSectionCard(
         shape = RoundedCornerShape(14.dp),
@@ -2370,6 +2374,42 @@ private fun ProjectLocalGitRepositoryCard(
                 text = "推送拉取记录",
                 style = MaterialTheme.typography.titleSmall
             )
+            if (recentOperationRecords.isEmpty()) {
+                Text(
+                    text = "当前仓库还没有记录，后续的暂存、同步、提交和分支操作都会显示在这里。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = mutedTextColor
+                )
+            } else {
+                Text(
+                    text = buildString {
+                        append("共 ${operationSummary.totalCount} 条")
+                        append(" · 成功 ${operationSummary.successCount}")
+                        append(" · 同步 ${operationSummary.syncCount}")
+                        operationSummary.latestTimeLabel?.let { append(" · 最近 $it") }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = mutedTextColor
+                )
+                recentOperationRecords.firstOrNull()?.let { record ->
+                    Text(
+                        text = "${record.categoryLabel} · ${record.title}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (record.isSuccess) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        }
+                    )
+                    Text(
+                        text = record.detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
             Text(
                 text = buildString {
                     append("上游: ")
@@ -2437,6 +2477,9 @@ private fun ProjectGitSection(
     var workspaceRemoteSummaryResumeSignal by remember(currentProjectPath) { mutableStateOf(0) }
     var hasObservedWorkspaceResume by remember(currentProjectPath) { mutableStateOf(false) }
     var feedbackMessage by remember(activeProjectPath) { mutableStateOf<String?>(null) }
+    var gitOperationRecords by remember(currentProjectPath) {
+        mutableStateOf(listOf<ProjectGitOperationRecordUi>())
+    }
     var showCommitDialog by remember(activeProjectPath) { mutableStateOf(false) }
     var commitTitleDraft by remember(activeProjectPath) { mutableStateOf("") }
     var commitDetailDraft by remember(activeProjectPath) { mutableStateOf("") }
@@ -2451,10 +2494,15 @@ private fun ProjectGitSection(
     var workflowDispatchInputs by remember(activeProjectPath) {
         mutableStateOf(listOf<ProjectGitHubWorkflowDispatchInputUi>())
     }
+    var workflowDispatchBranchRefs by remember(activeProjectPath) { mutableStateOf(listOf<String>()) }
+    var isWorkflowDispatchBranchesLoading by remember(activeProjectPath) { mutableStateOf(false) }
+    var isWorkflowDispatchSchemaLoading by remember(activeProjectPath) { mutableStateOf(false) }
+    var workflowDispatchSchemaMessage by remember(activeProjectPath) { mutableStateOf<String?>(null) }
     var artifactDialogState by remember(activeProjectPath) { mutableStateOf<ProjectGitHubArtifactDialogUi?>(null) }
     var workflowRunDetailDialogState by remember(activeProjectPath) { mutableStateOf<ProjectGitHubWorkflowRunDetailUi?>(null) }
     var showInitGitDialog by remember(activeProjectPath) { mutableStateOf(false) }
     var initBranchDraft by remember(activeProjectPath) { mutableStateOf("main") }
+    var initContinueToCreateGitHubRepo by remember(activeProjectPath) { mutableStateOf(false) }
     var showCreateGitHubRepoDialog by remember(activeProjectPath) { mutableStateOf(false) }
     var createGitHubRepoNameDraft by remember(activeProjectPath) {
         mutableStateOf(suggestProjectGitHubRepoName(activeProjectPath))
@@ -2515,6 +2563,13 @@ private fun ProjectGitSection(
         mutableStateOf<String?>(null)
     }
     var isViewerReadmeLoading by remember(currentProjectPath) { mutableStateOf(false) }
+    var workspaceWorkbenchReadme by remember(currentProjectPath) {
+        mutableStateOf<ProjectGitHubReadmeUi?>(null)
+    }
+    var workspaceWorkbenchReadmeErrorMessage by remember(currentProjectPath) {
+        mutableStateOf<String?>(null)
+    }
+    var isWorkspaceWorkbenchReadmeLoading by remember(currentProjectPath) { mutableStateOf(false) }
     var viewerRepositoryMenuTarget by remember(currentProjectPath) {
         mutableStateOf<ProjectGitHubAccountRepoUi?>(null)
     }
@@ -2551,10 +2606,26 @@ private fun ProjectGitSection(
     var isWorkspaceSelectionMode by remember(currentProjectPath) {
         mutableStateOf(false)
     }
+    val activeDetectedRepo = remember(activeProjectPath, detectedRepos) {
+        activeProjectPath?.let { path ->
+            detectedRepos.firstOrNull { it.rootPath == path }
+        }
+    }
+    val activeRepoFeatureLabels = remember(activeDetectedRepo) {
+        activeDetectedRepo?.let(::buildProjectDetectedRepoFeatureLabels).orEmpty()
+    }
     val showGitHubWorkspacePage = workspaceNavigationState.isVisible
     val showGitHubWorkspaceDownloadCenterPage = workspaceNavigationState.isDownloadCenterVisible
     val workspaceWorkbenchRepoRoot = workspaceNavigationState.workbenchRepoRoot
     val workspaceWorkbenchSelectedTab = workspaceNavigationState.workbenchSelectedTab
+    val currentRepoOperationRecords = remember(gitOperationRecords, gitState.repoRoot) {
+        val currentRepoRoot = gitState.repoRoot
+        if (currentRepoRoot.isNullOrBlank()) {
+            gitOperationRecords
+        } else {
+            gitOperationRecords.filter { it.repoRoot == currentRepoRoot }
+        }
+    }
 
     fun resetCommitDraft() {
         commitTitleDraft = ""
@@ -2567,7 +2638,7 @@ private fun ProjectGitSection(
 
     fun resetCreateGitHubRepoDraft() {
         createGitHubRepoNameDraft = suggestProjectGitHubRepoName(activeProjectPath)
-        createGitHubRepoDescriptionDraft = ""
+        createGitHubRepoDescriptionDraft = suggestProjectGitHubRepoDescription(activeDetectedRepo)
         createGitHubRepoPrivateFlag = false
         createGitHubRepoBindOriginFlag = true
     }
@@ -2582,6 +2653,22 @@ private fun ProjectGitSection(
             defaultBranch = githubActionsState.defaultBranch,
             upstreamBranch = gitState.upstreamBranch
         )
+    }
+
+    fun appendGitOperationRecord(
+        title: String,
+        detail: String,
+        repoRoot: String?,
+        isSuccess: Boolean
+    ) {
+        gitOperationRecords = listOf(
+            createProjectGitOperationRecord(
+                title = title,
+                detail = detail,
+                repoRoot = repoRoot,
+                isSuccess = isSuccess
+            )
+        ) + gitOperationRecords.take(11)
     }
 
     fun loadIssueComments(issueNumber: Long) {
@@ -2829,13 +2916,47 @@ private fun ProjectGitSection(
         scope.launch {
             isGitActionRunning = true
             val result = withContext(Dispatchers.IO) { block() }
-            feedbackMessage = when {
+            val detailMessage = when {
                 result.success -> result.output.ifBlank { successFallback }
                 else -> result.error ?: result.output.ifBlank { "Git 操作失败" }
             }
+            feedbackMessage = detailMessage
+            appendGitOperationRecord(
+                title = successFallback,
+                detail = detailMessage,
+                repoRoot = gitState.repoRoot,
+                isSuccess = result.success
+            )
             isGitActionRunning = false
             if (result.success) {
                 refreshGitState()
+            }
+        }
+    }
+
+    fun runGitAction(
+        successFallback: String,
+        onSuccess: () -> Unit,
+        block: suspend () -> ProjectGitCommandResult
+    ) {
+        scope.launch {
+            isGitActionRunning = true
+            val result = withContext(Dispatchers.IO) { block() }
+            val detailMessage = when {
+                result.success -> result.output.ifBlank { successFallback }
+                else -> result.error ?: result.output.ifBlank { "Git 操作失败" }
+            }
+            feedbackMessage = detailMessage
+            appendGitOperationRecord(
+                title = successFallback,
+                detail = detailMessage,
+                repoRoot = gitState.repoRoot,
+                isSuccess = result.success
+            )
+            isGitActionRunning = false
+            if (result.success) {
+                refreshGitState()
+                onSuccess()
             }
         }
     }
@@ -2848,10 +2969,17 @@ private fun ProjectGitSection(
         scope.launch {
             isGitActionRunning = true
             val result = withContext(Dispatchers.IO) { block() }
-            feedbackMessage = when {
+            val detailMessage = when {
                 result.success -> result.output.ifBlank { successFallback }
                 else -> result.error ?: result.output.ifBlank { "Git 操作失败" }
             }
+            feedbackMessage = detailMessage
+            appendGitOperationRecord(
+                title = successFallback,
+                detail = detailMessage,
+                repoRoot = repoRoot,
+                isSuccess = result.success
+            )
             isGitActionRunning = false
             if (result.success) {
                 val status = withContext(Dispatchers.IO) { loadProjectGitStatus(repoRoot) }
@@ -2939,6 +3067,10 @@ private fun ProjectGitSection(
             ?: selectedViewerRepository?.defaultBranch
             ?: "main"
         workflowDispatchInputs = emptyList()
+        workflowDispatchBranchRefs = emptyList()
+        isWorkflowDispatchBranchesLoading = false
+        workflowDispatchSchemaMessage = null
+        isWorkflowDispatchSchemaLoading = false
     }
 
     fun refreshViewerRepositories(
@@ -3086,6 +3218,64 @@ private fun ProjectGitSection(
             remoteRepoState = result.state
             result.feedbackMessage?.let { feedbackMessage = it }
         }
+    }
+
+    fun openStandaloneReadmeEditor(readme: ProjectGitHubReadmeUi) {
+        val repository = selectedViewerRepository ?: return
+        openRemoteRepositoryEntry(
+            ProjectGitHubRemoteEntryUi(
+                name = readme.name,
+                path = readme.path,
+                type = "file",
+                sha = null,
+                size = readme.content.toByteArray().size.toLong(),
+                htmlUrl = readme.htmlUrl
+            )
+        )
+    }
+
+    fun refreshWorkspaceWorkbenchReadme() {
+        val repo = githubActionsState.repo
+        val token = config.githubToken.trim()
+        if (repo == null) {
+            workspaceWorkbenchReadme = null
+            workspaceWorkbenchReadmeErrorMessage = githubActionsState.errorMessage
+                ?: "当前仓库还没有可读取的 GitHub README。"
+            isWorkspaceWorkbenchReadmeLoading = false
+            return
+        }
+        if (token.isBlank()) {
+            workspaceWorkbenchReadme = null
+            workspaceWorkbenchReadmeErrorMessage = "请先在设置页填写 GitHub Token。"
+            isWorkspaceWorkbenchReadmeLoading = false
+            return
+        }
+        scope.launch {
+            isWorkspaceWorkbenchReadmeLoading = true
+            val result = withContext(Dispatchers.IO) {
+                loadProjectGitHubReadme(
+                    repo = repo,
+                    token = token,
+                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                )
+            }
+            workspaceWorkbenchReadme = result.readme
+            workspaceWorkbenchReadmeErrorMessage = result.error
+            isWorkspaceWorkbenchReadmeLoading = false
+        }
+    }
+
+    fun openWorkspaceWorkbenchReadmeEditor(readme: ProjectGitHubReadmeUi) {
+        openRemoteRepositoryEntry(
+            ProjectGitHubRemoteEntryUi(
+                name = readme.name,
+                path = readme.path,
+                type = "file",
+                sha = null,
+                size = readme.content.toByteArray().size.toLong(),
+                htmlUrl = readme.htmlUrl
+            )
+        )
     }
 
     fun refreshGitHubWorkspaceRemoteSummaries(
@@ -3678,6 +3868,29 @@ private fun ProjectGitSection(
         }
     }
 
+    LaunchedEffect(workspaceWorkbenchRepoRoot) {
+        if (workspaceWorkbenchRepoRoot == null) {
+            workspaceWorkbenchReadme = null
+            workspaceWorkbenchReadmeErrorMessage = null
+            isWorkspaceWorkbenchReadmeLoading = false
+        }
+    }
+
+    LaunchedEffect(
+        workspaceWorkbenchRepoRoot,
+        workspaceWorkbenchSelectedTab,
+        githubActionsState.repo?.owner,
+        githubActionsState.repo?.repo,
+        config.githubToken,
+        config.githubApiBaseUrl
+    ) {
+        if (workspaceWorkbenchRepoRoot.isNullOrBlank()) return@LaunchedEffect
+        if (workspaceWorkbenchSelectedTab != ProjectGitHubWorkspaceRepoWorkbenchTab.README) {
+            return@LaunchedEffect
+        }
+        refreshWorkspaceWorkbenchReadme()
+    }
+
     LaunchedEffect(
         activeProjectPath,
         selectedViewerRepository?.owner,
@@ -3951,6 +4164,11 @@ private fun ProjectGitSection(
                         "当前条目还没有可打开的 GitHub 页面地址。"
                     )
                 },
+                readme = workspaceWorkbenchReadme,
+                readmeErrorMessage = workspaceWorkbenchReadmeErrorMessage,
+                isReadmeLoading = isWorkspaceWorkbenchReadmeLoading,
+                onRefreshReadme = ::refreshWorkspaceWorkbenchReadme,
+                onEditReadme = ::openWorkspaceWorkbenchReadmeEditor,
                 onCreateIssue = {
                     resetCreateIssueDraft()
                     showCreateIssueDialog = true
@@ -4312,6 +4530,54 @@ private fun ProjectGitSection(
                     feedbackMessage = "已开始下载 ${result.fileName}"
                 },
                 onOpenRunDetail = ::openWorkflowRunDetail,
+                onCreateRelease = {
+                    releaseDraftState = createProjectGitHubReleaseDraftState(
+                        githubActionsState.defaultBranch ?: selectedViewerRepository?.defaultBranch
+                    )
+                    showCreateReleaseDialog = true
+                },
+                onEditRelease = { release ->
+                    releaseEditTarget = release
+                    releaseDraftState = editProjectGitHubReleaseDraftState(release)
+                },
+                onToggleReleaseMode = { release, makeDraft ->
+                    runGitHubMutationAction(
+                        block = {
+                            toggleProjectGitHubReleaseModeAction(
+                                repo = githubActionsState.repo,
+                                release = release,
+                                token = config.githubToken.trim(),
+                                apiBaseUrl = config.getGitHubApiBaseUrl(),
+                                makeDraft = makeDraft
+                            )
+                        }
+                    )
+                },
+                onTogglePrerelease = { release, makePrerelease ->
+                    runGitHubMutationAction(
+                        block = {
+                            toggleProjectGitHubReleasePrereleaseAction(
+                                repo = githubActionsState.repo,
+                                release = release,
+                                token = config.githubToken.trim(),
+                                apiBaseUrl = config.getGitHubApiBaseUrl(),
+                                makePrerelease = makePrerelease
+                            )
+                        }
+                    )
+                },
+                onDeleteRelease = { release ->
+                    runGitHubMutationAction(
+                        block = {
+                            deleteProjectGitHubReleaseAction(
+                                repo = githubActionsState.repo,
+                                release = release,
+                                token = config.githubToken.trim(),
+                                apiBaseUrl = config.getGitHubApiBaseUrl()
+                            )
+                        }
+                    )
+                },
                 onOpenReleasePage = { release ->
                     openGitHubPage(
                         release.htmlUrl,
@@ -4324,7 +4590,81 @@ private fun ProjectGitSection(
                         assets = release.assets,
                         releaseHtmlUrl = release.htmlUrl
                     )
-                }
+                },
+                onCreateIssue = {
+                    resetCreateIssueDraft()
+                    showCreateIssueDialog = true
+                },
+                onOpenIssueDetail = ::openIssueDetail,
+                onToggleIssueState = { issue, shouldClose ->
+                    val repo = githubActionsState.repo ?: return@ProjectGitHubStandaloneBrowserSection
+                    val token = config.githubToken.trim()
+                    if (token.isBlank()) {
+                        feedbackMessage = "请先在设置页填写 GitHub Token。"
+                        return@ProjectGitHubStandaloneBrowserSection
+                    }
+                    runGitHubAction(if (shouldClose) "已关闭 Issue #${issue.number}" else "已重新打开 Issue #${issue.number}") {
+                        updateProjectGitHubIssueState(
+                            repo = repo,
+                            issueNumber = issue.number,
+                            close = shouldClose,
+                            token = token,
+                            apiBaseUrl = config.getGitHubApiBaseUrl()
+                        )
+                    }
+                },
+                onOpenIssuePage = { issue ->
+                    openGitHubPage(
+                        issue.htmlUrl,
+                        "当前 Issue 还没有可打开的 GitHub 页面地址。"
+                    )
+                },
+                onCreatePullRequest = {
+                    resetCreatePullRequestDraft()
+                    showCreatePullRequestDialog = true
+                },
+                onOpenPullRequestDetail = ::openPullRequestDetail,
+                onTogglePullRequestState = { pullRequest, shouldClose ->
+                    val repo = githubActionsState.repo ?: return@ProjectGitHubStandaloneBrowserSection
+                    val token = config.githubToken.trim()
+                    if (token.isBlank()) {
+                        feedbackMessage = "请先在设置页填写 GitHub Token。"
+                        return@ProjectGitHubStandaloneBrowserSection
+                    }
+                    runGitHubAction(if (shouldClose) "已关闭 PR #${pullRequest.number}" else "已重新打开 PR #${pullRequest.number}") {
+                        updateProjectGitHubPullRequestState(
+                            repo = repo,
+                            pullNumber = pullRequest.number,
+                            close = shouldClose,
+                            token = token,
+                            apiBaseUrl = config.getGitHubApiBaseUrl()
+                        )
+                    }
+                },
+                onMergePullRequest = { pullRequest ->
+                    val repo = githubActionsState.repo ?: return@ProjectGitHubStandaloneBrowserSection
+                    val token = config.githubToken.trim()
+                    if (token.isBlank()) {
+                        feedbackMessage = "请先在设置页填写 GitHub Token。"
+                        return@ProjectGitHubStandaloneBrowserSection
+                    }
+                    runGitHubAction("已合并 PR #${pullRequest.number}") {
+                        mergeProjectGitHubPullRequest(
+                            repo = repo,
+                            pullNumber = pullRequest.number,
+                            title = pullRequest.title,
+                            token = token,
+                            apiBaseUrl = config.getGitHubApiBaseUrl()
+                        )
+                    }
+                },
+                onOpenPullRequestPage = { pullRequest ->
+                    openGitHubPage(
+                        pullRequest.htmlUrl,
+                        "当前 Pull Request 还没有可打开的 GitHub 页面地址。"
+                    )
+                },
+                onEditReadme = ::openStandaloneReadmeEditor
             )
             feedbackMessage?.takeIf { it.isNotBlank() }?.let { message ->
                 ProjectSectionCard(
@@ -4553,9 +4893,20 @@ private fun ProjectGitSection(
                             color = MaterialTheme.colorScheme.primary
                         )
                         suspectedRepos.take(4).forEach { repo ->
-                            val childRepoCandidates = detectedRepos.filter { candidate ->
-                                candidate.rootPath != repo.rootPath &&
-                                    candidate.rootPath.startsWith(repo.rootPath + File.separator)
+                            val childRepoCandidates = detectedRepos
+                                .filter { candidate ->
+                                    candidate.rootPath != repo.rootPath &&
+                                        candidate.rootPath.startsWith(repo.rootPath + File.separator)
+                                }
+                                .sortedWith(
+                                    compareBy<ProjectDetectedRepoUi> { !it.hasGitMetadata }
+                                        .thenByDescending {
+                                            buildProjectDetectedRepoFeatureLabels(it).size
+                                        }
+                                        .thenBy { it.relativePath.lowercase(Locale.getDefault()) }
+                                )
+                            val repoFeatureLabels = remember(repo) {
+                                buildProjectDetectedRepoFeatureLabels(repo)
                             }
                             ProjectInsetCard(
                                 modifier = Modifier.combinedClickable(
@@ -4583,8 +4934,28 @@ private fun ProjectGitSection(
                                             style = MaterialTheme.typography.bodySmall,
                                             color = mutedTextColor
                                         )
+                                        Row(
+                                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            repoFeatureLabels.ifEmpty { listOf("待初始化") }.forEach { label ->
+                                                FilterChip(
+                                                    selected = true,
+                                                    onClick = {},
+                                                    label = { Text(label) }
+                                                )
+                                            }
+                                        }
                                     }
-                                    if (repo.rootPath == activeProjectPath) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        if (repo.rootPath != activeProjectPath) {
+                                            TextButton(
+                                                onClick = { onSelectRepoRoot(repo.rootPath) },
+                                                enabled = !isGitLoading && !isGitActionRunning
+                                            ) {
+                                                Text("切换")
+                                            }
+                                        }
                                         OutlinedButton(
                                             onClick = {
                                                 onSelectRepoRoot(repo.rootPath)
@@ -4594,20 +4965,13 @@ private fun ProjectGitSection(
                                         ) {
                                             Text("初始化")
                                         }
-                                    } else {
-                                        OutlinedButton(
-                                            onClick = { onSelectRepoRoot(repo.rootPath) },
-                                            enabled = !isGitLoading && !isGitActionRunning
-                                        ) {
-                                            Text("切换")
-                                        }
                                     }
                                 }
                                 Text(
                                     text = if (childRepoCandidates.isEmpty()) {
-                                        "点按先切到这个目录，长按后续可改到子文件夹；当前还没识别到可切换的子项目。"
+                                        "点按先切到这个目录，右侧可直接初始化 Git；当前目录下还没有识别到更像独立项目的子路径。"
                                     } else {
-                                        "点按切到当前目录，长按可改到子文件夹；已识别 ${childRepoCandidates.size} 个子项目候选。"
+                                        "点按切到当前目录，右侧可直接初始化；长按可改到更具体的子项目，已识别 ${childRepoCandidates.size} 个子项目候选。"
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = mutedTextColor
@@ -4630,9 +4994,9 @@ private fun ProjectGitSection(
                         text = if (primaryWorkspaceRepoRoot == null) {
                             "当前还没有可直接打开的 Git 仓库，先在上方选择仓库或初始化 Git。"
                         } else if (detectedRepos.count { it.hasGitMetadata } > 1) {
-                            "已按多仓库模式识别项目，可直接切到当前选中仓库的项目页、工作流和 Release。"
+                            "已按多仓库模式识别项目，可直接切到当前选中仓库的项目页、工作流、Issue、PR、Release 和 README。"
                         } else {
-                            "当前是单仓库模式，可直接进入项目页、工作流和 Release。"
+                            "当前是单仓库模式，可直接进入项目页、工作流、Issue、PR、Release 和 README。"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = mutedTextColor
@@ -4688,12 +5052,65 @@ private fun ProjectGitSection(
                             Text("Release")
                         }
                         OutlinedButton(
+                            onClick = {
+                                primaryWorkspaceRepoRoot?.let {
+                                    openGitHubWorkspaceRepoWorkbench(
+                                        rootPath = it,
+                                        selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.ISSUES
+                                    )
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            enabled = primaryWorkspaceRepoRoot != null
+                        ) {
+                            Text("Issue")
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                primaryWorkspaceRepoRoot?.let {
+                                    openGitHubWorkspaceRepoWorkbench(
+                                        rootPath = it,
+                                        selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.PULL_REQUESTS
+                                    )
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            enabled = primaryWorkspaceRepoRoot != null
+                        ) {
+                            Text("PR")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                primaryWorkspaceRepoRoot?.let {
+                                    openGitHubWorkspaceRepoWorkbench(
+                                        rootPath = it,
+                                        selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.README
+                                    )
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            enabled = primaryWorkspaceRepoRoot != null
+                        ) {
+                            Text("README")
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
                             onClick = ::openGitHubWorkspaceDownloadCenter,
                             modifier = Modifier.weight(1f),
                             enabled = true
                         ) {
                             Text("下载")
                         }
+                        Row(modifier = Modifier.weight(1f)) {}
                     }
                 }
             }
@@ -4774,6 +5191,7 @@ private fun ProjectGitSection(
                         gitState.repoRoot?.let { "仓库根目录: $it" }
                     },
                     status = repoStatus,
+                    recentOperationRecords = gitOperationRecords.filter { it.repoRoot == repo.rootPath },
                     isActive = repo.rootPath == activeProjectPath,
                     isBusy = isGitLoading || isGitActionRunning,
                     onSelectRepo = { onSelectRepoRoot(repo.rootPath) },
@@ -5016,6 +5434,7 @@ private fun ProjectGitSection(
                     remoteBranchCount = gitState.remoteBranches.size,
                     tokenConfigured = config.githubToken.isNotBlank()
                 )
+                Text("更改:", style = MaterialTheme.typography.titleSmall)
                 ProjectSectionCard(
                     shape = RoundedCornerShape(14.dp),
                     surfaceColorOverride = chromeColor.copy(alpha = 0.34f)
@@ -5057,7 +5476,7 @@ private fun ProjectGitSection(
                                         color = MaterialTheme.colorScheme.error
                                     )
                                 } ?: Text(
-                                    text = "工作流、远端仓库、Issue、PR、Release 已迁入仓库工作台，主 Git 页只保留入口与本地仓库控制。",
+                                    text = "工作流、远端仓库、Issue、PR、Release、README 已迁入仓库工作台，主 Git 页只保留入口与本地仓库控制。",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = mutedTextColor
                                 )
@@ -5087,6 +5506,75 @@ private fun ProjectGitSection(
                                 }
                             }
                         }
+                        if (gitHubWorkbenchRepo != null) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                FilterChip(
+                                    selected = true,
+                                    onClick = {
+                                        activeProjectPath?.let {
+                                            openGitHubWorkspaceRepoWorkbench(
+                                                rootPath = it,
+                                                selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.WORKFLOW
+                                            )
+                                        }
+                                    },
+                                    label = { Text("工作流 ${githubActionsState.workflows.size}") }
+                                )
+                                FilterChip(
+                                    selected = true,
+                                    onClick = {
+                                        activeProjectPath?.let {
+                                            openGitHubWorkspaceRepoWorkbench(
+                                                rootPath = it,
+                                                selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.ISSUES
+                                            )
+                                        }
+                                    },
+                                    label = { Text("Issue ${githubActionsState.issues.size}") }
+                                )
+                                FilterChip(
+                                    selected = true,
+                                    onClick = {
+                                        activeProjectPath?.let {
+                                            openGitHubWorkspaceRepoWorkbench(
+                                                rootPath = it,
+                                                selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.PULL_REQUESTS
+                                            )
+                                        }
+                                    },
+                                    label = { Text("PR ${githubActionsState.pullRequests.size}") }
+                                )
+                                FilterChip(
+                                    selected = true,
+                                    onClick = {
+                                        activeProjectPath?.let {
+                                            openGitHubWorkspaceRepoWorkbench(
+                                                rootPath = it,
+                                                selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.RELEASES
+                                            )
+                                        }
+                                    },
+                                    label = { Text("Release ${githubActionsState.releases.size}") }
+                                )
+                                FilterChip(
+                                    selected = true,
+                                    onClick = {
+                                        activeProjectPath?.let {
+                                            openGitHubWorkspaceRepoWorkbench(
+                                                rootPath = it,
+                                                selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.README
+                                            )
+                                        }
+                                    },
+                                    label = { Text("README") }
+                                )
+                            }
+                        }
                     }
                 }
                 ProjectGitHubDownloadCenterSummaryCard(
@@ -5109,24 +5597,6 @@ private fun ProjectGitSection(
                         onOpenDiff = ::openDiff
                     )
                 }
-                ProjectGitHistorySection(
-                    commits = gitState.recentCommits,
-                    onOpenCommit = { commit ->
-                        val repoRoot = gitState.repoRoot ?: return@ProjectGitHistorySection
-                        scope.launch {
-                            isGitActionRunning = true
-                            val preview = withContext(Dispatchers.IO) {
-                                loadProjectGitCommitPreview(repoRoot, commit.commitHash)
-                            }
-                            isGitActionRunning = false
-                            if (preview == null) {
-                                feedbackMessage = "无法读取提交 ${commit.shortHash} 的详情"
-                            } else {
-                                diffPreview = preview
-                            }
-                        }
-                    }
-                )
                 ProjectGitFileGroup(
                     title = "已暂存",
                     items = gitState.stagedFiles,
@@ -5172,6 +5642,58 @@ private fun ProjectGitSection(
                     },
                     onOpenDiff = ::openDiff
                 )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            val repoRoot = gitState.repoRoot ?: return@OutlinedButton
+                            runGitAction("已全部暂存") {
+                                runEmbeddedGitAction {
+                                    embeddedGitStageAll(repoRoot)
+                                }
+                            }
+                        },
+                        enabled = gitState.canStageAll && !isGitLoading && !isGitActionRunning
+                    ) {
+                        Text("全部暂存")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            val repoRoot = gitState.repoRoot ?: return@OutlinedButton
+                            runGitAction("已完成全部同步") {
+                                runEmbeddedGitAction {
+                                    embeddedGitPull(repoRoot, config.githubToken)
+                                }
+                            }
+                        },
+                        enabled = gitState.canPull && !isGitLoading && !isGitActionRunning
+                    ) {
+                        Text("全部同步")
+                    }
+                }
+                ProjectGitOperationHistorySection(records = currentRepoOperationRecords)
+                ProjectGitHistorySection(
+                    commits = gitState.recentCommits,
+                    onOpenCommit = { commit ->
+                        val repoRoot = gitState.repoRoot ?: return@ProjectGitHistorySection
+                        scope.launch {
+                            isGitActionRunning = true
+                            val preview = withContext(Dispatchers.IO) {
+                                loadProjectGitCommitPreview(repoRoot, commit.commitHash)
+                            }
+                            isGitActionRunning = false
+                            if (preview == null) {
+                                feedbackMessage = "无法读取提交 ${commit.shortHash} 的详情"
+                            } else {
+                                diffPreview = preview
+                            }
+                        }
+                    }
+                )
             }
 
             Text(
@@ -5183,13 +5705,20 @@ private fun ProjectGitSection(
     }
 
     suspectedRepoMenuTarget?.let { repo ->
-        val childRepoCandidates = detectedRepos.filter { candidate ->
-            candidate.rootPath != repo.rootPath &&
-                candidate.rootPath.startsWith(repo.rootPath + File.separator)
-        }
+        val childRepoCandidates = detectedRepos
+            .filter { candidate ->
+                candidate.rootPath != repo.rootPath &&
+                    candidate.rootPath.startsWith(repo.rootPath + File.separator)
+            }
+            .sortedWith(
+                compareBy<ProjectDetectedRepoUi> { !it.hasGitMetadata }
+                    .thenByDescending { buildProjectDetectedRepoFeatureLabels(it).size }
+                    .thenBy { it.relativePath.lowercase(Locale.getDefault()) }
+            )
+        val repoFeatureLabels = remember(repo) { buildProjectDetectedRepoFeatureLabels(repo) }
         ReasonixAlertDialog(
             onDismissRequest = { suspectedRepoMenuTarget = null },
-            title = { Text("切换子文件夹") },
+            title = { Text("切换子文件夹 / 初始化") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
@@ -5200,29 +5729,121 @@ private fun ProjectGitSection(
                         text = "疑似仓库先保留当前目录，长按后可以把作用域切到下面识别到的子项目。",
                         style = MaterialTheme.typography.bodySmall
                     )
+                    if (repoFeatureLabels.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            repoFeatureLabels.forEach { label ->
+                                FilterChip(
+                                    selected = true,
+                                    onClick = {},
+                                    label = { Text(label) }
+                                )
+                            }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                onSelectRepoRoot(repo.rootPath)
+                                suspectedRepoMenuTarget = null
+                                feedbackMessage = "已切到目录 ${repo.relativePath}"
+                            }
+                        ) {
+                            Text("切到当前目录")
+                        }
+                        Button(
+                            onClick = {
+                                onSelectRepoRoot(repo.rootPath)
+                                suspectedRepoMenuTarget = null
+                                showInitGitDialog = true
+                            },
+                            enabled = !isGitLoading && !isGitActionRunning
+                        ) {
+                            Text("在此初始化")
+                        }
+                    }
                     if (childRepoCandidates.isEmpty()) {
                         Text(
-                            text = "当前还没识别到可切换的子文件夹。后面我再继续补更细的手动路径选择。",
+                            text = "当前目录下还没有识别到更具体的子项目，先在这里初始化 Git 会更稳妥。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     } else {
                         childRepoCandidates.forEach { candidate ->
-                            OutlinedButton(
-                                onClick = {
-                                    onSelectRepoRoot(candidate.rootPath)
-                                    suspectedRepoMenuTarget = null
-                                    feedbackMessage = "已切到子文件夹 ${candidate.relativePath}"
+                            val candidateFeatureLabels = remember(candidate) {
+                                buildProjectDetectedRepoFeatureLabels(candidate)
+                            }
+                            ProjectInsetCard(
+                                shape = RoundedCornerShape(10.dp),
+                                surfaceColorOverride = if (candidate.hasGitMetadata) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.32f)
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.34f)
                                 },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    if (candidate.hasGitMetadata) {
-                                        "${candidate.relativePath}（Git 仓库）"
-                                    } else {
-                                        candidate.relativePath
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        onSelectRepoRoot(candidate.rootPath)
+                                        suspectedRepoMenuTarget = null
+                                        feedbackMessage = "已切到子文件夹 ${candidate.relativePath}"
                                     }
-                                )
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(
+                                        text = if (candidate.hasGitMetadata) {
+                                            "${candidate.relativePath}（Git 仓库）"
+                                        } else {
+                                            candidate.relativePath
+                                        },
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    Text(
+                                        text = candidate.rootPath,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        TextButton(
+                                            onClick = {
+                                                onSelectRepoRoot(candidate.rootPath)
+                                                suspectedRepoMenuTarget = null
+                                                feedbackMessage = "已切到子文件夹 ${candidate.relativePath}"
+                                            }
+                                        ) {
+                                            Text(if (candidate.hasGitMetadata) "切到仓库" else "切到这里")
+                                        }
+                                        if (!candidate.hasGitMetadata) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    onSelectRepoRoot(candidate.rootPath)
+                                                    suspectedRepoMenuTarget = null
+                                                    showInitGitDialog = true
+                                                },
+                                                enabled = !isGitLoading && !isGitActionRunning
+                                            ) {
+                                                Text("直接初始化")
+                                            }
+                                        }
+                                    }
+                                    Row(
+                                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        candidateFeatureLabels.ifEmpty {
+                                            listOf(if (candidate.hasGitMetadata) "Git 仓库" else "待初始化")
+                                        }.forEach { label ->
+                                            FilterChip(
+                                                selected = true,
+                                                onClick = {},
+                                                label = { Text(label) }
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -5245,8 +5866,19 @@ private fun ProjectGitSection(
                     onClick = {
                         val projectPath = activeProjectPath ?: return@Button
                         val branchName = initBranchDraft.trim().ifBlank { "main" }
+                        val continueToCreateRepo = initContinueToCreateGitHubRepo
                         showInitGitDialog = false
-                        runGitAction("已初始化 Git 仓库") {
+                        runGitAction(
+                            successFallback = "已初始化 Git 仓库",
+                            onSuccess = {
+                                if (continueToCreateRepo) {
+                                    resetCreateGitHubRepoDraft()
+                                    createGitHubRepoBindOriginFlag = true
+                                    showCreateGitHubRepoDialog = true
+                                }
+                                initContinueToCreateGitHubRepo = false
+                            }
+                        ) {
                             initializeProjectGitRepository(projectPath, branchName)
                         }
                     },
@@ -5256,13 +5888,48 @@ private fun ProjectGitSection(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showInitGitDialog = false }) {
+                TextButton(onClick = {
+                    showInitGitDialog = false
+                    initContinueToCreateGitHubRepo = false
+                }) {
                     Text("取消")
                 }
             },
             title = { Text("初始化 Git") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    activeProjectPath?.let { path ->
+                        ProjectInsetCard(
+                            shape = RoundedCornerShape(10.dp),
+                            surfaceColorOverride = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f)
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    text = activeDetectedRepo?.displayName ?: File(path).name.ifBlank { path },
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    text = path,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Row(
+                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    activeRepoFeatureLabels.ifEmpty { listOf("当前目录") }.forEach { label ->
+                                        FilterChip(
+                                            selected = true,
+                                            onClick = {},
+                                            label = { Text(label) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                     OutlinedTextField(
                         value = initBranchDraft,
                         onValueChange = { initBranchDraft = it },
@@ -5272,7 +5939,33 @@ private fun ProjectGitSection(
                         singleLine = true
                     )
                     Text(
-                        text = "会在当前项目目录创建 `.git`，并尽量把默认分支设为你输入的名称。",
+                        text = "会在当前目录创建 `.git` 并尽量把默认分支设为你输入的名称。初始化完成后，这里会重新按单仓库或多仓库模式识别。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FilterChip(
+                        selected = initContinueToCreateGitHubRepo,
+                        onClick = {
+                            if (config.githubToken.isNotBlank()) {
+                                initContinueToCreateGitHubRepo = !initContinueToCreateGitHubRepo
+                            }
+                        },
+                        label = {
+                            Text(
+                                if (config.githubToken.isNotBlank()) {
+                                    "初始化后继续创建 GitHub 仓库并绑定 origin"
+                                } else {
+                                    "先配置 GitHub Token 后，才能继续创建远端仓库"
+                                }
+                            )
+                        }
+                    )
+                    Text(
+                        text = if (initContinueToCreateGitHubRepo) {
+                            "初始化成功后会直接弹出 GitHub 建仓弹窗，并默认保留绑定 origin。"
+                        } else {
+                            "这一版先完成目录级初始化；后续如果要推 GitHub，可继续走“新建 GitHub 仓库并绑定 origin”。"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -5305,15 +5998,30 @@ private fun ProjectGitSection(
                             }
                             if (!createResult.success || createResult.repo == null) {
                                 isGitHubActionRunning = false
-                                feedbackMessage = createResult.error ?: "创建 GitHub 仓库失败"
+                                val failureMessage = createResult.error ?: "创建 GitHub 仓库失败"
+                                feedbackMessage = failureMessage
+                                appendGitOperationRecord(
+                                    title = "创建 GitHub 仓库",
+                                    detail = failureMessage,
+                                    repoRoot = projectPath,
+                                    isSuccess = false
+                                )
                                 return@launch
                             }
                             var message = "已创建 GitHub 仓库 ${createResult.repo.owner}/${createResult.repo.repo}"
+                            var operationSucceeded = true
                             if (createGitHubRepoBindOriginFlag) {
                                 val remoteUrl = createResult.recommendedRemoteUrl
                                 if (remoteUrl.isNullOrBlank()) {
                                     isGitHubActionRunning = false
-                                    feedbackMessage = "GitHub 已创建仓库，但没有返回可绑定的远端地址"
+                                    val missingRemoteMessage = "GitHub 已创建仓库，但没有返回可绑定的远端地址"
+                                    feedbackMessage = missingRemoteMessage
+                                    appendGitOperationRecord(
+                                        title = "创建 GitHub 仓库",
+                                        detail = missingRemoteMessage,
+                                        repoRoot = projectPath,
+                                        isSuccess = false
+                                    )
                                     return@launch
                                 }
                                 val bindResult = withContext(Dispatchers.IO) {
@@ -5326,11 +6034,22 @@ private fun ProjectGitSection(
                                 message = if (bindResult.success) {
                                     "$message，并已绑定 origin（默认使用 HTTPS 远端）"
                                 } else {
+                                    operationSucceeded = false
                                     "$message，但绑定 origin 失败: ${bindResult.error ?: bindResult.output}"
                                 }
                             }
                             isGitHubActionRunning = false
                             feedbackMessage = message
+                            appendGitOperationRecord(
+                                title = if (createGitHubRepoBindOriginFlag) {
+                                    "创建 GitHub 仓库并绑定 origin"
+                                } else {
+                                    "创建 GitHub 仓库"
+                                },
+                                detail = message,
+                                repoRoot = projectPath,
+                                isSuccess = operationSucceeded
+                            )
                             refreshGitState()
                         }
                     },
@@ -5353,6 +6072,47 @@ private fun ProjectGitSection(
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    activeProjectPath?.let { path ->
+                        ProjectInsetCard(
+                            shape = RoundedCornerShape(10.dp),
+                            surfaceColorOverride = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f)
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    text = activeDetectedRepo?.displayName ?: File(path).name.ifBlank { path },
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    text = path,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Row(
+                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    activeRepoFeatureLabels.ifEmpty { listOf("当前目录") }.forEach { label ->
+                                        FilterChip(
+                                            selected = true,
+                                            onClick = {},
+                                            label = { Text(label) }
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = if (gitState.isRepository) {
+                                        "会基于当前本地仓库创建远端；如果勾选绑定 origin，创建完成后会直接写入远端地址。"
+                                    } else {
+                                        "当前目录还没有 `.git`；如果保留绑定 origin，创建远端时会先初始化本地 Git，再写入 origin。"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
                     OutlinedTextField(
                         value = createGitHubRepoNameDraft,
                         onValueChange = { createGitHubRepoNameDraft = it },
@@ -5447,6 +6207,15 @@ private fun ProjectGitSection(
                     val mutedTextColor = rememberReasonixMutedTextColor()
                     val chromeColor = rememberReasonixChromeColor()
                     Text(
+                        text = buildString {
+                            append("当前分支 ${gitState.currentBranch ?: "未知"}")
+                            append(" · 已暂存 ${gitState.stagedFiles.size}")
+                            append(" · 工作区待处理 ${gitState.modifiedFiles.size + gitState.untrackedFiles.size}")
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                    Text(
                         text = "已暂存 ${gitState.stagedFiles.size} 个文件",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary
@@ -5538,6 +6307,33 @@ private fun ProjectGitSection(
                             }
                         }
                     }
+                    currentRepoOperationRecords.firstOrNull()?.let { lastRecord ->
+                        ProjectInsetCard(
+                            shape = RoundedCornerShape(10.dp),
+                            surfaceColorOverride = surfaceColor.copy(alpha = 0.52f)
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = "最近一次 Git 操作",
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                                Text(
+                                    text = "${lastRecord.categoryLabel} · ${lastRecord.title} · ${lastRecord.timeLabel}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
+                                )
+                                Text(
+                                    text = lastRecord.detail,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (lastRecord.isSuccess) {
+                                        mutedTextColor
+                                    } else {
+                                        MaterialTheme.colorScheme.error
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
             }
         )
@@ -5581,6 +6377,46 @@ private fun ProjectGitSection(
                 val chromeColor = rememberReasonixChromeColor()
                 val mutedTextColor = rememberReasonixMutedTextColor()
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = buildString {
+                            append("当前 ${gitState.currentBranch ?: "未知"}")
+                            append(" · 本地分支 ${gitState.localBranches.size}")
+                            append(" · 远端分支 ${gitState.remoteBranches.size}")
+                            if (!gitState.upstreamBranch.isNullOrBlank()) {
+                                append(" · 上游 ${gitState.upstreamBranch}")
+                            }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                    currentRepoOperationRecords.firstOrNull()?.let { lastRecord ->
+                        ProjectInsetCard(
+                            shape = RoundedCornerShape(10.dp),
+                            surfaceColorOverride = chromeColor.copy(alpha = 0.48f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = "最近一次仓库操作",
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                                Text(
+                                    text = "${lastRecord.categoryLabel} · ${lastRecord.title} · ${lastRecord.timeLabel}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
+                                )
+                                Text(
+                                    text = lastRecord.detail,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (lastRecord.isSuccess) {
+                                        mutedTextColor
+                                    } else {
+                                        MaterialTheme.colorScheme.error
+                                    }
+                                )
+                            }
+                        }
+                    }
                     OutlinedTextField(
                         value = newBranchName,
                         onValueChange = { newBranchName = it },
@@ -5594,6 +6430,19 @@ private fun ProjectGitSection(
                         style = MaterialTheme.typography.labelMedium,
                         color = mutedTextColor
                     )
+                    if (gitState.localBranches.isNotEmpty()) {
+                        ProjectInsetCard(
+                            shape = RoundedCornerShape(10.dp),
+                            surfaceColorOverride = surfaceColor.copy(alpha = 0.46f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "当前分支会显示跟踪信息，点“切换”即可直接切到目标本地分支。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = mutedTextColor
+                            )
+                        }
+                    }
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -5653,6 +6502,17 @@ private fun ProjectGitSection(
                                 style = MaterialTheme.typography.labelMedium,
                                 color = mutedTextColor
                             )
+                            ProjectInsetCard(
+                                shape = RoundedCornerShape(10.dp),
+                                surfaceColorOverride = chromeColor.copy(alpha = 0.46f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "点“跟踪”会按远端分支名创建或切换本地分支，并自动建立上游关系。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
+                                )
+                            }
                             gitState.remoteBranches.forEach { remoteBranch ->
                                 val suggestedLocalName = remoteBranch.substringAfter('/', remoteBranch)
                                 ProjectInsetCard(
@@ -5703,6 +6563,83 @@ private fun ProjectGitSection(
         )
     }
 
+    LaunchedEffect(
+        workflowDispatchTarget?.id,
+        githubActionsState.repo?.owner,
+        githubActionsState.repo?.repo,
+        config.githubToken,
+        config.githubApiBaseUrl
+    ) {
+        val workflow = workflowDispatchTarget ?: return@LaunchedEffect
+        val repo = githubActionsState.repo ?: return@LaunchedEffect
+        val token = config.githubToken.trim()
+        if (token.isBlank()) {
+            workflowDispatchBranchRefs = emptyList()
+            isWorkflowDispatchBranchesLoading = false
+            return@LaunchedEffect
+        }
+        isWorkflowDispatchBranchesLoading = true
+        val result = withContext(Dispatchers.IO) {
+            loadProjectGitHubBranches(
+                repo = repo,
+                token = token,
+                apiBaseUrl = config.getGitHubApiBaseUrl()
+            )
+        }
+        val preferredBranches = listOfNotNull(
+            workflowDispatchRefDraft.trim().takeIf { it.isNotBlank() },
+            githubActionsState.defaultBranch?.takeIf { it.isNotBlank() },
+            selectedViewerRepository?.defaultBranch?.takeIf { it.isNotBlank() }
+        ).distinct()
+        workflowDispatchBranchRefs = preferredBranches +
+            result.branches.filterNot { branch -> preferredBranches.contains(branch) }
+        if (!result.error.isNullOrBlank()) {
+            workflowDispatchSchemaMessage = result.error
+        }
+        isWorkflowDispatchBranchesLoading = false
+    }
+
+    LaunchedEffect(
+        workflowDispatchTarget?.id,
+        workflowDispatchRefDraft,
+        githubActionsState.repo?.owner,
+        githubActionsState.repo?.repo,
+        config.githubToken,
+        config.githubApiBaseUrl
+    ) {
+        val workflow = workflowDispatchTarget ?: return@LaunchedEffect
+        val repo = githubActionsState.repo ?: return@LaunchedEffect
+        val token = config.githubToken.trim()
+        if (token.isBlank()) {
+            workflowDispatchInputs = emptyList()
+            workflowDispatchSchemaMessage = "请先在设置页填写 GitHub Token。"
+            isWorkflowDispatchSchemaLoading = false
+            return@LaunchedEffect
+        }
+        val ref = workflowDispatchRefDraft.trim()
+            .ifBlank { githubActionsState.defaultBranch ?: selectedViewerRepository?.defaultBranch ?: "main" }
+        isWorkflowDispatchSchemaLoading = true
+        val result = withContext(Dispatchers.IO) {
+            loadProjectGitHubWorkflowDispatchSchema(
+                repo = repo,
+                workflowPath = workflow.path,
+                ref = ref,
+                token = token,
+                apiBaseUrl = config.getGitHubApiBaseUrl()
+            )
+        }
+        workflowDispatchInputs = mergeProjectGitHubWorkflowDispatchInputs(
+            current = workflowDispatchInputs,
+            parsed = result.inputs
+        )
+        workflowDispatchSchemaMessage = when {
+            result.inputs.isNotEmpty() -> "已自动识别 ${result.inputs.size} 个 workflow_dispatch 参数。"
+            !result.error.isNullOrBlank() -> "${result.error}，可手动补充参数。"
+            else -> "当前工作流没有声明 workflow_dispatch.inputs，可直接运行或手动补充参数。"
+        }
+        isWorkflowDispatchSchemaLoading = false
+    }
+
     workflowDispatchTarget?.let { workflow ->
         val quickRefs = listOfNotNull(
             workflowRunDetailDialogState?.headBranch?.takeIf { it.isNotBlank() },
@@ -5715,7 +6652,11 @@ private fun ProjectGitSection(
             workflow = workflow,
             refDraft = workflowDispatchRefDraft,
             quickRefs = quickRefs,
+            branchRefs = workflowDispatchBranchRefs,
+            isBranchRefsLoading = isWorkflowDispatchBranchesLoading,
             inputs = workflowDispatchInputs,
+            isSchemaLoading = isWorkflowDispatchSchemaLoading,
+            schemaMessage = workflowDispatchSchemaMessage,
             isActionRunning = isGitHubActionRunning,
             onRefDraftChange = { workflowDispatchRefDraft = it },
             onInputKeyChange = { index, value ->
@@ -5741,10 +6682,23 @@ private fun ProjectGitSection(
                 val token = config.githubToken.trim()
                 val ref = workflowDispatchRefDraft.trim()
                 if (token.isBlank() || ref.isBlank()) return@ProjectGitHubWorkflowDispatchDialog
+                val missingRequiredInputs = workflowDispatchInputs.filter { input ->
+                    input.autoDetected &&
+                        input.required &&
+                        input.key.isNotBlank() &&
+                        input.value.trim().ifBlank { input.defaultValue?.trim().orEmpty() }.isBlank()
+                }
+                if (missingRequiredInputs.isNotEmpty()) {
+                    feedbackMessage = "请先填写必填参数：${
+                        missingRequiredInputs.joinToString("、") { it.key }
+                    }"
+                    return@ProjectGitHubWorkflowDispatchDialog
+                }
                 val inputs = workflowDispatchInputs
                     .mapNotNull { input ->
                         val key = input.key.trim()
-                        if (key.isBlank()) null else key to input.value
+                        val value = input.value.trim().ifBlank { input.defaultValue?.trim().orEmpty() }
+                        if (key.isBlank() || value.isBlank()) null else key to value
                     }
                     .toMap()
                 workflowDispatchTarget = null
@@ -6126,6 +7080,7 @@ private fun ProjectGitSection(
         ProjectGitHubReleaseAssetDialog(
             dialog = dialog,
             onDismiss = { releaseAssetDialogState = null },
+            isActionRunning = isGitHubActionRunning,
             onOpenReleasePage = { url ->
                 openGitHubPage(
                     url,
@@ -6151,6 +7106,28 @@ private fun ProjectGitSection(
                     )
                 }
                 result.feedbackMessage?.let { feedbackMessage = it }
+            },
+            onDeleteAsset = { target, asset ->
+                runGitHubMutationAction(
+                    block = {
+                        deleteProjectGitHubReleaseAssetAction(
+                            repo = githubActionsState.repo,
+                            asset = asset,
+                            token = config.githubToken.trim(),
+                            apiBaseUrl = config.getGitHubApiBaseUrl()
+                        )
+                    },
+                    onResult = { result ->
+                        if (result.success) {
+                            val remainingAssets = target.assets.filterNot { it.id == asset.id }
+                            releaseAssetDialogState = if (remainingAssets.isEmpty()) {
+                                target.copy(assets = emptyList())
+                            } else {
+                                target.copy(assets = remainingAssets)
+                            }
+                        }
+                    }
+                )
             }
         )
     }
@@ -6664,7 +7641,12 @@ private fun ProjectGitSection(
                 pendingRemoteFileSaveConfirmation = false
             }
             if (result.shouldRefreshBrowser) {
-                refreshRemoteRepositoryBrowser(targetPath = result.refreshTargetPath)
+                if (activeProjectPath.isNullOrBlank()) {
+                    refreshStandaloneRemoteRepositoryBrowser(targetPath = result.refreshTargetPath)
+                    selectedViewerRepository?.let(::refreshSelectedViewerRepositoryDetail)
+                } else {
+                    refreshRemoteRepositoryBrowser(targetPath = result.refreshTargetPath)
+                }
             }
         }
     }
@@ -6759,7 +7741,7 @@ private fun ProjectGitSection(
     }
 
     if (globalTaskCenter.isVisible) {
-        ProjectGitHubGlobalTaskCenterDialog(
+        ProjectGitHubWorkspaceTaskCenterDialog(
             taskCenter = globalTaskCenter,
             onClose = { globalTaskCenter = globalTaskCenter.copy(isVisible = false) },
             onTaskClick = ::onGlobalTaskClick,
@@ -6773,6 +7755,25 @@ private fun approvalModeLabel(mode: ToolApprovalMode): String = when (mode) {
     ToolApprovalMode.ALL_APPROVAL -> "全部审批"
     ToolApprovalMode.WHITELIST_AUTO -> "白名单自动通过"
     ToolApprovalMode.ALL_AUTO -> "全部自动通过"
+}
+
+private fun mergeProjectGitHubWorkflowDispatchInputs(
+    current: List<ProjectGitHubWorkflowDispatchInputUi>,
+    parsed: List<ProjectGitHubWorkflowDispatchInputUi>
+): List<ProjectGitHubWorkflowDispatchInputUi> {
+    val currentByKey = current.associateBy { it.key }
+    val mergedParsed = parsed.map { input ->
+        val existing = currentByKey[input.key]
+        if (existing == null) {
+            input
+        } else {
+            input.copy(
+                value = existing.value.ifBlank { input.value }
+            )
+        }
+    }
+    val manualInputs = current.filterNot { it.autoDetected }
+    return mergedParsed + manualInputs
 }
 
 private enum class ProjectPrimaryTab(val label: String) {
@@ -6845,16 +7846,20 @@ private fun flattenVisibleEntries(
 
 private fun detectProjectGitRepositories(root: File): List<ProjectDetectedRepoUi> {
     val rootPath = root.absolutePath
-    val results = linkedMapOf<String, Boolean>()
+    val results = linkedMapOf<String, ProjectDetectedRepoMarkerSummary>()
     val pendingDirs = ArrayDeque<File>().apply { add(root) }
     while (pendingDirs.isNotEmpty()) {
         val dir = pendingDirs.removeFirst()
         val dirPath = dir.absolutePath
         val children = runCatching { listProjectEntries(dir) }.getOrElse { emptyList() }
+        val markerSummary = detectProjectRepoMarkers(dir, children)
         val hasGitMetadata = hasProjectGitMetadata(dir)
-        val isProjectRoot = hasGitMetadata || (dirPath != rootPath && hasProjectRootMarkers(children))
+        val isProjectRoot = hasGitMetadata || (dirPath != rootPath && markerSummary.hasProjectRootMarker)
         if (isProjectRoot) {
-            results[dirPath] = results[dirPath] == true || hasGitMetadata
+            results[dirPath] = (results[dirPath] ?: ProjectDetectedRepoMarkerSummary()).merge(
+                other = markerSummary,
+                hasGitMetadata = hasGitMetadata
+            )
         }
         if (hasGitMetadata && dirPath != rootPath) {
             continue
@@ -6864,7 +7869,9 @@ private fun detectProjectGitRepositories(root: File): List<ProjectDetectedRepoUi
             val childDir = File(entry.absolutePath)
             if (childDir.name == ".git") {
                 childDir.parentFile?.absolutePath?.let { repoRoot ->
-                    results[repoRoot] = true
+                    results[repoRoot] = (results[repoRoot] ?: ProjectDetectedRepoMarkerSummary()).copy(
+                        hasGitMetadata = true
+                    )
                 }
                 return@forEach
             }
@@ -6873,13 +7880,17 @@ private fun detectProjectGitRepositories(root: File): List<ProjectDetectedRepoUi
         }
     }
     return results
-        .map { (repoRoot, hasGitMetadata) ->
+        .map { (repoRoot, markerSummary) ->
             ProjectDetectedRepoUi(
                 rootPath = repoRoot,
                 displayName = File(repoRoot).name.ifBlank { repoRoot },
                 relativePath = if (repoRoot == rootPath) "." else relativeProjectPath(rootPath, repoRoot),
                 isWorkspaceRoot = repoRoot == rootPath,
-                hasGitMetadata = hasGitMetadata
+                hasGitMetadata = markerSummary.hasGitMetadata,
+                hasReadme = markerSummary.hasReadme,
+                hasGradleBuild = markerSummary.hasGradleBuild,
+                hasPackageJson = markerSummary.hasPackageJson,
+                hasGitHubWorkflows = markerSummary.hasGitHubWorkflows
             )
         }
         .sortedWith(
@@ -6894,10 +7905,74 @@ private fun hasProjectGitMetadata(dir: File): Boolean {
     return gitDir.exists() || RootFile.exists(gitDir.absolutePath)
 }
 
-private fun hasProjectRootMarkers(entries: List<ProjectTreeEntry>): Boolean {
-    if (entries.isEmpty()) return false
+private data class ProjectDetectedRepoMarkerSummary(
+    val hasGitMetadata: Boolean = false,
+    val hasReadme: Boolean = false,
+    val hasGradleBuild: Boolean = false,
+    val hasPackageJson: Boolean = false,
+    val hasGitHubWorkflows: Boolean = false
+) {
+    val hasProjectRootMarker: Boolean
+        get() = hasReadme || hasGradleBuild || hasPackageJson || hasGitHubWorkflows
+
+    fun merge(
+        other: ProjectDetectedRepoMarkerSummary,
+        hasGitMetadata: Boolean = this.hasGitMetadata
+    ): ProjectDetectedRepoMarkerSummary {
+        return ProjectDetectedRepoMarkerSummary(
+            hasGitMetadata = this.hasGitMetadata || hasGitMetadata || other.hasGitMetadata,
+            hasReadme = this.hasReadme || other.hasReadme,
+            hasGradleBuild = this.hasGradleBuild || other.hasGradleBuild,
+            hasPackageJson = this.hasPackageJson || other.hasPackageJson,
+            hasGitHubWorkflows = this.hasGitHubWorkflows || other.hasGitHubWorkflows
+        )
+    }
+}
+
+private fun detectProjectRepoMarkers(
+    dir: File,
+    entries: List<ProjectTreeEntry>
+): ProjectDetectedRepoMarkerSummary {
     val names = entries.map { it.name.lowercase(Locale.getDefault()) }.toSet()
-    return PROJECT_ROOT_MARKERS.any(names::contains)
+    val hasWorkflows = names.contains(".github") && (
+        File(dir, ".github/workflows").exists() ||
+            RootFile.dirExists(File(dir, ".github/workflows").absolutePath)
+        )
+    return ProjectDetectedRepoMarkerSummary(
+        hasReadme = names.any { it == "readme.md" || it == "readme" },
+        hasGradleBuild = names.contains("build.gradle") || names.contains("build.gradle.kts"),
+        hasPackageJson = names.contains("package.json"),
+        hasGitHubWorkflows = hasWorkflows
+    )
+}
+
+private fun buildProjectDetectedRepoFeatureLabels(
+    repo: ProjectDetectedRepoUi
+): List<String> {
+    return buildList {
+        if (repo.hasGitMetadata) add("Git")
+        if (repo.hasReadme) add("README")
+        if (repo.hasGradleBuild) add("Gradle")
+        if (repo.hasPackageJson) add("package.json")
+        if (repo.hasGitHubWorkflows) add("工作流")
+    }
+}
+
+private fun suggestProjectGitHubRepoDescription(repo: ProjectDetectedRepoUi?): String {
+    if (repo == null) return ""
+    val featureLabels = buildProjectDetectedRepoFeatureLabels(repo)
+        .filterNot { it == "Git" }
+    val featureSummary = featureLabels
+        .takeIf { it.isNotEmpty() }
+        ?.joinToString("、")
+        ?.let { "，包含 $it" }
+        .orEmpty()
+    val scopeSummary = if (repo.relativePath == ".") {
+        "，来自当前工作区根目录"
+    } else {
+        "，目录 ${repo.relativePath}"
+    }
+    return "${repo.displayName} 项目$featureSummary$scopeSummary"
 }
 
 private fun listProjectEntries(dir: File): List<ProjectTreeEntry> {

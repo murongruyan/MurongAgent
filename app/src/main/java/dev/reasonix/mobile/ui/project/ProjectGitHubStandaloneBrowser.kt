@@ -1,24 +1,29 @@
 package dev.reasonix.mobile.ui.project
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import dev.reasonix.mobile.ui.MarkdownText
 import dev.reasonix.mobile.ui.rememberReasonixChromeColor
 import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
 import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
@@ -27,6 +32,8 @@ internal enum class ProjectGitHubStandaloneSection(val label: String) {
     REPOSITORIES("项目"),
     WORKFLOWS("工作流"),
     RELEASES("Release"),
+    ISSUES("Issue"),
+    PULL_REQUESTS("PR"),
     README("README")
 }
 
@@ -68,8 +75,23 @@ internal fun ProjectGitHubStandaloneBrowserSection(
     onOpenRunPage: (ProjectGitHubWorkflowRunUi) -> Unit,
     onDownloadRunLogs: (ProjectGitHubWorkflowRunUi) -> Unit,
     onOpenRunDetail: (ProjectGitHubWorkflowRunUi) -> Unit,
+    onCreateRelease: () -> Unit,
+    onEditRelease: (ProjectGitHubReleaseUi) -> Unit,
+    onToggleReleaseMode: (ProjectGitHubReleaseUi, Boolean) -> Unit,
+    onTogglePrerelease: (ProjectGitHubReleaseUi, Boolean) -> Unit,
+    onDeleteRelease: (ProjectGitHubReleaseUi) -> Unit,
     onOpenReleasePage: (ProjectGitHubReleaseUi) -> Unit,
-    onOpenReleaseAssets: (ProjectGitHubReleaseUi) -> Unit
+    onOpenReleaseAssets: (ProjectGitHubReleaseUi) -> Unit,
+    onCreateIssue: () -> Unit,
+    onOpenIssueDetail: (ProjectGitHubIssueUi) -> Unit,
+    onToggleIssueState: (ProjectGitHubIssueUi, Boolean) -> Unit,
+    onOpenIssuePage: (ProjectGitHubIssueUi) -> Unit,
+    onCreatePullRequest: () -> Unit,
+    onOpenPullRequestDetail: (ProjectGitHubPullRequestUi) -> Unit,
+    onTogglePullRequestState: (ProjectGitHubPullRequestUi, Boolean) -> Unit,
+    onMergePullRequest: (ProjectGitHubPullRequestUi) -> Unit,
+    onOpenPullRequestPage: (ProjectGitHubPullRequestUi) -> Unit,
+    onEditReadme: (ProjectGitHubReadmeUi) -> Unit
 ) {
     val chromeColor = rememberReasonixChromeColor()
     val surfaceColor = rememberReasonixSurfaceColor()
@@ -229,7 +251,25 @@ internal fun ProjectGitHubStandaloneBrowserSection(
                     onOpenRemoteParent = onOpenRemoteParent,
                     onOpenRemoteRoot = onOpenRemoteRoot,
                     onOpenRemoteEntry = onOpenRemoteEntry,
-                    onOpenRemoteEntryPage = onOpenRemoteEntryPage
+                    onOpenRemoteEntryPage = onOpenRemoteEntryPage,
+                    onShowWorkflows = {
+                        onChangeSection(ProjectGitHubStandaloneSection.WORKFLOWS)
+                    },
+                    onShowReleases = {
+                        onChangeSection(ProjectGitHubStandaloneSection.RELEASES)
+                    },
+                    onShowIssues = {
+                        onChangeSection(ProjectGitHubStandaloneSection.ISSUES)
+                    },
+                    onShowPullRequests = {
+                        onChangeSection(ProjectGitHubStandaloneSection.PULL_REQUESTS)
+                    },
+                    onShowReadme = {
+                        onChangeSection(ProjectGitHubStandaloneSection.README)
+                    },
+                    onOpenLatestRunDetail = repoDetailState.recentRuns.firstOrNull()?.let { run ->
+                        { onOpenRunDetail(run) }
+                    }
                 )
             }
 
@@ -254,18 +294,49 @@ internal fun ProjectGitHubStandaloneBrowserSection(
                 ProjectGitHubStandaloneReleaseSection(
                     releases = repoDetailState.releases,
                     isLoading = isRepoDetailLoading,
+                    isActionRunning = isActionRunning,
                     onRefresh = onRefreshRepoDetail,
+                    onCreateRelease = onCreateRelease,
+                    onEditRelease = onEditRelease,
+                    onToggleReleaseMode = onToggleReleaseMode,
+                    onTogglePrerelease = onTogglePrerelease,
+                    onDeleteRelease = onDeleteRelease,
                     onOpenReleasePage = onOpenReleasePage,
                     onOpenReleaseAssets = onOpenReleaseAssets
                 )
             }
 
+            ProjectGitHubStandaloneSection.ISSUES -> {
+                ProjectGitHubIssueSection(
+                    issues = repoDetailState.issues,
+                    isActionRunning = isActionRunning,
+                    onCreateIssue = onCreateIssue,
+                    onOpenDetail = onOpenIssueDetail,
+                    onToggleIssueState = onToggleIssueState,
+                    onOpenIssuePage = onOpenIssuePage
+                )
+            }
+
+            ProjectGitHubStandaloneSection.PULL_REQUESTS -> {
+                ProjectGitHubPullRequestSection(
+                    pullRequests = repoDetailState.pullRequests,
+                    isActionRunning = isActionRunning,
+                    onCreatePullRequest = onCreatePullRequest,
+                    onOpenDetail = onOpenPullRequestDetail,
+                    onTogglePullRequestState = onTogglePullRequestState,
+                    onMergePullRequest = onMergePullRequest,
+                    onOpenPullRequestPage = onOpenPullRequestPage
+                )
+            }
+
             ProjectGitHubStandaloneSection.README -> {
-                ProjectGitHubStandaloneReadmeSection(
+                ProjectGitHubReadmeSection(
                     readme = readme,
                     isLoading = isReadmeLoading,
                     errorMessage = readmeErrorMessage,
-                    onOpenRepoPage = onOpenRepoPage
+                    onRefresh = onRefreshRepoDetail,
+                    onOpenRepoPage = onOpenRepoPage,
+                    onEditReadme = onEditReadme
                 )
             }
         }
@@ -290,10 +361,22 @@ private fun ProjectGitHubStandaloneProjectSection(
     onOpenRemoteParent: () -> Unit,
     onOpenRemoteRoot: () -> Unit,
     onOpenRemoteEntry: (ProjectGitHubRemoteEntryUi) -> Unit,
-    onOpenRemoteEntryPage: (ProjectGitHubRemoteEntryUi) -> Unit
+    onOpenRemoteEntryPage: (ProjectGitHubRemoteEntryUi) -> Unit,
+    onShowWorkflows: () -> Unit,
+    onShowReleases: () -> Unit,
+    onShowIssues: () -> Unit,
+    onShowPullRequests: () -> Unit,
+    onShowReadme: () -> Unit,
+    onOpenLatestRunDetail: (() -> Unit)?
 ) {
     val chromeColor = rememberReasonixChromeColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
+    val latestRun = remember(repoDetailState.recentRuns) { repoDetailState.recentRuns.firstOrNull() }
+    val latestRelease = remember(repoDetailState.releases) { repoDetailState.releases.firstOrNull() }
+    val latestIssue = remember(repoDetailState.issues) { repoDetailState.issues.firstOrNull() }
+    val latestPullRequest = remember(repoDetailState.pullRequests) {
+        repoDetailState.pullRequests.firstOrNull()
+    }
     ProjectSectionCard(
         shape = RoundedCornerShape(14.dp),
         surfaceColorOverride = chromeColor.copy(alpha = 0.28f)
@@ -325,6 +408,204 @@ private fun ProjectGitHubStandaloneProjectSection(
                 style = MaterialTheme.typography.bodySmall,
                 color = mutedTextColor
             )
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = true,
+                    onClick = onShowWorkflows,
+                    label = { Text("工作流 ${repoDetailState.workflows.size}") }
+                )
+                FilterChip(
+                    selected = true,
+                    onClick = onShowWorkflows,
+                    label = { Text("运行 ${repoDetailState.recentRuns.size}") }
+                )
+                FilterChip(
+                    selected = true,
+                    onClick = onShowReleases,
+                    label = { Text("Release ${repoDetailState.releases.size}") }
+                )
+                FilterChip(
+                    selected = true,
+                    onClick = onShowReadme,
+                    label = { Text("README") }
+                )
+                FilterChip(
+                    selected = true,
+                    onClick = onShowIssues,
+                    label = { Text("Issue ${repoDetailState.issues.size}") }
+                )
+                FilterChip(
+                    selected = true,
+                    onClick = onShowPullRequests,
+                    label = { Text("PR ${repoDetailState.pullRequests.size}") }
+                )
+            }
+            latestRun?.let { run ->
+                ProjectInsetCard(
+                    shape = RoundedCornerShape(12.dp),
+                    surfaceColorOverride = chromeColor.copy(alpha = 0.40f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "最近工作流活动",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        Text(
+                            text = run.displayTitle.ifBlank { run.name.ifBlank { "最近一次运行" } },
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = "${run.statusLabel} · 分支 ${run.headBranch.ifBlank { "未知" }} · 更新 ${run.updatedAt}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (run.hasIssue) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                mutedTextColor
+                            }
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = onShowWorkflows) {
+                                Text("切到工作流")
+                            }
+                            onOpenLatestRunDetail?.let { openDetail ->
+                                TextButton(onClick = openDetail) {
+                                    Text("运行详情")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            latestRelease?.let { release ->
+                ProjectInsetCard(
+                    shape = RoundedCornerShape(12.dp),
+                    surfaceColorOverride = chromeColor.copy(alpha = 0.34f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "最近 Release",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        Text(
+                            text = release.name.ifBlank { release.tagName },
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = buildString {
+                                append(
+                                    when {
+                                        release.isDraft -> "草稿"
+                                        release.isPrerelease -> "预发布"
+                                        else -> "正式版"
+                                    }
+                                )
+                                append(" · 资产 ${release.assets.size}")
+                                append(" · ")
+                                append(
+                                    release.publishedAt
+                                        .takeIf { it.isNotBlank() }
+                                        ?.let(::formatProjectGitHubIsoDateTime)
+                                        ?: "发布时间未知"
+                                )
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = onShowReleases) {
+                                Text("切到 Release")
+                            }
+                            TextButton(onClick = onShowReadme) {
+                                Text("README")
+                            }
+                        }
+                    }
+                }
+            }
+            latestIssue?.let { issue ->
+                ProjectInsetCard(
+                    shape = RoundedCornerShape(12.dp),
+                    surfaceColorOverride = chromeColor.copy(alpha = 0.32f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "最近 Issue",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        Text(
+                            text = "#${issue.number} · ${issue.title}",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = "${issue.stateLabel} · ${issue.authorLabel} · 更新 ${issue.updatedAt}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (issue.isOpen) {
+                                mutedTextColor
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            }
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = onShowIssues) {
+                                Text("切到 Issue")
+                            }
+                        }
+                    }
+                }
+            }
+            latestPullRequest?.let { pullRequest ->
+                ProjectInsetCard(
+                    shape = RoundedCornerShape(12.dp),
+                    surfaceColorOverride = chromeColor.copy(alpha = 0.30f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "最近 PR",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        Text(
+                            text = "#${pullRequest.number} · ${pullRequest.title}",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = buildString {
+                                append(pullRequest.stateLabel)
+                                append(" · ")
+                                append(pullRequest.headBranch)
+                                append(" -> ")
+                                append(pullRequest.baseBranch)
+                                append(" · 更新 ")
+                                append(pullRequest.updatedAt)
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (pullRequest.canMerge) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                mutedTextColor
+                            }
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = onShowPullRequests) {
+                                Text("切到 PR")
+                            }
+                        }
+                    }
+                }
+            }
+            repoDetailState.errorMessage?.takeIf { it.isNotBlank() }?.let { error ->
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
         }
     }
     ProjectGitHubRemoteRepositorySection(
@@ -339,6 +620,7 @@ private fun ProjectGitHubStandaloneProjectSection(
         onOpenRepo = onOpenRepoPage,
         onOpenParent = onOpenRemoteParent,
         onOpenRoot = onOpenRemoteRoot,
+        onOpenPath = composeProjectGitHubRemoteDirectoryPathOpener(onOpenRemoteEntry),
         onOpenEntry = onOpenRemoteEntry,
         onOpenEntryPage = onOpenRemoteEntryPage
     )
@@ -354,6 +636,7 @@ private fun ProjectGitHubStandaloneTopActions(
     val buttonRows = listOf(
         listOf("返回" to null, ProjectGitHubStandaloneSection.REPOSITORIES.label to ProjectGitHubStandaloneSection.REPOSITORIES),
         listOf(ProjectGitHubStandaloneSection.WORKFLOWS.label to ProjectGitHubStandaloneSection.WORKFLOWS, ProjectGitHubStandaloneSection.RELEASES.label to ProjectGitHubStandaloneSection.RELEASES),
+        listOf(ProjectGitHubStandaloneSection.ISSUES.label to ProjectGitHubStandaloneSection.ISSUES, ProjectGitHubStandaloneSection.PULL_REQUESTS.label to ProjectGitHubStandaloneSection.PULL_REQUESTS),
         listOf(ProjectGitHubStandaloneSection.README.label to ProjectGitHubStandaloneSection.README)
     )
     buttonRows.forEach { row ->
@@ -441,111 +724,33 @@ private fun ProjectGitHubStandaloneRepoRow(
 private fun ProjectGitHubStandaloneReleaseSection(
     releases: List<ProjectGitHubReleaseUi>,
     isLoading: Boolean,
+    isActionRunning: Boolean,
     onRefresh: () -> Unit,
+    onCreateRelease: () -> Unit,
+    onEditRelease: (ProjectGitHubReleaseUi) -> Unit,
+    onToggleReleaseMode: (ProjectGitHubReleaseUi, Boolean) -> Unit,
+    onTogglePrerelease: (ProjectGitHubReleaseUi, Boolean) -> Unit,
+    onDeleteRelease: (ProjectGitHubReleaseUi) -> Unit,
     onOpenReleasePage: (ProjectGitHubReleaseUi) -> Unit,
     onOpenReleaseAssets: (ProjectGitHubReleaseUi) -> Unit
 ) {
-    val surfaceColor = rememberReasonixSurfaceColor()
-    val mutedTextColor = rememberReasonixMutedTextColor()
     ProjectSectionCard(
         shape = RoundedCornerShape(14.dp),
-        surfaceColorOverride = surfaceColor.copy(alpha = 0.58f)
+        surfaceColorOverride = rememberReasonixSurfaceColor().copy(alpha = 0.58f)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("Release", style = MaterialTheme.typography.titleSmall)
-                OutlinedButton(onClick = onRefresh, enabled = !isLoading) {
-                    Text("刷新")
-                }
-            }
-            if (isLoading) {
-                ProjectGitHubStandaloneLoadingCard("正在读取 Release...")
-            } else if (releases.isEmpty()) {
-                Text(
-                    text = "当前仓库还没有 Release。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor
-                )
-            } else {
-                releases.forEach { release ->
-                    ProjectInsetCard(
-                        shape = RoundedCornerShape(12.dp),
-                        surfaceColorOverride = surfaceColor.copy(alpha = 0.42f)
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(
-                                text = release.name.ifBlank { release.tagName },
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                            Text(
-                                text = "${release.tagName} · 产物 ${release.assets.size} · ${release.publishedAt.ifBlank { "发布时间未知" }}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = mutedTextColor
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                TextButton(onClick = { onOpenReleasePage(release) }) {
-                                    Text("网页")
-                                }
-                                OutlinedButton(onClick = { onOpenReleaseAssets(release) }) {
-                                    Text("产物")
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ProjectGitHubStandaloneReadmeSection(
-    readme: ProjectGitHubReadmeUi?,
-    isLoading: Boolean,
-    errorMessage: String?,
-    onOpenRepoPage: () -> Unit
-) {
-    val chromeColor = rememberReasonixChromeColor()
-    val mutedTextColor = rememberReasonixMutedTextColor()
-    ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
-        surfaceColorOverride = chromeColor.copy(alpha = 0.28f)
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("README", style = MaterialTheme.typography.titleSmall)
-                TextButton(onClick = onOpenRepoPage) {
-                    Text("仓库页")
-                }
-            }
-            when {
-                isLoading -> ProjectGitHubStandaloneLoadingCard("正在读取 README...")
-                !errorMessage.isNullOrBlank() -> Text(
-                    text = errorMessage,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
-                )
-                readme == null -> Text(
-                    text = "当前仓库还没有 README。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor
-                )
-                else -> {
-                    Text(
-                        text = readme.path,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = mutedTextColor
-                    )
-                    MarkdownText(text = readme.content)
-                }
-            }
-        }
+        ProjectGitHubReleaseSection(
+            releases = releases,
+            isLoading = isLoading,
+            isActionRunning = isActionRunning,
+            onCreateRelease = onCreateRelease,
+            onRefresh = onRefresh,
+            onEditRelease = onEditRelease,
+            onToggleReleaseMode = onToggleReleaseMode,
+            onTogglePrerelease = onTogglePrerelease,
+            onDeleteRelease = onDeleteRelease,
+            onOpenReleasePage = onOpenReleasePage,
+            onOpenAssets = onOpenReleaseAssets
+        )
     }
 }
 

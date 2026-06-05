@@ -1,18 +1,25 @@
 package dev.reasonix.mobile.ui.project
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
 import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
@@ -28,6 +35,9 @@ internal fun ProjectGitHubIssueSection(
 ) {
     val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
+    val summary = remember(issues) {
+        buildProjectGitHubIssueSummary(issues)
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -39,6 +49,11 @@ internal fun ProjectGitHubIssueSection(
                 Text("新建")
             }
         }
+        Text(
+            text = "共 ${summary.totalCount} 个 Issue · 开放 ${summary.openCount} · 已关闭 ${summary.closedCount} · 标签 ${summary.labelCount}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary
+        )
         if (issues.isEmpty()) {
             Text(
                 text = "当前仓库还没有读取到 Issue。",
@@ -55,28 +70,64 @@ internal fun ProjectGitHubIssueSection(
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
                             text = "#${issue.number} · ${issue.title}",
-                            style = MaterialTheme.typography.bodyMedium
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "${issue.stateLabel} · ${issue.authorLabel} · ${issue.updatedAt}",
+                            text = "${issue.authorLabel} · 更新 ${issue.updatedAt}",
                             style = MaterialTheme.typography.bodySmall,
                             color = mutedTextColor
                         )
-                        if (issue.labels.isNotEmpty()) {
-                            Text(
-                                text = issue.labels.joinToString(" · "),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = mutedTextColor
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = true,
+                                onClick = {},
+                                label = { Text(issue.stateLabel) }
                             )
+                            FilterChip(
+                                selected = true,
+                                onClick = {},
+                                label = { Text("评论入口") }
+                            )
+                            if (issue.labels.isNotEmpty()) {
+                                FilterChip(
+                                    selected = true,
+                                    onClick = {},
+                                    label = { Text("标签 ${issue.labels.size}") }
+                                )
+                            }
+                        }
+                        if (issue.labels.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                issue.labels.take(6).forEach { label ->
+                                    FilterChip(
+                                        selected = true,
+                                        onClick = {},
+                                        label = { Text(label) }
+                                    )
+                                }
+                            }
                         }
                         issue.body.takeIf { it.isNotBlank() }?.let { body ->
                             Text(
-                                text = body.take(140),
+                                text = body.take(220),
                                 style = MaterialTheme.typography.bodySmall,
-                                color = mutedTextColor
+                                color = mutedTextColor,
+                                maxLines = 4,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             TextButton(
                                 onClick = { onOpenDetail(issue) },
                                 enabled = !isActionRunning
@@ -117,6 +168,9 @@ internal fun ProjectGitHubPullRequestSection(
 ) {
     val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
+    val summary = remember(pullRequests) {
+        buildProjectGitHubPullRequestSummary(pullRequests)
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -128,6 +182,17 @@ internal fun ProjectGitHubPullRequestSection(
                 Text("新建")
             }
         }
+        Text(
+            text = buildString {
+                append("共 ${summary.totalCount} 个 PR")
+                append(" · 开放 ${summary.openCount}")
+                append(" · 草稿 ${summary.draftCount}")
+                append(" · 已合并 ${summary.mergedCount}")
+                append(" · 可合并 ${summary.mergeableCount}")
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary
+        )
         if (pullRequests.isEmpty()) {
             Text(
                 text = "当前仓库还没有读取到 Pull Request。",
@@ -144,28 +209,71 @@ internal fun ProjectGitHubPullRequestSection(
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
                             text = "#${pullRequest.number} · ${pullRequest.title}",
-                            style = MaterialTheme.typography.bodyMedium
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "${pullRequest.stateLabel} · ${pullRequest.authorLabel} · ${pullRequest.headBranch} -> ${pullRequest.baseBranch}",
+                            text = "${pullRequest.authorLabel} · 更新 ${pullRequest.updatedAt}",
                             style = MaterialTheme.typography.bodySmall,
                             color = mutedTextColor
                         )
-                        if (pullRequest.labels.isNotEmpty()) {
-                            Text(
-                                text = pullRequest.labels.joinToString(" · "),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = mutedTextColor
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = true,
+                                onClick = {},
+                                label = { Text(pullRequest.stateLabel) }
                             )
+                            FilterChip(
+                                selected = true,
+                                onClick = {},
+                                label = { Text("${pullRequest.headBranch} -> ${pullRequest.baseBranch}") }
+                            )
+                            if (pullRequest.canMerge) {
+                                FilterChip(
+                                    selected = true,
+                                    onClick = {},
+                                    label = { Text("可直接合并") }
+                                )
+                            }
+                            if (pullRequest.labels.isNotEmpty()) {
+                                FilterChip(
+                                    selected = true,
+                                    onClick = {},
+                                    label = { Text("标签 ${pullRequest.labels.size}") }
+                                )
+                            }
+                        }
+                        if (pullRequest.labels.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                pullRequest.labels.take(6).forEach { label ->
+                                    FilterChip(
+                                        selected = true,
+                                        onClick = {},
+                                        label = { Text(label) }
+                                    )
+                                }
+                            }
                         }
                         pullRequest.body.takeIf { it.isNotBlank() }?.let { body ->
                             Text(
-                                text = body.take(140),
+                                text = body.take(220),
                                 style = MaterialTheme.typography.bodySmall,
-                                color = mutedTextColor
+                                color = mutedTextColor,
+                                maxLines = 4,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             TextButton(
                                 onClick = { onOpenDetail(pullRequest) },
                                 enabled = !isActionRunning
@@ -204,11 +312,51 @@ internal fun ProjectGitHubPullRequestSection(
     }
 }
 
+private data class ProjectGitHubIssueSummaryUi(
+    val totalCount: Int,
+    val openCount: Int,
+    val closedCount: Int,
+    val labelCount: Int
+)
+
+private data class ProjectGitHubPullRequestSummaryUi(
+    val totalCount: Int,
+    val openCount: Int,
+    val draftCount: Int,
+    val mergedCount: Int,
+    val mergeableCount: Int
+)
+
+private fun buildProjectGitHubIssueSummary(
+    issues: List<ProjectGitHubIssueUi>
+): ProjectGitHubIssueSummaryUi {
+    return ProjectGitHubIssueSummaryUi(
+        totalCount = issues.size,
+        openCount = issues.count { it.isOpen },
+        closedCount = issues.count { !it.isOpen },
+        labelCount = issues.sumOf { it.labels.size }
+    )
+}
+
+private fun buildProjectGitHubPullRequestSummary(
+    pullRequests: List<ProjectGitHubPullRequestUi>
+): ProjectGitHubPullRequestSummaryUi {
+    return ProjectGitHubPullRequestSummaryUi(
+        totalCount = pullRequests.size,
+        openCount = pullRequests.count { it.isOpen },
+        draftCount = pullRequests.count { it.isDraft && !it.isMerged },
+        mergedCount = pullRequests.count { it.isMerged },
+        mergeableCount = pullRequests.count { it.canMerge }
+    )
+}
+
 @Composable
 internal fun ProjectGitHubReleaseSection(
     releases: List<ProjectGitHubReleaseUi>,
+    isLoading: Boolean = false,
     isActionRunning: Boolean,
     onCreateRelease: () -> Unit,
+    onRefresh: (() -> Unit)? = null,
     onEditRelease: (ProjectGitHubReleaseUi) -> Unit,
     onToggleReleaseMode: (ProjectGitHubReleaseUi, Boolean) -> Unit,
     onTogglePrerelease: (ProjectGitHubReleaseUi, Boolean) -> Unit,
@@ -218,6 +366,9 @@ internal fun ProjectGitHubReleaseSection(
 ) {
     val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
+    val summary = remember(releases) {
+        buildProjectGitHubReleaseSummary(releases)
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -225,60 +376,192 @@ internal fun ProjectGitHubReleaseSection(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Releases", style = MaterialTheme.typography.titleSmall)
-            OutlinedButton(
-                onClick = onCreateRelease,
-                enabled = !isActionRunning
-            ) {
-                Text("新建")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(
+                    onClick = onCreateRelease,
+                    enabled = !isLoading && !isActionRunning
+                ) {
+                    Text("新建")
+                }
+                onRefresh?.let { refresh ->
+                    OutlinedButton(
+                        onClick = refresh,
+                        enabled = !isLoading
+                    ) {
+                        Text("刷新")
+                    }
+                }
             }
         }
-        if (releases.isEmpty()) {
+        Text(
+            text = "共 ${summary.totalCount} 个 Release · 草稿 ${summary.draftCount} · 预发布 ${summary.prereleaseCount} · 资产 ${summary.assetCount}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Text(
+            text = "先看标签、状态和发布时间，再按需要展开发布管理和资产预览。",
+            style = MaterialTheme.typography.bodySmall,
+            color = mutedTextColor
+        )
+        if (isLoading) {
+            Text(
+                text = "正在读取 Release...",
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedTextColor
+            )
+        } else if (releases.isEmpty()) {
             Text(
                 text = "当前仓库还没有读取到 Release。",
                 style = MaterialTheme.typography.bodySmall,
                 color = mutedTextColor
             )
         } else {
+            val expandedReleaseState = remember(releases) { mutableStateMapOf<Long, Boolean>() }
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        releases.forEach { release ->
+                            expandedReleaseState[release.id] = true
+                        }
+                    }
+                ) {
+                    Text("展开全部")
+                }
+                OutlinedButton(
+                    onClick = {
+                        releases.forEach { release ->
+                            expandedReleaseState[release.id] = false
+                        }
+                    }
+                ) {
+                    Text("收起全部")
+                }
+            }
             releases.forEach { release ->
+                val stateLabel = when {
+                    release.isDraft -> "草稿"
+                    release.isPrerelease -> "预发布"
+                    else -> "正式版"
+                }
+                val expanded = expandedReleaseState[release.id] ?: (releases.size == 1)
+                val publishedAtLabel = release.publishedAt
+                    .takeIf { it.isNotBlank() }
+                    ?.let(::formatProjectGitHubIsoDateTime)
+                    ?: "发布时间未知"
                 ProjectInsetCard(
                     shape = RoundedCornerShape(12.dp),
                     surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { expandedReleaseState[release.id] = !expanded }
                 ) {
                     Column(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text(
-                            text = release.name.ifBlank { release.tagName },
-                            style = MaterialTheme.typography.bodyMedium
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    text = release.name.ifBlank { release.tagName },
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    text = release.tagName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            Text(
+                                text = if (expanded) "收起" else "展开",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = mutedTextColor
+                            )
+                        }
                         Text(
                             text = buildString {
-                                append(release.tagName)
+                                append(stateLabel)
                                 append(" · ")
-                                append(
-                                    when {
-                                        release.isDraft -> "草稿"
-                                        release.isPrerelease -> "预发布"
-                                        else -> "正式版"
-                                    }
-                                )
-                                release.publishedAt.takeIf { it.isNotBlank() }?.let {
-                                    append(" · ")
-                                    append(it)
-                                }
+                                append(publishedAtLabel)
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = mutedTextColor
                         )
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = true,
+                                onClick = {},
+                                label = { Text(release.tagName) }
+                            )
+                            FilterChip(
+                                selected = true,
+                                onClick = {},
+                                label = { Text(stateLabel) }
+                            )
+                            FilterChip(
+                                selected = true,
+                                onClick = {},
+                                label = { Text("资产 ${release.assets.size}") }
+                            )
+                            if (release.body.isNotBlank()) {
+                                FilterChip(
+                                    selected = true,
+                                    onClick = {},
+                                    label = { Text("说明") }
+                                )
+                            }
+                        }
                         if (release.body.isNotBlank()) {
                             Text(
                                 text = release.body.take(140),
                                 style = MaterialTheme.typography.bodySmall,
+                                color = mutedTextColor,
+                                maxLines = if (expanded) Int.MAX_VALUE else 4,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        } else {
+                            Text(
+                                text = "当前 Release 还没有说明。",
+                                style = MaterialTheme.typography.bodySmall,
                                 color = mutedTextColor
                             )
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (release.assets.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                release.assets.take(3).forEach { asset ->
+                                    FilterChip(
+                                        selected = true,
+                                        onClick = { onOpenAssets(release) },
+                                        label = { Text(asset.name.take(22)) }
+                                    )
+                                }
+                                if (release.assets.size > 3) {
+                                    FilterChip(
+                                        selected = true,
+                                        onClick = { onOpenAssets(release) },
+                                        label = { Text("其余 ${release.assets.size - 3} 个") }
+                                    )
+                                }
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             release.htmlUrl?.takeIf { it.isNotBlank() }?.let {
                                 TextButton(
                                     onClick = { onOpenReleasePage(release) },
@@ -294,32 +577,130 @@ internal fun ProjectGitHubReleaseSection(
                                 Text("编辑")
                             }
                             OutlinedButton(
-                                onClick = { onToggleReleaseMode(release, !release.isDraft) },
-                                enabled = !isActionRunning
-                            ) {
-                                Text(if (release.isDraft) "发布" else "草稿")
-                            }
-                            OutlinedButton(
-                                onClick = { onTogglePrerelease(release, !release.isPrerelease) },
-                                enabled = !isActionRunning && !release.isDraft
-                            ) {
-                                Text(if (release.isPrerelease) "转正式" else "预发布")
-                            }
-                            OutlinedButton(
                                 onClick = { onOpenAssets(release) },
                                 enabled = !isActionRunning
                             ) {
-                                Text("资产 ${release.assets.size}")
+                                Text(if (release.assets.isEmpty()) "产物列表" else "查看产物")
                             }
-                            TextButton(
-                                onClick = { onDeleteRelease(release) },
-                                enabled = !isActionRunning
+                        }
+                        if (expanded) {
+                            Text(
+                                text = "发布管理",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text("删除")
+                                OutlinedButton(
+                                    onClick = { onToggleReleaseMode(release, !release.isDraft) },
+                                    enabled = !isActionRunning
+                                ) {
+                                    Text(if (release.isDraft) "发布" else "转草稿")
+                                }
+                                OutlinedButton(
+                                    onClick = { onTogglePrerelease(release, !release.isPrerelease) },
+                                    enabled = !isActionRunning && !release.isDraft
+                                ) {
+                                    Text(if (release.isPrerelease) "转正式" else "预发布")
+                                }
+                                TextButton(
+                                    onClick = { onDeleteRelease(release) },
+                                    enabled = !isActionRunning
+                                ) {
+                                    Text("删除")
+                                }
+                            }
+                            Text(
+                                text = "Assets · ${release.assets.size}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            if (release.assets.isEmpty()) {
+                                Text(
+                                    text = "当前 Release 没有可下载产物。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
+                                )
+                            } else {
+                                release.assets.forEach { asset ->
+                                    ProjectGitHubReleaseAssetPreviewRow(
+                                        asset = asset,
+                                        onOpenAssets = { onOpenAssets(release) }
+                                    )
+                                }
                             }
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+private data class ProjectGitHubReleaseSummaryUi(
+    val totalCount: Int,
+    val draftCount: Int,
+    val prereleaseCount: Int,
+    val assetCount: Int
+)
+
+private fun buildProjectGitHubReleaseSummary(
+    releases: List<ProjectGitHubReleaseUi>
+): ProjectGitHubReleaseSummaryUi {
+    return ProjectGitHubReleaseSummaryUi(
+        totalCount = releases.size,
+        draftCount = releases.count { it.isDraft },
+        prereleaseCount = releases.count { it.isPrerelease },
+        assetCount = releases.sumOf { it.assets.size }
+    )
+}
+
+@Composable
+private fun ProjectGitHubReleaseAssetPreviewRow(
+    asset: ProjectGitHubReleaseAssetUi,
+    onOpenAssets: () -> Unit
+) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    ProjectInsetCard(
+        shape = RoundedCornerShape(10.dp),
+        surfaceColorOverride = surfaceColor.copy(alpha = 0.34f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = asset.name,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = buildString {
+                        append(asset.sizeLabel)
+                        append(" · ")
+                        append(
+                            asset.updatedAt
+                                .takeIf { it.isNotBlank() }
+                                ?.let(::formatProjectGitHubIsoDateTime)
+                                ?: "时间未知"
+                        )
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = mutedTextColor
+                )
+            }
+            TextButton(onClick = onOpenAssets) {
+                Text("管理资产")
             }
         }
     }

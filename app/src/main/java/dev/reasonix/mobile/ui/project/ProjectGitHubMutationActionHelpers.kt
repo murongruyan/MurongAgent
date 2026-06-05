@@ -376,6 +376,35 @@ internal suspend fun deleteProjectGitHubReleaseAction(
     )
 }
 
+internal suspend fun deleteProjectGitHubReleaseAssetAction(
+    repo: ProjectGitHubRepoRef?,
+    asset: ProjectGitHubReleaseAssetUi,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubMutationActionResult {
+    if (repo == null) {
+        return ProjectGitHubMutationActionResult(
+            feedbackMessage = "当前还没有可操作的 GitHub 仓库。"
+        )
+    }
+    if (token.isBlank()) {
+        return ProjectGitHubMutationActionResult(
+            feedbackMessage = "请先在设置页填写 GitHub Token。"
+        )
+    }
+    val result = deleteProjectGitHubReleaseAsset(
+        repo = repo,
+        assetId = asset.id,
+        token = token,
+        apiBaseUrl = apiBaseUrl
+    )
+    return buildProjectGitHubMutationActionResult(
+        commandResult = result,
+        successFallback = "已删除 Release 资产 ${asset.name}",
+        shouldRefreshGitHubActions = result.success
+    )
+}
+
 private fun buildProjectGitHubMutationActionResult(
     commandResult: ProjectGitHubCommandResult,
     successFallback: String,

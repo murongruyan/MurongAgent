@@ -1,10 +1,12 @@
 package dev.reasonix.mobile.ui.project
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -39,6 +41,7 @@ internal fun ProjectGitHubGlobalTaskCenterDialog(
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 // Header
+                val totalTasks = taskCenter.criticalTasks.size + taskCenter.attentionTasks.size
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -57,8 +60,7 @@ internal fun ProjectGitHubGlobalTaskCenterDialog(
                             fontWeight = FontWeight.Bold
                         )
                     }
-                    
-                    val totalTasks = taskCenter.criticalTasks.size + taskCenter.attentionTasks.size
+
                     Badge(
                         containerColor = if (taskCenter.criticalTasks.isNotEmpty()) {
                             MaterialTheme.colorScheme.error
@@ -69,6 +71,18 @@ internal fun ProjectGitHubGlobalTaskCenterDialog(
                         Text("$totalTasks 个待处理")
                     }
                 }
+                Text(
+                    text = buildString {
+                        append("优先 ${taskCenter.criticalTasks.size}")
+                        append(" · 跟进 ${taskCenter.attentionTasks.size}")
+                        if (taskCenter.criticalTasks.isEmpty() && taskCenter.attentionTasks.isEmpty()) {
+                            append(" · 当前工作区状态平稳")
+                        }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
 
                 Divider(color = chromeColor.copy(alpha = 0.2f))
 
@@ -207,6 +221,30 @@ private fun GlobalTaskItem(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    task.repoTitle.takeIf { it.isNotBlank() }?.let { repoTitle ->
+                        FilterChip(
+                            selected = true,
+                            onClick = {},
+                            label = { Text(repoTitle, maxLines = 1) }
+                        )
+                    }
+                    FilterChip(
+                        selected = true,
+                        onClick = {},
+                        label = { Text(task.kind.label) }
+                    )
+                    task.destinationLabel?.takeIf { it.isNotBlank() }?.let { destination ->
+                        FilterChip(
+                            selected = true,
+                            onClick = {},
+                            label = { Text(destination) }
+                        )
+                    }
+                }
                 Text(
                     text = task.subtitle,
                     style = MaterialTheme.typography.bodySmall,

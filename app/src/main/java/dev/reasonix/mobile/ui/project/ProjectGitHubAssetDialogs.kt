@@ -106,8 +106,10 @@ internal fun ProjectGitHubArtifactDialog(
 internal fun ProjectGitHubReleaseAssetDialog(
     dialog: ProjectGitHubReleaseAssetDialogUi,
     onDismiss: () -> Unit,
+    isActionRunning: Boolean,
     onOpenReleasePage: (String?) -> Unit,
-    onDownloadAsset: (ProjectGitHubReleaseAssetDialogUi, ProjectGitHubReleaseAssetUi) -> Unit
+    onDownloadAsset: (ProjectGitHubReleaseAssetDialogUi, ProjectGitHubReleaseAssetUi) -> Unit,
+    onDeleteAsset: (ProjectGitHubReleaseAssetDialogUi, ProjectGitHubReleaseAssetUi) -> Unit
 ) {
     val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
@@ -131,6 +133,11 @@ internal fun ProjectGitHubReleaseAssetDialog(
                 Text(
                     text = dialog.releaseTitle,
                     style = MaterialTheme.typography.titleSmall
+                )
+                Text(
+                    text = "资产 ${dialog.assets.size} 个",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = mutedTextColor
                 )
                 dialog.releaseHtmlUrl?.takeIf { it.isNotBlank() }?.let {
                     TextButton(onClick = { onOpenReleasePage(dialog.releaseHtmlUrl) }) {
@@ -169,6 +176,12 @@ internal fun ProjectGitHubReleaseAssetDialog(
                                         onClick = { onDownloadAsset(dialog, asset) }
                                     ) {
                                         Text("下载")
+                                    }
+                                    OutlinedButton(
+                                        onClick = { onDeleteAsset(dialog, asset) },
+                                        enabled = !isActionRunning
+                                    ) {
+                                        Text("删除")
                                     }
                                 }
                             }

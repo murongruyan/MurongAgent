@@ -1,10 +1,13 @@
 package dev.reasonix.mobile.ui.project
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.PrimaryScrollableTabRow
@@ -25,6 +28,7 @@ internal enum class ProjectGitHubWorkspaceRepoWorkbenchTab(val label: String) {
     OVERVIEW("概览"),
     WORKFLOW("工作流"),
     REMOTE("远端"),
+    README("README"),
     ISSUES("Issue"),
     PULL_REQUESTS("PR"),
     RELEASES("Release")
@@ -40,7 +44,16 @@ internal data class ProjectGitHubWorkspaceWorkbenchHeaderUi(
 internal data class ProjectGitHubWorkspaceWorkbenchOverviewUi(
     val remoteSummaryText: String,
     val remoteErrorMessage: String?,
+    val workflowCount: Int,
+    val recentRunCount: Int,
+    val issueCount: Int,
+    val pullRequestCount: Int,
+    val releaseCount: Int,
+    val hasReadme: Boolean,
     val latestWorkflow: ProjectGitHubWorkspaceWorkbenchLatestWorkflowUi?,
+    val latestIssue: ProjectGitHubIssueUi?,
+    val latestPullRequest: ProjectGitHubPullRequestUi?,
+    val latestRelease: ProjectGitHubReleaseUi?,
     val remoteUrl: String?,
     val upstreamBranch: String?,
     val aheadCount: Int,
@@ -139,6 +152,9 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchOverviewTab(
     downloads: List<ProjectGitHubDownloadRecordUi>,
     onShowWorkflowTab: () -> Unit,
     onShowIssuesTab: () -> Unit,
+    onShowPullRequestsTab: () -> Unit,
+    onShowReleaseTab: () -> Unit,
+    onShowReadmeTab: () -> Unit,
     onOpenLatestRunDetail: (() -> Unit)?,
     onOpenSystemDownloads: () -> Unit,
     onOpenDownloadSource: (ProjectGitHubDownloadRecordUi) -> Unit
@@ -158,6 +174,43 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchOverviewTab(
                 style = MaterialTheme.typography.bodySmall,
                 color = mutedTextColor
             )
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = true,
+                    onClick = onShowWorkflowTab,
+                    label = { Text("工作流 ${overview.workflowCount}") }
+                )
+                FilterChip(
+                    selected = true,
+                    onClick = onShowWorkflowTab,
+                    label = { Text("运行 ${overview.recentRunCount}") }
+                )
+                FilterChip(
+                    selected = true,
+                    onClick = onShowIssuesTab,
+                    label = { Text("Issue ${overview.issueCount}") }
+                )
+                FilterChip(
+                    selected = true,
+                    onClick = onShowPullRequestsTab,
+                    label = { Text("PR ${overview.pullRequestCount}") }
+                )
+                FilterChip(
+                    selected = true,
+                    onClick = onShowReleaseTab,
+                    label = { Text("Release ${overview.releaseCount}") }
+                )
+                if (overview.hasReadme) {
+                    FilterChip(
+                        selected = true,
+                        onClick = onShowReadmeTab,
+                        label = { Text("README") }
+                    )
+                }
+            }
             overview.remoteErrorMessage?.takeIf { it.isNotBlank() }?.let { error ->
                 Text(
                     text = error,
@@ -173,6 +226,31 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchOverviewTab(
                     onShowWorkflowTab = onShowWorkflowTab,
                     onShowIssuesTab = onShowIssuesTab,
                     onOpenLatestRunDetail = onOpenLatestRunDetail
+                )
+            }
+            overview.latestIssue?.let { issue ->
+                ProjectGitHubWorkspaceLatestIssueCard(
+                    issue = issue,
+                    chromeColor = chromeColor,
+                    mutedTextColor = mutedTextColor,
+                    onShowIssuesTab = onShowIssuesTab
+                )
+            }
+            overview.latestPullRequest?.let { pullRequest ->
+                ProjectGitHubWorkspaceLatestPullRequestCard(
+                    pullRequest = pullRequest,
+                    chromeColor = chromeColor,
+                    mutedTextColor = mutedTextColor,
+                    onShowPullRequestsTab = onShowPullRequestsTab
+                )
+            }
+            overview.latestRelease?.let { release ->
+                ProjectGitHubWorkspaceLatestReleaseCard(
+                    release = release,
+                    chromeColor = chromeColor,
+                    mutedTextColor = mutedTextColor,
+                    onShowReleaseTab = onShowReleaseTab,
+                    onShowReadmeTab = onShowReadmeTab
                 )
             }
             ProjectGitRemoteSummaryCard(
@@ -239,6 +317,131 @@ private fun ProjectGitHubWorkspaceLatestWorkflowCard(
 }
 
 @Composable
+private fun ProjectGitHubWorkspaceLatestIssueCard(
+    issue: ProjectGitHubIssueUi,
+    chromeColor: Color,
+    mutedTextColor: Color,
+    onShowIssuesTab: () -> Unit
+) {
+    ProjectInsetCard(
+        shape = RoundedCornerShape(12.dp),
+        surfaceColorOverride = chromeColor.copy(alpha = 0.28f)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("最近 Issue", style = MaterialTheme.typography.labelMedium)
+            Text(
+                text = "#${issue.number} · ${issue.title}",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = "${issue.stateLabel} · ${issue.authorLabel} · 更新 ${issue.updatedAt}",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (issue.isOpen) mutedTextColor else MaterialTheme.colorScheme.primary
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onShowIssuesTab) {
+                    Text("切到 Issue")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProjectGitHubWorkspaceLatestPullRequestCard(
+    pullRequest: ProjectGitHubPullRequestUi,
+    chromeColor: Color,
+    mutedTextColor: Color,
+    onShowPullRequestsTab: () -> Unit
+) {
+    ProjectInsetCard(
+        shape = RoundedCornerShape(12.dp),
+        surfaceColorOverride = chromeColor.copy(alpha = 0.26f)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("最近 PR", style = MaterialTheme.typography.labelMedium)
+            Text(
+                text = "#${pullRequest.number} · ${pullRequest.title}",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = buildString {
+                    append(pullRequest.stateLabel)
+                    append(" · ")
+                    append(pullRequest.headBranch)
+                    append(" -> ")
+                    append(pullRequest.baseBranch)
+                    append(" · 更新 ")
+                    append(pullRequest.updatedAt)
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (pullRequest.canMerge) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    mutedTextColor
+                }
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onShowPullRequestsTab) {
+                    Text("切到 PR")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProjectGitHubWorkspaceLatestReleaseCard(
+    release: ProjectGitHubReleaseUi,
+    chromeColor: Color,
+    mutedTextColor: Color,
+    onShowReleaseTab: () -> Unit,
+    onShowReadmeTab: () -> Unit
+) {
+    ProjectInsetCard(
+        shape = RoundedCornerShape(12.dp),
+        surfaceColorOverride = chromeColor.copy(alpha = 0.24f)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("最近 Release", style = MaterialTheme.typography.labelMedium)
+            Text(
+                text = release.name.ifBlank { release.tagName },
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = buildString {
+                    append(
+                        when {
+                            release.isDraft -> "草稿"
+                            release.isPrerelease -> "预发布"
+                            else -> "正式版"
+                        }
+                    )
+                    append(" · 资产 ${release.assets.size}")
+                    append(" · ")
+                    append(
+                        release.publishedAt
+                            .takeIf { it.isNotBlank() }
+                            ?.let(::formatProjectGitHubIsoDateTime)
+                            ?: "发布时间未知"
+                    )
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedTextColor
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onShowReleaseTab) {
+                    Text("切到 Release")
+                }
+                TextButton(onClick = onShowReadmeTab) {
+                    Text("README")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 internal fun ProjectGitHubWorkspaceRepoWorkbenchPage(
     summary: ProjectGitHubWorkspaceRepoSummaryUi,
     remoteSummary: ProjectGitHubWorkspaceRemoteSummaryUi?,
@@ -267,6 +470,11 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchPage(
     onOpenRemoteRoot: () -> Unit,
     onOpenRemoteEntry: (ProjectGitHubRemoteEntryUi) -> Unit,
     onOpenRemoteEntryPage: (ProjectGitHubRemoteEntryUi) -> Unit,
+    readme: ProjectGitHubReadmeUi?,
+    readmeErrorMessage: String?,
+    isReadmeLoading: Boolean,
+    onRefreshReadme: () -> Unit,
+    onEditReadme: (ProjectGitHubReadmeUi) -> Unit,
     onCreateIssue: () -> Unit,
     onOpenIssueDetail: (ProjectGitHubIssueUi) -> Unit,
     onToggleIssueState: (ProjectGitHubIssueUi, Boolean) -> Unit,
@@ -297,7 +505,7 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchPage(
 
     ReasonixSecondaryPageFrame(
         title = summary.repo.displayName.ifBlank { "仓库工作台" },
-        subtitle = "先承接仓库级概览、工作流与远端仓库，后续继续迁移 Issue / PR / Release。"
+        subtitle = "统一承接仓库级概览、工作流、远端、README、Issue、PR 和 Release。"
     ) {
         Column(
             modifier = Modifier.graphicsLayer {
@@ -338,6 +546,15 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchPage(
                         },
                         onShowIssuesTab = {
                             onSelectTab(ProjectGitHubWorkspaceRepoWorkbenchTab.ISSUES)
+                        },
+                        onShowPullRequestsTab = {
+                            onSelectTab(ProjectGitHubWorkspaceRepoWorkbenchTab.PULL_REQUESTS)
+                        },
+                        onShowReleaseTab = {
+                            onSelectTab(ProjectGitHubWorkspaceRepoWorkbenchTab.RELEASES)
+                        },
+                        onShowReadmeTab = {
+                            onSelectTab(ProjectGitHubWorkspaceRepoWorkbenchTab.README)
                         },
                         onOpenLatestRunDetail = remoteSummary?.latestRun?.let { run ->
                             { onOpenRunDetail(run) }
@@ -384,10 +601,21 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchPage(
                             onOpenRepo = onOpenRepoPage,
                             onOpenParent = onOpenRemoteParent,
                             onOpenRoot = onOpenRemoteRoot,
+                            onOpenPath = composeProjectGitHubRemoteDirectoryPathOpener(onOpenRemoteEntry),
                             onOpenEntry = onOpenRemoteEntry,
                             onOpenEntryPage = onOpenRemoteEntryPage
                         )
                     }
+                }
+                ProjectGitHubWorkspaceRepoWorkbenchTab.README -> {
+                    ProjectGitHubReadmeSection(
+                        readme = readme,
+                        isLoading = isReadmeLoading,
+                        errorMessage = readmeErrorMessage,
+                        onRefresh = onRefreshReadme,
+                        onOpenRepoPage = onOpenRepoPage,
+                        onEditReadme = onEditReadme
+                    )
                 }
                 ProjectGitHubWorkspaceRepoWorkbenchTab.ISSUES -> {
                     ProjectGitHubIssueSection(
@@ -413,8 +641,10 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchPage(
                 ProjectGitHubWorkspaceRepoWorkbenchTab.RELEASES -> {
                     ProjectGitHubReleaseSection(
                         releases = githubActionsState.releases,
+                        isLoading = isGitHubLoading,
                         isActionRunning = isGitHubActionRunning,
                         onCreateRelease = onCreateRelease,
+                        onRefresh = onRefreshGitHubActions,
                         onEditRelease = onEditRelease,
                         onToggleReleaseMode = onToggleReleaseMode,
                         onTogglePrerelease = onTogglePrerelease,
@@ -459,6 +689,8 @@ private fun buildProjectGitHubWorkspaceWorkbenchHeader(
 
 private fun buildProjectGitHubWorkspaceWorkbenchOverview(
     remoteSummary: ProjectGitHubWorkspaceRemoteSummaryUi?,
+    githubActionsState: ProjectGitHubActionsState,
+    readme: ProjectGitHubReadmeUi?,
     gitState: ProjectGitStatusUi,
     tokenConfigured: Boolean
 ): ProjectGitHubWorkspaceWorkbenchOverviewUi {
@@ -474,13 +706,28 @@ private fun buildProjectGitHubWorkspaceWorkbenchOverview(
             }
         } ?: "当前仓库还没有工作区级远端摘要，可先刷新 GitHub。",
         remoteErrorMessage = remoteSummary?.errorMessage,
+        workflowCount = githubActionsState.workflows.size,
+        recentRunCount = githubActionsState.recentRuns.size,
+        issueCount = githubActionsState.issues.size,
+        pullRequestCount = githubActionsState.pullRequests.size,
+        releaseCount = githubActionsState.releases.size,
+        hasReadme = readme != null,
         latestWorkflow = remoteSummary?.latestRun?.let { run ->
             ProjectGitHubWorkspaceWorkbenchLatestWorkflowUi(
                 title = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
                 detail = "${run.statusLabel} · ${run.headBranch.ifBlank { "分支未知" }} · ${run.updatedAt}",
                 hasIssue = remoteSummary.latestRunHasIssue
             )
+        } ?: githubActionsState.recentRuns.firstOrNull()?.let { run ->
+            ProjectGitHubWorkspaceWorkbenchLatestWorkflowUi(
+                title = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
+                detail = "${run.statusLabel} · ${run.headBranch.ifBlank { "分支未知" }} · ${run.updatedAt}",
+                hasIssue = run.hasIssue
+            )
         },
+        latestIssue = remoteSummary?.latestOpenIssue ?: githubActionsState.issues.firstOrNull(),
+        latestPullRequest = remoteSummary?.latestOpenPullRequest ?: githubActionsState.pullRequests.firstOrNull(),
+        latestRelease = githubActionsState.releases.firstOrNull(),
         remoteUrl = gitState.remoteUrl,
         upstreamBranch = gitState.upstreamBranch,
         aheadCount = gitState.aheadCount,

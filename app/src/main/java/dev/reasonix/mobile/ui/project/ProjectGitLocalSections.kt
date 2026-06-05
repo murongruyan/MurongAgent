@@ -5,7 +5,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -191,6 +194,79 @@ internal fun ProjectGitHistorySection(
                         TextButton(onClick = { onOpenCommit(commit) }) {
                             Text("查看详情")
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun ProjectGitOperationHistorySection(
+    records: List<ProjectGitOperationRecordUi>
+) {
+    val surfaceColor = rememberReasonixSurfaceColor()
+    val mutedTextColor = rememberReasonixMutedTextColor()
+    val summary = remember(records) {
+        buildProjectGitOperationSummary(records)
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("最近操作", style = MaterialTheme.typography.titleSmall)
+        if (records.isEmpty()) {
+            Text(
+                "当前还没有可显示的 Git 操作记录。",
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedTextColor
+            )
+        } else {
+            Text(
+                text = buildString {
+                    append("共 ${summary.totalCount} 条")
+                    append(" · 成功 ${summary.successCount}")
+                    append(" · 失败 ${summary.failureCount}")
+                    append(" · 涉及仓库 ${summary.repoCount}")
+                    summary.latestTimeLabel?.let { append(" · 最近 $it") }
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedTextColor
+            )
+            records.forEach { record ->
+                ProjectInsetCard(
+                    shape = RoundedCornerShape(12.dp),
+                    surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(record.title, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            text = "${record.repoLabel} · ${record.timeLabel}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = true,
+                                onClick = {},
+                                label = { Text(record.categoryLabel) }
+                            )
+                            FilterChip(
+                                selected = true,
+                                onClick = {},
+                                label = { Text(if (record.isSuccess) "成功" else "失败") }
+                            )
+                        }
+                        Text(
+                            text = record.detail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (record.isSuccess) {
+                                mutedTextColor
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            }
+                        )
                     }
                 }
             }

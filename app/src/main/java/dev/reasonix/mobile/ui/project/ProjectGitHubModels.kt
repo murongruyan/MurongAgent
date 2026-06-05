@@ -11,7 +11,11 @@ internal data class ProjectDetectedRepoUi(
     val displayName: String,
     val relativePath: String,
     val isWorkspaceRoot: Boolean,
-    val hasGitMetadata: Boolean
+    val hasGitMetadata: Boolean,
+    val hasReadme: Boolean,
+    val hasGradleBuild: Boolean,
+    val hasPackageJson: Boolean,
+    val hasGitHubWorkflows: Boolean
 )
 
 @Serializable
@@ -76,7 +80,18 @@ internal data class ProjectGitHubWorkflowUi(
 
 internal data class ProjectGitHubWorkflowDispatchInputUi(
     val key: String = "",
-    val value: String = ""
+    val value: String = "",
+    val description: String? = null,
+    val required: Boolean = false,
+    val defaultValue: String? = null,
+    val type: String = "string",
+    val options: List<String> = emptyList(),
+    val autoDetected: Boolean = false
+)
+
+internal data class ProjectGitHubWorkflowDispatchSchemaLoadResult(
+    val inputs: List<ProjectGitHubWorkflowDispatchInputUi>,
+    val error: String? = null
 )
 
 @Serializable
@@ -548,11 +563,25 @@ internal enum class ProjectGitHubWorkspaceBatchAction(val label: String) {
     REFRESH_REMOTE("批量刷新 GitHub 摘要")
 }
 
+internal enum class ProjectGitHubWorkspaceTaskKind(val label: String) {
+    GENERAL("概览"),
+    WORKFLOW("工作流"),
+    LOCAL_CONFLICT("冲突"),
+    SYNC("同步"),
+    COLLABORATION("协作"),
+    LOCAL_CHANGES("本地改动"),
+    REMOTE_BINDING("远端绑定"),
+    REMOTE_ERROR("远端摘要")
+}
+
 internal data class ProjectGitHubWorkspaceTaskUi(
     val title: String,
     val subtitle: String,
     val repoRoot: String,
+    val repoTitle: String = "",
     val isCritical: Boolean = false,
+    val kind: ProjectGitHubWorkspaceTaskKind = ProjectGitHubWorkspaceTaskKind.GENERAL,
+    val destinationLabel: String? = null,
     val targetTab: ProjectGitHubWorkspaceRepoWorkbenchTab? = null,
     val targetWorkflowRun: ProjectGitHubWorkflowRunUi? = null,
     val targetIssue: ProjectGitHubIssueUi? = null,

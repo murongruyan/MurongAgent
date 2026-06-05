@@ -1,5 +1,6 @@
 package dev.reasonix.mobile.ui.project
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,11 +10,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.reasonix.mobile.ui.ReasonixAlertDialog
@@ -37,6 +40,13 @@ internal fun ProjectGitHubIssueDetailDialog(
 ) {
     val mutedTextColor = rememberReasonixMutedTextColor()
     val surfaceColor = rememberReasonixSurfaceColor()
+    val issueSummary = remember(issue, comments, isCommentsLoading) {
+        buildProjectGitHubIssueDetailSummary(
+            issue = issue,
+            commentCount = comments.size,
+            isCommentsLoading = isCommentsLoading
+        )
+    }
 
     ReasonixAlertDialog(
         onDismissRequest = onDismiss,
@@ -63,34 +73,95 @@ internal fun ProjectGitHubIssueDetailDialog(
             ) {
                 Text(issue.title, style = MaterialTheme.typography.titleSmall)
                 Text(
-                    text = "${issue.stateLabel} · ${issue.authorLabel} · 更新于 ${issue.updatedAt}",
+                    text = "${issue.authorLabel} · 更新于 ${issue.updatedAt}",
                     style = MaterialTheme.typography.bodySmall,
                     color = mutedTextColor
                 )
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = true,
+                        onClick = {},
+                        label = { Text(issue.stateLabel) }
+                    )
+                    FilterChip(
+                        selected = true,
+                        onClick = {},
+                        label = {
+                            Text(
+                                if (issueSummary.isCommentsLoading) {
+                                    "评论读取中"
+                                } else {
+                                    "评论 ${issueSummary.commentCount}"
+                                }
+                            )
+                        }
+                    )
+                    if (issue.labels.isNotEmpty()) {
+                        FilterChip(
+                            selected = true,
+                            onClick = {},
+                            label = { Text("标签 ${issue.labels.size}") }
+                        )
+                    }
+                }
                 if (issue.labels.isNotEmpty()) {
                     ProjectInsetCard(
                         shape = RoundedCornerShape(12.dp),
                         surfaceColorOverride = surfaceColor.copy(alpha = 0.56f)
                     ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("标签", style = MaterialTheme.typography.labelMedium)
-                            Text(
-                                text = issue.labels.joinToString(" · "),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = mutedTextColor
-                            )
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            issue.labels.forEach { label ->
+                                FilterChip(
+                                    selected = true,
+                                    onClick = {},
+                                    label = { Text(label) }
+                                )
+                            }
                         }
                     }
                 }
+                ProjectInsetCard(
+                    shape = RoundedCornerShape(12.dp),
+                    surfaceColorOverride = surfaceColor.copy(alpha = 0.56f)
+                ) {
+                    Text(
+                        text = if (issue.body.isNotBlank()) issue.body else "这个 Issue 还没有正文说明。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (issue.body.isNotBlank()) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            mutedTextColor
+                        }
+                    )
+                }
                 Text(
-                    text = if (issue.body.isNotBlank()) issue.body else "这个 Issue 还没有正文说明。",
+                    text = "详情概览: ${issueSummary.summaryText}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (issue.body.isNotBlank()) {
-                        MaterialTheme.colorScheme.onSurface
-                    } else {
-                        mutedTextColor
-                    }
+                    color = MaterialTheme.colorScheme.primary
                 )
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onRefreshComments,
+                        enabled = !isCommentsLoading && !isActionRunning
+                    ) {
+                        Text("刷新讨论")
+                    }
+                    OutlinedButton(
+                        onClick = onToggleIssueState,
+                        enabled = !isActionRunning && canToggleIssueState
+                    ) {
+                        Text(if (issue.isOpen) "关闭 Issue" else "重新打开")
+                    }
+                }
                 ProjectGitHubCommentThreadSection(
                     title = "讨论",
                     comments = comments,
@@ -101,14 +172,6 @@ internal fun ProjectGitHubIssueDetailDialog(
                     onRefresh = onRefreshComments,
                     onSubmit = onSubmitComment
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = onToggleIssueState,
-                        enabled = !isActionRunning && canToggleIssueState
-                    ) {
-                        Text(if (issue.isOpen) "关闭 Issue" else "重新打开")
-                    }
-                }
             }
         }
     )
@@ -154,6 +217,29 @@ internal fun ProjectGitHubPullRequestDetailDialog(
 ) {
     val mutedTextColor = rememberReasonixMutedTextColor()
     val surfaceColor = rememberReasonixSurfaceColor()
+    val pullRequestSummary = remember(
+        pullRequest,
+        comments,
+        reviews,
+        files,
+        reviewComments,
+        isCommentsLoading,
+        isReviewsLoading,
+        isFilesLoading,
+        isReviewCommentsLoading
+    ) {
+        buildProjectGitHubPullRequestDetailSummary(
+            pullRequest = pullRequest,
+            commentCount = comments.size,
+            reviewCount = reviews.size,
+            fileCount = files.size,
+            reviewCommentCount = reviewComments.size,
+            isCommentsLoading = isCommentsLoading,
+            isReviewsLoading = isReviewsLoading,
+            isFilesLoading = isFilesLoading,
+            isReviewCommentsLoading = isReviewCommentsLoading
+        )
+    }
 
     ReasonixAlertDialog(
         onDismissRequest = onDismiss,
@@ -180,43 +266,100 @@ internal fun ProjectGitHubPullRequestDetailDialog(
             ) {
                 Text(pullRequest.title, style = MaterialTheme.typography.titleSmall)
                 Text(
-                    text = "${pullRequest.stateLabel} · ${pullRequest.authorLabel} · ${pullRequest.headBranch} -> ${pullRequest.baseBranch}",
+                    text = "${pullRequest.authorLabel} · 更新于 ${pullRequest.updatedAt}",
                     style = MaterialTheme.typography.bodySmall,
                     color = mutedTextColor
                 )
-                Text(
-                    text = "更新于 ${pullRequest.updatedAt}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor
-                )
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = true,
+                        onClick = {},
+                        label = { Text(pullRequest.stateLabel) }
+                    )
+                    FilterChip(
+                        selected = true,
+                        onClick = {},
+                        label = { Text("${pullRequest.headBranch} -> ${pullRequest.baseBranch}") }
+                    )
+                    if (pullRequest.canMerge) {
+                        FilterChip(
+                            selected = true,
+                            onClick = {},
+                            label = { Text("可直接合并") }
+                        )
+                    }
+                    if (pullRequest.labels.isNotEmpty()) {
+                        FilterChip(
+                            selected = true,
+                            onClick = {},
+                            label = { Text("标签 ${pullRequest.labels.size}") }
+                        )
+                    }
+                }
                 if (pullRequest.labels.isNotEmpty()) {
                     ProjectInsetCard(
                         shape = RoundedCornerShape(12.dp),
                         surfaceColorOverride = surfaceColor.copy(alpha = 0.56f)
                     ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("标签", style = MaterialTheme.typography.labelMedium)
-                            Text(
-                                text = pullRequest.labels.joinToString(" · "),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = mutedTextColor
-                            )
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            pullRequest.labels.forEach { label ->
+                                FilterChip(
+                                    selected = true,
+                                    onClick = {},
+                                    label = { Text(label) }
+                                )
+                            }
                         }
                     }
                 }
+                ProjectInsetCard(
+                    shape = RoundedCornerShape(12.dp),
+                    surfaceColorOverride = surfaceColor.copy(alpha = 0.56f)
+                ) {
+                    Text(
+                        text = if (pullRequest.body.isNotBlank()) {
+                            pullRequest.body
+                        } else {
+                            "这个 Pull Request 还没有正文说明。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (pullRequest.body.isNotBlank()) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            mutedTextColor
+                        }
+                    )
+                }
                 Text(
-                    text = if (pullRequest.body.isNotBlank()) {
-                        pullRequest.body
-                    } else {
-                        "这个 Pull Request 还没有正文说明。"
-                    },
+                    text = pullRequestSummary.summaryText,
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (pullRequest.body.isNotBlank()) {
-                        MaterialTheme.colorScheme.onSurface
-                    } else {
-                        mutedTextColor
-                    }
+                    color = MaterialTheme.colorScheme.primary
                 )
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (pullRequest.canMerge) {
+                        Button(
+                            onClick = onMerge,
+                            enabled = !isActionRunning && canMerge
+                        ) {
+                            Text("合并")
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = onTogglePullRequestState,
+                        enabled = !isActionRunning && canTogglePullRequestState && !pullRequest.isMerged
+                    ) {
+                        Text(if (pullRequest.isOpen) "关闭 PR" else "重新打开")
+                    }
+                }
                 ProjectGitHubCommentThreadSection(
                     title = "讨论",
                     comments = comments,
@@ -254,23 +397,69 @@ internal fun ProjectGitHubPullRequestDetailDialog(
                     onSubmit = onSubmitReviewComment,
                     onReplyToComment = onReplyToReviewComment
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (pullRequest.canMerge) {
-                        Button(
-                            onClick = onMerge,
-                            enabled = !isActionRunning && canMerge
-                        ) {
-                            Text("合并")
-                        }
-                    }
-                    OutlinedButton(
-                        onClick = onTogglePullRequestState,
-                        enabled = !isActionRunning && canTogglePullRequestState && !pullRequest.isMerged
-                    ) {
-                        Text(if (pullRequest.isOpen) "关闭 PR" else "重新打开")
-                    }
-                }
             }
+        }
+    )
+}
+
+private data class ProjectGitHubIssueDetailSummaryUi(
+    val commentCount: Int,
+    val isCommentsLoading: Boolean,
+    val summaryText: String
+)
+
+private data class ProjectGitHubPullRequestDetailSummaryUi(
+    val summaryText: String
+)
+
+private fun buildProjectGitHubIssueDetailSummary(
+    issue: ProjectGitHubIssueUi,
+    commentCount: Int,
+    isCommentsLoading: Boolean
+): ProjectGitHubIssueDetailSummaryUi {
+    return ProjectGitHubIssueDetailSummaryUi(
+        commentCount = commentCount,
+        isCommentsLoading = isCommentsLoading,
+        summaryText = buildString {
+            append(issue.stateLabel)
+            append(" · 作者 ${issue.authorLabel}")
+            append(" · 标签 ${issue.labels.size}")
+            append(" · ")
+            append(
+                if (isCommentsLoading) {
+                    "评论读取中"
+                } else {
+                    "评论 $commentCount"
+                }
+            )
+        }
+    )
+}
+
+private fun buildProjectGitHubPullRequestDetailSummary(
+    pullRequest: ProjectGitHubPullRequestUi,
+    commentCount: Int,
+    reviewCount: Int,
+    fileCount: Int,
+    reviewCommentCount: Int,
+    isCommentsLoading: Boolean,
+    isReviewsLoading: Boolean,
+    isFilesLoading: Boolean,
+    isReviewCommentsLoading: Boolean
+): ProjectGitHubPullRequestDetailSummaryUi {
+    return ProjectGitHubPullRequestDetailSummaryUi(
+        summaryText = buildString {
+            append(pullRequest.stateLabel)
+            append(" · 作者 ${pullRequest.authorLabel}")
+            append(" · 变更 ${pullRequest.headBranch} -> ${pullRequest.baseBranch}")
+            append(" · ")
+            append(if (isCommentsLoading) "讨论读取中" else "讨论 $commentCount")
+            append(" · ")
+            append(if (isReviewsLoading) "评审读取中" else "评审 $reviewCount")
+            append(" · ")
+            append(if (isFilesLoading) "文件读取中" else "文件 $fileCount")
+            append(" · ")
+            append(if (isReviewCommentsLoading) "代码评论读取中" else "代码评论 $reviewCommentCount")
         }
     )
 }

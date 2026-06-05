@@ -33,6 +33,11 @@ internal data class ProjectGitHubReadmeLoadResult(
     val error: String?
 )
 
+internal data class ProjectGitHubBranchListLoadResult(
+    val branches: List<String>,
+    val error: String? = null
+)
+
 internal fun loadProjectGitHubViewerRepositories(
     token: String,
     apiBaseUrl: String
@@ -337,6 +342,33 @@ internal fun loadProjectGitHubActions(
         issues = issues,
         pullRequests = pullRequests,
         errorMessage = null
+    )
+}
+
+internal fun loadProjectGitHubBranches(
+    repo: ProjectGitHubRepoRef,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubBranchListLoadResult {
+    val result = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/branches?per_page=100"
+    )
+    if (!result.success) {
+        return ProjectGitHubBranchListLoadResult(
+            branches = emptyList(),
+            error = result.error ?: "读取仓库分支失败"
+        )
+    }
+    val branches = parseProjectGitHubJsonArray(result.body)
+        ?.mapNotNull { item ->
+            item.jsonObjectOrNull()?.string("name")?.takeIf { it.isNotBlank() }
+        }
+        .orEmpty()
+    return ProjectGitHubBranchListLoadResult(
+        branches = branches,
+        error = null
     )
 }
 
@@ -715,6 +747,31 @@ internal fun deleteProjectGitHubRelease(
             success = false,
             message = "",
             error = result.error ?: "删除 Release 失败"
+        )
+    }
+}
+
+internal fun deleteProjectGitHubReleaseAsset(
+    repo: ProjectGitHubRepoRef,
+    assetId: Long,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubCommandResult {
+    val result = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${repo.owner}/${repo.repo}/releases/assets/$assetId",
+        method = "DELETE",
+        jsonBody = "",
+        allowedCodes = setOf(204)
+    )
+    return if (result.success) {
+        ProjectGitHubCommandResult(success = true, message = "Release 资产已删除。")
+    } else {
+        ProjectGitHubCommandResult(
+            success = false,
+            message = "",
+            error = result.error ?: "删除 Release 资产失败"
         )
     }
 }
@@ -1271,6 +1328,39 @@ internal fun loadProjectGitHubRemoteFile(
     )
 }
 
+internal fun loadProjectGitHubWorkflowDispatchSchema(
+    repo: ProjectGitHubRepoRef,
+    workflowPath: String,
+    ref: String,
+    token: String,
+    apiBaseUrl: String
+): ProjectGitHubWorkflowDispatchSchemaLoadResult {
+    if (workflowPath.isBlank()) {
+        return ProjectGitHubWorkflowDispatchSchemaLoadResult(
+            inputs = emptyList(),
+            error = "当前工作流路径为空，无法解析参数。"
+        )
+    }
+    val fileResult = loadProjectGitHubRemoteFile(
+        repo = repo,
+        path = workflowPath,
+        ref = ref,
+        token = token,
+        apiBaseUrl = apiBaseUrl
+    )
+    if (!fileResult.success || fileResult.file == null) {
+        return ProjectGitHubWorkflowDispatchSchemaLoadResult(
+            inputs = emptyList(),
+            error = fileResult.error ?: "读取工作流配置失败"
+        )
+    }
+    val inputs = parseProjectGitHubWorkflowDispatchInputs(fileResult.file.content)
+    return ProjectGitHubWorkflowDispatchSchemaLoadResult(
+        inputs = inputs,
+        error = null
+    )
+}
+
 internal fun updateProjectGitHubRemoteFile(
     repo: ProjectGitHubRepoRef,
     path: String,
@@ -1306,6 +1396,464 @@ internal fun updateProjectGitHubRemoteFile(
             error = result.error ?: "更新远端文件失败"
         )
     }
+}
+
+private fun parseProjectGitHubWorkflowDispatchInputs(
+    workflowContent: String
+): List<ProjectGitHubWorkflowDispatchInputUi> {
+    val normalizedContent = workflowContent.replace("\r\n", "\n")
+    val documents = splitProjectGitHubYamlDocuments(normalizedContent)
+    documents.forEach { documentLines ->
+        val parsed = parseProjectGitHubWorkflowDispatchInputsFromDocument(documentLines)
+        if (parsed != null) {
+            return parsed
+        }
+    }
+    return emptyList()
+}
+
+private fun parseProjectGitHubWorkflowDispatchInputsFromDocument(
+    lines: List<String>
+): List<ProjectGitHubWorkflowDispatchInputUi>? {
+    val jobsIndex = lines.indexOfFirst { it.trimStart().startsWith("jobs:") }.let { if (it < 0) lines.size else it }
+    val onBlockIndex = lines.indexOfFirst { line ->
+        val trimmed = stripProjectGitHubYamlInlineComment(line).trim()
+        Regex("^(\"on\"|'on'|on)\\s*:").containsMatchIn(trimmed)
+    }.takeIf { it >= 0 }
+    if (onBlockIndex < 0) return null
+    val onIndent = lines[onBlockIndex!!].leadingWhitespaceCount()
+    // Inline `on: [workflow_dispatch]` / `on: {workflow_dispatch: {}}` / `on: workflow_dispatch`
+    run {
+        val inline = stripProjectGitHubYamlInlineComment(lines[onBlockIndex]).trim()
+        val afterColon = inline.substringAfter(':', "").trim()
+        if (afterColon.isNotBlank()) {
+            if (afterColon.contains("workflow_dispatch")) {
+                return parseProjectGitHubInlineWorkflowDispatchInputs(afterColon) ?: emptyList()
+            }
+        }
+    }
+    val onBlockLines = collectProjectGitHubYamlChildLines(
+        lines = lines,
+        startIndex = onBlockIndex + 1,
+        parentIndent = onIndent
+    ).first
+    if (onBlockLines.any { line ->
+            val trimmed = stripProjectGitHubYamlInlineComment(line).trim()
+            trimmed == "- workflow_dispatch" ||
+                trimmed == "- \"workflow_dispatch\"" ||
+                trimmed == "- 'workflow_dispatch'"
+        }) {
+        return emptyList()
+    }
+    val workflowDispatchIndex = findProjectGitHubYamlChildIndex(
+        lines = lines,
+        parentIndex = onBlockIndex,
+        parentIndent = onIndent,
+        targetKey = "workflow_dispatch"
+    ) ?: return null
+    val workflowDispatchIndent = lines[workflowDispatchIndex].leadingWhitespaceCount()
+    run {
+        val workflowDispatchLine = stripProjectGitHubYamlInlineComment(lines[workflowDispatchIndex]).trim()
+        val afterColon = workflowDispatchLine.substringAfter(':', "").trim()
+        if (afterColon.isNotBlank()) {
+            return parseProjectGitHubInlineInputsFromWorkflowDispatchValue(afterColon) ?: emptyList()
+        }
+    }
+    val inputsIndex = findProjectGitHubYamlChildIndex(
+        lines = lines,
+        parentIndex = workflowDispatchIndex,
+        parentIndent = workflowDispatchIndent,
+        targetKey = "inputs"
+    ) ?: return emptyList()
+    if (inputsIndex >= jobsIndex) return null
+    run {
+        val inputsLine = stripProjectGitHubYamlInlineComment(lines[inputsIndex]).trim()
+        val afterColon = inputsLine.substringAfter(':', "").trim()
+        if (afterColon.isNotBlank()) {
+            return parseProjectGitHubInlineInputsMap(afterColon)
+        }
+    }
+    val inputsIndent = lines[inputsIndex].leadingWhitespaceCount()
+    val results = mutableListOf<ProjectGitHubWorkflowDispatchInputUi>()
+    var index = inputsIndex + 1
+    while (index < lines.size) {
+        val line = lines[index]
+        if (line.isBlank() || line.trimStart().startsWith("#")) {
+            index++
+            continue
+        }
+        val indent = line.leadingWhitespaceCount()
+        if (indent <= inputsIndent) break
+        val trimmed = line.trim()
+        if (!trimmed.endsWith(":") || trimmed.startsWith("- ")) {
+            index++
+            continue
+        }
+        val inputKey = trimmed.removeSuffix(":").trim().trimYamlQuotes()
+        val propertyStart = index + 1
+        var nextInputIndex = propertyStart
+        while (nextInputIndex < lines.size) {
+            val nextLine = lines[nextInputIndex]
+            if (nextLine.isBlank() || nextLine.trimStart().startsWith("#")) {
+                nextInputIndex++
+                continue
+            }
+            val nextIndent = nextLine.leadingWhitespaceCount()
+            if (nextIndent <= inputsIndent) break
+            if (nextIndent == indent && nextLine.trim().endsWith(":")) break
+            nextInputIndex++
+        }
+        val propertyLines = lines.subList(propertyStart, nextInputIndex)
+        results += parseProjectGitHubWorkflowDispatchInput(
+            key = inputKey,
+            propertyLines = propertyLines
+        )
+        index = nextInputIndex
+    }
+    return results
+}
+
+private fun splitProjectGitHubYamlDocuments(content: String): List<List<String>> {
+    val lines = content.lines()
+    val documents = mutableListOf<MutableList<String>>()
+    var current = mutableListOf<String>()
+    lines.forEach { line ->
+        val trimmed = line.trim()
+        if (trimmed == "---" || trimmed == "...") {
+            if (current.isNotEmpty()) {
+                documents += current
+                current = mutableListOf()
+            }
+        } else {
+            current += line
+        }
+    }
+    if (current.isNotEmpty()) {
+        documents += current
+    }
+    return documents.ifEmpty { listOf(lines) }
+}
+
+private fun parseProjectGitHubInlineWorkflowDispatchInputs(
+    inlineText: String
+): List<ProjectGitHubWorkflowDispatchInputUi>? {
+    val normalized = stripProjectGitHubYamlInlineComment(inlineText).trim()
+    if (normalized.equals("workflow_dispatch", ignoreCase = true)) {
+        return emptyList()
+    }
+    if (normalized.startsWith("[") && normalized.endsWith("]")) {
+        val items = splitProjectGitHubInlineTopLevel(
+            normalized.removePrefix("[").removeSuffix("]")
+        ).map { it.trim().trimYamlQuotes() }
+        return if (items.any { it == "workflow_dispatch" }) emptyList() else null
+    }
+    val entries = parseProjectGitHubInlineMapEntries(
+        if (normalized.startsWith("{")) normalized else "{$normalized}"
+    )
+    val workflowDispatchValue = entries["workflow_dispatch"] ?: return null
+    return parseProjectGitHubInlineInputsFromWorkflowDispatchValue(workflowDispatchValue) ?: emptyList()
+}
+
+private fun parseProjectGitHubInlineInputsFromWorkflowDispatchValue(
+    workflowDispatchValue: String
+): List<ProjectGitHubWorkflowDispatchInputUi>? {
+    val normalized = workflowDispatchValue.trim()
+    if (normalized.isBlank() || normalized == "{}") return emptyList()
+    val entries = parseProjectGitHubInlineMapEntries(
+        if (normalized.startsWith("{")) normalized else "{$normalized}"
+    )
+    val inputsValue = entries["inputs"] ?: return emptyList()
+    return parseProjectGitHubInlineInputsMap(inputsValue)
+}
+
+private fun parseProjectGitHubInlineInputsMap(
+    inputsValue: String
+): List<ProjectGitHubWorkflowDispatchInputUi> {
+    val entries = parseProjectGitHubInlineMapEntries(
+        if (inputsValue.trim().startsWith("{")) inputsValue.trim() else "{$inputsValue}"
+    )
+    return entries.map { (key, rawValue) ->
+        val normalized = rawValue.trim()
+        val properties = if (normalized.startsWith("{") && normalized.endsWith("}")) {
+            parseProjectGitHubInlineMapEntries(normalized)
+        } else {
+            emptyMap()
+        }
+        val optionsValue = properties["options"]
+        val options = if (optionsValue != null && optionsValue.trim().startsWith("[") && optionsValue.trim().endsWith("]")) {
+            splitProjectGitHubInlineTopLevel(
+                optionsValue.trim().removePrefix("[").removeSuffix("]")
+            ).mapNotNull { option ->
+                option.trim().trimYamlQuotes().takeIf { it.isNotBlank() }
+            }
+        } else {
+            emptyList()
+        }
+        ProjectGitHubWorkflowDispatchInputUi(
+            key = key,
+            value = properties["default"]?.trimYamlQuotes().orEmpty(),
+            description = properties["description"]?.trimYamlQuotes()?.takeIf { it.isNotBlank() },
+            required = properties["required"]?.equals("true", ignoreCase = true) == true,
+            defaultValue = properties["default"]?.trimYamlQuotes()?.takeIf { it.isNotBlank() },
+            type = properties["type"]?.trimYamlQuotes()?.ifBlank { "string" } ?: "string",
+            options = options,
+            autoDetected = true
+        )
+    }
+}
+
+private fun parseProjectGitHubInlineMapEntries(
+    raw: String
+): Map<String, String> {
+    val normalized = raw.trim().removeSurrounding("{", "}").trim()
+    if (normalized.isBlank()) return emptyMap()
+    return splitProjectGitHubInlineTopLevel(normalized)
+        .mapNotNull { entry ->
+            val separatorIndex = findProjectGitHubInlineTopLevelSeparator(entry, ':')
+            if (separatorIndex <= 0) {
+                null
+            } else {
+                val key = entry.substring(0, separatorIndex).trim().trimYamlQuotes()
+                val value = entry.substring(separatorIndex + 1).trim()
+                key.takeIf { it.isNotBlank() }?.let { it to value }
+            }
+        }
+        .toMap()
+}
+
+private fun splitProjectGitHubInlineTopLevel(
+    content: String
+): List<String> {
+    val parts = mutableListOf<String>()
+    val builder = StringBuilder()
+    var braceDepth = 0
+    var bracketDepth = 0
+    var inSingleQuote = false
+    var inDoubleQuote = false
+    content.forEach { char ->
+        when (char) {
+            '\'' -> if (!inDoubleQuote) inSingleQuote = !inSingleQuote
+            '"' -> if (!inSingleQuote) inDoubleQuote = !inDoubleQuote
+            '{' -> if (!inSingleQuote && !inDoubleQuote) braceDepth++
+            '}' -> if (!inSingleQuote && !inDoubleQuote) braceDepth--
+            '[' -> if (!inSingleQuote && !inDoubleQuote) bracketDepth++
+            ']' -> if (!inSingleQuote && !inDoubleQuote) bracketDepth--
+            ',' -> if (!inSingleQuote && !inDoubleQuote && braceDepth == 0 && bracketDepth == 0) {
+                parts += builder.toString().trim()
+                builder.clear()
+                return@forEach
+            }
+        }
+        builder.append(char)
+    }
+    builder.toString().trim().takeIf { it.isNotBlank() }?.let(parts::add)
+    return parts
+}
+
+private fun findProjectGitHubInlineTopLevelSeparator(
+    content: String,
+    separator: Char
+): Int {
+    var braceDepth = 0
+    var bracketDepth = 0
+    var inSingleQuote = false
+    var inDoubleQuote = false
+    content.forEachIndexed { index, char ->
+        when (char) {
+            '\'' -> if (!inDoubleQuote) inSingleQuote = !inSingleQuote
+            '"' -> if (!inSingleQuote) inDoubleQuote = !inDoubleQuote
+            '{' -> if (!inSingleQuote && !inDoubleQuote) braceDepth++
+            '}' -> if (!inSingleQuote && !inDoubleQuote) braceDepth--
+            '[' -> if (!inSingleQuote && !inDoubleQuote) bracketDepth++
+            ']' -> if (!inSingleQuote && !inDoubleQuote) bracketDepth--
+            separator -> if (!inSingleQuote && !inDoubleQuote && braceDepth == 0 && bracketDepth == 0) {
+                return index
+            }
+        }
+    }
+    return -1
+}
+
+private fun parseProjectGitHubWorkflowDispatchInput(
+    key: String,
+    propertyLines: List<String>
+): ProjectGitHubWorkflowDispatchInputUi {
+    var description: String? = null
+    var required = false
+    var defaultValue: String? = null
+    var type = "string"
+    val options = mutableListOf<String>()
+    var index = 0
+    while (index < propertyLines.size) {
+        val line = propertyLines[index]
+        val trimmed = stripProjectGitHubYamlInlineComment(line).trim()
+        if (trimmed.isBlank() || trimmed.startsWith("#")) {
+            index++
+            continue
+        }
+        val colonIndex = trimmed.indexOf(':')
+        if (colonIndex <= 0) {
+            index++
+            continue
+        }
+        val lineIndent = line.leadingWhitespaceCount()
+        val propertyKey = trimmed.substring(0, colonIndex).trim().trimYamlQuotes()
+        val propertyValue = trimmed.substring(colonIndex + 1).trim()
+        when (propertyKey) {
+            "description" -> {
+                if (propertyValue == "|" || propertyValue == ">") {
+                    val (blockLines, nextIndex) = collectProjectGitHubYamlChildLines(
+                        lines = propertyLines,
+                        startIndex = index + 1,
+                        parentIndent = lineIndent
+                    )
+                    description = formatProjectGitHubYamlBlockScalar(
+                        lines = blockLines,
+                        folded = propertyValue == ">"
+                    ).takeIf { it.isNotBlank() }
+                    index = nextIndex
+                    continue
+                }
+                description = propertyValue.trimYamlQuotes().takeIf { it.isNotBlank() }
+            }
+            "required" -> required = propertyValue.equals("true", ignoreCase = true)
+            "default" -> {
+                if (propertyValue == "|" || propertyValue == ">") {
+                    val (blockLines, nextIndex) = collectProjectGitHubYamlChildLines(
+                        lines = propertyLines,
+                        startIndex = index + 1,
+                        parentIndent = lineIndent
+                    )
+                    defaultValue = formatProjectGitHubYamlBlockScalar(
+                        lines = blockLines,
+                        folded = propertyValue == ">"
+                    ).takeIf { it.isNotBlank() }
+                    index = nextIndex
+                    continue
+                }
+                defaultValue = propertyValue.trimYamlQuotes().takeIf { it.isNotBlank() }
+            }
+            "type" -> type = propertyValue.trimYamlQuotes().ifBlank { "string" }
+            "options" -> {
+                if (propertyValue.startsWith("[") && propertyValue.endsWith("]")) {
+                    options += propertyValue
+                        .removePrefix("[")
+                        .removeSuffix("]")
+                        .split(',')
+                        .map { it.trim().trimYamlQuotes() }
+                        .filter { it.isNotBlank() }
+                } else {
+                    val (blockLines, nextIndex) = collectProjectGitHubYamlChildLines(
+                        lines = propertyLines,
+                        startIndex = index + 1,
+                        parentIndent = lineIndent
+                    )
+                    options += blockLines.mapNotNull { optionLine ->
+                        stripProjectGitHubYamlInlineComment(optionLine).trim()
+                            .takeIf { it.startsWith("- ") }
+                            ?.removePrefix("- ")
+                            ?.trim()
+                            ?.trimYamlQuotes()
+                            ?.takeIf { it.isNotBlank() }
+                    }
+                    index = nextIndex
+                    continue
+                }
+            }
+        }
+        index++
+    }
+    return ProjectGitHubWorkflowDispatchInputUi(
+        key = key,
+        value = defaultValue.orEmpty(),
+        description = description,
+        required = required,
+        defaultValue = defaultValue,
+        type = type,
+        options = options,
+        autoDetected = true
+    )
+}
+
+private fun collectProjectGitHubYamlChildLines(
+    lines: List<String>,
+    startIndex: Int,
+    parentIndent: Int
+): Pair<List<String>, Int> {
+    val collected = mutableListOf<String>()
+    var index = startIndex
+    while (index < lines.size) {
+        val line = lines[index]
+        if (line.isBlank()) {
+            collected += line
+            index++
+            continue
+        }
+        val indent = line.leadingWhitespaceCount()
+        if (indent <= parentIndent) break
+        collected += line
+        index++
+    }
+    return collected to index
+}
+
+private fun formatProjectGitHubYamlBlockScalar(
+    lines: List<String>,
+    folded: Boolean
+): String {
+    val normalized = lines
+        .filterNot { it.trimStart().startsWith("#") }
+        .map { it.trimEnd() }
+        .dropWhile { it.isBlank() }
+        .dropLastWhile { it.isBlank() }
+        .map { it.trimStart() }
+    return if (folded) {
+        normalized.joinToString(" ").replace(Regex("\\s+"), " ").trim()
+    } else {
+        normalized.joinToString("\n").trim()
+    }
+}
+
+private fun findProjectGitHubYamlChildIndex(
+    lines: List<String>,
+    parentIndex: Int,
+    parentIndent: Int,
+    targetKey: String
+): Int? {
+    var index = parentIndex + 1
+    while (index < lines.size) {
+        val line = lines[index]
+        if (line.isBlank() || line.trimStart().startsWith("#")) {
+            index++
+            continue
+        }
+        val indent = line.leadingWhitespaceCount()
+        if (indent <= parentIndent) break
+        val trimmed = stripProjectGitHubYamlInlineComment(line).trim()
+        val key = trimmed.substringBefore(':').trim().trimYamlQuotes()
+        if (key == targetKey) return index
+        index++
+    }
+    return null
+}
+
+private fun String.leadingWhitespaceCount(): Int = takeWhile { it == ' ' || it == '\t' }.length
+
+private fun String.trimYamlQuotes(): String = trim().removeSurrounding("\"").removeSurrounding("'")
+
+private fun stripProjectGitHubYamlInlineComment(line: String): String {
+    var inSingleQuote = false
+    var inDoubleQuote = false
+    line.forEachIndexed { index, char ->
+        when (char) {
+            '\'' -> if (!inDoubleQuote) inSingleQuote = !inSingleQuote
+            '"' -> if (!inSingleQuote) inDoubleQuote = !inDoubleQuote
+            '#' -> if (!inSingleQuote && !inDoubleQuote) {
+                return line.substring(0, index).trimEnd()
+            }
+        }
+    }
+    return line
 }
 
 internal fun createProjectGitHubRepository(

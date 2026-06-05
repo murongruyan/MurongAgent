@@ -1,11 +1,14 @@
 package dev.reasonix.mobile.ui.project
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -220,9 +223,94 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
             ) {
                 matchedVisibleLogEntries.indexOfFirst { it.entryName == activeMatchedLogEntryName }
             }
+            val visibleExpandedCount = remember(visibleLogEntries, expandedLogEntries) {
+                visibleLogEntries.count { entry -> expandedLogEntries.contains(entry.entryName) }
+            }
+            val logScopeLabel = remember(
+                selectedIssueJobName,
+                selectedIssueStepName,
+                showOnlyIssueLogs,
+                showOnlySelectedStepLogs
+            ) {
+                buildProjectGitHubWorkflowLogScopeLabel(
+                    selectedJobName = selectedIssueJobName,
+                    selectedStepName = selectedIssueStepName,
+                    showOnlyIssueLogs = showOnlyIssueLogs,
+                    showOnlySelectedStepLogs = showOnlySelectedStepLogs
+                )
+            }
+            val visibleLogSummaryText = remember(
+                visibleLogEntries,
+                detail.logEntries,
+                matchedVisibleLogEntries,
+                logSearchTerms,
+                visibleExpandedCount
+            ) {
+                buildProjectGitHubWorkflowVisibleLogSummary(
+                    visibleCount = visibleLogEntries.size,
+                    totalCount = detail.logEntries.size,
+                    matchedCount = matchedVisibleLogEntries.size,
+                    searchTermCount = logSearchTerms.size,
+                    expandedCount = visibleExpandedCount
+                )
+            }
+            val logSectionBringIntoViewRequester = remember(detail.id) {
+                BringIntoViewRequester()
+            }
+            var logSectionScrollRequest by remember(detail.id) {
+                mutableStateOf(0)
+            }
             val logListScrollState = rememberScrollState()
+            fun focusJobLogs(jobName: String) {
+                selectedIssueJobName = jobName
+                selectedIssueStepName = null
+                showOnlyIssueLogs = false
+                showOnlySelectedStepLogs = false
+                expandedLogEntries = expandedLogEntries +
+                    detail.logEntries
+                        .filter { entry -> projectGitHubLogMatchesJob(entry, jobName) }
+                        .map { it.entryName }
+                        .toSet()
+                logSectionScrollRequest += 1
+            }
+            fun clearJobLogFocus(resetExpandedLogs: Boolean = false) {
+                selectedIssueJobName = null
+                selectedIssueStepName = null
+                showOnlyIssueLogs = false
+                showOnlySelectedStepLogs = false
+                if (resetExpandedLogs) {
+                    expandedLogEntries = autoExpandedLogEntries
+                }
+            }
+            fun clearStepLogFocus(resetExpandedLogs: Boolean = false) {
+                selectedIssueStepName = null
+                showOnlySelectedStepLogs = false
+                if (resetExpandedLogs) {
+                    expandedLogEntries = autoExpandedLogEntries
+                }
+            }
+            fun focusJobStepLogs(jobName: String, stepName: String) {
+                selectedIssueJobName = jobName
+                selectedIssueStepName = stepName
+                showOnlyIssueLogs = false
+                showOnlySelectedStepLogs = true
+                expandedLogEntries = expandedLogEntries +
+                    detail.logEntries
+                        .filter { entry ->
+                            projectGitHubLogMatchesJob(entry, jobName) &&
+                                projectGitHubLogMentionsStep(entry, stepName)
+                        }
+                        .map { it.entryName }
+                        .toSet()
+                logSectionScrollRequest += 1
+            }
             LaunchedEffect(detail.status, detail.jobs, detail.logEntries) {
                 expandedLogEntries = autoExpandedLogEntries
+            }
+            LaunchedEffect(logSectionScrollRequest) {
+                if (logSectionScrollRequest > 0) {
+                    logSectionBringIntoViewRequester.bringIntoView()
+                }
             }
             LaunchedEffect(logSearchTerms, logSearchRequireAllTerms, matchedVisibleLogEntries) {
                 activeMatchedLineIndexByEntry.clear()
@@ -247,61 +335,95 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
             }
 
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 460.dp)
-                    .verticalScroll(logListScrollState),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(
-                    text = "${detail.repo.owner}/${detail.repo.repo} / ${detail.workflowName.ifBlank { detail.title }}",
-                    style = MaterialTheme.typography.titleSmall
-                )
-                Text(
-                    text = "第 ${detail.runNumber} 次运行",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor
-                )
-                Text(
-                    text = "触发方式: ${detail.eventLabel}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor
-                )
-                Text(
-                    text = "当前状态: ${detail.statusLabel} · 持续时间: ${detail.durationLabel}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (detail.hasIssue) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        mutedTextColor
-                    }
-                )
-                Text(
-                    text = "分支 ${detail.headBranch.ifBlank { "未知" }} · 开始 ${detail.createdAtLabel} · 更新 ${detail.updatedAtLabel}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor
-                )
-                Text(
-                    text = "作业 ${detail.jobs.size} · 日志 ${detail.logEntries.size} · 产物 ${detail.artifacts.size}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { onRefreshDetail(detail) }) {
-                        Text("刷新详情")
-                    }
-                    OutlinedButton(onClick = { onRerun(detail) }) {
-                        Text("重新运行")
-                    }
-                    detail.htmlUrl?.takeIf { it.isNotBlank() }?.let {
-                        TextButton(onClick = { onOpenRunPage(detail.htmlUrl) }) {
-                            Text("网页")
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 460.dp)
+                        .verticalScroll(logListScrollState),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "${detail.repo.owner}/${detail.repo.repo} / ${detail.workflowName.ifBlank { detail.title }}",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text(
+                        text = "第 ${detail.runNumber} 次运行",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                    Text(
+                        text = "触发方式: ${detail.eventLabel}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                    Text(
+                        text = "当前状态: ${detail.statusLabel} · 持续时间: ${detail.durationLabel}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (detail.hasIssue) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            mutedTextColor
+                        }
+                    )
+                    Text(
+                        text = "分支 ${detail.headBranch.ifBlank { "未知" }} · 开始 ${detail.createdAtLabel} · 更新 ${detail.updatedAtLabel}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                    Text(
+                        text = buildString {
+                            append("作业列表: ")
+                            if (detail.jobs.isEmpty()) {
+                                append("GitHub 正在返回作业信息")
+                            } else {
+                                append(
+                                    detail.jobs.take(3).joinToString(" / ") { job ->
+                                        "${job.name}(${job.durationLabel})"
+                                    }
+                                )
+                                if (detail.jobs.size > 3) {
+                                    append(" 等 ${detail.jobs.size} 个")
+                                }
+                            }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                    Text(
+                        text = "日志 ${detail.logEntries.size} · 产物 ${detail.artifacts.size}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    if (detail.jobs.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = selectedIssueJobName == null,
+                                onClick = { clearJobLogFocus() },
+                                label = { Text("全部作业") }
+                            )
+                            detail.jobs.forEach { job ->
+                                FilterChip(
+                                    selected = selectedIssueJobName == job.name,
+                                    onClick = { focusJobLogs(job.name) },
+                                    label = {
+                                        Text(
+                                            buildString {
+                                                append(job.name.take(18))
+                                                append(" · ")
+                                                append(job.durationLabel)
+                                            }
+                                        )
+                                    }
+                                )
+                            }
                         }
                     }
-                    OutlinedButton(onClick = { onDownloadLogs(detail) }) {
-                        Text("日志 ZIP")
-                    }
-                }
                 detail.issueSummaries.takeIf { it.isNotEmpty() }?.let { issues ->
                     ProjectInsetCard(
                         shape = RoundedCornerShape(12.dp),
@@ -485,6 +607,153 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                             },
                             style = MaterialTheme.typography.titleSmall
                         )
+                        Text(
+                            text = if (selectedIssueJobName.isNullOrBlank()) {
+                                "点击上方 Job 可直接定位对应日志。"
+                            } else {
+                                "当前聚焦 Job: ${selectedIssueJobName.orEmpty()}"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor,
+                            modifier = Modifier.bringIntoViewRequester(logSectionBringIntoViewRequester)
+                        )
+                        Text(
+                            text = logScopeLabel,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                        Text(
+                            text = visibleLogSummaryText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        if (
+                            !selectedIssueJobName.isNullOrBlank() ||
+                            !selectedIssueStepName.isNullOrBlank() ||
+                            showOnlyIssueLogs ||
+                            showOnlySelectedStepLogs ||
+                            searchActive
+                        ) {
+                            ProjectInsetCard(
+                                shape = RoundedCornerShape(12.dp),
+                                surfaceColorOverride = chromeColor.copy(alpha = 0.46f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(
+                                        text = "当前视图状态",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Row(
+                                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        selectedIssueJobName?.takeIf { it.isNotBlank() }?.let { jobName ->
+                                            FilterChip(
+                                                selected = true,
+                                                onClick = {},
+                                                label = { Text("Job: $jobName") }
+                                            )
+                                        }
+                                        selectedIssueStepName?.takeIf { it.isNotBlank() }?.let { stepName ->
+                                            FilterChip(
+                                                selected = true,
+                                                onClick = {},
+                                                label = { Text("步骤: ${stepName.take(22)}") }
+                                            )
+                                        }
+                                        if (showOnlyIssueLogs) {
+                                            FilterChip(
+                                                selected = true,
+                                                onClick = {},
+                                                label = { Text("仅异常日志") }
+                                            )
+                                        }
+                                        if (showOnlySelectedStepLogs) {
+                                            FilterChip(
+                                                selected = true,
+                                                onClick = {},
+                                                label = { Text("仅当前步骤") }
+                                            )
+                                        }
+                                        if (searchActive) {
+                                            FilterChip(
+                                                selected = true,
+                                                onClick = {},
+                                                label = { Text("搜索中 ${logSearchTerms.size} 项") }
+                                            )
+                                        }
+                                    }
+                                    Row(
+                                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        if (!selectedIssueStepName.isNullOrBlank()) {
+                                            OutlinedButton(
+                                                onClick = { clearStepLogFocus(resetExpandedLogs = true) }
+                                            ) {
+                                                Text("清除步骤聚焦")
+                                            }
+                                        }
+                                        if (!selectedIssueJobName.isNullOrBlank()) {
+                                            OutlinedButton(
+                                                onClick = { clearJobLogFocus(resetExpandedLogs = true) }
+                                            ) {
+                                                Text("清除 Job 聚焦")
+                                            }
+                                        }
+                                        if (showOnlyIssueLogs) {
+                                            OutlinedButton(onClick = { showOnlyIssueLogs = false }) {
+                                                Text("显示全部日志")
+                                            }
+                                        }
+                                        if (searchActive) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    logSearchQuery = ""
+                                                    selectedLogSearchPresets = emptySet()
+                                                    logSearchRequireAllTerms = false
+                                                    showOnlyMatchedLogs = false
+                                                    activeMatchedLogEntryName = null
+                                                }
+                                            ) {
+                                                Text("清空搜索")
+                                            }
+                                        }
+                                    }
+                                    Text(
+                                        text = visibleLogSummaryText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = mutedTextColor
+                                    )
+                                }
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    expandedLogEntries = expandedLogEntries +
+                                        visibleLogEntries.map { it.entryName }.toSet()
+                                }
+                            ) {
+                                Text("展开当前范围")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    expandedLogEntries = expandedLogEntries -
+                                        visibleLogEntries.map { it.entryName }.toSet()
+                                }
+                            ) {
+                                Text("收起当前范围")
+                            }
+                            OutlinedButton(onClick = { expandedLogEntries = autoExpandedLogEntries }) {
+                                Text("恢复自动展开")
+                            }
+                        }
                         autoExpandHint?.let { hint ->
                             Text(
                                 text = hint,
@@ -600,11 +869,7 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                                 )
                                 FilterChip(
                                     selected = false,
-                                    onClick = {
-                                        selectedIssueStepName = null
-                                        showOnlySelectedStepLogs = false
-                                        expandedLogEntries = autoExpandedLogEntries
-                                    },
+                                    onClick = { clearStepLogFocus(resetExpandedLogs = true) },
                                     label = { Text("清除步骤聚焦") }
                                 )
                             }
@@ -699,11 +964,13 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                         }
                         if (visibleLogEntries.isEmpty()) {
                             Text(
-                                text = if (searchActive) {
-                                    "当前筛选条件下没有命中的日志文件，可以清空搜索、关闭“只看搜索命中”，或切回全部 Job。"
-                                } else {
-                                    "当前筛选条件下没有命中的日志文件，可以关闭“只看异常日志”或切回全部 Job。"
-                                },
+                                text = buildProjectGitHubWorkflowEmptyLogMessage(
+                                    searchActive = searchActive,
+                                    showOnlyMatchedLogs = showOnlyMatchedLogs,
+                                    selectedJobName = selectedIssueJobName,
+                                    selectedStepName = selectedIssueStepName,
+                                    showOnlyIssueLogs = showOnlyIssueLogs
+                                ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = mutedTextColor
                             )
@@ -712,6 +979,8 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                             val isExpanded = expandedLogEntries.contains(entry.entryName)
                             val matchesFocusedStep = !selectedIssueStepName.isNullOrBlank() &&
                                 focusedStepMatchedEntries.contains(entry.entryName)
+                            val matchesFocusedJob = !selectedIssueJobName.isNullOrBlank() &&
+                                projectGitHubLogMatchesJob(entry, selectedIssueJobName.orEmpty())
                             val searchHit = logSearchHits[entry.entryName]
                             val matchesSearch = searchHit?.hasMatch == true
                             val isActiveSearchMatch = matchesSearch &&
@@ -746,6 +1015,7 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                                 mutedTextColor = mutedTextColor,
                                 chromeAlphaSurfaceColor = chromeColor.copy(alpha = 0.56f),
                                 defaultSurfaceColor = surfaceColor.copy(alpha = 0.58f),
+                                matchesFocusedJob = matchesFocusedJob,
                                 matchesFocusedStep = matchesFocusedStep,
                                 matchesSearch = matchesSearch,
                                 isActiveSearchMatch = isActiveSearchMatch,
@@ -837,77 +1107,188 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                         }
                     }
                 }
-                if (detail.jobs.isEmpty()) {
-                    Text(
-                        text = "这次运行还没有返回 job 详情，可能仍在初始化。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = mutedTextColor
-                    )
-                } else {
-                    visibleJobs.forEach { job ->
-                        ProjectInsetCard(
-                            shape = RoundedCornerShape(12.dp),
-                            surfaceColorOverride = if (job.hasIssue) {
-                                MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.40f)
-                            } else {
-                                surfaceColor.copy(alpha = 0.58f)
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text(job.name, style = MaterialTheme.typography.bodyMedium)
-                                Text(
-                                    text = job.statusLabel,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (job.hasIssue) {
-                                        MaterialTheme.colorScheme.error
-                                    } else {
-                                        mutedTextColor
-                                    }
-                                )
-                                if (job.startedAt.isNotBlank() || job.completedAt.isNotBlank()) {
+                    if (detail.jobs.isEmpty()) {
+                        Text(
+                            text = "这次运行还没有返回 job 详情，可能仍在初始化。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                    } else {
+                        visibleJobs.forEach { job ->
+                            ProjectInsetCard(
+                                shape = RoundedCornerShape(12.dp),
+                                surfaceColorOverride = if (job.hasIssue) {
+                                    MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.40f)
+                                } else {
+                                    surfaceColor.copy(alpha = 0.58f)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { focusJobLogs(job.name) }
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(job.name, style = MaterialTheme.typography.bodyMedium)
                                     Text(
-                                        text = buildString {
-                                            if (job.startedAt.isNotBlank()) {
-                                                append("开始 ${formatProjectGitHubIsoDateTime(job.startedAt)}")
-                                            }
-                                            if (job.completedAt.isNotBlank()) {
-                                                if (isNotEmpty()) append(" · ")
-                                                append("结束 ${formatProjectGitHubIsoDateTime(job.completedAt)}")
-                                            }
-                                        },
+                                        text = job.statusLabel,
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = mutedTextColor
-                                    )
-                                }
-                                if (job.failedSteps.isNotEmpty()) {
-                                    Text(
-                                        text = "失败步骤 ${job.failedSteps.size}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.error
-                                    )
-                                }
-                                job.steps.forEach { step ->
-                                    Text(
-                                        text = buildString {
-                                            append("• ")
-                                            if (step.number > 0) {
-                                                append("#${step.number} ")
-                                            }
-                                            append(step.name)
-                                            append(" · ")
-                                            append(step.statusLabel)
-                                            append(" · ")
-                                            append(step.durationLabel)
-                                        },
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = if (step.hasIssue) {
+                                        color = if (job.hasIssue) {
                                             MaterialTheme.colorScheme.error
                                         } else {
                                             mutedTextColor
                                         }
                                     )
+                                    if (job.startedAt.isNotBlank() || job.completedAt.isNotBlank()) {
+                                        Text(
+                                            text = buildString {
+                                                if (job.startedAt.isNotBlank()) {
+                                                    append("开始 ${formatProjectGitHubIsoDateTime(job.startedAt)}")
+                                                }
+                                                if (job.completedAt.isNotBlank()) {
+                                                    if (isNotEmpty()) append(" · ")
+                                                    append("结束 ${formatProjectGitHubIsoDateTime(job.completedAt)}")
+                                                }
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = mutedTextColor
+                                        )
+                                    }
+                                    if (job.failedSteps.isNotEmpty()) {
+                                        Text(
+                                            text = "失败步骤 ${job.failedSteps.size}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.error
+                                        )
+                                    }
+                                    Row(
+                                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        FilterChip(
+                                            selected = true,
+                                            onClick = {},
+                                            label = { Text(job.statusLabel) }
+                                        )
+                                        FilterChip(
+                                            selected = true,
+                                            onClick = {},
+                                            label = { Text(job.durationLabel) }
+                                        )
+                                        if (job.failedSteps.isNotEmpty()) {
+                                            FilterChip(
+                                                selected = true,
+                                                onClick = {},
+                                                label = { Text("失败 ${job.failedSteps.size} 步") }
+                                            )
+                                        }
+                                        if (job.steps.isNotEmpty()) {
+                                            FilterChip(
+                                                selected = true,
+                                                onClick = {},
+                                                label = { Text("步骤 ${job.steps.size}") }
+                                            )
+                                        }
+                                    }
+                                    Row(
+                                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        OutlinedButton(onClick = { focusJobLogs(job.name) }) {
+                                            Text("查看日志")
+                                        }
+                                        if (selectedIssueJobName == job.name) {
+                                            FilterChip(
+                                                selected = true,
+                                                onClick = {},
+                                                label = { Text("当前已聚焦") }
+                                            )
+                                        }
+                                    }
+                                    val highlightedSteps = remember(job.steps) {
+                                        val failingSteps = job.steps.filter { it.hasIssue }
+                                        if (failingSteps.isNotEmpty()) {
+                                            failingSteps
+                                        } else {
+                                            job.steps.filterNot {
+                                                it.status.equals("completed", ignoreCase = true)
+                                            }.ifEmpty { job.steps.take(3) }
+                                        }
+                                    }
+                                    if (highlightedSteps.isNotEmpty()) {
+                                        Row(
+                                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            highlightedSteps.take(5).forEach { step ->
+                                                FilterChip(
+                                                    selected = selectedIssueJobName == job.name &&
+                                                        selectedIssueStepName == step.name,
+                                                    onClick = { focusJobStepLogs(job.name, step.name) },
+                                                    label = {
+                                                        Text(
+                                                            buildString {
+                                                                append(step.name.take(22))
+                                                                append(" · ")
+                                                                append(step.durationLabel)
+                                                            }
+                                                        )
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                    if (job.steps.isNotEmpty()) {
+                                        Text(
+                                            text = "步骤列表",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = mutedTextColor
+                                        )
+                                        job.steps.forEach { step ->
+                                            ProjectGitHubWorkflowStepCard(
+                                                step = step,
+                                                isFocused = selectedIssueJobName == job.name &&
+                                                    selectedIssueStepName == step.name,
+                                                mutedTextColor = mutedTextColor,
+                                                onFocusLogs = { focusJobStepLogs(job.name, step.name) }
+                                            )
+                                        }
+                                    }
                                 }
+                            }
+                        }
+                    }
+                }
+                ProjectInsetCard(
+                    shape = RoundedCornerShape(12.dp),
+                    surfaceColorOverride = chromeColor.copy(alpha = 0.48f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = if (detail.status.equals("completed", ignoreCase = true)) {
+                                "底部常驻操作：可直接重跑、刷新详情，或补拉当前运行的日志 ZIP。"
+                            } else {
+                                "底部常驻操作：运行中也可随时刷新详情，完成后可直接重新运行同一工作流。"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(onClick = { onRefreshDetail(detail) }) {
+                                Text("刷新详情")
+                            }
+                            OutlinedButton(onClick = { onDownloadLogs(detail) }) {
+                                Text("日志 ZIP")
+                            }
+                            detail.htmlUrl?.takeIf { it.isNotBlank() }?.let {
+                                TextButton(onClick = { onOpenRunPage(detail.htmlUrl) }) {
+                                    Text("网页")
+                                }
+                            }
+                            Button(onClick = { onRerun(detail) }) {
+                                Text("重新运行")
                             }
                         }
                     }
@@ -915,6 +1296,91 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
             }
         }
     )
+}
+
+@Composable
+private fun ProjectGitHubWorkflowStepCard(
+    step: ProjectGitHubWorkflowStepUi,
+    isFocused: Boolean,
+    mutedTextColor: androidx.compose.ui.graphics.Color,
+    onFocusLogs: () -> Unit
+) {
+    val surfaceColor = when {
+        isFocused -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.62f)
+        step.hasIssue -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.36f)
+        step.status.equals("completed", ignoreCase = true) -> MaterialTheme.colorScheme.surfaceVariant.copy(
+            alpha = 0.32f
+        )
+        else -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.28f)
+    }
+    val statusColor = when {
+        isFocused -> MaterialTheme.colorScheme.primary
+        step.hasIssue -> MaterialTheme.colorScheme.error
+        else -> mutedTextColor
+    }
+    ProjectInsetCard(
+        shape = RoundedCornerShape(10.dp),
+        surfaceColorOverride = surfaceColor,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onFocusLogs)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                text = buildString {
+                    if (step.number > 0) {
+                        append("#${step.number} ")
+                    }
+                    append(step.name)
+                },
+                style = MaterialTheme.typography.bodySmall
+            )
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = true,
+                    onClick = {},
+                    label = { Text(step.statusLabel) }
+                )
+                FilterChip(
+                    selected = true,
+                    onClick = {},
+                    label = { Text(step.durationLabel) }
+                )
+                if (isFocused) {
+                    FilterChip(
+                        selected = true,
+                        onClick = {},
+                        label = { Text("当前聚焦") }
+                    )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onFocusLogs) {
+                    Text("查看步骤日志")
+                }
+                Text(
+                    text = if (step.startedAt.isNotBlank() || step.completedAt.isNotBlank()) {
+                        buildString {
+                            if (step.startedAt.isNotBlank()) {
+                                append("开始 ${formatProjectGitHubIsoDateTime(step.startedAt)}")
+                            }
+                            if (step.completedAt.isNotBlank()) {
+                                if (isNotEmpty()) append(" · ")
+                                append("结束 ${formatProjectGitHubIsoDateTime(step.completedAt)}")
+                            }
+                        }
+                    } else {
+                        "等待 GitHub 返回该步骤时间"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = statusColor
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -926,6 +1392,7 @@ private fun ProjectGitHubWorkflowLogEntryCard(
     mutedTextColor: androidx.compose.ui.graphics.Color,
     chromeAlphaSurfaceColor: androidx.compose.ui.graphics.Color,
     defaultSurfaceColor: androidx.compose.ui.graphics.Color,
+    matchesFocusedJob: Boolean,
     matchesFocusedStep: Boolean,
     matchesSearch: Boolean,
     isActiveSearchMatch: Boolean,
@@ -951,6 +1418,8 @@ private fun ProjectGitHubWorkflowLogEntryCard(
                 MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
             } else if (matchesFocusedStep) {
                 MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.52f)
+            } else if (matchesFocusedJob) {
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
             } else if (isActiveSearchMatch) {
                 MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.66f)
             } else if (matchesSearch) {
@@ -971,6 +1440,9 @@ private fun ProjectGitHubWorkflowLogEntryCard(
                         if (entry.truncated) {
                             append(" · 预览已截断")
                         }
+                        if (matchesFocusedJob) {
+                            append(" · 命中当前 Job")
+                        }
                         if (matchesFocusedStep) {
                             append(" · 命中当前步骤")
                         }
@@ -984,6 +1456,39 @@ private fun ProjectGitHubWorkflowLogEntryCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = mutedTextColor
                 )
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (matchesFocusedJob) {
+                        FilterChip(
+                            selected = true,
+                            onClick = {},
+                            label = { Text("当前 Job") }
+                        )
+                    }
+                    if (matchesFocusedStep) {
+                        FilterChip(
+                            selected = true,
+                            onClick = {},
+                            label = { Text("当前步骤") }
+                        )
+                    }
+                    if (matchesSearch) {
+                        FilterChip(
+                            selected = true,
+                            onClick = {},
+                            label = { Text("搜索命中 ${searchHit?.matchedLineCount ?: 0}") }
+                        )
+                    }
+                    if (isActiveSearchMatch) {
+                        FilterChip(
+                            selected = true,
+                            onClick = {},
+                            label = { Text("当前搜索焦点") }
+                        )
+                    }
+                }
                 if (searchTerms.isNotEmpty() && matchesSearch) {
                     Text(
                         text = highlightedSnippet,
