@@ -537,6 +537,8 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchPage(
                     ProjectGitHubWorkspaceRepoWorkbenchOverviewTab(
                         overview = buildProjectGitHubWorkspaceWorkbenchOverview(
                             remoteSummary = remoteSummary,
+                            githubActionsState = githubActionsState,
+                            readme = readme,
                             gitState = gitState,
                             tokenConfigured = tokenConfigured
                         ),

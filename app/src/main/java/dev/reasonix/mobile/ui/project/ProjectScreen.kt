@@ -3106,11 +3106,12 @@ private fun ProjectGitSection(
     }
 
     fun refreshSelectedViewerRepositoryDetail(
-        repository: ProjectGitHubAccountRepoUi = selectedViewerRepository ?: return
+        repository: ProjectGitHubAccountRepoUi? = selectedViewerRepository
     ) {
+        val targetRepository = repository ?: return
         val token = config.githubToken.trim()
         if (token.isBlank()) {
-            githubActionsState = ProjectGitHubActionsState.empty(repository.repoRef).copy(
+            githubActionsState = ProjectGitHubActionsState.empty(targetRepository.repoRef).copy(
                 errorMessage = "请先在设置页填写 GitHub Token。"
             )
             selectedViewerReadme = null
@@ -3121,7 +3122,7 @@ private fun ProjectGitSection(
             isGitHubLoading = true
             githubActionsState = withContext(Dispatchers.IO) {
                 loadProjectGitHubActions(
-                    repo = repository.repoRef,
+                    repo = targetRepository.repoRef,
                     token = token,
                     apiBaseUrl = config.getGitHubApiBaseUrl()
                 )
@@ -3132,7 +3133,7 @@ private fun ProjectGitSection(
             isViewerReadmeLoading = true
             val result = withContext(Dispatchers.IO) {
                 loadProjectGitHubReadme(
-                    repo = repository.repoRef,
+                    repo = targetRepository.repoRef,
                     token = token,
                     apiBaseUrl = config.getGitHubApiBaseUrl()
                 )
@@ -3222,16 +3223,37 @@ private fun ProjectGitSection(
 
     fun openStandaloneReadmeEditor(readme: ProjectGitHubReadmeUi) {
         val repository = selectedViewerRepository ?: return
-        openRemoteRepositoryEntry(
-            ProjectGitHubRemoteEntryUi(
-                name = readme.name,
-                path = readme.path,
-                type = "file",
-                sha = null,
-                size = readme.content.toByteArray().size.toLong(),
-                htmlUrl = readme.htmlUrl
-            )
-        )
+        scope.launch {
+            isGitHubActionRunning = true
+            val result = withContext(Dispatchers.IO) {
+                openProjectGitHubRemoteFileEditor(
+                    currentRepo = repository.repoRef,
+                    gitRemoteUrl = null,
+                    token = config.githubToken.trim(),
+                    currentRemoteRef = remoteRepoState.currentRef,
+                    refDraft = remoteRepoRefDraft,
+                    currentBranch = null,
+                    defaultBranch = githubActionsState.defaultBranch ?: repository.defaultBranch,
+                    entry = ProjectGitHubRemoteEntryUi(
+                        name = readme.name,
+                        path = readme.path,
+                        type = "file",
+                        sha = null,
+                        size = readme.content.toByteArray().size.toLong(),
+                        htmlUrl = readme.htmlUrl
+                    ),
+                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                )
+            }
+            isGitHubActionRunning = false
+            if (result.file != null) {
+                remoteFileDialogState = result.file
+                remoteFileContentDraft = result.contentDraft
+                remoteFileCommitMessageDraft = result.commitMessageDraft
+            } else {
+                feedbackMessage = result.feedbackMessage ?: "读取远端文件失败"
+            }
+        }
     }
 
     fun refreshWorkspaceWorkbenchReadme() {
@@ -3266,16 +3288,37 @@ private fun ProjectGitSection(
     }
 
     fun openWorkspaceWorkbenchReadmeEditor(readme: ProjectGitHubReadmeUi) {
-        openRemoteRepositoryEntry(
-            ProjectGitHubRemoteEntryUi(
-                name = readme.name,
-                path = readme.path,
-                type = "file",
-                sha = null,
-                size = readme.content.toByteArray().size.toLong(),
-                htmlUrl = readme.htmlUrl
-            )
-        )
+        scope.launch {
+            isGitHubActionRunning = true
+            val result = withContext(Dispatchers.IO) {
+                openProjectGitHubRemoteFileEditor(
+                    currentRepo = githubActionsState.repo,
+                    gitRemoteUrl = gitState.remoteUrl,
+                    token = config.githubToken.trim(),
+                    currentRemoteRef = remoteRepoState.currentRef,
+                    refDraft = remoteRepoRefDraft,
+                    currentBranch = gitState.currentBranch,
+                    defaultBranch = githubActionsState.defaultBranch,
+                    entry = ProjectGitHubRemoteEntryUi(
+                        name = readme.name,
+                        path = readme.path,
+                        type = "file",
+                        sha = null,
+                        size = readme.content.toByteArray().size.toLong(),
+                        htmlUrl = readme.htmlUrl
+                    ),
+                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                )
+            }
+            isGitHubActionRunning = false
+            if (result.file != null) {
+                remoteFileDialogState = result.file
+                remoteFileContentDraft = result.contentDraft
+                remoteFileCommitMessageDraft = result.commitMessageDraft
+            } else {
+                feedbackMessage = result.feedbackMessage ?: "读取远端文件失败"
+            }
+        }
     }
 
     fun refreshGitHubWorkspaceRemoteSummaries(
@@ -3910,15 +3953,16 @@ private fun ProjectGitSection(
         selectedViewerSection,
         githubActionsState.defaultBranch
     ) {
+        val selectedRepo = selectedViewerRepository
         if (
             activeProjectPath.isNullOrBlank() &&
-            selectedViewerRepository != null &&
+            selectedRepo != null &&
             selectedViewerSection == ProjectGitHubStandaloneSection.REPOSITORIES
         ) {
             val currentRepo = remoteRepoState.repo
             if (
-                currentRepo?.owner != selectedViewerRepository.owner ||
-                currentRepo.repo != selectedViewerRepository.name
+                currentRepo?.owner != selectedRepo.owner ||
+                currentRepo?.repo != selectedRepo.name
             ) {
                 refreshStandaloneRemoteRepositoryBrowser(
                     targetPath = "",
@@ -5157,7 +5201,7 @@ private fun ProjectGitSection(
                             style = MaterialTheme.typography.titleSmall
                         )
                         Text(
-                            text = File(currentProjectPath).name.ifBlank { currentProjectPath },
+                            text = File(currentProjectPath).name.ifBlank { currentProjectPath.orEmpty() },
                             style = MaterialTheme.typography.bodyMedium
                         )
                         Text(

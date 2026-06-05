@@ -207,6 +207,8 @@ internal data class ProjectGitHubWorkflowRunDetailUi(
         get() = formatProjectGitHubIsoDateTime(createdAt)
     val updatedAtLabel: String
         get() = formatProjectGitHubIsoDateTime(updatedAt)
+    val hasIssue: Boolean
+        get() = projectGitHubRunHasIssue(status, conclusion) || issueSummaries.isNotEmpty()
     val issueSummaries: List<String>
         get() = buildList {
             jobs.filter { it.hasIssue }.take(4).forEach { job ->
@@ -703,6 +705,12 @@ internal data class ProjectGitHubHttpResult(
     val error: String?
 )
 
+internal data class ProjectGitHubMutationResult<T>(
+    val success: Boolean,
+    val value: T?,
+    val error: String?
+)
+
 internal data class ProjectGitHubCommandResult(
     val success: Boolean,
     val message: String,
@@ -812,9 +820,12 @@ internal fun buildProjectGitHubDurationLabel(
     status: String
 ): String {
     val startMillis = parseProjectGitHubIsoMillis(startedAt) ?: return "耗时未知"
-    val endMillis = parseProjectGitHubIsoMillis(completedAt)
-        ?: if (status.equals("completed", ignoreCase = true)) null else System.currentTimeMillis()
-        ?: return "耗时未知"
+    val completedMillis = parseProjectGitHubIsoMillis(completedAt)
+    val endMillis = when {
+        completedMillis != null -> completedMillis
+        status.equals("completed", ignoreCase = true) -> return "耗时未知"
+        else -> System.currentTimeMillis()
+    }
     val durationMillis = (endMillis - startMillis).coerceAtLeast(0L)
     val minutes = durationMillis / 60_000L
     val seconds = (durationMillis % 60_000L) / 1_000L

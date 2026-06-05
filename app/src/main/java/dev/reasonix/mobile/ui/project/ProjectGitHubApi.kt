@@ -1419,9 +1419,9 @@ private fun parseProjectGitHubWorkflowDispatchInputsFromDocument(
     val onBlockIndex = lines.indexOfFirst { line ->
         val trimmed = stripProjectGitHubYamlInlineComment(line).trim()
         Regex("^(\"on\"|'on'|on)\\s*:").containsMatchIn(trimmed)
-    }.takeIf { it >= 0 }
+    }
     if (onBlockIndex < 0) return null
-    val onIndent = lines[onBlockIndex!!].leadingWhitespaceCount()
+    val onIndent = lines[onBlockIndex].leadingWhitespaceCount()
     // Inline `on: [workflow_dispatch]` / `on: {workflow_dispatch: {}}` / `on: workflow_dispatch`
     run {
         val inline = stripProjectGitHubYamlInlineComment(lines[onBlockIndex]).trim()
