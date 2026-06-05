@@ -2592,7 +2592,7 @@ private fun ProjectGitSection(
         }
     }
 
-    fun refreshGitHubWorkspaceRemoteSummaries(
+    fun refreshGitHubWorkspaceRemoteSummariesForRoots(
         rootPaths: List<String>
     ) {
         val token = config.githubToken.trim()
@@ -3026,7 +3026,7 @@ private fun ProjectGitSection(
                 }
                 ProjectGitHubWorkspaceBatchAction.REFRESH_REMOTE -> {
                     feedbackMessage = "正在批量刷新 ${selectedPaths.size} 个仓库的 GitHub 摘要..."
-                    refreshGitHubWorkspaceRemoteSummaries(selectedPaths)
+                    refreshGitHubWorkspaceRemoteSummariesForRoots(selectedPaths)
                     feedbackMessage = "批量刷新 GitHub 摘要已排队"
                 }
             }
