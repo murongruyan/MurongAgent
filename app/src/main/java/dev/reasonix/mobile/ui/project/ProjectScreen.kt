@@ -2170,12 +2170,14 @@ private fun ProjectGitSection(
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val projectStoragePath = currentProjectPath?.takeIf { it.isNotBlank() }
+        ?: context.filesDir.absolutePath
     var downloadStore by remember(currentProjectPath) {
-        mutableStateOf(loadProjectGitHubDownloadStore(currentProjectPath))
+        mutableStateOf(loadProjectGitHubDownloadStore(projectStoragePath))
     }
     val repoStatusSummaries = remember(currentProjectPath) { mutableStateMapOf<String, ProjectGitStatusUi>() }
     var workspaceRemoteSummaryStore by remember(currentProjectPath) {
-        val cache = loadProjectGitHubWorkspaceRemoteSummaryCache(currentProjectPath)
+        val cache = loadProjectGitHubWorkspaceRemoteSummaryCache(projectStoragePath)
         mutableStateOf(
             ProjectGitHubWorkspaceRemoteSummaryStore(
                 summaries = cache.summaries,
@@ -2489,19 +2491,19 @@ private fun ProjectGitSection(
             repoLabel = repoLabel
         )
         downloadStore = newStore
-        saveProjectGitHubDownloadStore(currentProjectPath, newStore)
+        saveProjectGitHubDownloadStore(projectStoragePath, newStore)
     }
 
     fun deleteGitHubDownloadRecord(recordId: String) {
         val newStore = deleteProjectGitHubDownloadRecord(downloadStore, recordId)
         downloadStore = newStore
-        saveProjectGitHubDownloadStore(currentProjectPath, newStore)
+        saveProjectGitHubDownloadStore(projectStoragePath, newStore)
     }
 
     fun clearGitHubDownloadHistory() {
         val newStore = clearProjectGitHubDownloadHistory(downloadStore)
         downloadStore = newStore
-        saveProjectGitHubDownloadStore(currentProjectPath, newStore)
+        saveProjectGitHubDownloadStore(projectStoragePath, newStore)
     }
 
     fun refreshGitState() {
@@ -2669,7 +2671,7 @@ private fun ProjectGitSection(
                     fetchedAtMillis = fetchedAtMillis
                 )
                 workspaceRemoteSummaryStore = newStore
-                saveProjectGitHubWorkspaceRemoteSummaryCache(currentProjectPath, newStore.summaries)
+                saveProjectGitHubWorkspaceRemoteSummaryCache(projectStoragePath, newStore.summaries)
             }.onFailure { error ->
                 workspaceRemoteSummaryStore = failProjectGitHubWorkspaceRemoteSummaryRefresh(
                     currentStore = workspaceRemoteSummaryStore,

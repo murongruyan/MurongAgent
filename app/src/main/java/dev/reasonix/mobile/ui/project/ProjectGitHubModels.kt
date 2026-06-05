@@ -93,7 +93,10 @@ internal data class ProjectGitHubWorkflowLogSearchHitUi(
     val matchedLineCount: Int,
     val snippet: String,
     val matchedLineIndices: List<Int>
-)
+) {
+    val matchedLineNumbers: List<Int>
+        get() = matchedLineIndices.map { it + 1 }
+}
 
 internal data class ProjectGitHubWorkflowRunDetailUi(
     val id: Long,

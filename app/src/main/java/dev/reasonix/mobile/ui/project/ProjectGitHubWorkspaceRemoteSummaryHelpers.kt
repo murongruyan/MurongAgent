@@ -53,6 +53,12 @@ internal data class ProjectGitHubWorkspaceRemoteSummaryStore(
     val globalErrorMessage: String? = null
 )
 
+internal data class ProjectGitHubWorkspaceRemoteTargetUi(
+    val rootPath: String,
+    val repo: ProjectGitHubRepoRef,
+    val includeWorkItemPreview: Boolean
+)
+
 internal data class ProjectGitHubWorkspaceRemoteSummaryRefreshPlan(
     val shouldRefresh: Boolean,
     val targetsToRefresh: List<ProjectGitHubWorkspaceRemoteTargetUi> = emptyList(),

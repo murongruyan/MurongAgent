@@ -186,7 +186,8 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchOverviewTab(
             ProjectGitHubDownloadHistorySection(
                 downloads = downloads,
                 onOpenSystemDownloads = onOpenSystemDownloads,
-                onOpenSource = onOpenDownloadSource
+                onOpenSource = onOpenDownloadSource,
+                onDeleteRecord = {}
             )
         }
     }
