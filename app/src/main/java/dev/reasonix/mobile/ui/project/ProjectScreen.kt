@@ -2437,6 +2437,29 @@ private fun ProjectLocalGitRepositoryCard(
 }
 
 @Composable
+private fun ProjectGitDeferredContent(
+    content: @Composable () -> Unit
+) {
+    content()
+}
+
+@Composable
+private fun ProjectGitSectionColumn(
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text("Git / GitHub", style = MaterialTheme.typography.titleMedium)
+        content()
+    }
+}
+
+@Composable
 private fun ProjectGitSection(
     config: ProviderConfig,
     currentProjectPath: String?,
@@ -4109,7 +4132,8 @@ private fun ProjectGitSection(
     }
 
     if (showGitHubWorkspacePage) {
-        if (showGitHubWorkspaceDownloadCenterPage) {
+        ProjectGitDeferredContent {
+            if (showGitHubWorkspaceDownloadCenterPage) {
             ProjectGitHubWorkspaceDownloadCenterPage(
                 downloads = downloadStore.records,
                 onOpenSystemDownloads = ::openSystemDownloads,
@@ -4123,7 +4147,7 @@ private fun ProjectGitSection(
                 onClearHistory = ::clearGitHubDownloadHistory,
                 backProgress = projectSecondaryBackProgress
             )
-        } else if (workspaceWorkbenchRepo != null) {
+            } else if (workspaceWorkbenchRepo != null) {
             val workbenchStatus = repoStatusSummaries[workspaceWorkbenchRepo.rootPath]
                 ?: ProjectGitStatusUi.empty(workspaceWorkbenchRepo.rootPath)
             val workbenchSummary = ProjectGitHubWorkspaceRepoSummaryUi(
@@ -4366,7 +4390,7 @@ private fun ProjectGitSection(
                 },
                 backProgress = projectSecondaryBackProgress
             )
-        } else {
+            } else {
             val overviewRepoCards = remember(
                 detectedRepos,
                 repoStatusSummaries,
@@ -4449,19 +4473,14 @@ private fun ProjectGitSection(
                 onBatchAction = ::runGitHubWorkspaceBatchAction,
                 backProgress = projectSecondaryBackProgress
             )
+            }
         }
         return
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text("Git / GitHub", style = MaterialTheme.typography.titleMedium)
+    ProjectGitSectionColumn {
         if (activeProjectPath.isNullOrBlank()) {
+            ProjectGitDeferredContent {
             ProjectGitHubStandaloneBrowserSection(
                 tokenConfigured = config.githubToken.isNotBlank(),
                 repoListState = viewerRepositoriesState,
@@ -4800,7 +4819,9 @@ private fun ProjectGitSection(
                     }
                 )
             }
+            }
         } else {
+            ProjectGitDeferredContent {
             val surfaceColor = rememberReasonixSurfaceColor()
             val chromeColor = rememberReasonixChromeColor()
             val mutedTextColor = rememberReasonixMutedTextColor()
@@ -5745,6 +5766,7 @@ private fun ProjectGitSection(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            }
         }
     }
 
