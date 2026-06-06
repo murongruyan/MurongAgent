@@ -133,6 +133,7 @@ fun MainScreen() {
     var selectedTopLevelPage by remember { mutableIntStateOf(0) }
     var settingsSubpage by remember { mutableStateOf<SettingsSubpage>(SettingsSubpage.Main) }
     var settingsBackProgress by remember { mutableFloatStateOf(0f) }
+    var topLevelBackProgress by remember { mutableFloatStateOf(0f) }
     var showTaskDialog by remember { mutableStateOf(false) }
     var taskProjectPath by remember { mutableStateOf("") }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -296,6 +297,25 @@ fun MainScreen() {
         }
     }
 
+    PredictiveBackHandler(
+        enabled = settingsSubpage == SettingsSubpage.Main &&
+            topLevelHistory.isNotEmpty() &&
+            !drawerState.isOpen &&
+            !isProjectSecondaryPage
+    ) { progress ->
+        try {
+            progress.collect { backEvent ->
+                topLevelBackProgress = backEvent.progress
+            }
+            topLevelBackProgress = 1f
+            navigateBackToPreviousTopLevel()
+        } catch (_: CancellationException) {
+            topLevelBackProgress = 0f
+        } finally {
+            topLevelBackProgress = 0f
+        }
+    }
+
     PredictiveBackHandler(enabled = settingsSubpage != SettingsSubpage.Main) { progress ->
         try {
             progress.collect { backEvent ->
@@ -434,7 +454,7 @@ fun MainScreen() {
         SettingsSubpage.About -> "信息"
         SettingsSubpage.Main -> when (currentScreen) {
             is Screen.Chat -> "对话"
-            is Screen.Projects -> if (isProjectSecondaryPage) "" else "项目"
+            is Screen.Projects -> "项目"
             is Screen.Tools -> "工具"
             is Screen.Settings -> "设置"
         }
@@ -861,6 +881,10 @@ fun MainScreen() {
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(innerPadding)
+                        .graphicsLayer {
+                            translationX = size.width * topLevelBackProgress
+                            alpha = 1f - (topLevelBackProgress * 0.08f)
+                        }
                         .reasonixGlassSource(LocalReasonixHazeState.current),
                     userScrollEnabled = false
                 ) { page ->

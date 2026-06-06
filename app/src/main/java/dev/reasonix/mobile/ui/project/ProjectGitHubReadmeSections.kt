@@ -11,13 +11,13 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.reasonix.mobile.ui.MarkdownText
+import dev.reasonix.mobile.ui.ReasonixOutlinedActionButton
 import dev.reasonix.mobile.ui.rememberReasonixChromeColor
 import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
 
@@ -52,20 +52,24 @@ internal fun ProjectGitHubReadmeSection(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     readme?.let { currentReadme ->
                         onEditReadme?.let { onEdit ->
-                            TextButton(onClick = { onEdit(currentReadme) }) {
-                                Text("编辑 README")
-                            }
+                            ReasonixOutlinedActionButton(
+                                text = "编辑 README",
+                                onClick = { onEdit(currentReadme) }
+                            )
                         }
                     }
                     onRefresh?.let { refresh ->
-                        TextButton(onClick = refresh, enabled = !isLoading) {
-                            Text("刷新")
-                        }
+                        ReasonixOutlinedActionButton(
+                            text = "刷新",
+                            onClick = refresh,
+                            enabled = !isLoading
+                        )
                     }
                     onOpenRepoPage?.let { openRepo ->
-                        TextButton(onClick = openRepo) {
-                            Text("仓库页")
-                        }
+                        ReasonixOutlinedActionButton(
+                            text = "仓库页",
+                            onClick = openRepo
+                        )
                     }
                 }
             }
@@ -97,7 +101,7 @@ internal fun ProjectGitHubReadmeSection(
                         readme.content
                     }
                     Text(
-                        text = "默认按 Markdown 渲染，图片、链接和代码块都保留；需要修改时可直接打开远端编辑。",
+                        text = "按 Markdown 渲染，图片、链接和代码块会一并显示。",
                         style = MaterialTheme.typography.bodySmall,
                         color = mutedTextColor
                     )
@@ -131,11 +135,10 @@ internal fun ProjectGitHubReadmeSection(
                         color = mutedTextColor
                     )
                     if (shouldCollapse) {
-                        TextButton(
+                        ReasonixOutlinedActionButton(
+                            text = if (expandedReadme.value) "收起 README" else "展开 README",
                             onClick = { expandedReadme.value = !expandedReadme.value }
-                        ) {
-                            Text(if (expandedReadme.value) "收起 README" else "展开 README")
-                        }
+                        )
                     }
                     ProjectInsetCard(
                         shape = RoundedCornerShape(12.dp),

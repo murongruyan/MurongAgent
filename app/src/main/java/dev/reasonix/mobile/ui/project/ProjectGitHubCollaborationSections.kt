@@ -8,12 +8,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
@@ -21,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.reasonix.mobile.ui.ReasonixOutlinedActionButton
 import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
 import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
 
@@ -45,9 +43,11 @@ internal fun ProjectGitHubIssueSection(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Issues", style = MaterialTheme.typography.titleSmall)
-            TextButton(onClick = onCreateIssue, enabled = !isActionRunning) {
-                Text("新建")
-            }
+            ReasonixOutlinedActionButton(
+                text = "新建",
+                onClick = onCreateIssue,
+                enabled = !isActionRunning
+            )
         }
         Text(
             text = "共 ${summary.totalCount} 个 Issue · 开放 ${summary.openCount} · 已关闭 ${summary.closedCount} · 标签 ${summary.labelCount}",
@@ -128,25 +128,22 @@ internal fun ProjectGitHubIssueSection(
                             modifier = Modifier.horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            TextButton(
+                            ReasonixOutlinedActionButton(
+                                text = "详情",
                                 onClick = { onOpenDetail(issue) },
                                 enabled = !isActionRunning
-                            ) {
-                                Text("详情")
-                            }
-                            OutlinedButton(
+                            )
+                            ReasonixOutlinedActionButton(
+                                text = if (issue.isOpen) "关闭" else "重开",
                                 onClick = { onToggleIssueState(issue, issue.isOpen) },
                                 enabled = !isActionRunning
-                            ) {
-                                Text(if (issue.isOpen) "关闭" else "重开")
-                            }
+                            )
                             issue.htmlUrl?.takeIf { it.isNotBlank() }?.let {
-                                TextButton(
+                                ReasonixOutlinedActionButton(
+                                    text = "网页",
                                     onClick = { onOpenIssuePage(issue) },
                                     enabled = !isActionRunning
-                                ) {
-                                    Text("网页")
-                                }
+                                )
                             }
                         }
                     }
@@ -178,9 +175,11 @@ internal fun ProjectGitHubPullRequestSection(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Pull Requests", style = MaterialTheme.typography.titleSmall)
-            TextButton(onClick = onCreatePullRequest, enabled = !isActionRunning) {
-                Text("新建")
-            }
+            ReasonixOutlinedActionButton(
+                text = "新建",
+                onClick = onCreatePullRequest,
+                enabled = !isActionRunning
+            )
         }
         Text(
             text = buildString {
@@ -274,35 +273,31 @@ internal fun ProjectGitHubPullRequestSection(
                             modifier = Modifier.horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            TextButton(
+                            ReasonixOutlinedActionButton(
+                                text = "详情",
                                 onClick = { onOpenDetail(pullRequest) },
                                 enabled = !isActionRunning
-                            ) {
-                                Text("详情")
-                            }
+                            )
                             if (pullRequest.canMerge) {
-                                Button(
+                                ReasonixOutlinedActionButton(
+                                    text = "合并",
                                     onClick = { onMergePullRequest(pullRequest) },
                                     enabled = !isActionRunning
-                                ) {
-                                    Text("合并")
-                                }
+                                )
                             }
                             if (!pullRequest.isMerged) {
-                                OutlinedButton(
+                                ReasonixOutlinedActionButton(
+                                    text = if (pullRequest.isOpen) "关闭" else "重开",
                                     onClick = { onTogglePullRequestState(pullRequest, pullRequest.isOpen) },
                                     enabled = !isActionRunning
-                                ) {
-                                    Text(if (pullRequest.isOpen) "关闭" else "重开")
-                                }
+                                )
                             }
                             pullRequest.htmlUrl?.takeIf { it.isNotBlank() }?.let {
-                                TextButton(
+                                ReasonixOutlinedActionButton(
+                                    text = "网页",
                                     onClick = { onOpenPullRequestPage(pullRequest) },
                                     enabled = !isActionRunning
-                                ) {
-                                    Text("网页")
-                                }
+                                )
                             }
                         }
                     }
@@ -377,19 +372,17 @@ internal fun ProjectGitHubReleaseSection(
         ) {
             Text("Releases", style = MaterialTheme.typography.titleSmall)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(
+                ReasonixOutlinedActionButton(
+                    text = "新建",
                     onClick = onCreateRelease,
                     enabled = !isLoading && !isActionRunning
-                ) {
-                    Text("新建")
-                }
+                )
                 onRefresh?.let { refresh ->
-                    OutlinedButton(
+                    ReasonixOutlinedActionButton(
+                        text = "刷新",
                         onClick = refresh,
                         enabled = !isLoading
-                    ) {
-                        Text("刷新")
-                    }
+                    )
                 }
             }
         }
@@ -421,24 +414,22 @@ internal fun ProjectGitHubReleaseSection(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedButton(
+                ReasonixOutlinedActionButton(
+                    text = "展开全部",
                     onClick = {
                         releases.forEach { release ->
                             expandedReleaseState[release.id] = true
                         }
                     }
-                ) {
-                    Text("展开全部")
-                }
-                OutlinedButton(
+                )
+                ReasonixOutlinedActionButton(
+                    text = "收起全部",
                     onClick = {
                         releases.forEach { release ->
                             expandedReleaseState[release.id] = false
                         }
                     }
-                ) {
-                    Text("收起全部")
-                }
+                )
             }
             releases.forEach { release ->
                 val stateLabel = when {
@@ -563,25 +554,22 @@ internal fun ProjectGitHubReleaseSection(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             release.htmlUrl?.takeIf { it.isNotBlank() }?.let {
-                                TextButton(
+                                ReasonixOutlinedActionButton(
+                                    text = "网页",
                                     onClick = { onOpenReleasePage(release) },
                                     enabled = !isActionRunning
-                                ) {
-                                    Text("网页")
-                                }
+                                )
                             }
-                            OutlinedButton(
+                            ReasonixOutlinedActionButton(
+                                text = "编辑",
                                 onClick = { onEditRelease(release) },
                                 enabled = !isActionRunning
-                            ) {
-                                Text("编辑")
-                            }
-                            OutlinedButton(
+                            )
+                            ReasonixOutlinedActionButton(
+                                text = if (release.assets.isEmpty()) "产物列表" else "查看产物",
                                 onClick = { onOpenAssets(release) },
                                 enabled = !isActionRunning
-                            ) {
-                                Text(if (release.assets.isEmpty()) "产物列表" else "查看产物")
-                            }
+                            )
                         }
                         if (expanded) {
                             Text(
@@ -593,24 +581,21 @@ internal fun ProjectGitHubReleaseSection(
                                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                OutlinedButton(
+                                ReasonixOutlinedActionButton(
+                                    text = if (release.isDraft) "发布" else "转草稿",
                                     onClick = { onToggleReleaseMode(release, !release.isDraft) },
                                     enabled = !isActionRunning
-                                ) {
-                                    Text(if (release.isDraft) "发布" else "转草稿")
-                                }
-                                OutlinedButton(
+                                )
+                                ReasonixOutlinedActionButton(
+                                    text = if (release.isPrerelease) "转正式" else "预发布",
                                     onClick = { onTogglePrerelease(release, !release.isPrerelease) },
                                     enabled = !isActionRunning && !release.isDraft
-                                ) {
-                                    Text(if (release.isPrerelease) "转正式" else "预发布")
-                                }
-                                TextButton(
+                                )
+                                ReasonixOutlinedActionButton(
+                                    text = "删除",
                                     onClick = { onDeleteRelease(release) },
                                     enabled = !isActionRunning
-                                ) {
-                                    Text("删除")
-                                }
+                                )
                             }
                             Text(
                                 text = "Assets · ${release.assets.size}",
@@ -699,9 +684,10 @@ private fun ProjectGitHubReleaseAssetPreviewRow(
                     color = mutedTextColor
                 )
             }
-            TextButton(onClick = onOpenAssets) {
-                Text("管理资产")
-            }
+            ReasonixOutlinedActionButton(
+                text = "管理资产",
+                onClick = onOpenAssets
+            )
         }
     }
 }

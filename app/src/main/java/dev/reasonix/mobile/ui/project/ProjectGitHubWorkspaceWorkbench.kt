@@ -9,16 +9,15 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
+import dev.reasonix.mobile.ui.ReasonixOutlinedActionButton
 import dev.reasonix.mobile.ui.ReasonixSecondaryPageFrame
 import dev.reasonix.mobile.ui.rememberReasonixChromeColor
 import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
@@ -107,7 +106,7 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchHeader(
         shape = RoundedCornerShape(14.dp),
         surfaceColorOverride = chromeColor.copy(alpha = 0.38f)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(header.title, style = MaterialTheme.typography.titleSmall)
             Text(
                 text = header.subtitle,
@@ -124,22 +123,21 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchHeader(
                 }
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onExitWorkbench) {
-                    Text("返回工作区")
-                }
-                OutlinedButton(
+                ReasonixOutlinedActionButton(
+                    text = "返回工作区",
+                    onClick = onExitWorkbench
+                )
+                ReasonixOutlinedActionButton(
+                    text = "刷新本地",
                     onClick = onRefreshGitState,
                     enabled = !isGitLoading
-                ) {
-                    Text("刷新本地")
-                }
+                )
                 if (tokenConfigured) {
-                    OutlinedButton(
+                    ReasonixOutlinedActionButton(
+                        text = "刷新 GitHub",
                         onClick = onRefreshGitHubActions,
                         enabled = !isGitHubLoading && !isGitHubActionRunning
-                    ) {
-                        Text("刷新 GitHub")
-                    }
+                    )
                 }
             }
         }
@@ -167,7 +165,7 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchOverviewTab(
         shape = RoundedCornerShape(14.dp),
         surfaceColorOverride = surfaceColor.copy(alpha = 0.58f)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("仓库概览", style = MaterialTheme.typography.titleSmall)
             Text(
                 text = overview.remoteSummaryText,
@@ -284,8 +282,8 @@ private fun ProjectGitHubWorkspaceLatestWorkflowCard(
         shape = RoundedCornerShape(12.dp),
         surfaceColorOverride = chromeColor.copy(alpha = 0.30f)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("最近工作流", style = MaterialTheme.typography.labelMedium)
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("最近工作流", style = MaterialTheme.typography.titleSmall)
             Text(
                 text = run.title,
                 style = MaterialTheme.typography.bodyMedium
@@ -300,16 +298,19 @@ private fun ProjectGitHubWorkspaceLatestWorkflowCard(
                 }
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onShowWorkflowTab) {
-                    Text("切到工作流")
-                }
-                OutlinedButton(onClick = onShowIssuesTab) {
-                    Text("切到事项")
-                }
+                ReasonixOutlinedActionButton(
+                    text = "切到工作流",
+                    onClick = onShowWorkflowTab
+                )
+                ReasonixOutlinedActionButton(
+                    text = "切到事项",
+                    onClick = onShowIssuesTab
+                )
                 onOpenLatestRunDetail?.let { openDetail ->
-                    TextButton(onClick = openDetail) {
-                        Text("运行详情")
-                    }
+                    ReasonixOutlinedActionButton(
+                        text = "运行详情",
+                        onClick = openDetail
+                    )
                 }
             }
         }
@@ -327,8 +328,8 @@ private fun ProjectGitHubWorkspaceLatestIssueCard(
         shape = RoundedCornerShape(12.dp),
         surfaceColorOverride = chromeColor.copy(alpha = 0.28f)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("最近 Issue", style = MaterialTheme.typography.labelMedium)
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("最近 Issue", style = MaterialTheme.typography.titleSmall)
             Text(
                 text = "#${issue.number} · ${issue.title}",
                 style = MaterialTheme.typography.bodyMedium
@@ -339,9 +340,10 @@ private fun ProjectGitHubWorkspaceLatestIssueCard(
                 color = if (issue.isOpen) mutedTextColor else MaterialTheme.colorScheme.primary
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onShowIssuesTab) {
-                    Text("切到 Issue")
-                }
+                ReasonixOutlinedActionButton(
+                    text = "切到 Issue",
+                    onClick = onShowIssuesTab
+                )
             }
         }
     }
@@ -358,8 +360,8 @@ private fun ProjectGitHubWorkspaceLatestPullRequestCard(
         shape = RoundedCornerShape(12.dp),
         surfaceColorOverride = chromeColor.copy(alpha = 0.26f)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("最近 PR", style = MaterialTheme.typography.labelMedium)
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("最近 PR", style = MaterialTheme.typography.titleSmall)
             Text(
                 text = "#${pullRequest.number} · ${pullRequest.title}",
                 style = MaterialTheme.typography.bodyMedium
@@ -382,9 +384,10 @@ private fun ProjectGitHubWorkspaceLatestPullRequestCard(
                 }
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onShowPullRequestsTab) {
-                    Text("切到 PR")
-                }
+                ReasonixOutlinedActionButton(
+                    text = "切到 PR",
+                    onClick = onShowPullRequestsTab
+                )
             }
         }
     }
@@ -402,8 +405,8 @@ private fun ProjectGitHubWorkspaceLatestReleaseCard(
         shape = RoundedCornerShape(12.dp),
         surfaceColorOverride = chromeColor.copy(alpha = 0.24f)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("最近 Release", style = MaterialTheme.typography.labelMedium)
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("最近 Release", style = MaterialTheme.typography.titleSmall)
             Text(
                 text = release.name.ifBlank { release.tagName },
                 style = MaterialTheme.typography.bodyMedium
@@ -430,12 +433,14 @@ private fun ProjectGitHubWorkspaceLatestReleaseCard(
                 color = mutedTextColor
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onShowReleaseTab) {
-                    Text("切到 Release")
-                }
-                TextButton(onClick = onShowReadmeTab) {
-                    Text("README")
-                }
+                ReasonixOutlinedActionButton(
+                    text = "切到 Release",
+                    onClick = onShowReleaseTab
+                )
+                ReasonixOutlinedActionButton(
+                    text = "README",
+                    onClick = onShowReadmeTab
+                )
             }
         }
     }
@@ -512,7 +517,7 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchPage(
                 translationX = 180f * backProgress
                 alpha = 1f - (backProgress * 0.08f)
             },
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             ProjectGitHubWorkspaceRepoWorkbenchHeader(
                 header = buildProjectGitHubWorkspaceWorkbenchHeader(
@@ -582,7 +587,7 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchPage(
                     )
                 }
                 ProjectGitHubWorkspaceRepoWorkbenchTab.REMOTE -> {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         ProjectGitRemoteSummaryCard(
                             remoteUrl = gitState.remoteUrl,
                             upstreamBranch = gitState.upstreamBranch,

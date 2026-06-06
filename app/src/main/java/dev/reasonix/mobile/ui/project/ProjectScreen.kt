@@ -6,7 +6,6 @@ import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.os.Environment
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -266,49 +265,51 @@ internal fun ProjectScreen(
     ReasonixSecondaryPageSurface(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        contentPadding = PaddingValues(vertical = 6.dp)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            ReasonixGlassSurface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 8.dp),
-                shape = RoundedCornerShape(24.dp),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+            if (!activeProjectSecondaryState.active) {
+                ReasonixGlassSurface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    shape = RoundedCornerShape(24.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
                 ) {
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "项目工作区",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = mutedTextColor
-                        )
-                        Text(
-                            text = currentProjectPath?.takeIf { it.isNotBlank() } ?: "还没选择项目文件夹",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        if (detectedRepos.isNotEmpty()) {
-                            val gitRepoCount = detectedRepos.count { it.hasGitMetadata }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
                             Text(
-                                text = "已识别 ${detectedRepos.size} 个项目根目录，其中 $gitRepoCount 个是 Git 仓库",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.primary
+                                text = "项目工作区",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = mutedTextColor
                             )
+                            Text(
+                                text = currentProjectPath?.takeIf { it.isNotBlank() } ?: "还没选择项目文件夹",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (detectedRepos.isNotEmpty()) {
+                                val gitRepoCount = detectedRepos.count { it.hasGitMetadata }
+                                Text(
+                                    text = "已识别 ${detectedRepos.size} 个项目根目录，其中 $gitRepoCount 个是 Git 仓库",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
-                    }
-                    OutlinedButton(onClick = onNewTask) {
-                        Text("选择文件夹")
+                        OutlinedButton(onClick = onNewTask) {
+                            Text("选择文件夹")
+                        }
                     }
                 }
             }
@@ -1037,14 +1038,47 @@ private fun ProjectEditorSection(
         showAiCompletionDialog = false
     }
 
-    LaunchedEffect(closeProjectSecondaryPageRequestSignal) {
-        if (closeProjectSecondaryPageRequestSignal != 0 && selectedFilePath != null) {
-            exitEditorPage()
+    fun handleEditorCloseRequest() {
+        when {
+            showAiCompletionDialog -> {
+                showAiCompletionDialog = false
+                aiCompletionCandidate = null
+            }
+
+            showConflictResolverDialog -> {
+                showConflictResolverDialog = false
+            }
+
+            showDiagnosticsDialog -> {
+                showDiagnosticsDialog = false
+            }
+
+            showOutlineDialog -> {
+                showOutlineDialog = false
+            }
+
+            showLanguageDialog -> {
+                showLanguageDialog = false
+            }
+
+            showLineReplaceDialog -> {
+                showLineReplaceDialog = false
+            }
+
+            showSearchReplaceDialog -> {
+                showSearchReplaceDialog = false
+            }
+
+            selectedFilePath != null -> {
+                exitEditorPage()
+            }
         }
     }
 
-    BackHandler(enabled = selectedFilePath != null) {
-        exitEditorPage()
+    LaunchedEffect(closeProjectSecondaryPageRequestSignal) {
+        if (closeProjectSecondaryPageRequestSignal != 0 && selectedFilePath != null) {
+            handleEditorCloseRequest()
+        }
     }
 
     AnimatedContent(
@@ -4200,22 +4234,117 @@ private fun ProjectGitSection(
         )
     }
 
-    LaunchedEffect(closeProjectSecondaryPageRequestSignal) {
-        if (closeProjectSecondaryPageRequestSignal != 0 && showGitHubWorkspacePage) {
-            workspaceNavigationState = closeProjectGitHubWorkspaceNavigationLayer(
-                currentState = workspaceNavigationState
-            )
-        } else if (closeProjectSecondaryPageRequestSignal != 0 && showStandaloneViewerSecondaryPage) {
-            if (selectedViewerSection != ProjectGitHubStandaloneSection.OVERVIEW) {
-                selectedViewerSection = ProjectGitHubStandaloneSection.OVERVIEW
-            } else {
-                selectedViewerRepository = null
-                selectedViewerReadme = null
-                selectedViewerReadmeErrorMessage = null
-                selectedViewerSection = ProjectGitHubStandaloneSection.OVERVIEW
-                remoteRepoState = ProjectGitHubRemoteBrowserState.empty()
-                remoteRepoRefDraft = ""
+    fun closeRemoteFileDialog() {
+        remoteFileDialogState = null
+        remoteFileContentDraft = ""
+        remoteFileCommitMessageDraft = ""
+        pendingRemoteFileSaveConfirmation = false
+    }
+
+    fun handleGitSecondaryCloseRequest() {
+        when {
+            pendingRemoteFileSaveConfirmation -> {
+                pendingRemoteFileSaveConfirmation = false
             }
+
+            viewerDescriptionEditTarget != null -> {
+                viewerDescriptionEditTarget = null
+            }
+
+            viewerRepositoryMenuTarget != null -> {
+                viewerRepositoryMenuTarget = null
+            }
+
+            suspectedRepoMenuTarget != null -> {
+                suspectedRepoMenuTarget = null
+            }
+
+            globalSearchStore.isVisible -> {
+                globalSearchStore = globalSearchStore.copy(isVisible = false)
+            }
+
+            globalTaskCenter.isVisible -> {
+                globalTaskCenter = globalTaskCenter.copy(isVisible = false)
+            }
+
+            workflowDispatchTarget != null -> {
+                workflowDispatchTarget = null
+                workflowDispatchInputs = emptyList()
+                workflowDispatchBranchRefs = emptyList()
+                isWorkflowDispatchBranchesLoading = false
+                workflowDispatchSchemaMessage = null
+                isWorkflowDispatchSchemaLoading = false
+            }
+
+            workflowRunDetailDialogState != null -> {
+                workflowRunDetailDialogState = null
+            }
+
+            artifactDialogState != null -> {
+                artifactDialogState = null
+            }
+
+            releaseAssetDialogState != null -> {
+                releaseAssetDialogState = null
+            }
+
+            remoteFileDialogState != null -> {
+                closeRemoteFileDialog()
+            }
+
+            pullRequestDetailStore.pullRequest != null -> {
+                pullRequestDetailStore = clearProjectGitHubPullRequestDetailStore()
+            }
+
+            issueDetailStore.issue != null -> {
+                issueDetailStore = clearProjectGitHubIssueDetailStore()
+            }
+
+            diffPreview != null -> {
+                diffPreview = null
+            }
+
+            showCreatePullRequestDialog -> {
+                showCreatePullRequestDialog = false
+            }
+
+            showCreateIssueDialog -> {
+                showCreateIssueDialog = false
+            }
+
+            showCreateReleaseDialog || releaseEditTarget != null -> {
+                showCreateReleaseDialog = false
+                releaseEditTarget = null
+                resetReleaseDraft()
+            }
+
+            showCreateGitHubRepoDialog -> {
+                showCreateGitHubRepoDialog = false
+            }
+
+            showInitGitDialog -> {
+                showInitGitDialog = false
+            }
+
+            showBranchDialog -> {
+                showBranchDialog = false
+            }
+
+            showCommitDialog -> {
+                showCommitDialog = false
+            }
+
+            showGitHubWorkspacePage -> {
+                workspaceNavigationState = closeProjectGitHubWorkspaceNavigationLayer(
+                    currentState = workspaceNavigationState
+                )
+            }
+        }
+    }
+
+    LaunchedEffect(closeProjectSecondaryPageRequestSignal) {
+        if (closeProjectSecondaryPageRequestSignal != 0) {
+            handleGitSecondaryCloseRequest()
         }
     }
 
@@ -4837,8 +4966,8 @@ private fun ProjectGitSection(
                         "当前 Pull Request 还没有可打开的 GitHub 页面地址。"
                     )
                 },
-                onEditReadme = ::openStandaloneReadmeEditor
-                ,
+                onEditReadme = ::openStandaloneReadmeEditor,
+                closeRequestSignal = closeProjectSecondaryPageRequestSignal,
                 backProgress = projectSecondaryBackProgress
             )
             feedbackMessage?.takeIf { it.isNotBlank() }?.let { message ->

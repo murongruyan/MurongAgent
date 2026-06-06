@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -17,10 +18,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,7 +32,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
+import dev.reasonix.mobile.ui.ReasonixOutlinedActionButton
 import dev.reasonix.mobile.ui.ReasonixSecondaryPageFrame
+import dev.reasonix.mobile.ui.ReasonixTagButton
 import dev.reasonix.mobile.ui.rememberReasonixChromeColor
 import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
 import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
@@ -103,19 +105,29 @@ internal fun ProjectGitHubStandaloneBrowserSection(
     onMergePullRequest: (ProjectGitHubPullRequestUi) -> Unit,
     onOpenPullRequestPage: (ProjectGitHubPullRequestUi) -> Unit,
     onEditReadme: (ProjectGitHubReadmeUi) -> Unit,
+    closeRequestSignal: Int,
     backProgress: Float
 ) {
     val chromeColor = rememberReasonixChromeColor()
     val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
 
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LaunchedEffect(closeRequestSignal, selectedRepo?.fullName, activeSection) {
+        if (closeRequestSignal == 0 || selectedRepo == null) return@LaunchedEffect
+        when (activeSection) {
+            ProjectGitHubStandaloneSection.OVERVIEW -> onBackToRepoList()
+            ProjectGitHubStandaloneSection.WORKFLOWS -> Unit
+            else -> onChangeSection(ProjectGitHubStandaloneSection.OVERVIEW)
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         if (selectedRepo == null) {
             ProjectSectionCard(
                 shape = RoundedCornerShape(14.dp),
                 surfaceColorOverride = chromeColor.copy(alpha = 0.38f)
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("GitHub 账号仓库", style = MaterialTheme.typography.titleSmall)
                     Text(
                         text = buildString {
@@ -132,16 +144,15 @@ internal fun ProjectGitHubStandaloneBrowserSection(
                         color = mutedTextColor
                     )
                     Text(
-                        text = "未选择本地项目时，直接显示当前账号下的仓库；点击进入二级页，长按可设为当前任务仓库。",
+                        text = "未选择本地项目时，直接显示当前账号下的仓库；点按进入仓库，长按可设为当前任务仓库。",
                         style = MaterialTheme.typography.bodySmall,
                         color = mutedTextColor
                     )
-                    OutlinedButton(
+                    ReasonixOutlinedActionButton(
+                        text = "刷新仓库",
                         onClick = onRefreshRepoList,
                         enabled = tokenConfigured && !isRepoListLoading
-                    ) {
-                        Text("刷新仓库")
-                    }
+                    )
                     if (!tokenConfigured) {
                         Text(
                             text = "请先在设置页填写 GitHub Token，未选择本地项目时才能直接浏览账号仓库。",
@@ -240,6 +251,10 @@ internal fun ProjectGitHubStandaloneBrowserSection(
                     onLoadRunDetail = onLoadRunDetail,
                     onRefreshRunDetail = onRefreshRunDetail,
                     onDownloadWorkflowArtifact = onDownloadWorkflowArtifact,
+                    closeRequestSignal = closeRequestSignal,
+                    onExitWorkflowPage = {
+                        onChangeSection(ProjectGitHubStandaloneSection.OVERVIEW)
+                    },
                     backProgress = backProgress
                 )
             }
@@ -293,14 +308,14 @@ private fun ProjectGitHubStandaloneOverviewPage(
 ) {
     ReasonixSecondaryPageFrame(
         title = selectedRepo.fullName,
-        subtitle = "仓库详情页默认展示 README，其他能力通过按钮进入三级页。"
+        subtitle = "仓库信息和 README 直接显示在这里。"
     ) {
         Column(
             modifier = Modifier.graphicsLayer {
                 translationX = 180f * backProgress
                 alpha = 1f - (backProgress * 0.08f)
             },
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             ProjectGitHubStandaloneHeaderCard(
                 selectedRepo = selectedRepo,
@@ -348,14 +363,14 @@ private fun ProjectGitHubStandaloneReleasePage(
 ) {
     ReasonixSecondaryPageFrame(
         title = "${selectedRepo.name} · Release",
-        subtitle = "独立三级页，只显示当前仓库的 Release。"
+        subtitle = "当前仓库的 Release 列表。"
     ) {
         Column(
             modifier = Modifier.graphicsLayer {
                 translationX = 180f * backProgress
                 alpha = 1f - (backProgress * 0.08f)
             },
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             ProjectGitHubStandaloneReleaseSection(
                 releases = releases,
@@ -385,6 +400,8 @@ private fun ProjectGitHubStandaloneWorkflowPage(
     onLoadRunDetail: (ProjectGitHubWorkflowRunUi, (ProjectGitHubWorkflowRunDetailUi?) -> Unit) -> Unit,
     onRefreshRunDetail: (ProjectGitHubWorkflowRunDetailUi, (ProjectGitHubWorkflowRunDetailUi?) -> Unit) -> Unit,
     onDownloadWorkflowArtifact: (ProjectGitHubWorkflowRunDetailUi, ProjectGitHubArtifactUi) -> Unit,
+    closeRequestSignal: Int,
+    onExitWorkflowPage: () -> Unit,
     backProgress: Float
 ) {
     var selectedWorkflow by remember(selectedRepo.fullName) {
@@ -410,6 +427,33 @@ private fun ProjectGitHubStandaloneWorkflowPage(
             workflow = selectedWorkflow,
             runs = state.recentRuns
         )
+    }
+    LaunchedEffect(closeRequestSignal) {
+        if (closeRequestSignal == 0) return@LaunchedEffect
+        when {
+            selectedJob != null -> {
+                selectedJob = null
+            }
+
+            selectedRun != null -> {
+                selectedRun = null
+                selectedRunDetail = null
+                selectedJob = null
+                workflowRunDetailErrorMessage = null
+                isWorkflowRunDetailLoading = false
+            }
+
+            selectedWorkflow != null -> {
+                selectedWorkflow = null
+                selectedRun = null
+                selectedRunDetail = null
+                selectedJob = null
+                workflowRunDetailErrorMessage = null
+                isWorkflowRunDetailLoading = false
+            }
+
+            else -> onExitWorkflowPage()
+        }
     }
     fun openWorkflowRun(run: ProjectGitHubWorkflowRunUi) {
         selectedRun = run
@@ -453,11 +497,11 @@ private fun ProjectGitHubStandaloneWorkflowPage(
             }
         },
         subtitle = when {
-            selectedJob != null -> "当前作业的步骤与日志页"
-            selectedRun != null -> "作业与日志详情页"
+            selectedJob != null -> "当前作业的步骤与日志。"
+            selectedRun != null -> "当前运行的作业、产物与日志。"
             else -> when (selectedWorkflow) {
-                null -> "这里只显示当前可执行工作流。"
-                else -> "点击运行项可继续查看日志与作业详情。"
+                null -> "这里显示当前可执行工作流。"
+                else -> "点开运行记录继续查看作业和日志。"
             }
         }
     ) {
@@ -538,12 +582,12 @@ private fun ProjectGitHubStandaloneWorkflowRunDetailSection(
 ) {
     val mutedTextColor = rememberReasonixMutedTextColor()
     val surfaceColor = rememberReasonixSurfaceColor()
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         ProjectSectionCard(
             shape = RoundedCornerShape(14.dp),
             surfaceColorOverride = rememberReasonixChromeColor().copy(alpha = 0.28f)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("第 ${run.runNumber} 次运行", style = MaterialTheme.typography.titleSmall)
                 Text(
                     text = "${buildProjectGitHubStandaloneWorkflowTriggerLabel(run.event)} · ${run.statusLabel}",
@@ -556,12 +600,15 @@ private fun ProjectGitHubStandaloneWorkflowRunDetailSection(
                     color = mutedTextColor
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = onBackToRuns) {
-                        Text("返回运行列表")
-                    }
-                    OutlinedButton(onClick = onRefreshDetail, enabled = detail != null && !isLoading) {
-                        Text("刷新详情")
-                    }
+                    ReasonixOutlinedActionButton(
+                        text = "返回运行列表",
+                        onClick = onBackToRuns
+                    )
+                    ReasonixOutlinedActionButton(
+                        text = "刷新详情",
+                        onClick = onRefreshDetail,
+                        enabled = detail != null && !isLoading
+                    )
                 }
             }
         }
@@ -591,7 +638,7 @@ private fun ProjectGitHubStandaloneWorkflowRunDetailSection(
                 shape = RoundedCornerShape(14.dp),
                 surfaceColorOverride = surfaceColor.copy(alpha = 0.58f)
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("产物文件", style = MaterialTheme.typography.titleSmall)
                     detail.artifacts.forEach { artifact ->
                         Row(
@@ -606,9 +653,10 @@ private fun ProjectGitHubStandaloneWorkflowRunDetailSection(
                                     color = mutedTextColor
                                 )
                             }
-                            OutlinedButton(onClick = { onDownloadArtifact(detail, artifact) }) {
-                                Text("下载")
-                            }
+                            ReasonixOutlinedActionButton(
+                                text = "下载",
+                                onClick = { onDownloadArtifact(detail, artifact) }
+                            )
                         }
                     }
                 }
@@ -628,7 +676,7 @@ private fun ProjectGitHubStandaloneWorkflowJobSection(
         shape = RoundedCornerShape(14.dp),
         surfaceColorOverride = rememberReasonixSurfaceColor().copy(alpha = 0.58f)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("作业", style = MaterialTheme.typography.titleSmall)
             detail.jobs.forEach { job ->
                 ProjectInsetCard(
@@ -640,7 +688,7 @@ private fun ProjectGitHubStandaloneWorkflowJobSection(
                         .fillMaxWidth()
                         .clickable { onOpenJob(job) }
                 ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(job.name, style = MaterialTheme.typography.bodyMedium)
                         Text(
                             text = "${job.statusLabel} · ${job.durationLabel}",
@@ -663,7 +711,7 @@ private fun ProjectGitHubStandaloneWorkflowJobSection(
                             )
                         }
                         Text(
-                            text = "点击进入该作业日志",
+                            text = "点开查看这个作业的日志",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -681,12 +729,12 @@ private fun ProjectGitHubStandaloneWorkflowJobDetailSection(
     onBackToRun: () -> Unit
 ) {
     val mutedTextColor = rememberReasonixMutedTextColor()
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         ProjectSectionCard(
             shape = RoundedCornerShape(14.dp),
             surfaceColorOverride = rememberReasonixChromeColor().copy(alpha = 0.28f)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(job.name, style = MaterialTheme.typography.titleSmall)
                 Text(
                     text = "${job.statusLabel} · ${job.durationLabel}",
@@ -697,16 +745,17 @@ private fun ProjectGitHubStandaloneWorkflowJobDetailSection(
                         else -> mutedTextColor
                     }
                 )
-                TextButton(onClick = onBackToRun) {
-                    Text("返回运行详情")
-                }
+                ReasonixOutlinedActionButton(
+                    text = "返回运行详情",
+                    onClick = onBackToRun
+                )
             }
         }
         ProjectSectionCard(
             shape = RoundedCornerShape(14.dp),
             surfaceColorOverride = rememberReasonixSurfaceColor().copy(alpha = 0.58f)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("步骤", style = MaterialTheme.typography.titleSmall)
                 job.steps.forEach { step ->
                     ProjectInsetCard(
@@ -715,7 +764,7 @@ private fun ProjectGitHubStandaloneWorkflowJobDetailSection(
                             alpha = if (step.hasIssue) 0.30f else 0.18f
                         )
                     ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(
                                 text = "${step.number}. ${step.name}",
                                 style = MaterialTheme.typography.bodyMedium
@@ -770,7 +819,7 @@ private fun ProjectGitHubStandaloneWorkflowLogsSection(
         shape = RoundedCornerShape(14.dp),
         surfaceColorOverride = rememberReasonixSurfaceColor().copy(alpha = 0.58f)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("日志", style = MaterialTheme.typography.titleSmall)
             Text(
                 text = when {
@@ -786,7 +835,8 @@ private fun ProjectGitHubStandaloneWorkflowLogsSection(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    OutlinedButton(
+                    ReasonixTagButton(
+                        text = "全部日志",
                         onClick = {
                             selectedJobName = null
                             expandedLogEntries = buildProjectGitHubStandaloneDefaultExpandedLogEntries(
@@ -794,11 +844,10 @@ private fun ProjectGitHubStandaloneWorkflowLogsSection(
                                 selectedJobName = null
                             )
                         }
-                    ) {
-                        Text("全部日志")
-                    }
+                    )
                     detail.jobs.forEach { job ->
-                        OutlinedButton(
+                        ReasonixTagButton(
+                            text = job.name,
                             onClick = {
                                 selectedJobName = job.name
                                 expandedLogEntries = buildProjectGitHubStandaloneDefaultExpandedLogEntries(
@@ -806,9 +855,7 @@ private fun ProjectGitHubStandaloneWorkflowLogsSection(
                                     selectedJobName = job.name
                                 )
                             }
-                        ) {
-                            Text(job.name)
-                        }
+                        )
                     }
                 }
             }
@@ -844,7 +891,7 @@ private fun ProjectGitHubStandaloneWorkflowLogsSection(
                             }
                         }
                 ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(entry.displayName, style = MaterialTheme.typography.bodyMedium)
                         Text(
                             text = buildString {
@@ -898,14 +945,14 @@ private fun ProjectGitHubStandaloneIssuePage(
 ) {
     ReasonixSecondaryPageFrame(
         title = "${selectedRepo.name} · Issue",
-        subtitle = "独立三级页，只显示当前仓库的 Issue。"
+        subtitle = "当前仓库的 Issue 列表。"
     ) {
         Column(
             modifier = Modifier.graphicsLayer {
                 translationX = 180f * backProgress
                 alpha = 1f - (backProgress * 0.08f)
             },
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             ProjectGitHubIssueSection(
                 issues = issues,
@@ -933,14 +980,14 @@ private fun ProjectGitHubStandalonePullRequestPage(
 ) {
     ReasonixSecondaryPageFrame(
         title = "${selectedRepo.name} · PR",
-        subtitle = "独立三级页，只显示当前仓库的 Pull Request。"
+        subtitle = "当前仓库的 Pull Request 列表。"
     ) {
         Column(
             modifier = Modifier.graphicsLayer {
                 translationX = 180f * backProgress
                 alpha = 1f - (backProgress * 0.08f)
             },
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             ProjectGitHubPullRequestSection(
                 pullRequests = pullRequests,
@@ -967,7 +1014,7 @@ private fun ProjectGitHubStandaloneHeaderCard(
         shape = RoundedCornerShape(14.dp),
         surfaceColorOverride = surfaceColor.copy(alpha = 0.58f)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(selectedRepo.fullName, style = MaterialTheme.typography.titleSmall)
             ProjectInsetCard(
                 shape = RoundedCornerShape(12.dp),
@@ -1016,18 +1063,30 @@ private fun ProjectGitHubStandaloneTopActions(
         listOf(ProjectGitHubStandaloneSection.RELEASES.label to onShowReleases, ProjectGitHubStandaloneSection.WORKFLOWS.label to onShowWorkflows),
         listOf(ProjectGitHubStandaloneSection.ISSUES.label to onShowIssues, ProjectGitHubStandaloneSection.PULL_REQUESTS.label to onShowPullRequests)
     )
-    buttonRows.forEach { row ->
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            row.forEach { (label, onClick) ->
-                ProjectGitHubStandaloneActionButton(
-                    label = label,
-                    selected = false,
-                    modifier = Modifier.weight(1f),
-                    onClick = onClick
-                )
+    ProjectSectionCard(
+        shape = RoundedCornerShape(14.dp),
+        surfaceColorOverride = rememberReasonixSurfaceColor().copy(alpha = 0.58f)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = "仓库入口",
+                style = MaterialTheme.typography.titleSmall
+            )
+            buttonRows.forEach { row ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    row.forEach { (label, onClick) ->
+                        ProjectGitHubStandaloneActionButton(
+                            label = label,
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 44.dp),
+                            onClick = onClick
+                        )
+                    }
+                }
             }
         }
     }
@@ -1036,33 +1095,14 @@ private fun ProjectGitHubStandaloneTopActions(
 @Composable
 private fun ProjectGitHubStandaloneActionButton(
     label: String,
-    selected: Boolean,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    val chromeColor = rememberReasonixChromeColor()
-    val surfaceColor = rememberReasonixSurfaceColor()
-    ProjectInsetCard(
-        modifier = modifier.clickable(onClick = onClick),
-        shape = RoundedCornerShape(14.dp),
-        surfaceColorOverride = if (selected) {
-            chromeColor.copy(alpha = 0.62f)
-        } else {
-            surfaceColor.copy(alpha = 0.54f)
-        }
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.titleSmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            color = if (selected) {
-                MaterialTheme.colorScheme.primary
-            } else {
-                MaterialTheme.colorScheme.onSurface
-            }
-        )
-    }
+    ReasonixOutlinedActionButton(
+        text = label,
+        onClick = onClick,
+        modifier = modifier
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -1156,19 +1196,18 @@ private fun ProjectGitHubStandaloneWorkflowListSection(
     onOpenWorkflow: (ProjectGitHubWorkflowUi) -> Unit
 ) {
     val mutedTextColor = rememberReasonixMutedTextColor()
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         ProjectSectionCard(
             shape = RoundedCornerShape(14.dp),
             surfaceColorOverride = rememberReasonixChromeColor().copy(alpha = 0.28f)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("可执行工作流", style = MaterialTheme.typography.titleSmall)
-                OutlinedButton(
+                ReasonixOutlinedActionButton(
+                    text = "刷新",
                     onClick = onRefresh,
                     enabled = tokenConfigured && !isLoading
-                ) {
-                    Text("刷新")
-                }
+                )
                 when {
                     isLoading -> {
                         ProjectGitHubStandaloneLoadingCard("正在读取当前仓库的工作流...")
@@ -1205,7 +1244,7 @@ private fun ProjectGitHubStandaloneWorkflowListSection(
                     .fillMaxWidth()
                     .clickable { onOpenWorkflow(workflow) }
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
                         text = workflow.name.ifBlank { workflow.path },
                         style = MaterialTheme.typography.bodyMedium
@@ -1216,7 +1255,7 @@ private fun ProjectGitHubStandaloneWorkflowListSection(
                         color = mutedTextColor
                     )
                     Text(
-                        text = "点击进入此工作流的运行列表",
+                        text = "点开查看这个工作流的运行记录",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -1235,21 +1274,22 @@ private fun ProjectGitHubStandaloneWorkflowRunsSection(
     onOpenRunDetail: (ProjectGitHubWorkflowRunUi) -> Unit
 ) {
     val mutedTextColor = rememberReasonixMutedTextColor()
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         ProjectSectionCard(
             shape = RoundedCornerShape(14.dp),
             surfaceColorOverride = rememberReasonixChromeColor().copy(alpha = 0.28f)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(workflow.name.ifBlank { workflow.path }, style = MaterialTheme.typography.titleSmall)
                 Text(
-                    text = "这里只显示该工作流的运行记录，点击运行项继续看日志和作业。",
+                    text = "这里显示这个工作流的运行记录，点开后继续看日志和作业。",
                     style = MaterialTheme.typography.bodySmall,
                     color = mutedTextColor
                 )
-                TextButton(onClick = onBackToWorkflowList) {
-                    Text("返回工作流列表")
-                }
+                ReasonixOutlinedActionButton(
+                    text = "返回工作流列表",
+                    onClick = onBackToWorkflowList
+                )
             }
         }
         if (isLoading && runs.isEmpty()) {
@@ -1275,7 +1315,7 @@ private fun ProjectGitHubStandaloneWorkflowRunsSection(
                     .fillMaxWidth()
                     .clickable { onOpenRunDetail(run) }
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         text = "第 ${run.runNumber} 次运行",
                         style = MaterialTheme.typography.bodyMedium
