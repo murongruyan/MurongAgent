@@ -139,9 +139,12 @@ import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.put
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.nio.charset.MalformedInputException
 import java.util.Locale
 import java.util.UUID
@@ -4246,7 +4249,54 @@ private fun ProjectGitSection(
         pendingRemoteFileSaveConfirmation = false
     }
 
+    // #region debug-point A:git-debug-reporter
+    fun reportGitBackChatFlashProjectDebug(
+        hypothesisId: String,
+        location: String,
+        msg: String,
+        data: JSONObject
+    ) {
+        Thread {
+            runCatching {
+                val connection = (URL("http://192.168.2.3:7777/event").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 1200
+                    readTimeout = 1200
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json")
+                }
+                val payload = JSONObject()
+                    .put("sessionId", "git-back-chat-flash")
+                    .put("runId", "pre-fix")
+                    .put("hypothesisId", hypothesisId)
+                    .put("location", location)
+                    .put("msg", msg)
+                    .put("data", data)
+                    .put("ts", System.currentTimeMillis())
+                    .toString()
+                connection.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+                runCatching { connection.inputStream.use { input -> while (input.read() != -1) {} } }
+                connection.disconnect()
+            }
+        }.start()
+    }
+    // #endregion
+
     fun handleGitSecondaryCloseRequest() {
+        // #region debug-point A:git-close-entry
+        reportGitBackChatFlashProjectDebug(
+            hypothesisId = "A",
+            location = "ProjectScreen.kt:handleGitSecondaryCloseRequest",
+            msg = "[DEBUG] git secondary close requested",
+            data = JSONObject()
+                .put("showGitHubWorkspacePage", showGitHubWorkspacePage)
+                .put("workspaceWorkbenchRepoRoot", workspaceWorkbenchRepoRoot ?: JSONObject.NULL)
+                .put("workspaceWorkbenchSelectedTab", workspaceWorkbenchSelectedTab.name)
+                .put("showStandaloneViewerSecondaryPage", showStandaloneViewerSecondaryPage)
+                .put("selectedViewerSection", selectedViewerSection.name)
+                .put("showGitHubWorkspaceDownloadCenterPage", showGitHubWorkspaceDownloadCenterPage)
+        )
+        // #endregion
         when {
             pendingRemoteFileSaveConfirmation -> {
                 pendingRemoteFileSaveConfirmation = false
@@ -4341,6 +4391,16 @@ private fun ProjectGitSection(
 
             workspaceWorkbenchRepo != null &&
                 workspaceWorkbenchSelectedTab != ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW -> {
+                // #region debug-point A:git-close-workbench-tab
+                reportGitBackChatFlashProjectDebug(
+                    hypothesisId = "A",
+                    location = "ProjectScreen.kt:handleGitSecondaryCloseRequest:workbenchTab",
+                    msg = "[DEBUG] closing workbench tab to overview",
+                    data = JSONObject()
+                        .put("workspaceWorkbenchRepoRoot", workspaceWorkbenchRepoRoot ?: JSONObject.NULL)
+                        .put("workspaceWorkbenchSelectedTab", workspaceWorkbenchSelectedTab.name)
+                )
+                // #endregion
                 workspaceNavigationState = workspaceNavigationState.copy(
                     workbenchSelectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
                 )
@@ -4352,6 +4412,17 @@ private fun ProjectGitSection(
             }
 
             showGitHubWorkspacePage -> {
+                // #region debug-point A:git-close-workspace-layer
+                reportGitBackChatFlashProjectDebug(
+                    hypothesisId = "A",
+                    location = "ProjectScreen.kt:handleGitSecondaryCloseRequest:workspaceLayer",
+                    msg = "[DEBUG] delegating workspace layer close helper",
+                    data = JSONObject()
+                        .put("workspaceWorkbenchRepoRoot", workspaceWorkbenchRepoRoot ?: JSONObject.NULL)
+                        .put("workspaceWorkbenchSelectedTab", workspaceWorkbenchSelectedTab.name)
+                        .put("showGitHubWorkspaceDownloadCenterPage", showGitHubWorkspaceDownloadCenterPage)
+                )
+                // #endregion
                 workspaceNavigationState = closeProjectGitHubWorkspaceNavigationLayer(
                     currentState = workspaceNavigationState
                 )

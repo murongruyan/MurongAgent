@@ -68,6 +68,9 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 import kotlin.math.abs
 
 @AndroidEntryPoint
@@ -192,6 +195,20 @@ fun MainScreen() {
     fun navigateToTopLevel(target: Screen) {
         val targetIndex = shellScreens.indexOfFirst { it.route == target.route }
         if (targetIndex < 0) return
+        // #region debug-point C:chat-nav-request
+        reportGitBackChatFlashMainDebug(
+            hypothesisId = "C",
+            location = "MainActivity.kt:navigateToTopLevel",
+            msg = "[DEBUG] request top-level navigation",
+            data = JSONObject()
+                .put("targetRoute", target.route)
+                .put("targetIndex", targetIndex)
+                .put("selectedTopLevelPage", selectedTopLevelPage)
+                .put("visibleTopLevelPage", visibleTopLevelPage)
+                .put("visibleRoute", visibleScreen.route)
+                .put("drawerValue", drawerState.currentValue.name)
+        )
+        // #endregion
         settingsSubpage = SettingsSubpage.Main
         selectedTopLevelPage = targetIndex
     }
@@ -220,6 +237,20 @@ fun MainScreen() {
     LaunchedEffect(pagerState.settledPage) {
         val settledPage = pagerState.settledPage
         val navigationTargetPage = topLevelNavigationTargetPage
+        // #region debug-point C:chat-settled
+        reportGitBackChatFlashMainDebug(
+            hypothesisId = "C",
+            location = "MainActivity.kt:settledPage",
+            msg = "[DEBUG] pager settled page observed",
+            data = JSONObject()
+                .put("settledPage", settledPage)
+                .put("selectedTopLevelPage", selectedTopLevelPage)
+                .put("visibleTopLevelPage", visibleTopLevelPage)
+                .put("visibleRoute", visibleScreen.route)
+                .put("navigationTargetPage", navigationTargetPage ?: JSONObject.NULL)
+                .put("drawerValue", drawerState.currentValue.name)
+        )
+        // #endregion
         if (navigationTargetPage != null && settledPage != navigationTargetPage) {
             return@LaunchedEffect
         }
@@ -241,6 +272,20 @@ fun MainScreen() {
     }
 
     LaunchedEffect(selectedTopLevelPage) {
+        // #region debug-point C:chat-selected
+        reportGitBackChatFlashMainDebug(
+            hypothesisId = "C",
+            location = "MainActivity.kt:selectedTopLevelPage",
+            msg = "[DEBUG] selected top-level page changed",
+            data = JSONObject()
+                .put("selectedTopLevelPage", selectedTopLevelPage)
+                .put("visibleTopLevelPage", visibleTopLevelPage)
+                .put("visibleRoute", visibleScreen.route)
+                .put("pagerCurrentPage", pagerState.currentPage)
+                .put("navigationTargetPage", topLevelNavigationTargetPage ?: JSONObject.NULL)
+                .put("drawerValue", drawerState.currentValue.name)
+        )
+        // #endregion
         if (selectedTopLevelPage != pagerState.currentPage) {
             topLevelNavigationTargetPage = selectedTopLevelPage
             pagerState.scrollToPage(selectedTopLevelPage)
@@ -1343,6 +1388,39 @@ private fun copyTextToClipboard(context: Context, text: String) {
     val clipboard = context.getSystemService(android.content.ClipboardManager::class.java) ?: return
     clipboard.setPrimaryClip(ClipData.newPlainText(null, text))
 }
+
+// #region debug-point C:chat-debug-reporter
+private fun reportGitBackChatFlashMainDebug(
+    hypothesisId: String,
+    location: String,
+    msg: String,
+    data: JSONObject
+) {
+    Thread {
+        runCatching {
+            val connection = (URL("http://192.168.2.3:7777/event").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 1200
+                readTimeout = 1200
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+            val payload = JSONObject()
+                .put("sessionId", "git-back-chat-flash")
+                .put("runId", "pre-fix")
+                .put("hypothesisId", hypothesisId)
+                .put("location", location)
+                .put("msg", msg)
+                .put("data", data)
+                .put("ts", System.currentTimeMillis())
+                .toString()
+            connection.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+            runCatching { connection.inputStream.use { input -> while (input.read() != -1) {} } }
+            connection.disconnect()
+        }
+    }.start()
+}
+// #endregion
 
 private data class PromptCacheMetrics(
     val hitRatePercent: Int
