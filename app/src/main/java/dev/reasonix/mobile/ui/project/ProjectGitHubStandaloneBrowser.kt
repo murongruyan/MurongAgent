@@ -7,6 +7,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -16,7 +17,9 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -565,7 +568,7 @@ private fun ProjectGitHubStandaloneWorkflowPage(
                         )
                     },
                     listContent = {
-                        Box {
+                        Box(modifier = Modifier.fillMaxSize()) {
                             ProjectGitHubStandaloneWorkflowRunsSection(
                                 workflow = selectedWorkflow ?: return@ProjectNestedPredictiveBackHost,
                                 runs = visibleRuns,
@@ -579,17 +582,14 @@ private fun ProjectGitHubStandaloneWorkflowPage(
                                 },
                                 onOpenRunDetail = ::openWorkflowRun
                             )
-                            FloatingActionButton(
+                            ProjectGitHubFloatingWorkflowActionButton(
                                 modifier = Modifier
                                     .align(Alignment.BottomEnd)
-                                    .padding(16.dp),
+                                    .padding(end = 4.dp, bottom = 4.dp),
                                 onClick = {
                                     selectedWorkflow?.let(onRunWorkflow)
-                                },
-                                containerColor = MaterialTheme.colorScheme.primary
-                            ) {
-                                Text("+")
-                            }
+                                }
+                            )
                         }
                     }
                 )
@@ -604,6 +604,27 @@ private fun ProjectGitHubStandaloneWorkflowPage(
                 )
             }
         )
+    }
+}
+
+@Composable
+private fun ProjectGitHubFloatingWorkflowActionButton(
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    ExtendedFloatingActionButton(
+        onClick = onClick,
+        modifier = modifier,
+        containerColor = MaterialTheme.colorScheme.primary,
+        contentColor = MaterialTheme.colorScheme.onPrimary,
+        elevation = FloatingActionButtonDefaults.elevation(
+            defaultElevation = 6.dp,
+            pressedElevation = 8.dp,
+            focusedElevation = 6.dp,
+            hoveredElevation = 7.dp
+        )
+    ) {
+        Text("运行")
     }
 }
 
