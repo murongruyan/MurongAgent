@@ -51,6 +51,13 @@ internal fun closeProjectGitHubWorkspaceNavigationLayer(
     currentState: ProjectGitHubWorkspaceNavigationState
 ): ProjectGitHubWorkspaceNavigationState {
     return when {
+        currentState.workbenchRepoRoot != null &&
+            currentState.workbenchSelectedTab != ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW -> {
+            currentState.copy(
+                workbenchSelectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
+            )
+        }
+
         currentState.workbenchRepoRoot != null -> {
             currentState.copy(
                 workbenchRepoRoot = null,

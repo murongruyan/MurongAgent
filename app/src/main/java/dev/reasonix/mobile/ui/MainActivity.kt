@@ -181,7 +181,9 @@ fun MainScreen() {
     var projectEditorMenuAction by remember { mutableStateOf<ProjectEditorMenuAction?>(null) }
     var projectEditorMenuActionSignal by remember { mutableIntStateOf(0) }
     var showProjectEditorMenu by remember { mutableStateOf(false) }
-    val currentScreen = shellScreens[selectedTopLevelPage]
+    val selectedScreen = shellScreens[selectedTopLevelPage]
+    val visibleTopLevelPage = pagerState.currentPage.coerceIn(0, shellScreens.lastIndex)
+    val visibleScreen = shellScreens[visibleTopLevelPage]
     val darkMode = uiController.themeMode == ReasonixThemeMode.DARK ||
         (uiController.themeMode == ReasonixThemeMode.SYSTEM &&
             reasonixIsDarkColor(MaterialTheme.colorScheme.background))
@@ -246,7 +248,7 @@ fun MainScreen() {
             topLevelNavigationTargetPage = null
         }
         drawerState.close()
-        if (currentScreen !is Screen.Projects) {
+        if (selectedScreen !is Screen.Projects) {
             projectSecondaryChromeState = ProjectSecondaryChromeState()
             projectEditorMenuAction = null
         }
@@ -274,7 +276,7 @@ fun MainScreen() {
         settingsSubpage = SettingsSubpage.Main
     }
 
-    val isProjectSecondaryPage = currentScreen is Screen.Projects && projectSecondaryChromeState.active
+    val isProjectSecondaryPage = visibleScreen is Screen.Projects && projectSecondaryChromeState.active
 
     BackHandler(enabled = isProjectSecondaryPage) {
         projectSecondaryCloseRequestSignal += 1
@@ -435,7 +437,7 @@ fun MainScreen() {
     val topBarTitle = when (settingsSubpage) {
         SettingsSubpage.Theme -> "主题界面"
         SettingsSubpage.About -> "关于"
-        SettingsSubpage.Main -> when (currentScreen) {
+        SettingsSubpage.Main -> when (visibleScreen) {
             is Screen.Chat -> chatState.sessionTitle.ifBlank { "新对话" }
             is Screen.Projects -> projectSecondaryChromeState.title.ifBlank { Screen.Projects.title }
             is Screen.Tools -> Screen.Tools.title
@@ -445,7 +447,7 @@ fun MainScreen() {
     val topBarSubtitle = when (settingsSubpage) {
         SettingsSubpage.Theme -> "风格、模式与强调色"
         SettingsSubpage.About -> "应用信息与产品方向"
-        SettingsSubpage.Main -> when (currentScreen) {
+        SettingsSubpage.Main -> when (visibleScreen) {
             is Screen.Chat -> ""
             is Screen.Projects -> if (isProjectSecondaryPage) {
                 projectSecondaryChromeState.subtitle
@@ -459,7 +461,7 @@ fun MainScreen() {
     val topBarTag = when (settingsSubpage) {
         SettingsSubpage.Theme -> "外观"
         SettingsSubpage.About -> "信息"
-        SettingsSubpage.Main -> when (currentScreen) {
+        SettingsSubpage.Main -> when (visibleScreen) {
             is Screen.Chat -> "对话"
             is Screen.Projects -> "项目"
             is Screen.Tools -> "工具"
@@ -786,17 +788,17 @@ fun MainScreen() {
         }
     }
 
-    LaunchedEffect(currentScreen, settingsSubpage) {
-        if (currentScreen !is Screen.Chat || settingsSubpage != SettingsSubpage.Main) {
+    LaunchedEffect(visibleScreen, settingsSubpage) {
+        if (visibleScreen !is Screen.Chat || settingsSubpage != SettingsSubpage.Main) {
             drawerState.close()
         }
     }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
-        gesturesEnabled = currentScreen is Screen.Chat && showBottomBar,
+        gesturesEnabled = visibleScreen is Screen.Chat && showBottomBar,
         drawerContent = {
-            if (currentScreen is Screen.Chat) {
+            if (visibleScreen is Screen.Chat) {
                 ModalDrawerSheet {
                     SessionDrawerContent(
                         currentSessionId = chatState.sessionId,
@@ -874,7 +876,7 @@ fun MainScreen() {
                                             onClick = { projectSecondaryCloseRequestSignal += 1 }
                                         )
                                     }
-                                    currentScreen is Screen.Chat -> {
+                                    visibleScreen is Screen.Chat -> {
                                         IconButton(
                                             onClick = {
                                                 scope.launch {
@@ -1038,7 +1040,7 @@ fun MainScreen() {
                                             }
                                         }
                                     }
-                                } else if (currentScreen is Screen.Chat && settingsSubpage == SettingsSubpage.Main) {
+                                } else if (visibleScreen is Screen.Chat && settingsSubpage == SettingsSubpage.Main) {
                                     chatState.usageSummary
                                         .takeIf { it.totalTokens > 0 || it.promptTokens > 0 }
                                         ?.let { usageSummary ->
@@ -1049,7 +1051,7 @@ fun MainScreen() {
                                     ReasonixTagButton(text = topBarTag, onClick = {})
                                     Spacer(modifier = Modifier.width(6.dp))
                                 }
-                                if (currentScreen is Screen.Chat && settingsSubpage == SettingsSubpage.Main) {
+                                if (visibleScreen is Screen.Chat && settingsSubpage == SettingsSubpage.Main) {
                                     Box {
                                         IconButton(onClick = { showChatMenu = true }) {
                                             Icon(
@@ -1325,7 +1327,7 @@ fun MainScreen() {
             )
         }
 
-        if (currentScreen !is Screen.Tools) {
+        if (visibleScreen !is Screen.Tools) {
             chatState.pendingApproval?.let { pendingApproval ->
             ApprovalDialog(
                 approval = pendingApproval,
