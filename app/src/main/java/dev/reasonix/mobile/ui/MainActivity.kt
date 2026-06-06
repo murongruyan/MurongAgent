@@ -144,6 +144,7 @@ fun MainScreen() {
     )
     val topLevelHistory = remember { mutableStateListOf<Int>() }
     var lastSettledTopLevelPage by remember { mutableIntStateOf(selectedTopLevelPage) }
+    var topLevelNavigationTargetPage by remember { mutableStateOf<Int?>(null) }
     var consumingTopLevelBack by remember { mutableStateOf(false) }
     val authVm: AuthViewModel = hiltViewModel()
     val chatVm: ChatViewModel = hiltViewModel()
@@ -216,6 +217,10 @@ fun MainScreen() {
 
     LaunchedEffect(pagerState.settledPage) {
         val settledPage = pagerState.settledPage
+        val navigationTargetPage = topLevelNavigationTargetPage
+        if (navigationTargetPage != null && settledPage != navigationTargetPage) {
+            return@LaunchedEffect
+        }
         if (settledPage != lastSettledTopLevelPage) {
             if (consumingTopLevelBack) {
                 consumingTopLevelBack = false
@@ -227,16 +232,22 @@ fun MainScreen() {
         if (selectedTopLevelPage != settledPage) {
             selectedTopLevelPage = settledPage
         }
+        if (navigationTargetPage == settledPage) {
+            topLevelNavigationTargetPage = null
+        }
         drawerState.close()
     }
 
     LaunchedEffect(selectedTopLevelPage) {
         if (selectedTopLevelPage != pagerState.currentPage) {
+            topLevelNavigationTargetPage = selectedTopLevelPage
             if (abs(selectedTopLevelPage - pagerState.currentPage) > 1) {
                 pagerState.scrollToPage(selectedTopLevelPage)
             } else {
                 pagerState.animateScrollToPage(selectedTopLevelPage)
             }
+        } else if (topLevelNavigationTargetPage == selectedTopLevelPage) {
+            topLevelNavigationTargetPage = null
         }
         drawerState.close()
         if (currentScreen !is Screen.Projects) {
