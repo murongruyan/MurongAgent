@@ -130,9 +130,82 @@ internal fun ProjectGitHubStandaloneBrowserSection(
         modifier = Modifier.fillMaxWidth(),
         detailContent = {
             val currentRepo = selectedRepo ?: return@ProjectNestedPredictiveBackHost
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                when (activeSection) {
-                    ProjectGitHubStandaloneSection.OVERVIEW -> {
+            ProjectNestedPredictiveBackHost(
+                detailVisible = activeSection != ProjectGitHubStandaloneSection.OVERVIEW,
+                backProgress = backProgress,
+                detailContent = {
+                    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        when (activeSection) {
+                            ProjectGitHubStandaloneSection.RELEASES -> {
+                                ProjectGitHubStandaloneReleasePage(
+                                    selectedRepo = currentRepo,
+                                    releases = repoDetailState.releases,
+                                    isLoading = isRepoDetailLoading,
+                                    isActionRunning = isActionRunning,
+                                    onRefresh = onRefreshRepoDetail,
+                                    onCreateRelease = onCreateRelease,
+                                    onEditRelease = onEditRelease,
+                                    onToggleReleaseMode = onToggleReleaseMode,
+                                    onTogglePrerelease = onTogglePrerelease,
+                                    onDeleteRelease = onDeleteRelease,
+                                    onOpenReleasePage = onOpenReleasePage,
+                                    onOpenReleaseAssets = onOpenReleaseAssets,
+                                    backProgress = backProgress
+                                )
+                            }
+
+                            ProjectGitHubStandaloneSection.WORKFLOWS -> {
+                                ProjectGitHubStandaloneWorkflowPage(
+                                    selectedRepo = currentRepo,
+                                    state = repoDetailState,
+                                    isLoading = isRepoDetailLoading,
+                                    tokenConfigured = tokenConfigured,
+                                    onRefreshRepoDetail = onRefreshRepoDetail,
+                                    onRunWorkflow = onRunWorkflow,
+                                    onLoadRunDetail = onLoadRunDetail,
+                                    onRefreshRunDetail = onRefreshRunDetail,
+                                    onDownloadWorkflowArtifact = onDownloadWorkflowArtifact,
+                                    closeRequestSignal = closeRequestSignal,
+                                    onExitWorkflowPage = {
+                                        onChangeSection(ProjectGitHubStandaloneSection.OVERVIEW)
+                                    },
+                                    backProgress = backProgress
+                                )
+                            }
+
+                            ProjectGitHubStandaloneSection.ISSUES -> {
+                                ProjectGitHubStandaloneIssuePage(
+                                    selectedRepo = currentRepo,
+                                    issues = repoDetailState.issues,
+                                    isActionRunning = isActionRunning,
+                                    onCreateIssue = onCreateIssue,
+                                    onOpenIssueDetail = onOpenIssueDetail,
+                                    onToggleIssueState = onToggleIssueState,
+                                    onOpenIssuePage = onOpenIssuePage,
+                                    backProgress = backProgress
+                                )
+                            }
+
+                            ProjectGitHubStandaloneSection.PULL_REQUESTS -> {
+                                ProjectGitHubStandalonePullRequestPage(
+                                    selectedRepo = currentRepo,
+                                    pullRequests = repoDetailState.pullRequests,
+                                    isActionRunning = isActionRunning,
+                                    onCreatePullRequest = onCreatePullRequest,
+                                    onOpenPullRequestDetail = onOpenPullRequestDetail,
+                                    onTogglePullRequestState = onTogglePullRequestState,
+                                    onMergePullRequest = onMergePullRequest,
+                                    onOpenPullRequestPage = onOpenPullRequestPage,
+                                    backProgress = backProgress
+                                )
+                            }
+
+                            ProjectGitHubStandaloneSection.OVERVIEW -> Unit
+                        }
+                    }
+                },
+                listContent = {
+                    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         ProjectGitHubStandaloneOverviewPage(
                             selectedRepo = currentRepo,
                             selectedTaskRepo = selectedTaskRepo,
@@ -157,72 +230,8 @@ internal fun ProjectGitHubStandaloneBrowserSection(
                             backProgress = backProgress
                         )
                     }
-
-                    ProjectGitHubStandaloneSection.RELEASES -> {
-                        ProjectGitHubStandaloneReleasePage(
-                            selectedRepo = currentRepo,
-                            releases = repoDetailState.releases,
-                            isLoading = isRepoDetailLoading,
-                            isActionRunning = isActionRunning,
-                            onRefresh = onRefreshRepoDetail,
-                            onCreateRelease = onCreateRelease,
-                            onEditRelease = onEditRelease,
-                            onToggleReleaseMode = onToggleReleaseMode,
-                            onTogglePrerelease = onTogglePrerelease,
-                            onDeleteRelease = onDeleteRelease,
-                            onOpenReleasePage = onOpenReleasePage,
-                            onOpenReleaseAssets = onOpenReleaseAssets,
-                            backProgress = backProgress
-                        )
-                    }
-
-                    ProjectGitHubStandaloneSection.WORKFLOWS -> {
-                        ProjectGitHubStandaloneWorkflowPage(
-                            selectedRepo = currentRepo,
-                            state = repoDetailState,
-                            isLoading = isRepoDetailLoading,
-                            tokenConfigured = tokenConfigured,
-                            onRefreshRepoDetail = onRefreshRepoDetail,
-                            onRunWorkflow = onRunWorkflow,
-                            onLoadRunDetail = onLoadRunDetail,
-                            onRefreshRunDetail = onRefreshRunDetail,
-                            onDownloadWorkflowArtifact = onDownloadWorkflowArtifact,
-                            closeRequestSignal = closeRequestSignal,
-                            onExitWorkflowPage = {
-                                onChangeSection(ProjectGitHubStandaloneSection.OVERVIEW)
-                            },
-                            backProgress = backProgress
-                        )
-                    }
-
-                    ProjectGitHubStandaloneSection.ISSUES -> {
-                        ProjectGitHubStandaloneIssuePage(
-                            selectedRepo = currentRepo,
-                            issues = repoDetailState.issues,
-                            isActionRunning = isActionRunning,
-                            onCreateIssue = onCreateIssue,
-                            onOpenIssueDetail = onOpenIssueDetail,
-                            onToggleIssueState = onToggleIssueState,
-                            onOpenIssuePage = onOpenIssuePage,
-                            backProgress = backProgress
-                        )
-                    }
-
-                    ProjectGitHubStandaloneSection.PULL_REQUESTS -> {
-                        ProjectGitHubStandalonePullRequestPage(
-                            selectedRepo = currentRepo,
-                            pullRequests = repoDetailState.pullRequests,
-                            isActionRunning = isActionRunning,
-                            onCreatePullRequest = onCreatePullRequest,
-                            onOpenPullRequestDetail = onOpenPullRequestDetail,
-                            onTogglePullRequestState = onTogglePullRequestState,
-                            onMergePullRequest = onMergePullRequest,
-                            onOpenPullRequestPage = onOpenPullRequestPage,
-                            backProgress = backProgress
-                        )
-                    }
                 }
-            }
+            )
         },
         listContent = {
             ProjectGitHubStandaloneRepoListContent(

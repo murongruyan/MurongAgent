@@ -708,46 +708,70 @@ fun MainScreen() {
 
                 is Screen.Settings -> {
                     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                        SettingsScreen(
-                            config = settingsConfig,
-                            onConfigChanged = { settingsVm.updateConfig(it) },
-                            gitHubAuthState = gitHubAuthState,
-                            rootStatus = rootStatus,
-                            isCheckingRoot = isCheckingRoot,
-                            onCheckRoot = { settingsVm.checkRoot() },
-                            sessions = settingsSessions,
-                            balanceSyncStates = balanceSyncStates,
-                            mcpServers = mcpServers,
-                            mcpStatuses = mcpStatuses,
-                            mcpConnectError = mcpConnectError,
-                            onRefreshProviderBalance = { settingsVm.refreshProviderBalance(it) },
-                            supportsBalanceFetch = { settingsVm.supportsBalanceFetch(it) },
-                            onAddMcpServer = { settingsVm.addMcpServer(it) },
-                            onRemoveMcpServer = { settingsVm.removeMcpServer(it) },
-                            onConnectMcpServers = { settingsVm.connectMcpServers() },
-                            onRefreshMcpStatus = { settingsVm.refreshMcpStatus() },
-                            onRefreshGitHubAuthStatus = { settingsVm.refreshGitHubAuthStatus() },
-                            onStartGitHubOAuthLogin = { settingsVm.startGitHubOAuthLogin() },
-                            onClearGitHubToken = { settingsVm.clearGitHubToken() },
-                            onOpenThemePage = { settingsSubpage = SettingsSubpage.Theme },
-                            onOpenAboutPage = { settingsSubpage = SettingsSubpage.About }
-                        )
-                        if (settingsSubpage != SettingsSubpage.Main && !previewMode) {
+                        @Composable
+                        fun SettingsMainPage() {
+                            SettingsScreen(
+                                config = settingsConfig,
+                                onConfigChanged = { settingsVm.updateConfig(it) },
+                                gitHubAuthState = gitHubAuthState,
+                                rootStatus = rootStatus,
+                                isCheckingRoot = isCheckingRoot,
+                                onCheckRoot = { settingsVm.checkRoot() },
+                                sessions = settingsSessions,
+                                balanceSyncStates = balanceSyncStates,
+                                mcpServers = mcpServers,
+                                mcpStatuses = mcpStatuses,
+                                mcpConnectError = mcpConnectError,
+                                onRefreshProviderBalance = { settingsVm.refreshProviderBalance(it) },
+                                supportsBalanceFetch = { settingsVm.supportsBalanceFetch(it) },
+                                onAddMcpServer = { settingsVm.addMcpServer(it) },
+                                onRemoveMcpServer = { settingsVm.removeMcpServer(it) },
+                                onConnectMcpServers = { settingsVm.connectMcpServers() },
+                                onRefreshMcpStatus = { settingsVm.refreshMcpStatus() },
+                                onRefreshGitHubAuthStatus = { settingsVm.refreshGitHubAuthStatus() },
+                                onStartGitHubOAuthLogin = { settingsVm.startGitHubOAuthLogin() },
+                                onClearGitHubToken = { settingsVm.clearGitHubToken() },
+                                onOpenThemePage = { settingsSubpage = SettingsSubpage.Theme },
+                                onOpenAboutPage = { settingsSubpage = SettingsSubpage.About }
+                            )
+                        }
+                        @Composable
+                        fun SettingsDetailPage() {
+                            when (settingsSubpage) {
+                                SettingsSubpage.Main -> SettingsMainPage()
+                                SettingsSubpage.Theme -> ThemeSettingsPage()
+                                SettingsSubpage.About -> AboutPage()
+                            }
+                        }
+
+                        if (previewMode || settingsSubpage == SettingsSubpage.Main) {
+                            SettingsDetailPage()
+                        } else if (settingsBackProgress > 0.02f) {
                             val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
+                            val currentTranslationX = widthPx * settingsBackProgress
+                            val previousTranslationX = currentTranslationX - widthPx
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .graphicsLayer {
-                                        translationX = widthPx * settingsBackProgress
-                                        alpha = 1f - (settingsBackProgress * 0.08f)
+                                        translationX = previousTranslationX
+                                        alpha = 1f
                                     }
                             ) {
-                                when (settingsSubpage) {
-                                    SettingsSubpage.Main -> Unit
-                                    SettingsSubpage.Theme -> ThemeSettingsPage()
-                                    SettingsSubpage.About -> AboutPage()
-                                }
+                                SettingsMainPage()
                             }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer {
+                                        translationX = currentTranslationX
+                                        alpha = 1f
+                                    }
+                            ) {
+                                SettingsDetailPage()
+                            }
+                        } else {
+                            SettingsDetailPage()
                         }
                     }
                 }
@@ -1175,13 +1199,6 @@ fun MainScreen() {
                 ) {
                     val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
                     Box(modifier = Modifier.fillMaxSize()) {
-                        HorizontalPager(
-                            state = pagerState,
-                            modifier = Modifier.fillMaxSize(),
-                            userScrollEnabled = false
-                        ) { page ->
-                            TopLevelPageContent(page = page)
-                        }
                         topLevelPredictivePreviewTargetPage?.takeIf { showTopLevelPredictivePreview }?.let { targetPage ->
                             val currentTranslationX = widthPx * topLevelBackProgress
                             val previousTranslationX = currentTranslationX - widthPx
@@ -1211,6 +1228,12 @@ fun MainScreen() {
                                     previewMode = true
                                 )
                             }
+                        } ?: HorizontalPager(
+                            state = pagerState,
+                            modifier = Modifier.fillMaxSize(),
+                            userScrollEnabled = false
+                        ) { page ->
+                            TopLevelPageContent(page = page)
                         }
                     }
                 }

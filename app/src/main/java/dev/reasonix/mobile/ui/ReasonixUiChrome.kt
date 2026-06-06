@@ -543,11 +543,39 @@ fun Modifier.reasonixBackdropGlass(
     return hazeEffect(
         state = hazeState,
         style = HazeStyle(
-            blurRadius = 36.dp,
+            blurRadius = 24.dp,
             backgroundColor = Color.Transparent,
             tint = HazeTint(surfaceColor.copy(alpha = surfaceColor.alpha.coerceIn(minTintAlpha, maxTintAlpha)))
         )
     )
+}
+
+private fun reasonixOpaqueGlassColor(
+    seed: Color,
+    accent: Color,
+    darkMode: Boolean,
+    accentBlendRatio: Float,
+    alpha: Float
+): Color {
+    val blendedSeed = Color(
+        ColorUtils.blendARGB(
+            seed.toArgb(),
+            accent.toArgb(),
+            accentBlendRatio
+        )
+    )
+    val baseBlendTarget = if (darkMode) {
+        Color(0xFF0C1018)
+    } else {
+        Color(0xFFFDFEFF)
+    }
+    return Color(
+        ColorUtils.blendARGB(
+            blendedSeed.toArgb(),
+            baseBlendTarget.toArgb(),
+            if (darkMode) 0.20f else 0.26f
+        )
+    ).copy(alpha = alpha)
 }
 
 @Composable
@@ -743,18 +771,29 @@ fun ReasonixSecondaryPageSurface(
     val accent = rememberReasonixAccentColor()
     val chromeSeed = rememberReasonixChromeColor()
     val hazeState = LocalReasonixHazeState.current
+    val glassTint = if (darkMode) {
+        ColorUtils.blendARGB(chromeSeed.toArgb(), accent.toArgb(), 0.16f).let { Color(it) }.copy(alpha = 0.014f)
+    } else {
+        ColorUtils.blendARGB(chromeSeed.toArgb(), accent.toArgb(), 0.10f).let { Color(it) }.copy(alpha = 0.010f)
+    }
     val surfaceColor = if (ui.themeStyle == ReasonixThemeStyle.GLASS) {
-        chromeSeed.copy(alpha = if (darkMode) 0.54f else 0.30f)
+        reasonixOpaqueGlassColor(
+            seed = chromeSeed,
+            accent = accent,
+            darkMode = darkMode,
+            accentBlendRatio = 0.10f,
+            alpha = if (darkMode) 0.95f else 0.97f
+        )
     } else {
         chromeSeed.copy(alpha = 0.98f)
     }
     Surface(
         modifier = modifier.reasonixBackdropGlass(
-            surfaceColor = surfaceColor,
+            surfaceColor = glassTint,
             enabled = ui.themeStyle == ReasonixThemeStyle.GLASS,
             hazeState = hazeState,
-            minTintAlpha = 0.05f,
-            maxTintAlpha = 0.16f
+            minTintAlpha = 0.003f,
+            maxTintAlpha = 0.014f
         ),
         shape = shape,
         color = surfaceColor,
@@ -786,9 +825,20 @@ private fun ReasonixBottomBarSurface(
     val chromeSeed = rememberReasonixChromeColor()
     val hazeState = LocalReasonixHazeState.current
     val glassTint = if (darkMode) {
-        ColorUtils.blendARGB(chromeSeed.toArgb(), accent.toArgb(), 0.18f).let { Color(it) }.copy(alpha = 0.08f)
+        ColorUtils.blendARGB(chromeSeed.toArgb(), accent.toArgb(), 0.18f).let { Color(it) }.copy(alpha = 0.014f)
     } else {
-        ColorUtils.blendARGB(chromeSeed.toArgb(), accent.toArgb(), 0.12f).let { Color(it) }.copy(alpha = 0.10f)
+        ColorUtils.blendARGB(chromeSeed.toArgb(), accent.toArgb(), 0.12f).let { Color(it) }.copy(alpha = 0.010f)
+    }
+    val surfaceColor = if (ui.themeStyle == ReasonixThemeStyle.GLASS) {
+        reasonixOpaqueGlassColor(
+            seed = chromeSeed,
+            accent = accent,
+            darkMode = darkMode,
+            accentBlendRatio = 0.16f,
+            alpha = if (darkMode) 0.92f else 0.95f
+        )
+    } else {
+        MaterialTheme.colorScheme.surface
     }
     Surface(
         modifier = modifier
@@ -797,18 +847,17 @@ private fun ReasonixBottomBarSurface(
                 surfaceColor = glassTint,
                 enabled = ui.themeStyle == ReasonixThemeStyle.GLASS,
                 hazeState = hazeState,
-                minTintAlpha = 0.002f,
-                maxTintAlpha = 0.010f
+                minTintAlpha = 0.003f,
+                maxTintAlpha = 0.014f
             )
             .clip(shape),
         shape = shape,
-        color = if (ui.themeStyle == ReasonixThemeStyle.GLASS) {
-            Color.Transparent
-        } else {
-            MaterialTheme.colorScheme.surface
-        },
+        color = surfaceColor,
         border = if (ui.themeStyle == ReasonixThemeStyle.GLASS) {
-            null
+            BorderStroke(
+                1.dp,
+                accent.copy(alpha = if (darkMode) 0.16f else 0.12f)
+            )
         } else {
             BorderStroke(
                 1.dp,
@@ -843,6 +892,7 @@ fun ReasonixFloatingBottomBar(
     ReasonixBottomBarSurface(
         modifier = modifier
             .navigationBarsPadding()
+            .offset(y = (-12).dp)
             .widthIn(max = 520.dp)
             .zIndex(5f),
         shape = RoundedCornerShape(40.dp)

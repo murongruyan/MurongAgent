@@ -4199,6 +4199,7 @@ private fun ProjectGitSection(
         selectedViewerRepository?.fullName,
         selectedViewerSection,
         workspaceWorkbenchRepo,
+        workspaceWorkbenchSelectedTab,
         workspaceWorkbenchSubtitle,
         showGitHubWorkspaceDownloadCenterPage
     ) {
@@ -4208,6 +4209,10 @@ private fun ProjectGitSection(
                     active = true,
                     title = when {
                         showGitHubWorkspaceDownloadCenterPage -> "下载中心"
+                        workspaceWorkbenchRepo != null &&
+                            workspaceWorkbenchSelectedTab != ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW -> {
+                            workspaceWorkbenchSelectedTab.label
+                        }
                         workspaceWorkbenchRepo != null -> workspaceWorkbenchRepo.displayName.ifBlank { "仓库工作台" }
                         else -> "GitHub 工作区"
                     },
@@ -4332,6 +4337,18 @@ private fun ProjectGitSection(
 
             showCommitDialog -> {
                 showCommitDialog = false
+            }
+
+            workspaceWorkbenchRepo != null &&
+                workspaceWorkbenchSelectedTab != ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW -> {
+                workspaceNavigationState = workspaceNavigationState.copy(
+                    workbenchSelectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
+                )
+            }
+
+            showStandaloneViewerSecondaryPage &&
+                selectedViewerSection != ProjectGitHubStandaloneSection.OVERVIEW -> {
+                selectedViewerSection = ProjectGitHubStandaloneSection.OVERVIEW
             }
 
             showGitHubWorkspacePage -> {
