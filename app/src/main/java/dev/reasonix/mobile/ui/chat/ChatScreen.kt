@@ -96,7 +96,10 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.UUID
+import org.json.JSONObject
 
 @Composable
 fun ChatScreen(
@@ -257,6 +260,21 @@ fun ChatScreen(
     }
 
     LaunchedEffect(isScreenActive) {
+        // #region debug-point D:chat-screen-active
+        reportGitBackChatFlashChatDebug(
+            hypothesisId = "D",
+            location = "ChatScreen.kt:isScreenActive",
+            msg = "[DEBUG] chat screen active changed",
+            data = JSONObject()
+                .put("isScreenActive", isScreenActive)
+                .put("sessionId", state.sessionId)
+                .put("messageCount", state.messages.size)
+                .put("showMentionPicker", showMentionPicker)
+                .put("showSubagentHistory", showSubagentHistory)
+                .put("showCompressionHistory", showCompressionHistory)
+                .put("showFileChangeHistory", showFileChangeHistory)
+        )
+        // #endregion
         if (!isScreenActive) {
             dismissTransientOverlays()
         }
@@ -751,6 +769,39 @@ fun ChatScreen(
         )
     }
 }
+
+// #region debug-point D:chat-debug-reporter
+private fun reportGitBackChatFlashChatDebug(
+    hypothesisId: String,
+    location: String,
+    msg: String,
+    data: JSONObject
+) {
+    Thread {
+        runCatching {
+            val connection = (URL("http://192.168.2.3:7777/event").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 1200
+                readTimeout = 1200
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+            val payload = JSONObject()
+                .put("sessionId", "git-back-chat-flash")
+                .put("runId", "pre-fix")
+                .put("hypothesisId", hypothesisId)
+                .put("location", location)
+                .put("msg", msg)
+                .put("data", data)
+                .put("ts", System.currentTimeMillis())
+                .toString()
+            connection.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+            runCatching { connection.inputStream.use { input -> while (input.read() != -1) {} } }
+            connection.disconnect()
+        }
+    }.start()
+}
+// #endregion
 
 @Composable
 private fun WorkflowExecutionStatusBar(autoRouteBeforeExecution: Boolean) {

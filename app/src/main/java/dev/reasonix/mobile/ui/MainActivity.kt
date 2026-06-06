@@ -323,7 +323,42 @@ fun MainScreen() {
 
     val isProjectSecondaryPage = visibleScreen is Screen.Projects && projectSecondaryChromeState.active
 
+    LaunchedEffect(
+        visibleTopLevelPage,
+        visibleScreen.route,
+        projectSecondaryChromeState.active,
+        projectSecondaryChromeState.title,
+        projectSecondaryCloseRequestSignal
+    ) {
+        // #region debug-point B:project-secondary-state
+        reportGitBackChatFlashMainDebug(
+            hypothesisId = "B",
+            location = "MainActivity.kt:projectSecondaryState",
+            msg = "[DEBUG] project secondary state snapshot",
+            data = JSONObject()
+                .put("visibleTopLevelPage", visibleTopLevelPage)
+                .put("visibleRoute", visibleScreen.route)
+                .put("selectedTopLevelPage", selectedTopLevelPage)
+                .put("projectSecondaryActive", projectSecondaryChromeState.active)
+                .put("projectSecondaryTitle", projectSecondaryChromeState.title)
+                .put("isProjectSecondaryPage", isProjectSecondaryPage)
+                .put("closeRequestSignal", projectSecondaryCloseRequestSignal)
+        )
+        // #endregion
+    }
+
     BackHandler(enabled = isProjectSecondaryPage) {
+        // #region debug-point B:project-secondary-back
+        reportGitBackChatFlashMainDebug(
+            hypothesisId = "B",
+            location = "MainActivity.kt:projectSecondaryBackHandler",
+            msg = "[DEBUG] project secondary back handler fired",
+            data = JSONObject()
+                .put("visibleRoute", visibleScreen.route)
+                .put("projectSecondaryTitle", projectSecondaryChromeState.title)
+                .put("closeRequestSignalBefore", projectSecondaryCloseRequestSignal)
+        )
+        // #endregion
         projectSecondaryCloseRequestSignal += 1
     }
 
@@ -333,6 +368,17 @@ fun MainScreen() {
                 projectSecondaryBackProgress = backEvent.progress
             }
             projectSecondaryBackProgress = 1f
+            // #region debug-point B:project-secondary-predictive
+            reportGitBackChatFlashMainDebug(
+                hypothesisId = "B",
+                location = "MainActivity.kt:projectSecondaryPredictiveBack",
+                msg = "[DEBUG] project secondary predictive back committed",
+                data = JSONObject()
+                    .put("visibleRoute", visibleScreen.route)
+                    .put("projectSecondaryTitle", projectSecondaryChromeState.title)
+                    .put("closeRequestSignalBefore", projectSecondaryCloseRequestSignal)
+            )
+            // #endregion
             projectSecondaryCloseRequestSignal += 1
         } catch (_: CancellationException) {
             projectSecondaryBackProgress = 0f
