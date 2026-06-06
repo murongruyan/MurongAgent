@@ -503,13 +503,202 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchPage(
     onExitWorkbench: () -> Unit,
     backProgress: Float
 ) {
-    val chromeColor = rememberReasonixChromeColor()
-    val surfaceColor = rememberReasonixSurfaceColor()
-    val mutedTextColor = rememberReasonixMutedTextColor()
+    ProjectNestedPredictiveBackHost(
+        detailVisible = selectedTab != ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW,
+        backProgress = backProgress,
+        detailContent = {
+            ProjectGitHubWorkspaceRepoWorkbenchFrame(
+                summary = summary,
+                remoteSummary = remoteSummary,
+                gitState = gitState,
+                isGitLoading = isGitLoading,
+                isGitHubLoading = isGitHubLoading,
+                isGitHubActionRunning = isGitHubActionRunning,
+                tokenConfigured = tokenConfigured,
+                selectedTab = selectedTab,
+                onSelectTab = onSelectTab,
+                onRefreshGitState = onRefreshGitState,
+                onRefreshGitHubActions = onRefreshGitHubActions,
+                onExitWorkbench = onExitWorkbench
+            ) {
+                when (selectedTab) {
+                    ProjectGitHubWorkspaceRepoWorkbenchTab.WORKFLOW -> {
+                        ProjectGitHubActionsSection(
+                            state = githubActionsState,
+                            isLoading = isGitHubLoading,
+                            isActionRunning = isGitHubActionRunning,
+                            tokenConfigured = tokenConfigured,
+                            onRefresh = onRefreshGitHubActions,
+                            onOpenRepo = onOpenRepoPage,
+                            onRunWorkflow = onRunWorkflow,
+                            onOpenWorkflowPage = onOpenWorkflowPage,
+                            onOpenArtifacts = onOpenArtifacts,
+                            onOpenRunPage = onOpenRunPage,
+                            onDownloadRunLogs = onDownloadRunLogs,
+                            onOpenRunDetail = onOpenRunDetail
+                        )
+                    }
 
+                    ProjectGitHubWorkspaceRepoWorkbenchTab.REMOTE -> {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            ProjectGitRemoteSummaryCard(
+                                remoteUrl = gitState.remoteUrl,
+                                upstreamBranch = gitState.upstreamBranch,
+                                aheadCount = gitState.aheadCount,
+                                behindCount = gitState.behindCount,
+                                remoteBranchCount = gitState.remoteBranches.size,
+                                tokenConfigured = tokenConfigured
+                            )
+                            ProjectGitHubRemoteRepositorySection(
+                                state = remoteRepoState,
+                                isLoading = isRemoteRepoLoading,
+                                isActionRunning = isGitHubActionRunning,
+                                tokenConfigured = tokenConfigured,
+                                refDraft = remoteRepoRefDraft,
+                                onRefDraftChange = onRemoteRepoRefDraftChange,
+                                onRefresh = onRefreshRemoteRepository,
+                                onApplyRef = onApplyRemoteRef,
+                                onOpenRepo = onOpenRepoPage,
+                                onOpenParent = onOpenRemoteParent,
+                                onOpenRoot = onOpenRemoteRoot,
+                                onOpenPath = composeProjectGitHubRemoteDirectoryPathOpener(onOpenRemoteEntry),
+                                onOpenEntry = onOpenRemoteEntry,
+                                onOpenEntryPage = onOpenRemoteEntryPage
+                            )
+                        }
+                    }
+
+                    ProjectGitHubWorkspaceRepoWorkbenchTab.README -> {
+                        ProjectGitHubReadmeSection(
+                            readme = readme,
+                            isLoading = isReadmeLoading,
+                            errorMessage = readmeErrorMessage,
+                            onRefresh = onRefreshReadme,
+                            onOpenRepoPage = onOpenRepoPage,
+                            onEditReadme = onEditReadme
+                        )
+                    }
+
+                    ProjectGitHubWorkspaceRepoWorkbenchTab.ISSUES -> {
+                        ProjectGitHubIssueSection(
+                            issues = githubActionsState.issues,
+                            isActionRunning = isGitHubActionRunning,
+                            onCreateIssue = onCreateIssue,
+                            onOpenDetail = onOpenIssueDetail,
+                            onToggleIssueState = onToggleIssueState,
+                            onOpenIssuePage = onOpenIssuePage
+                        )
+                    }
+
+                    ProjectGitHubWorkspaceRepoWorkbenchTab.PULL_REQUESTS -> {
+                        ProjectGitHubPullRequestSection(
+                            pullRequests = githubActionsState.pullRequests,
+                            isActionRunning = isGitHubActionRunning,
+                            onCreatePullRequest = onCreatePullRequest,
+                            onOpenDetail = onOpenPullRequestDetail,
+                            onTogglePullRequestState = onTogglePullRequestState,
+                            onMergePullRequest = onMergePullRequest,
+                            onOpenPullRequestPage = onOpenPullRequestPage
+                        )
+                    }
+
+                    ProjectGitHubWorkspaceRepoWorkbenchTab.RELEASES -> {
+                        ProjectGitHubReleaseSection(
+                            releases = githubActionsState.releases,
+                            isLoading = isGitHubLoading,
+                            isActionRunning = isGitHubActionRunning,
+                            onCreateRelease = onCreateRelease,
+                            onRefresh = onRefreshGitHubActions,
+                            onEditRelease = onEditRelease,
+                            onToggleReleaseMode = onToggleReleaseMode,
+                            onTogglePrerelease = onTogglePrerelease,
+                            onDeleteRelease = onDeleteRelease,
+                            onOpenReleasePage = onOpenReleasePage,
+                            onOpenAssets = onOpenReleaseAssets
+                        )
+                    }
+
+                    ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW -> Unit
+                }
+            }
+        },
+        listContent = {
+            ProjectGitHubWorkspaceRepoWorkbenchFrame(
+                summary = summary,
+                remoteSummary = remoteSummary,
+                gitState = gitState,
+                isGitLoading = isGitLoading,
+                isGitHubLoading = isGitHubLoading,
+                isGitHubActionRunning = isGitHubActionRunning,
+                tokenConfigured = tokenConfigured,
+                selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW,
+                onSelectTab = onSelectTab,
+                onRefreshGitState = onRefreshGitState,
+                onRefreshGitHubActions = onRefreshGitHubActions,
+                onExitWorkbench = onExitWorkbench
+            ) {
+                ProjectGitHubWorkspaceRepoWorkbenchOverviewTab(
+                    overview = buildProjectGitHubWorkspaceWorkbenchOverview(
+                        remoteSummary = remoteSummary,
+                        githubActionsState = githubActionsState,
+                        readme = readme,
+                        gitState = gitState,
+                        tokenConfigured = tokenConfigured
+                    ),
+                    downloads = downloads,
+                    onShowWorkflowTab = {
+                        onSelectTab(ProjectGitHubWorkspaceRepoWorkbenchTab.WORKFLOW)
+                    },
+                    onShowIssuesTab = {
+                        onSelectTab(ProjectGitHubWorkspaceRepoWorkbenchTab.ISSUES)
+                    },
+                    onShowPullRequestsTab = {
+                        onSelectTab(ProjectGitHubWorkspaceRepoWorkbenchTab.PULL_REQUESTS)
+                    },
+                    onShowReleaseTab = {
+                        onSelectTab(ProjectGitHubWorkspaceRepoWorkbenchTab.RELEASES)
+                    },
+                    onShowReadmeTab = {
+                        onSelectTab(ProjectGitHubWorkspaceRepoWorkbenchTab.README)
+                    },
+                    onOpenLatestRunDetail = remoteSummary?.latestRun?.let { run ->
+                        { onOpenRunDetail(run) }
+                    },
+                    onOpenSystemDownloads = onOpenSystemDownloads,
+                    onOpenDownloadSource = onOpenDownloadSource
+                )
+            }
+        }
+    )
+}
+
+@Composable
+private fun ProjectGitHubWorkspaceRepoWorkbenchFrame(
+    summary: ProjectGitHubWorkspaceRepoSummaryUi,
+    remoteSummary: ProjectGitHubWorkspaceRemoteSummaryUi?,
+    gitState: ProjectGitStatusUi,
+    isGitLoading: Boolean,
+    isGitHubLoading: Boolean,
+    isGitHubActionRunning: Boolean,
+    tokenConfigured: Boolean,
+    selectedTab: ProjectGitHubWorkspaceRepoWorkbenchTab,
+    onSelectTab: (ProjectGitHubWorkspaceRepoWorkbenchTab) -> Unit,
+    onRefreshGitState: () -> Unit,
+    onRefreshGitHubActions: () -> Unit,
+    onExitWorkbench: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
     ReasonixSecondaryPageFrame(
-        title = summary.repo.displayName.ifBlank { "仓库工作台" },
-        subtitle = "统一承接仓库级概览、工作流、远端、README、Issue、PR 和 Release。"
+        title = if (selectedTab == ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW) {
+            summary.repo.displayName.ifBlank { "仓库工作台" }
+        } else {
+            "${summary.repo.displayName.ifBlank { "仓库工作台" }} · ${selectedTab.label}"
+        },
+        subtitle = if (selectedTab == ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW) {
+            "统一承接仓库级概览、工作流、远端、README、Issue、PR 和 Release。"
+        } else {
+            "预测性返回会先退回仓库概览，再退出当前工作台。"
+        }
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             ProjectGitHubWorkspaceRepoWorkbenchHeader(
@@ -530,143 +719,7 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchPage(
                 selectedTab = selectedTab,
                 onSelectTab = onSelectTab
             )
-            ProjectNestedPredictiveBackHost(
-                detailVisible = selectedTab != ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW,
-                backProgress = backProgress,
-                detailContent = {
-                    when (selectedTab) {
-                        ProjectGitHubWorkspaceRepoWorkbenchTab.WORKFLOW -> {
-                            ProjectGitHubActionsSection(
-                                state = githubActionsState,
-                                isLoading = isGitHubLoading,
-                                isActionRunning = isGitHubActionRunning,
-                                tokenConfigured = tokenConfigured,
-                                onRefresh = onRefreshGitHubActions,
-                                onOpenRepo = onOpenRepoPage,
-                                onRunWorkflow = onRunWorkflow,
-                                onOpenWorkflowPage = onOpenWorkflowPage,
-                                onOpenArtifacts = onOpenArtifacts,
-                                onOpenRunPage = onOpenRunPage,
-                                onDownloadRunLogs = onDownloadRunLogs,
-                                onOpenRunDetail = onOpenRunDetail
-                            )
-                        }
-
-                        ProjectGitHubWorkspaceRepoWorkbenchTab.REMOTE -> {
-                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                ProjectGitRemoteSummaryCard(
-                                    remoteUrl = gitState.remoteUrl,
-                                    upstreamBranch = gitState.upstreamBranch,
-                                    aheadCount = gitState.aheadCount,
-                                    behindCount = gitState.behindCount,
-                                    remoteBranchCount = gitState.remoteBranches.size,
-                                    tokenConfigured = tokenConfigured
-                                )
-                                ProjectGitHubRemoteRepositorySection(
-                                    state = remoteRepoState,
-                                    isLoading = isRemoteRepoLoading,
-                                    isActionRunning = isGitHubActionRunning,
-                                    tokenConfigured = tokenConfigured,
-                                    refDraft = remoteRepoRefDraft,
-                                    onRefDraftChange = onRemoteRepoRefDraftChange,
-                                    onRefresh = onRefreshRemoteRepository,
-                                    onApplyRef = onApplyRemoteRef,
-                                    onOpenRepo = onOpenRepoPage,
-                                    onOpenParent = onOpenRemoteParent,
-                                    onOpenRoot = onOpenRemoteRoot,
-                                    onOpenPath = composeProjectGitHubRemoteDirectoryPathOpener(onOpenRemoteEntry),
-                                    onOpenEntry = onOpenRemoteEntry,
-                                    onOpenEntryPage = onOpenRemoteEntryPage
-                                )
-                            }
-                        }
-
-                        ProjectGitHubWorkspaceRepoWorkbenchTab.README -> {
-                            ProjectGitHubReadmeSection(
-                                readme = readme,
-                                isLoading = isReadmeLoading,
-                                errorMessage = readmeErrorMessage,
-                                onRefresh = onRefreshReadme,
-                                onOpenRepoPage = onOpenRepoPage,
-                                onEditReadme = onEditReadme
-                            )
-                        }
-
-                        ProjectGitHubWorkspaceRepoWorkbenchTab.ISSUES -> {
-                            ProjectGitHubIssueSection(
-                                issues = githubActionsState.issues,
-                                isActionRunning = isGitHubActionRunning,
-                                onCreateIssue = onCreateIssue,
-                                onOpenDetail = onOpenIssueDetail,
-                                onToggleIssueState = onToggleIssueState,
-                                onOpenIssuePage = onOpenIssuePage
-                            )
-                        }
-
-                        ProjectGitHubWorkspaceRepoWorkbenchTab.PULL_REQUESTS -> {
-                            ProjectGitHubPullRequestSection(
-                                pullRequests = githubActionsState.pullRequests,
-                                isActionRunning = isGitHubActionRunning,
-                                onCreatePullRequest = onCreatePullRequest,
-                                onOpenDetail = onOpenPullRequestDetail,
-                                onTogglePullRequestState = onTogglePullRequestState,
-                                onMergePullRequest = onMergePullRequest,
-                                onOpenPullRequestPage = onOpenPullRequestPage
-                            )
-                        }
-
-                        ProjectGitHubWorkspaceRepoWorkbenchTab.RELEASES -> {
-                            ProjectGitHubReleaseSection(
-                                releases = githubActionsState.releases,
-                                isLoading = isGitHubLoading,
-                                isActionRunning = isGitHubActionRunning,
-                                onCreateRelease = onCreateRelease,
-                                onRefresh = onRefreshGitHubActions,
-                                onEditRelease = onEditRelease,
-                                onToggleReleaseMode = onToggleReleaseMode,
-                                onTogglePrerelease = onTogglePrerelease,
-                                onDeleteRelease = onDeleteRelease,
-                                onOpenReleasePage = onOpenReleasePage,
-                                onOpenAssets = onOpenReleaseAssets
-                            )
-                        }
-
-                        ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW -> Unit
-                    }
-                },
-                listContent = {
-                    ProjectGitHubWorkspaceRepoWorkbenchOverviewTab(
-                        overview = buildProjectGitHubWorkspaceWorkbenchOverview(
-                            remoteSummary = remoteSummary,
-                            githubActionsState = githubActionsState,
-                            readme = readme,
-                            gitState = gitState,
-                            tokenConfigured = tokenConfigured
-                        ),
-                        downloads = downloads,
-                        onShowWorkflowTab = {
-                            onSelectTab(ProjectGitHubWorkspaceRepoWorkbenchTab.WORKFLOW)
-                        },
-                        onShowIssuesTab = {
-                            onSelectTab(ProjectGitHubWorkspaceRepoWorkbenchTab.ISSUES)
-                        },
-                        onShowPullRequestsTab = {
-                            onSelectTab(ProjectGitHubWorkspaceRepoWorkbenchTab.PULL_REQUESTS)
-                        },
-                        onShowReleaseTab = {
-                            onSelectTab(ProjectGitHubWorkspaceRepoWorkbenchTab.RELEASES)
-                        },
-                        onShowReadmeTab = {
-                            onSelectTab(ProjectGitHubWorkspaceRepoWorkbenchTab.README)
-                        },
-                        onOpenLatestRunDetail = remoteSummary?.latestRun?.let { run ->
-                            { onOpenRunDetail(run) }
-                        },
-                        onOpenSystemDownloads = onOpenSystemDownloads,
-                        onOpenDownloadSource = onOpenDownloadSource
-                    )
-                }
-            )
+            content()
         }
     }
 }

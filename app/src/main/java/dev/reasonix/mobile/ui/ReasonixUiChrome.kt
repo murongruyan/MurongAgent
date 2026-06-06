@@ -778,13 +778,13 @@ fun ReasonixSecondaryPageSurface(
         ColorUtils.blendARGB(chromeSeed.toArgb(), accent.toArgb(), 0.10f).let { Color(it) }.copy(alpha = 0.010f)
     }
     val surfaceColor = if (ui.themeStyle == ReasonixThemeStyle.GLASS) {
-        reasonixOpaqueGlassColor(
-            seed = chromeSeed,
-            accent = accent,
-            darkMode = darkMode,
-            accentBlendRatio = 0.10f,
-            alpha = if (darkMode) 0.95f else 0.97f
-        )
+        Color(
+            ColorUtils.blendARGB(
+                chromeSeed.toArgb(),
+                accent.toArgb(),
+                if (darkMode) 0.10f else 0.08f
+            )
+        ).copy(alpha = if (darkMode) 0.24f else 0.20f)
     } else {
         chromeSeed.copy(alpha = 0.98f)
     }
@@ -831,13 +831,13 @@ private fun ReasonixBottomBarSurface(
         ColorUtils.blendARGB(chromeSeed.toArgb(), accent.toArgb(), 0.12f).let { Color(it) }.copy(alpha = 0.010f)
     }
     val surfaceColor = if (ui.themeStyle == ReasonixThemeStyle.GLASS) {
-        reasonixOpaqueGlassColor(
-            seed = chromeSeed,
-            accent = accent,
-            darkMode = darkMode,
-            accentBlendRatio = 0.16f,
-            alpha = if (darkMode) 0.92f else 0.95f
-        )
+        Color(
+            ColorUtils.blendARGB(
+                chromeSeed.toArgb(),
+                accent.toArgb(),
+                if (darkMode) 0.14f else 0.12f
+            )
+        ).copy(alpha = if (darkMode) 0.20f else 0.18f)
     } else {
         MaterialTheme.colorScheme.surface
     }

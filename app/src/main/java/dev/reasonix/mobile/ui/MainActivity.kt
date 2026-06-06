@@ -241,11 +241,7 @@ fun MainScreen() {
     LaunchedEffect(selectedTopLevelPage) {
         if (selectedTopLevelPage != pagerState.currentPage) {
             topLevelNavigationTargetPage = selectedTopLevelPage
-            if (abs(selectedTopLevelPage - pagerState.currentPage) > 1) {
-                pagerState.scrollToPage(selectedTopLevelPage)
-            } else {
-                pagerState.animateScrollToPage(selectedTopLevelPage)
-            }
+            pagerState.scrollToPage(selectedTopLevelPage)
         } else if (topLevelNavigationTargetPage == selectedTopLevelPage) {
             topLevelNavigationTargetPage = null
         }
