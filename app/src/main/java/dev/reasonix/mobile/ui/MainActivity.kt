@@ -463,6 +463,297 @@ fun MainScreen() {
         pagerState.currentPage.toFloat() + pagerState.currentPageOffsetFraction
         ).coerceIn(0f, shellScreens.lastIndex.toFloat())
     val showBottomBar = settingsSubpage == SettingsSubpage.Main && !isProjectSecondaryPage
+    val topLevelPredictivePreviewTargetPage = topLevelHistory.lastOrNull()
+    val showTopLevelPredictivePreview =
+        settingsSubpage == SettingsSubpage.Main &&
+            !isProjectSecondaryPage &&
+            topLevelPredictivePreviewTargetPage != null &&
+            topLevelBackProgress > 0.02f
+
+    @Composable
+    fun TopLevelPageContent(
+        page: Int,
+        modifier: Modifier = Modifier,
+        previewMode: Boolean = false
+    ) {
+        val pageScreen = shellScreens[page]
+        val pageBottomPadding = when {
+            !showBottomBar -> 12.dp
+            pageScreen is Screen.Chat -> 82.dp
+            else -> 24.dp
+        }
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(bottom = pageBottomPadding)
+        ) {
+            when (pageScreen) {
+                is Screen.Chat -> {
+                    ChatScreen(
+                        state = chatState,
+                        isScreenActive = !previewMode &&
+                            selectedTopLevelPage == page &&
+                            settingsSubpage == SettingsSubpage.Main,
+                        projectKnowledgePaths = chatState.projectKnowledgePaths,
+                        onSend = { text, mentions, images ->
+                            chatVm.sendMessage(text, mentions, images)
+                        },
+                        onStopSending = {
+                            val message = if (chatVm.stopSending()) {
+                                "已终止当前处理"
+                            } else {
+                                "当前没有可终止的处理"
+                            }
+                            scope.launch {
+                                snackbarHostState.showSnackbar(message)
+                            }
+                        },
+                        onClear = { chatVm.clear() },
+                        onNewSession = { chatVm.newSession() },
+                        title = chatState.sessionTitle,
+                        hasApiKey = chatVm.hasActiveApiKey(chatConfig),
+                        workflowExecutionMode = effectiveChatConfig.workflowExecutionMode,
+                        autoRouteBeforeExecution = false,
+                        onNavigateToSettings = {
+                            navigateToTopLevel(Screen.Settings)
+                        },
+                        onEditMessage = { messageId ->
+                            chatVm.rollbackToUserMessage(messageId)
+                        },
+                        onCompressContext = {
+                            scope.launch {
+                                val message = chatVm.compressCurrentContext()
+                                    .fold(
+                                        onSuccess = {
+                                            "已压缩 ${it.sourceMessageCount} 条历史消息，生成摘要 V${it.version} 后续将基于摘要续聊"
+                                        },
+                                        onFailure = { error ->
+                                            error.message ?: "上下文压缩失败"
+                                        }
+                                    )
+                                snackbarHostState.showSnackbar(message)
+                            }
+                        },
+                        onGeneratePlan = { input, mentions ->
+                            chatVm.generateWorkflowPlan(input, mentions)
+                        },
+                        onExecutePlan = {
+                            chatVm.executePendingWorkflowPlan()
+                        },
+                        onDismissPlan = {
+                            chatVm.dismissPendingWorkflowPlan()
+                        },
+                        onSubmitClarificationAnswer = { answer ->
+                            chatVm.submitClarificationAnswer(answer)
+                        },
+                        onDismissClarification = {
+                            chatVm.dismissPendingClarification()
+                        },
+                        onSearchFiles = { query ->
+                            chatVm.searchProjectFiles(query)
+                        },
+                        onRetrySubagent = { runId ->
+                            chatVm.retrySubagentRun(runId)
+                            scope.launch {
+                                snackbarHostState.showSnackbar("已重新发起子代理")
+                            }
+                        },
+                        onCancelSubagent = { runId ->
+                            val message = if (chatVm.cancelSubagentRun(runId)) {
+                                "已请求终止子代理"
+                            } else {
+                                "当前子代理无法终止"
+                            }
+                            scope.launch {
+                                snackbarHostState.showSnackbar(message)
+                            }
+                        },
+                        onRollbackFileCheckpoint = { checkpointId ->
+                            val message = chatVm.rollbackFileCheckpoint(checkpointId)
+                                .fold(
+                                    onSuccess = { count ->
+                                        "已按该对话前状态回滚这一批修改，恢复 $count 个文件"
+                                    },
+                                    onFailure = { error ->
+                                        error.message ?: "回滚文件修改失败"
+                                    }
+                                )
+                            scope.launch {
+                                snackbarHostState.showSnackbar(message)
+                            }
+                        }
+                    )
+                }
+
+                is Screen.Projects -> {
+                    Box(
+                        modifier = if (!previewMode && isProjectSecondaryPage) {
+                            Modifier.graphicsLayer {
+                                translationX = size.width * projectSecondaryBackProgress
+                                alpha = 1f - (projectSecondaryBackProgress * 0.08f)
+                            }
+                        } else {
+                            Modifier
+                        }
+                    ) {
+                        ProjectScreen(
+                            config = settingsConfig,
+                            currentProjectPath = chatState.projectPath,
+                            currentProjectScopePath = chatState.activeProjectScopePath,
+                            projectKnowledgeDraftPaths = chatState.projectKnowledgePaths,
+                            projectKnowledgeSnapshots = chatState.projectKnowledgeSnapshots,
+                            projectRules = chatState.projectRules,
+                            projectMemories = chatState.projectMemories,
+                            projectSkills = chatState.projectSkills,
+                            projectToolPreferences = chatState.projectToolPreferences,
+                            repoScopedConfigs = chatState.repoScopedConfigs,
+                            mcpToolNames = mcpStatuses.flatMap { status ->
+                                status.toolNames.map { "mcp_$it" }
+                            }.distinct().sorted(),
+                            sessions = chatSessions,
+                            onNewTask = {
+                                taskProjectPath = chatState.projectPath.orEmpty()
+                                showTaskDialog = true
+                            },
+                            onOpenChat = {
+                                navigateToTopLevel(Screen.Chat)
+                            },
+                            onProjectScopeChanged = { scopePath ->
+                                chatVm.switchProjectScope(scopePath)
+                            },
+                            onUpdateProjectConfig = { scopePath, rules, memories, skills ->
+                                chatVm.updateProjectConfig(scopePath, rules, memories, skills)
+                            },
+                            onUpdateProjectToolPreferences = { scopePath, preferences ->
+                                chatVm.updateProjectToolPreferences(scopePath, preferences)
+                            },
+                            onUpdateProjectKnowledgeDraftPaths = { paths ->
+                                chatVm.updateProjectKnowledgePaths(paths)
+                            },
+                            onSaveProjectKnowledgeSnapshot = { name, paths ->
+                                chatVm.saveProjectKnowledgeSnapshot(name, paths)
+                            },
+                            onRenameProjectKnowledgeSnapshot = { snapshotId, newName ->
+                                chatVm.renameProjectKnowledgeSnapshot(snapshotId, newName)
+                            },
+                            onApplyProjectKnowledgeSnapshot = { snapshotId ->
+                                chatVm.applyProjectKnowledgeSnapshot(snapshotId)
+                            },
+                            onDeleteProjectKnowledgeSnapshot = { snapshotId ->
+                                chatVm.deleteProjectKnowledgeSnapshot(snapshotId)
+                            },
+                            onProjectSecondaryPageChanged = { state ->
+                                if (!previewMode) {
+                                    projectSecondaryChromeState = state
+                                }
+                            },
+                            closeProjectSecondaryPageRequestSignal = if (previewMode) {
+                                0
+                            } else {
+                                projectSecondaryCloseRequestSignal
+                            },
+                            projectSecondaryBackProgress = if (previewMode) 0f else projectSecondaryBackProgress,
+                            editorMenuActionSignal = if (previewMode) 0 else projectEditorMenuActionSignal,
+                            editorMenuAction = if (previewMode) null else projectEditorMenuAction
+                        )
+                    }
+                }
+
+                is Screen.Tools -> {
+                    ToolsScreen(
+                        config = settingsConfig,
+                        currentProjectPath = chatState.projectPath,
+                        projectRuleCount = chatState.projectRules.count { it.enabled },
+                        projectMemoryCount = chatState.projectMemories.count { it.enabled },
+                        projectSkillCount = chatState.projectSkills.count { it.enabled },
+                        rootStatus = rootStatus,
+                        isCheckingRoot = isCheckingRoot,
+                        onCheckRoot = { settingsVm.checkRoot() },
+                        pendingApproval = chatState.pendingApproval,
+                        recentApprovals = chatState.recentApprovals,
+                        recentErrors = chatState.recentErrors,
+                        recentToolCalls = chatState.recentToolCalls,
+                        checkpoints = chatState.checkpoints,
+                        fileChanges = chatState.fileChanges,
+                        onOpenChat = {
+                            navigateToTopLevel(Screen.Chat)
+                        },
+                        onApprovePendingTool = {
+                            chatVm.approvePendingTool()
+                        },
+                        onRejectPendingTool = {
+                            chatVm.rejectPendingTool()
+                        },
+                        onRollbackFileCheckpoint = { checkpointId ->
+                            val message = chatVm.rollbackFileCheckpoint(checkpointId)
+                                .fold(
+                                    onSuccess = { count ->
+                                        "已按该对话前状态回滚这一批修改，恢复 $count 个文件"
+                                    },
+                                    onFailure = { error ->
+                                        error.message ?: "回滚文件修改失败"
+                                    }
+                                )
+                            scope.launch {
+                                snackbarHostState.showSnackbar(message)
+                            }
+                        },
+                        mcpStatuses = mcpStatuses,
+                        mcpConnectError = mcpConnectError,
+                        onConnectMcpServers = { settingsVm.connectMcpServers() },
+                        onRefreshMcpStatus = { settingsVm.refreshMcpStatus() },
+                        onUpdateConfig = { settingsVm.updateConfig(it) }
+                    )
+                }
+
+                is Screen.Settings -> {
+                    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                        SettingsScreen(
+                            config = settingsConfig,
+                            onConfigChanged = { settingsVm.updateConfig(it) },
+                            gitHubAuthState = gitHubAuthState,
+                            rootStatus = rootStatus,
+                            isCheckingRoot = isCheckingRoot,
+                            onCheckRoot = { settingsVm.checkRoot() },
+                            sessions = settingsSessions,
+                            balanceSyncStates = balanceSyncStates,
+                            mcpServers = mcpServers,
+                            mcpStatuses = mcpStatuses,
+                            mcpConnectError = mcpConnectError,
+                            onRefreshProviderBalance = { settingsVm.refreshProviderBalance(it) },
+                            supportsBalanceFetch = { settingsVm.supportsBalanceFetch(it) },
+                            onAddMcpServer = { settingsVm.addMcpServer(it) },
+                            onRemoveMcpServer = { settingsVm.removeMcpServer(it) },
+                            onConnectMcpServers = { settingsVm.connectMcpServers() },
+                            onRefreshMcpStatus = { settingsVm.refreshMcpStatus() },
+                            onRefreshGitHubAuthStatus = { settingsVm.refreshGitHubAuthStatus() },
+                            onStartGitHubOAuthLogin = { settingsVm.startGitHubOAuthLogin() },
+                            onClearGitHubToken = { settingsVm.clearGitHubToken() },
+                            onOpenThemePage = { settingsSubpage = SettingsSubpage.Theme },
+                            onOpenAboutPage = { settingsSubpage = SettingsSubpage.About }
+                        )
+                        if (settingsSubpage != SettingsSubpage.Main && !previewMode) {
+                            val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer {
+                                        translationX = widthPx * settingsBackProgress
+                                        alpha = 1f - (settingsBackProgress * 0.08f)
+                                    }
+                            ) {
+                                when (settingsSubpage) {
+                                    SettingsSubpage.Main -> Unit
+                                    SettingsSubpage.Theme -> ThemeSettingsPage()
+                                    SettingsSubpage.About -> AboutPage()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     LaunchedEffect(currentScreen, settingsSubpage) {
         if (currentScreen !is Screen.Chat || settingsSubpage != SettingsSubpage.Main) {
@@ -876,284 +1167,49 @@ fun MainScreen() {
                     }
                 }
             ) { innerPadding ->
-                HorizontalPager(
-                    state = pagerState,
+                BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(innerPadding)
-                        .graphicsLayer {
-                            translationX = size.width * topLevelBackProgress
-                            alpha = 1f - (topLevelBackProgress * 0.08f)
+                        .reasonixGlassSource(LocalReasonixHazeState.current)
+                ) {
+                    val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        HorizontalPager(
+                            state = pagerState,
+                            modifier = Modifier.fillMaxSize(),
+                            userScrollEnabled = false
+                        ) { page ->
+                            TopLevelPageContent(page = page)
                         }
-                        .reasonixGlassSource(LocalReasonixHazeState.current),
-                    userScrollEnabled = false
-                ) { page ->
-                    val pageScreen = shellScreens[page]
-                    val pageBottomPadding = when {
-                        !showBottomBar -> 12.dp
-                        pageScreen is Screen.Chat -> 82.dp
-                        else -> 24.dp
-                    }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(bottom = pageBottomPadding)
-                    ) {
-                        when (pageScreen) {
-                            is Screen.Chat -> {
-                                ChatScreen(
-                                    state = chatState,
-                                    isScreenActive = selectedTopLevelPage == page && settingsSubpage == SettingsSubpage.Main,
-                                    projectKnowledgePaths = chatState.projectKnowledgePaths,
-                                    onSend = { text, mentions, images ->
-                                        chatVm.sendMessage(text, mentions, images)
-                                    },
-                                    onStopSending = {
-                                        val message = if (chatVm.stopSending()) {
-                                            "已终止当前处理"
-                                        } else {
-                                            "当前没有可终止的处理"
-                                        }
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar(message)
-                                        }
-                                    },
-                                    onClear = { chatVm.clear() },
-                                    onNewSession = { chatVm.newSession() },
-                                    title = chatState.sessionTitle,
-                                    hasApiKey = chatVm.hasActiveApiKey(chatConfig),
-                                    workflowExecutionMode = effectiveChatConfig.workflowExecutionMode,
-                                    autoRouteBeforeExecution = false,
-                                    onNavigateToSettings = {
-                                        navigateToTopLevel(Screen.Settings)
-                                    },
-                                    onEditMessage = { messageId ->
-                                        chatVm.rollbackToUserMessage(messageId)
-                                    },
-                                    onCompressContext = {
-                                        scope.launch {
-                                            val message = chatVm.compressCurrentContext()
-                                                .fold(
-                                                    onSuccess = {
-                                                        "已压缩 ${it.sourceMessageCount} 条历史消息，生成摘要 V${it.version} 后续将基于摘要续聊"
-                                                    },
-                                                    onFailure = { error ->
-                                                        error.message ?: "上下文压缩失败"
-                                                    }
-                                                )
-                                            snackbarHostState.showSnackbar(message)
-                                        }
-                                    },
-                                    onGeneratePlan = { input, mentions ->
-                                        chatVm.generateWorkflowPlan(input, mentions)
-                                    },
-                                    onExecutePlan = {
-                                        chatVm.executePendingWorkflowPlan()
-                                    },
-                                    onDismissPlan = {
-                                        chatVm.dismissPendingWorkflowPlan()
-                                    },
-                                    onSubmitClarificationAnswer = { answer ->
-                                        chatVm.submitClarificationAnswer(answer)
-                                    },
-                                    onDismissClarification = {
-                                        chatVm.dismissPendingClarification()
-                                    },
-                                    onSearchFiles = { query ->
-                                        chatVm.searchProjectFiles(query)
-                                    },
-                                    onRetrySubagent = { runId ->
-                                        chatVm.retrySubagentRun(runId)
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar("已重新发起子代理")
-                                        }
-                                    },
-                                    onCancelSubagent = { runId ->
-                                        val message = if (chatVm.cancelSubagentRun(runId)) {
-                                            "已请求终止子代理"
-                                        } else {
-                                            "当前子代理无法终止"
-                                        }
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar(message)
-                                        }
-                                    },
-                                    onRollbackFileCheckpoint = { checkpointId ->
-                                        val message = chatVm.rollbackFileCheckpoint(checkpointId)
-                                            .fold(
-                                                onSuccess = { count ->
-                                                    "已按该对话前状态回滚这一批修改，恢复 $count 个文件"
-                                                },
-                                                onFailure = { error ->
-                                                    error.message ?: "回滚文件修改失败"
-                                                }
-                                            )
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar(message)
-                                        }
+                        topLevelPredictivePreviewTargetPage?.takeIf { showTopLevelPredictivePreview }?.let { targetPage ->
+                            val currentTranslationX = widthPx * topLevelBackProgress
+                            val previousTranslationX = currentTranslationX - widthPx
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer {
+                                        translationX = previousTranslationX
+                                        alpha = 1f
                                     }
+                            ) {
+                                TopLevelPageContent(
+                                    page = targetPage,
+                                    previewMode = true
                                 )
                             }
-
-                            is Screen.Projects -> {
-                                Box(
-                                    modifier = if (isProjectSecondaryPage) {
-                                        Modifier.graphicsLayer {
-                                            translationX = size.width * projectSecondaryBackProgress
-                                            alpha = 1f - (projectSecondaryBackProgress * 0.08f)
-                                        }
-                                    } else {
-                                        Modifier
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer {
+                                        translationX = currentTranslationX
+                                        alpha = 1f
                                     }
-                                ) {
-                                    ProjectScreen(
-                                        config = settingsConfig,
-                                        currentProjectPath = chatState.projectPath,
-                                        currentProjectScopePath = chatState.activeProjectScopePath,
-                                        projectKnowledgeDraftPaths = chatState.projectKnowledgePaths,
-                                        projectKnowledgeSnapshots = chatState.projectKnowledgeSnapshots,
-                                        projectRules = chatState.projectRules,
-                                        projectMemories = chatState.projectMemories,
-                                        projectSkills = chatState.projectSkills,
-                                        projectToolPreferences = chatState.projectToolPreferences,
-                                        repoScopedConfigs = chatState.repoScopedConfigs,
-                                        mcpToolNames = mcpStatuses.flatMap { status ->
-                                            status.toolNames.map { "mcp_$it" }
-                                        }.distinct().sorted(),
-                                        sessions = chatSessions,
-                                        onNewTask = {
-                                            taskProjectPath = chatState.projectPath.orEmpty()
-                                            showTaskDialog = true
-                                        },
-                                        onOpenChat = {
-                                            navigateToTopLevel(Screen.Chat)
-                                        },
-                                        onProjectScopeChanged = { scopePath ->
-                                            chatVm.switchProjectScope(scopePath)
-                                        },
-                                        onUpdateProjectConfig = { scopePath, rules, memories, skills ->
-                                            chatVm.updateProjectConfig(scopePath, rules, memories, skills)
-                                        },
-                                        onUpdateProjectToolPreferences = { scopePath, preferences ->
-                                            chatVm.updateProjectToolPreferences(scopePath, preferences)
-                                        },
-                                        onUpdateProjectKnowledgeDraftPaths = { paths ->
-                                            chatVm.updateProjectKnowledgePaths(paths)
-                                        },
-                                        onSaveProjectKnowledgeSnapshot = { name, paths ->
-                                            chatVm.saveProjectKnowledgeSnapshot(name, paths)
-                                        },
-                                        onRenameProjectKnowledgeSnapshot = { snapshotId, newName ->
-                                            chatVm.renameProjectKnowledgeSnapshot(snapshotId, newName)
-                                        },
-                                        onApplyProjectKnowledgeSnapshot = { snapshotId ->
-                                            chatVm.applyProjectKnowledgeSnapshot(snapshotId)
-                                        },
-                                        onDeleteProjectKnowledgeSnapshot = { snapshotId ->
-                                            chatVm.deleteProjectKnowledgeSnapshot(snapshotId)
-                                        },
-                                        onProjectSecondaryPageChanged = { state ->
-                                            projectSecondaryChromeState = state
-                                        },
-                                        closeProjectSecondaryPageRequestSignal = projectSecondaryCloseRequestSignal,
-                                        projectSecondaryBackProgress = projectSecondaryBackProgress,
-                                        editorMenuActionSignal = projectEditorMenuActionSignal,
-                                        editorMenuAction = projectEditorMenuAction
-                                    )
-                                }
-                            }
-
-                            is Screen.Tools -> {
-                                ToolsScreen(
-                                    config = settingsConfig,
-                                    currentProjectPath = chatState.projectPath,
-                                    projectRuleCount = chatState.projectRules.count { it.enabled },
-                                    projectMemoryCount = chatState.projectMemories.count { it.enabled },
-                                    projectSkillCount = chatState.projectSkills.count { it.enabled },
-                                    rootStatus = rootStatus,
-                                    isCheckingRoot = isCheckingRoot,
-                                    onCheckRoot = { settingsVm.checkRoot() },
-                                    pendingApproval = chatState.pendingApproval,
-                                    recentApprovals = chatState.recentApprovals,
-                                    recentErrors = chatState.recentErrors,
-                                    recentToolCalls = chatState.recentToolCalls,
-                                    checkpoints = chatState.checkpoints,
-                                    fileChanges = chatState.fileChanges,
-                                    onOpenChat = {
-                                        navigateToTopLevel(Screen.Chat)
-                                    },
-                                    onApprovePendingTool = {
-                                        chatVm.approvePendingTool()
-                                    },
-                                    onRejectPendingTool = {
-                                        chatVm.rejectPendingTool()
-                                    },
-                                    onRollbackFileCheckpoint = { checkpointId ->
-                                        val message = chatVm.rollbackFileCheckpoint(checkpointId)
-                                            .fold(
-                                                onSuccess = { count ->
-                                                    "已按该对话前状态回滚这一批修改，恢复 $count 个文件"
-                                                },
-                                                onFailure = { error ->
-                                                    error.message ?: "回滚文件修改失败"
-                                                }
-                                            )
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar(message)
-                                        }
-                                    },
-                                    mcpStatuses = mcpStatuses,
-                                    mcpConnectError = mcpConnectError,
-                                    onConnectMcpServers = { settingsVm.connectMcpServers() },
-                                    onRefreshMcpStatus = { settingsVm.refreshMcpStatus() },
-                                    onUpdateConfig = { settingsVm.updateConfig(it) }
+                            ) {
+                                TopLevelPageContent(
+                                    page = selectedTopLevelPage,
+                                    previewMode = true
                                 )
-                            }
-
-                            is Screen.Settings -> {
-                                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                                    SettingsScreen(
-                                        config = settingsConfig,
-                                        onConfigChanged = { settingsVm.updateConfig(it) },
-                                        gitHubAuthState = gitHubAuthState,
-                                        rootStatus = rootStatus,
-                                        isCheckingRoot = isCheckingRoot,
-                                        onCheckRoot = { settingsVm.checkRoot() },
-                                        sessions = settingsSessions,
-                                        balanceSyncStates = balanceSyncStates,
-                                        mcpServers = mcpServers,
-                                        mcpStatuses = mcpStatuses,
-                                        mcpConnectError = mcpConnectError,
-                                        onRefreshProviderBalance = { settingsVm.refreshProviderBalance(it) },
-                                        supportsBalanceFetch = { settingsVm.supportsBalanceFetch(it) },
-                                        onAddMcpServer = { settingsVm.addMcpServer(it) },
-                                        onRemoveMcpServer = { settingsVm.removeMcpServer(it) },
-                                        onConnectMcpServers = { settingsVm.connectMcpServers() },
-                                        onRefreshMcpStatus = { settingsVm.refreshMcpStatus() },
-                                        onRefreshGitHubAuthStatus = { settingsVm.refreshGitHubAuthStatus() },
-                                        onStartGitHubOAuthLogin = { settingsVm.startGitHubOAuthLogin() },
-                                        onClearGitHubToken = { settingsVm.clearGitHubToken() },
-                                        onOpenThemePage = { settingsSubpage = SettingsSubpage.Theme },
-                                        onOpenAboutPage = { settingsSubpage = SettingsSubpage.About }
-                                    )
-                                    if (settingsSubpage != SettingsSubpage.Main) {
-                                        val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .graphicsLayer {
-                                                    translationX = widthPx * settingsBackProgress
-                                                    alpha = 1f - (settingsBackProgress * 0.08f)
-                                                }
-                                        ) {
-                                            when (settingsSubpage) {
-                                                SettingsSubpage.Main -> Unit
-                                                SettingsSubpage.Theme -> ThemeSettingsPage()
-                                                SettingsSubpage.About -> AboutPage()
-                                            }
-                                        }
-                                    }
-                                }
                             }
                         }
                     }
