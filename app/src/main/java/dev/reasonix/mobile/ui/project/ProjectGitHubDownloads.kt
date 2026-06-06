@@ -24,7 +24,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import dev.reasonix.mobile.ui.ReasonixSecondaryPageFrame
 import dev.reasonix.mobile.ui.rememberReasonixChromeColor
@@ -73,13 +72,7 @@ internal fun ProjectGitHubWorkspaceDownloadCenterPage(
         title = "下载中心",
         subtitle = "工作区级统一查看日志、产物和 Release 下载记录。"
     ) {
-        Column(
-            modifier = Modifier.graphicsLayer {
-                translationX = 180f * backProgress
-                alpha = 1f - (backProgress * 0.08f)
-            },
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             ProjectSectionCard(
                 shape = RoundedCornerShape(14.dp),
                 surfaceColorOverride = chromeColor.copy(alpha = 0.38f)

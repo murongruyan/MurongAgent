@@ -121,171 +121,205 @@ internal fun ProjectGitHubStandaloneBrowserSection(
         }
     }
 
+    ProjectNestedPredictiveBackHost(
+        detailVisible = selectedRepo != null,
+        backProgress = backProgress,
+        modifier = Modifier.fillMaxWidth(),
+        detailContent = {
+            val currentRepo = selectedRepo ?: return@ProjectNestedPredictiveBackHost
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                when (activeSection) {
+                    ProjectGitHubStandaloneSection.OVERVIEW -> {
+                        ProjectGitHubStandaloneOverviewPage(
+                            selectedRepo = currentRepo,
+                            selectedTaskRepo = selectedTaskRepo,
+                            onEditRepoDescription = { onEditRepoDescription(currentRepo) },
+                            onRefreshRepoDetail = onRefreshRepoDetail,
+                            onShowWorkflows = {
+                                onChangeSection(ProjectGitHubStandaloneSection.WORKFLOWS)
+                            },
+                            onShowReleases = {
+                                onChangeSection(ProjectGitHubStandaloneSection.RELEASES)
+                            },
+                            onShowIssues = {
+                                onChangeSection(ProjectGitHubStandaloneSection.ISSUES)
+                            },
+                            onShowPullRequests = {
+                                onChangeSection(ProjectGitHubStandaloneSection.PULL_REQUESTS)
+                            },
+                            readme = readme,
+                            isReadmeLoading = isReadmeLoading,
+                            readmeErrorMessage = readmeErrorMessage,
+                            onEditReadme = onEditReadme,
+                            backProgress = backProgress
+                        )
+                    }
+
+                    ProjectGitHubStandaloneSection.RELEASES -> {
+                        ProjectGitHubStandaloneReleasePage(
+                            selectedRepo = currentRepo,
+                            releases = repoDetailState.releases,
+                            isLoading = isRepoDetailLoading,
+                            isActionRunning = isActionRunning,
+                            onRefresh = onRefreshRepoDetail,
+                            onCreateRelease = onCreateRelease,
+                            onEditRelease = onEditRelease,
+                            onToggleReleaseMode = onToggleReleaseMode,
+                            onTogglePrerelease = onTogglePrerelease,
+                            onDeleteRelease = onDeleteRelease,
+                            onOpenReleasePage = onOpenReleasePage,
+                            onOpenReleaseAssets = onOpenReleaseAssets,
+                            backProgress = backProgress
+                        )
+                    }
+
+                    ProjectGitHubStandaloneSection.WORKFLOWS -> {
+                        ProjectGitHubStandaloneWorkflowPage(
+                            selectedRepo = currentRepo,
+                            state = repoDetailState,
+                            isLoading = isRepoDetailLoading,
+                            tokenConfigured = tokenConfigured,
+                            onRefreshRepoDetail = onRefreshRepoDetail,
+                            onRunWorkflow = onRunWorkflow,
+                            onLoadRunDetail = onLoadRunDetail,
+                            onRefreshRunDetail = onRefreshRunDetail,
+                            onDownloadWorkflowArtifact = onDownloadWorkflowArtifact,
+                            closeRequestSignal = closeRequestSignal,
+                            onExitWorkflowPage = {
+                                onChangeSection(ProjectGitHubStandaloneSection.OVERVIEW)
+                            },
+                            backProgress = backProgress
+                        )
+                    }
+
+                    ProjectGitHubStandaloneSection.ISSUES -> {
+                        ProjectGitHubStandaloneIssuePage(
+                            selectedRepo = currentRepo,
+                            issues = repoDetailState.issues,
+                            isActionRunning = isActionRunning,
+                            onCreateIssue = onCreateIssue,
+                            onOpenIssueDetail = onOpenIssueDetail,
+                            onToggleIssueState = onToggleIssueState,
+                            onOpenIssuePage = onOpenIssuePage,
+                            backProgress = backProgress
+                        )
+                    }
+
+                    ProjectGitHubStandaloneSection.PULL_REQUESTS -> {
+                        ProjectGitHubStandalonePullRequestPage(
+                            selectedRepo = currentRepo,
+                            pullRequests = repoDetailState.pullRequests,
+                            isActionRunning = isActionRunning,
+                            onCreatePullRequest = onCreatePullRequest,
+                            onOpenPullRequestDetail = onOpenPullRequestDetail,
+                            onTogglePullRequestState = onTogglePullRequestState,
+                            onMergePullRequest = onMergePullRequest,
+                            onOpenPullRequestPage = onOpenPullRequestPage,
+                            backProgress = backProgress
+                        )
+                    }
+                }
+            }
+        },
+        listContent = {
+            ProjectGitHubStandaloneRepoListContent(
+                tokenConfigured = tokenConfigured,
+                repoListState = repoListState,
+                isRepoListLoading = isRepoListLoading,
+                selectedTaskRepo = selectedTaskRepo,
+                onRefreshRepoList = onRefreshRepoList,
+                onSelectRepo = onSelectRepo,
+                onShowRepoMenu = onShowRepoMenu,
+                chromeColor = chromeColor,
+                surfaceColor = surfaceColor,
+                mutedTextColor = mutedTextColor
+            )
+        }
+    )
+}
+
+@Composable
+private fun ProjectGitHubStandaloneRepoListContent(
+    tokenConfigured: Boolean,
+    repoListState: ProjectGitHubViewerRepositoriesState,
+    isRepoListLoading: Boolean,
+    selectedTaskRepo: ProjectGitHubRepoRef?,
+    onRefreshRepoList: () -> Unit,
+    onSelectRepo: (ProjectGitHubAccountRepoUi) -> Unit,
+    onShowRepoMenu: (ProjectGitHubAccountRepoUi) -> Unit,
+    chromeColor: androidx.compose.ui.graphics.Color,
+    surfaceColor: androidx.compose.ui.graphics.Color,
+    mutedTextColor: androidx.compose.ui.graphics.Color
+) {
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        if (selectedRepo == null) {
+        ProjectSectionCard(
+            shape = RoundedCornerShape(14.dp),
+            surfaceColorOverride = chromeColor.copy(alpha = 0.38f)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("GitHub 账号仓库", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    text = buildString {
+                        append(repoListState.viewerLogin?.let { "@$it" } ?: "未识别账号")
+                        repoListState.viewerName?.takeIf { it.isNotBlank() }?.let {
+                            append(" · ")
+                            append(it)
+                        }
+                        if (repoListState.repositories.isNotEmpty()) {
+                            append(" · 仓库 ${repoListState.repositories.size}")
+                        }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = mutedTextColor
+                )
+                Text(
+                    text = "未选择本地项目时，直接显示当前账号下的仓库；点按进入仓库，长按可设为当前任务仓库。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = mutedTextColor
+                )
+                ReasonixOutlinedActionButton(
+                    text = "刷新仓库",
+                    onClick = onRefreshRepoList,
+                    enabled = tokenConfigured && !isRepoListLoading
+                )
+                if (!tokenConfigured) {
+                    Text(
+                        text = "请先在设置页填写 GitHub Token，未选择本地项目时才能直接浏览账号仓库。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                repoListState.errorMessage?.takeIf { it.isNotBlank() }?.let { error ->
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        }
+        if (isRepoListLoading) {
+            ProjectGitHubStandaloneLoadingCard("正在读取当前账号下的仓库列表...")
+        }
+        if (repoListState.repositories.isEmpty() && !isRepoListLoading && tokenConfigured) {
             ProjectSectionCard(
                 shape = RoundedCornerShape(14.dp),
-                surfaceColorOverride = chromeColor.copy(alpha = 0.38f)
+                surfaceColorOverride = surfaceColor.copy(alpha = 0.55f)
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("GitHub 账号仓库", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        text = buildString {
-                            append(repoListState.viewerLogin?.let { "@$it" } ?: "未识别账号")
-                            repoListState.viewerName?.takeIf { it.isNotBlank() }?.let {
-                                append(" · ")
-                                append(it)
-                            }
-                            if (repoListState.repositories.isNotEmpty()) {
-                                append(" · 仓库 ${repoListState.repositories.size}")
-                            }
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = mutedTextColor
-                    )
-                    Text(
-                        text = "未选择本地项目时，直接显示当前账号下的仓库；点按进入仓库，长按可设为当前任务仓库。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = mutedTextColor
-                    )
-                    ReasonixOutlinedActionButton(
-                        text = "刷新仓库",
-                        onClick = onRefreshRepoList,
-                        enabled = tokenConfigured && !isRepoListLoading
-                    )
-                    if (!tokenConfigured) {
-                        Text(
-                            text = "请先在设置页填写 GitHub Token，未选择本地项目时才能直接浏览账号仓库。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-                    repoListState.errorMessage?.takeIf { it.isNotBlank() }?.let { error ->
-                        Text(
-                            text = error,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-                }
-            }
-            if (isRepoListLoading) {
-                ProjectGitHubStandaloneLoadingCard("正在读取当前账号下的仓库列表...")
-            }
-            if (repoListState.repositories.isEmpty() && !isRepoListLoading && tokenConfigured) {
-                ProjectSectionCard(
-                    shape = RoundedCornerShape(14.dp),
-                    surfaceColorOverride = surfaceColor.copy(alpha = 0.55f)
-                ) {
-                    Text(
-                        text = "当前账号下还没有读取到仓库，或该 Token 没有仓库读取权限。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = mutedTextColor
-                    )
-                }
-            }
-            repoListState.repositories.forEach { repo ->
-                ProjectGitHubStandaloneRepoRow(
-                    repo = repo,
-                    isTaskRepo = selectedTaskRepo == repo.repoRef,
-                    onClick = { onSelectRepo(repo) },
-                    onLongClick = { onShowRepoMenu(repo) }
+                Text(
+                    text = "当前账号下还没有读取到仓库，或该 Token 没有仓库读取权限。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = mutedTextColor
                 )
             }
-            return
         }
-
-        when (activeSection) {
-            ProjectGitHubStandaloneSection.OVERVIEW -> {
-                ProjectGitHubStandaloneOverviewPage(
-                    selectedRepo = selectedRepo,
-                    selectedTaskRepo = selectedTaskRepo,
-                    onEditRepoDescription = { onEditRepoDescription(selectedRepo) },
-                    onRefreshRepoDetail = onRefreshRepoDetail,
-                    onShowWorkflows = {
-                        onChangeSection(ProjectGitHubStandaloneSection.WORKFLOWS)
-                    },
-                    onShowReleases = {
-                        onChangeSection(ProjectGitHubStandaloneSection.RELEASES)
-                    },
-                    onShowIssues = {
-                        onChangeSection(ProjectGitHubStandaloneSection.ISSUES)
-                    },
-                    onShowPullRequests = {
-                        onChangeSection(ProjectGitHubStandaloneSection.PULL_REQUESTS)
-                    },
-                    readme = readme,
-                    isReadmeLoading = isReadmeLoading,
-                    readmeErrorMessage = readmeErrorMessage,
-                    onEditReadme = onEditReadme,
-                    backProgress = backProgress
-                )
-            }
-
-            ProjectGitHubStandaloneSection.RELEASES -> {
-                ProjectGitHubStandaloneReleasePage(
-                    selectedRepo = selectedRepo,
-                    releases = repoDetailState.releases,
-                    isLoading = isRepoDetailLoading,
-                    isActionRunning = isActionRunning,
-                    onRefresh = onRefreshRepoDetail,
-                    onCreateRelease = onCreateRelease,
-                    onEditRelease = onEditRelease,
-                    onToggleReleaseMode = onToggleReleaseMode,
-                    onTogglePrerelease = onTogglePrerelease,
-                    onDeleteRelease = onDeleteRelease,
-                    onOpenReleasePage = onOpenReleasePage,
-                    onOpenReleaseAssets = onOpenReleaseAssets,
-                    backProgress = backProgress
-                )
-            }
-
-            ProjectGitHubStandaloneSection.WORKFLOWS -> {
-                ProjectGitHubStandaloneWorkflowPage(
-                    selectedRepo = selectedRepo,
-                    state = repoDetailState,
-                    isLoading = isRepoDetailLoading,
-                    tokenConfigured = tokenConfigured,
-                    onRefreshRepoDetail = onRefreshRepoDetail,
-                    onRunWorkflow = onRunWorkflow,
-                    onLoadRunDetail = onLoadRunDetail,
-                    onRefreshRunDetail = onRefreshRunDetail,
-                    onDownloadWorkflowArtifact = onDownloadWorkflowArtifact,
-                    closeRequestSignal = closeRequestSignal,
-                    onExitWorkflowPage = {
-                        onChangeSection(ProjectGitHubStandaloneSection.OVERVIEW)
-                    },
-                    backProgress = backProgress
-                )
-            }
-
-            ProjectGitHubStandaloneSection.ISSUES -> {
-                ProjectGitHubStandaloneIssuePage(
-                    selectedRepo = selectedRepo,
-                    issues = repoDetailState.issues,
-                    isActionRunning = isActionRunning,
-                    onCreateIssue = onCreateIssue,
-                    onOpenIssueDetail = onOpenIssueDetail,
-                    onToggleIssueState = onToggleIssueState,
-                    onOpenIssuePage = onOpenIssuePage,
-                    backProgress = backProgress
-                )
-            }
-
-            ProjectGitHubStandaloneSection.PULL_REQUESTS -> {
-                ProjectGitHubStandalonePullRequestPage(
-                    selectedRepo = selectedRepo,
-                    pullRequests = repoDetailState.pullRequests,
-                    isActionRunning = isActionRunning,
-                    onCreatePullRequest = onCreatePullRequest,
-                    onOpenPullRequestDetail = onOpenPullRequestDetail,
-                    onTogglePullRequestState = onTogglePullRequestState,
-                    onMergePullRequest = onMergePullRequest,
-                    onOpenPullRequestPage = onOpenPullRequestPage,
-                    backProgress = backProgress
-                )
-            }
-
+        repoListState.repositories.forEach { repo ->
+            ProjectGitHubStandaloneRepoRow(
+                repo = repo,
+                isTaskRepo = selectedTaskRepo == repo.repoRef,
+                onClick = { onSelectRepo(repo) },
+                onLongClick = { onShowRepoMenu(repo) }
+            )
         }
     }
 }
@@ -310,13 +344,7 @@ private fun ProjectGitHubStandaloneOverviewPage(
         title = selectedRepo.fullName,
         subtitle = "仓库信息和 README 直接显示在这里。"
     ) {
-        Column(
-            modifier = Modifier.graphicsLayer {
-                translationX = 180f * backProgress
-                alpha = 1f - (backProgress * 0.08f)
-            },
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             ProjectGitHubStandaloneHeaderCard(
                 selectedRepo = selectedRepo,
                 selectedTaskRepo = selectedTaskRepo,
@@ -365,13 +393,7 @@ private fun ProjectGitHubStandaloneReleasePage(
         title = "${selectedRepo.name} · Release",
         subtitle = "当前仓库的 Release 列表。"
     ) {
-        Column(
-            modifier = Modifier.graphicsLayer {
-                translationX = 180f * backProgress
-                alpha = 1f - (backProgress * 0.08f)
-            },
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             ProjectGitHubStandaloneReleaseSection(
                 releases = releases,
                 isLoading = isLoading,
@@ -505,35 +527,74 @@ private fun ProjectGitHubStandaloneWorkflowPage(
             }
         }
     ) {
-        Box(
-            modifier = Modifier.graphicsLayer {
-                translationX = 180f * backProgress
-                alpha = 1f - (backProgress * 0.08f)
-            }
-        ) {
-            if (selectedJob != null && selectedRunDetail != null) {
-                ProjectGitHubStandaloneWorkflowJobDetailSection(
-                    detail = selectedRunDetail!!,
-                    job = selectedJob!!,
-                    onBackToRun = { selectedJob = null }
-                )
-            } else if (selectedRun != null) {
-                ProjectGitHubStandaloneWorkflowRunDetailSection(
-                    run = selectedRun!!,
-                    detail = selectedRunDetail,
-                    isLoading = isWorkflowRunDetailLoading,
-                    errorMessage = workflowRunDetailErrorMessage,
-                    onBackToRuns = {
-                        selectedRun = null
-                        selectedRunDetail = null
-                        selectedJob = null
-                        workflowRunDetailErrorMessage = null
+        ProjectNestedPredictiveBackHost(
+            detailVisible = selectedWorkflow != null,
+            backProgress = backProgress,
+            detailContent = {
+                ProjectNestedPredictiveBackHost(
+                    detailVisible = selectedRun != null,
+                    backProgress = backProgress,
+                    detailContent = {
+                        ProjectNestedPredictiveBackHost(
+                            detailVisible = selectedJob != null && selectedRunDetail != null,
+                            backProgress = backProgress,
+                            detailContent = {
+                                ProjectGitHubStandaloneWorkflowJobDetailSection(
+                                    detail = selectedRunDetail ?: return@ProjectNestedPredictiveBackHost,
+                                    job = selectedJob ?: return@ProjectNestedPredictiveBackHost,
+                                    onBackToRun = { selectedJob = null }
+                                )
+                            },
+                            listContent = {
+                                ProjectGitHubStandaloneWorkflowRunDetailSection(
+                                    run = selectedRun ?: return@ProjectNestedPredictiveBackHost,
+                                    detail = selectedRunDetail,
+                                    isLoading = isWorkflowRunDetailLoading,
+                                    errorMessage = workflowRunDetailErrorMessage,
+                                    onBackToRuns = {
+                                        selectedRun = null
+                                        selectedRunDetail = null
+                                        selectedJob = null
+                                        workflowRunDetailErrorMessage = null
+                                    },
+                                    onRefreshDetail = ::refreshWorkflowRunDetail,
+                                    onDownloadArtifact = onDownloadWorkflowArtifact,
+                                    onOpenJob = { job -> selectedJob = job }
+                                )
+                            }
+                        )
                     },
-                    onRefreshDetail = ::refreshWorkflowRunDetail,
-                    onDownloadArtifact = onDownloadWorkflowArtifact,
-                    onOpenJob = { job -> selectedJob = job }
+                    listContent = {
+                        Box {
+                            ProjectGitHubStandaloneWorkflowRunsSection(
+                                workflow = selectedWorkflow ?: return@ProjectNestedPredictiveBackHost,
+                                runs = visibleRuns,
+                                isLoading = isLoading,
+                                onBackToWorkflowList = {
+                                    selectedWorkflow = null
+                                    selectedRun = null
+                                    selectedRunDetail = null
+                                    selectedJob = null
+                                    workflowRunDetailErrorMessage = null
+                                },
+                                onOpenRunDetail = ::openWorkflowRun
+                            )
+                            FloatingActionButton(
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(16.dp),
+                                onClick = {
+                                    selectedWorkflow?.let(onRunWorkflow)
+                                },
+                                containerColor = MaterialTheme.colorScheme.primary
+                            ) {
+                                Text("+")
+                            }
+                        }
+                    }
                 )
-            } else if (selectedWorkflow == null) {
+            },
+            listContent = {
                 ProjectGitHubStandaloneWorkflowListSection(
                     state = state,
                     isLoading = isLoading,
@@ -541,31 +602,8 @@ private fun ProjectGitHubStandaloneWorkflowPage(
                     onRefresh = onRefreshRepoDetail,
                     onOpenWorkflow = { workflow -> selectedWorkflow = workflow }
                 )
-            } else {
-                ProjectGitHubStandaloneWorkflowRunsSection(
-                    workflow = selectedWorkflow!!,
-                    runs = visibleRuns,
-                    isLoading = isLoading,
-                    onBackToWorkflowList = {
-                        selectedWorkflow = null
-                        selectedRun = null
-                        selectedRunDetail = null
-                        selectedJob = null
-                        workflowRunDetailErrorMessage = null
-                    },
-                    onOpenRunDetail = ::openWorkflowRun
-                )
-                FloatingActionButton(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(16.dp),
-                    onClick = { onRunWorkflow(selectedWorkflow!!) },
-                    containerColor = MaterialTheme.colorScheme.primary
-                ) {
-                    Text("+")
-                }
             }
-        }
+        )
     }
 }
 
@@ -947,13 +985,7 @@ private fun ProjectGitHubStandaloneIssuePage(
         title = "${selectedRepo.name} · Issue",
         subtitle = "当前仓库的 Issue 列表。"
     ) {
-        Column(
-            modifier = Modifier.graphicsLayer {
-                translationX = 180f * backProgress
-                alpha = 1f - (backProgress * 0.08f)
-            },
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             ProjectGitHubIssueSection(
                 issues = issues,
                 isActionRunning = isActionRunning,
@@ -982,13 +1014,7 @@ private fun ProjectGitHubStandalonePullRequestPage(
         title = "${selectedRepo.name} · PR",
         subtitle = "当前仓库的 Pull Request 列表。"
     ) {
-        Column(
-            modifier = Modifier.graphicsLayer {
-                translationX = 180f * backProgress
-                alpha = 1f - (backProgress * 0.08f)
-            },
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             ProjectGitHubPullRequestSection(
                 pullRequests = pullRequests,
                 isActionRunning = isActionRunning,

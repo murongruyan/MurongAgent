@@ -4350,347 +4350,356 @@ private fun ProjectGitSection(
 
     if (showGitHubWorkspacePage) {
         ProjectGitDeferredContent {
-            if (showGitHubWorkspaceDownloadCenterPage) {
-            ProjectGitHubWorkspaceDownloadCenterPage(
-                downloads = downloadStore.records,
-                onOpenSystemDownloads = ::openSystemDownloads,
-                onOpenDownloadSource = { item ->
-                    openGitHubPage(
-                        item.sourceUrl,
-                        "这条下载记录暂时没有可打开的来源页面。"
-                    )
-                },
-                onDeleteRecord = ::deleteGitHubDownloadRecord,
-                onClearHistory = ::clearGitHubDownloadHistory,
-                backProgress = projectSecondaryBackProgress
-            )
-            } else if (workspaceWorkbenchRepo != null) {
-            val workbenchStatus = repoStatusSummaries[workspaceWorkbenchRepo.rootPath]
-                ?: ProjectGitStatusUi.empty(workspaceWorkbenchRepo.rootPath)
-            val workbenchSummary = ProjectGitHubWorkspaceRepoSummaryUi(
-                repo = workspaceWorkbenchRepo,
-                status = workbenchStatus,
-                githubRepo = parseProjectGitHubRepoRef(workbenchStatus.remoteUrl),
-                isSelected = workspaceWorkbenchRepo.rootPath == selectedRepoRoot
-            )
-            ProjectGitHubWorkspaceRepoWorkbenchPage(
-                summary = workbenchSummary,
-                remoteSummary = workspaceWorkbenchRemoteSummary,
-                gitState = gitState,
-                githubActionsState = githubActionsState,
-                remoteRepoState = remoteRepoState,
-                isGitLoading = isGitLoading,
-                isGitHubLoading = isGitHubLoading,
-                isGitHubActionRunning = isGitHubActionRunning,
-                isRemoteRepoLoading = isRemoteRepoLoading,
-                tokenConfigured = config.githubToken.isNotBlank(),
-                remoteRepoRefDraft = remoteRepoRefDraft,
-                onRemoteRepoRefDraftChange = { remoteRepoRefDraft = it },
-                onRefreshGitState = ::refreshGitState,
-                onRefreshGitHubActions = ::refreshGitHubActions,
-                onRefreshRemoteRepository = { refreshRemoteRepositoryBrowser(resetRefIfBlank = true) },
-                onApplyRemoteRef = { refreshRemoteRepositoryBrowser(targetPath = remoteRepoState.currentPath) },
-                onOpenRepoPage = ::openCurrentGitHubRepoPage,
-                onOpenWorkflowPage = { workflow ->
-                    openGitHubPage(
-                        workflow.htmlUrl,
-                        "当前工作流还没有可打开的 GitHub 页面地址。"
-                    )
-                },
-                onRunWorkflow = { workflow ->
-                    openWorkflowDispatchDialog(
-                        workflow = workflow,
-                        preferredRef = gitState.currentBranch ?: githubActionsState.defaultBranch
-                    )
-                },
-                onOpenArtifacts = ::openWorkflowArtifacts,
-                onOpenRunPage = { run ->
-                    openGitHubPage(
-                        run.htmlUrl,
-                        "当前运行记录还没有可打开的 GitHub 页面地址。"
-                    )
-                },
-                onDownloadRunLogs = { run ->
-                    val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
-                    val token = config.githubToken.trim()
-                    if (token.isBlank()) {
-                        feedbackMessage = "请先在设置页填写 GitHub Token。"
-                        return@ProjectGitHubWorkspaceRepoWorkbenchPage
-                    }
-                    val result = enqueueProjectGitHubWorkflowLogsDownload(
-                        context = context,
-                        repo = repo,
-                        runId = run.id,
-                        runDisplayTitle = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
-                        token = token,
-                        apiBaseUrl = config.getGitHubApiBaseUrl()
-                    )
-                    recordGitHubDownload(
-                        typeLabel = "工作流日志",
-                        title = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
-                        fileName = result.fileName,
-                        downloadId = result.downloadId,
-                        sourceUrl = run.htmlUrl,
-                        repo = repo
-                    )
-                    feedbackMessage = "已开始下载 ${result.fileName}"
-                },
-                onOpenRunDetail = ::openWorkflowRunDetail,
-                onOpenRemoteParent = {
-                    refreshRemoteRepositoryBrowser(
-                        targetPath = parentProjectGitHubRepoPath(remoteRepoState.currentPath).orEmpty()
-                    )
-                },
-                onOpenRemoteRoot = { refreshRemoteRepositoryBrowser(targetPath = "") },
-                onOpenRemoteEntry = ::openRemoteRepositoryEntry,
-                onOpenRemoteEntryPage = { entry ->
-                    openGitHubPage(
-                        entry.htmlUrl,
-                        "当前条目还没有可打开的 GitHub 页面地址。"
-                    )
-                },
-                readme = workspaceWorkbenchReadme,
-                readmeErrorMessage = workspaceWorkbenchReadmeErrorMessage,
-                isReadmeLoading = isWorkspaceWorkbenchReadmeLoading,
-                onRefreshReadme = ::refreshWorkspaceWorkbenchReadme,
-                onEditReadme = ::openWorkspaceWorkbenchReadmeEditor,
-                onCreateIssue = {
-                    resetCreateIssueDraft()
-                    showCreateIssueDialog = true
-                },
-                onOpenIssueDetail = ::openIssueDetail,
-                onToggleIssueState = { issue, shouldClose ->
-                    val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
-                    val token = config.githubToken.trim()
-                    if (token.isBlank()) {
-                        feedbackMessage = "请先在设置页填写 GitHub Token。"
-                        return@ProjectGitHubWorkspaceRepoWorkbenchPage
-                    }
-                    runGitHubAction(if (shouldClose) "已关闭 Issue #${issue.number}" else "已重新打开 Issue #${issue.number}") {
-                        updateProjectGitHubIssueState(
-                            repo = repo,
-                            issueNumber = issue.number,
-                            close = shouldClose,
-                            token = token,
-                            apiBaseUrl = config.getGitHubApiBaseUrl()
+            ProjectNestedPredictiveBackHost(
+                detailVisible = showGitHubWorkspaceDownloadCenterPage || workspaceWorkbenchRepo != null,
+                backProgress = projectSecondaryBackProgress,
+                detailContent = {
+                    if (showGitHubWorkspaceDownloadCenterPage) {
+                        ProjectGitHubWorkspaceDownloadCenterPage(
+                            downloads = downloadStore.records,
+                            onOpenSystemDownloads = ::openSystemDownloads,
+                            onOpenDownloadSource = { item ->
+                                openGitHubPage(
+                                    item.sourceUrl,
+                                    "这条下载记录暂时没有可打开的来源页面。"
+                                )
+                            },
+                            onDeleteRecord = ::deleteGitHubDownloadRecord,
+                            onClearHistory = ::clearGitHubDownloadHistory,
+                            backProgress = projectSecondaryBackProgress
                         )
-                    }
-                },
-                onOpenIssuePage = { issue ->
-                    openGitHubPage(
-                        issue.htmlUrl,
-                        "当前 Issue 还没有可打开的 GitHub 页面地址。"
-                    )
-                },
-                onCreatePullRequest = {
-                    resetCreatePullRequestDraft()
-                    showCreatePullRequestDialog = true
-                },
-                onOpenPullRequestDetail = ::openPullRequestDetail,
-                onTogglePullRequestState = { pullRequest, shouldClose ->
-                    val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
-                    val token = config.githubToken.trim()
-                    if (token.isBlank()) {
-                        feedbackMessage = "请先在设置页填写 GitHub Token。"
-                        return@ProjectGitHubWorkspaceRepoWorkbenchPage
-                    }
-                    runGitHubAction(if (shouldClose) "已关闭 PR #${pullRequest.number}" else "已重新打开 PR #${pullRequest.number}") {
-                        updateProjectGitHubPullRequestState(
-                            repo = repo,
-                            pullNumber = pullRequest.number,
-                            close = shouldClose,
-                            token = token,
-                            apiBaseUrl = config.getGitHubApiBaseUrl()
-                        )
-                    }
-                },
-                onMergePullRequest = { pullRequest ->
-                    val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
-                    val token = config.githubToken.trim()
-                    if (token.isBlank()) {
-                        feedbackMessage = "请先在设置页填写 GitHub Token。"
-                        return@ProjectGitHubWorkspaceRepoWorkbenchPage
-                    }
-                    runGitHubAction("已合并 PR #${pullRequest.number}") {
-                        mergeProjectGitHubPullRequest(
-                            repo = repo,
-                            pullNumber = pullRequest.number,
-                            title = pullRequest.title,
-                            token = token,
-                            apiBaseUrl = config.getGitHubApiBaseUrl()
-                        )
-                    }
-                },
-                onOpenPullRequestPage = { pullRequest ->
-                    openGitHubPage(
-                        pullRequest.htmlUrl,
-                        "当前 Pull Request 还没有可打开的 GitHub 页面地址。"
-                    )
-                },
-                onCreateRelease = {
-                    releaseDraftState = createProjectGitHubReleaseDraftState(gitState.currentBranch)
-                    showCreateReleaseDialog = true
-                },
-                onEditRelease = { release ->
-                    releaseEditTarget = release
-                    releaseDraftState = editProjectGitHubReleaseDraftState(release)
-                },
-                onToggleReleaseMode = { release, makeDraft ->
-                    runGitHubMutationAction(
-                        block = {
-                            toggleProjectGitHubReleaseModeAction(
-                                repo = githubActionsState.repo,
-                                release = release,
-                                token = config.githubToken.trim(),
-                                apiBaseUrl = config.getGitHubApiBaseUrl(),
-                                makeDraft = makeDraft
-                            )
-                        }
-                    )
-                },
-                onTogglePrerelease = { release, makePrerelease ->
-                    runGitHubMutationAction(
-                        block = {
-                            toggleProjectGitHubReleasePrereleaseAction(
-                                repo = githubActionsState.repo,
-                                release = release,
-                                token = config.githubToken.trim(),
-                                apiBaseUrl = config.getGitHubApiBaseUrl(),
-                                makePrerelease = makePrerelease
-                            )
-                        }
-                    )
-                },
-                onDeleteRelease = { release ->
-                    runGitHubMutationAction(
-                        block = {
-                            deleteProjectGitHubReleaseAction(
-                                repo = githubActionsState.repo,
-                                release = release,
-                                token = config.githubToken.trim(),
-                                apiBaseUrl = config.getGitHubApiBaseUrl()
-                            )
-                        }
-                    )
-                },
-                onOpenReleasePage = { release ->
-                    openGitHubPage(
-                        release.htmlUrl,
-                        "当前 Release 还没有可打开的 GitHub 页面地址。"
-                    )
-                },
-                onOpenReleaseAssets = { release ->
-                    releaseAssetDialogState = ProjectGitHubReleaseAssetDialogUi(
-                        releaseTitle = release.name.ifBlank { release.tagName },
-                        assets = release.assets,
-                        releaseHtmlUrl = release.htmlUrl
-                    )
-                },
-                downloads = downloadStore.records,
-                onOpenSystemDownloads = ::openSystemDownloads,
-                onOpenDownloadSource = { item ->
-                    openGitHubPage(
-                        item.sourceUrl,
-                        "这条下载记录暂时没有可打开的来源页面。"
-                    )
-                },
-                selectedTab = workspaceWorkbenchSelectedTab,
-                onSelectTab = { tab ->
-                    workspaceNavigationState = workspaceNavigationState.copy(
-                        workbenchSelectedTab = tab
-                    )
-                },
-                onExitWorkbench = {
-                    workspaceNavigationState = closeProjectGitHubWorkspaceRepoWorkbench(
-                        currentState = workspaceNavigationState
-                    )
-                },
-                backProgress = projectSecondaryBackProgress
-            )
-            } else {
-            val overviewRepoCards = remember(
-                detectedRepos,
-                repoStatusSummaries,
-                selectedRepoRoot,
-                workspaceRemoteSummaryStore.summaries,
-                workspaceFilterType,
-                workspaceSearchQuery
-            ) {
-                buildProjectGitHubWorkspaceRepoCards(
-                    repos = detectedRepos,
-                    repoStatusSummaries = repoStatusSummaries,
-                    selectedRepoRoot = selectedRepoRoot,
-                    remoteSummaries = workspaceRemoteSummaryStore.summaries,
-                    filterType = workspaceFilterType,
-                    searchQuery = workspaceSearchQuery
-                )
-            }
-            val overview = remember(
-                overviewRepoCards,
-                workspaceRemoteSummaryStore.summaries.size,
-                workspaceRemoteSummaryStore.lastUpdatedMillis,
-                gitState.remoteUrl,
-                githubActionsState
-            ) {
-                buildProjectGitHubWorkspaceOverview(
-                    repoCards = overviewRepoCards,
-                    remoteSummaryCount = workspaceRemoteSummaryStore.summaries.size,
-                    activeRepo = parseProjectGitHubRepoRef(gitState.remoteUrl),
-                    activeGitHubState = githubActionsState,
-                    lastUpdatedMillis = workspaceRemoteSummaryStore.lastUpdatedMillis
-                )
-            }
-            val remoteSummaryStatusLabel = remember(
-                config.githubToken,
-                overviewRepoCards,
-                workspaceRemoteSummaryStore
-            ) {
-                buildProjectGitHubWorkspaceRemoteSummaryStatusLabel(
-                    tokenConfigured = config.githubToken.isNotBlank(),
-                    targetRepoCount = overviewRepoCards.count { it.hasGitHubRepo },
-                    currentStore = workspaceRemoteSummaryStore
-                )
-            }
-            ProjectGitHubWorkspaceOverviewPage(
-                overview = overview,
-                repoCards = overviewRepoCards,
-                tokenConfigured = config.githubToken.isNotBlank(),
-                remoteSummaryStatusLabel = remoteSummaryStatusLabel,
-                isRemoteSummaryLoading = workspaceRemoteSummaryStore.isLoading,
-                remoteSummaryErrorMessage = workspaceRemoteSummaryStore.globalErrorMessage,
-                onRefreshRemoteSummaries = ::refreshGitHubWorkspaceRemoteSummaries,
-                downloads = downloadStore.records,
-                onOpenDownloadCenter = ::openGitHubWorkspaceDownloadCenter,
-                onOpenSystemDownloads = ::openSystemDownloads,
-                onOpenRepoWorkbench = ::openGitHubWorkspaceRepoWorkbench,
-                onOpenWorkflowRunDetailTarget = ::openWorkflowRunDetailForRepo,
-                onOpenIssueDetailTarget = ::openIssueDetailForRepo,
-                onOpenPullRequestDetailTarget = ::openPullRequestDetailForRepo,
-                currentFilter = workspaceFilterType,
-                onFilterChange = { workspaceFilterType = it },
-                searchQuery = workspaceSearchQuery,
-                onSearchQueryChange = { workspaceSearchQuery = it },
-                onOpenGlobalSearch = { globalSearchStore = globalSearchStore.copy(isVisible = true) },
-                onOpenGlobalTaskCenter = {
-                    globalTaskCenter = buildProjectGitHubGlobalTaskCenter(overviewRepoCards).copy(isVisible = true)
-                },
-                isSelectionMode = isWorkspaceSelectionMode,
-                onToggleSelectionMode = {
-                    isWorkspaceSelectionMode = !isWorkspaceSelectionMode
-                    if (!isWorkspaceSelectionMode) workspaceSelectedRepoPaths = emptySet()
-                },
-                selectedRepoPaths = workspaceSelectedRepoPaths,
-                onToggleRepoSelection = { path ->
-                    workspaceSelectedRepoPaths = if (workspaceSelectedRepoPaths.contains(path)) {
-                        workspaceSelectedRepoPaths - path
                     } else {
-                        workspaceSelectedRepoPaths + path
+                        val currentWorkbenchRepo = workspaceWorkbenchRepo
+                            ?: return@ProjectNestedPredictiveBackHost
+                        val workbenchStatus = repoStatusSummaries[currentWorkbenchRepo.rootPath]
+                            ?: ProjectGitStatusUi.empty(currentWorkbenchRepo.rootPath)
+                        val workbenchSummary = ProjectGitHubWorkspaceRepoSummaryUi(
+                            repo = currentWorkbenchRepo,
+                            status = workbenchStatus,
+                            githubRepo = parseProjectGitHubRepoRef(workbenchStatus.remoteUrl),
+                            isSelected = currentWorkbenchRepo.rootPath == selectedRepoRoot
+                        )
+                        ProjectGitHubWorkspaceRepoWorkbenchPage(
+                            summary = workbenchSummary,
+                            remoteSummary = workspaceWorkbenchRemoteSummary,
+                            gitState = gitState,
+                            githubActionsState = githubActionsState,
+                            remoteRepoState = remoteRepoState,
+                            isGitLoading = isGitLoading,
+                            isGitHubLoading = isGitHubLoading,
+                            isGitHubActionRunning = isGitHubActionRunning,
+                            isRemoteRepoLoading = isRemoteRepoLoading,
+                            tokenConfigured = config.githubToken.isNotBlank(),
+                            remoteRepoRefDraft = remoteRepoRefDraft,
+                            onRemoteRepoRefDraftChange = { remoteRepoRefDraft = it },
+                            onRefreshGitState = ::refreshGitState,
+                            onRefreshGitHubActions = ::refreshGitHubActions,
+                            onRefreshRemoteRepository = { refreshRemoteRepositoryBrowser(resetRefIfBlank = true) },
+                            onApplyRemoteRef = { refreshRemoteRepositoryBrowser(targetPath = remoteRepoState.currentPath) },
+                            onOpenRepoPage = ::openCurrentGitHubRepoPage,
+                            onOpenWorkflowPage = { workflow ->
+                                openGitHubPage(
+                                    workflow.htmlUrl,
+                                    "当前工作流还没有可打开的 GitHub 页面地址。"
+                                )
+                            },
+                            onRunWorkflow = { workflow ->
+                                openWorkflowDispatchDialog(
+                                    workflow = workflow,
+                                    preferredRef = gitState.currentBranch ?: githubActionsState.defaultBranch
+                                )
+                            },
+                            onOpenArtifacts = ::openWorkflowArtifacts,
+                            onOpenRunPage = { run ->
+                                openGitHubPage(
+                                    run.htmlUrl,
+                                    "当前运行记录还没有可打开的 GitHub 页面地址。"
+                                )
+                            },
+                            onDownloadRunLogs = { run ->
+                                val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                                val token = config.githubToken.trim()
+                                if (token.isBlank()) {
+                                    feedbackMessage = "请先在设置页填写 GitHub Token。"
+                                    return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                                }
+                                val result = enqueueProjectGitHubWorkflowLogsDownload(
+                                    context = context,
+                                    repo = repo,
+                                    runId = run.id,
+                                    runDisplayTitle = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
+                                    token = token,
+                                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                                )
+                                recordGitHubDownload(
+                                    typeLabel = "工作流日志",
+                                    title = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
+                                    fileName = result.fileName,
+                                    downloadId = result.downloadId,
+                                    sourceUrl = run.htmlUrl,
+                                    repo = repo
+                                )
+                                feedbackMessage = "已开始下载 ${result.fileName}"
+                            },
+                            onOpenRunDetail = ::openWorkflowRunDetail,
+                            onOpenRemoteParent = {
+                                refreshRemoteRepositoryBrowser(
+                                    targetPath = parentProjectGitHubRepoPath(remoteRepoState.currentPath).orEmpty()
+                                )
+                            },
+                            onOpenRemoteRoot = { refreshRemoteRepositoryBrowser(targetPath = "") },
+                            onOpenRemoteEntry = ::openRemoteRepositoryEntry,
+                            onOpenRemoteEntryPage = { entry ->
+                                openGitHubPage(
+                                    entry.htmlUrl,
+                                    "当前条目还没有可打开的 GitHub 页面地址。"
+                                )
+                            },
+                            readme = workspaceWorkbenchReadme,
+                            readmeErrorMessage = workspaceWorkbenchReadmeErrorMessage,
+                            isReadmeLoading = isWorkspaceWorkbenchReadmeLoading,
+                            onRefreshReadme = ::refreshWorkspaceWorkbenchReadme,
+                            onEditReadme = ::openWorkspaceWorkbenchReadmeEditor,
+                            onCreateIssue = {
+                                resetCreateIssueDraft()
+                                showCreateIssueDialog = true
+                            },
+                            onOpenIssueDetail = ::openIssueDetail,
+                            onToggleIssueState = { issue, shouldClose ->
+                                val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                                val token = config.githubToken.trim()
+                                if (token.isBlank()) {
+                                    feedbackMessage = "请先在设置页填写 GitHub Token。"
+                                    return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                                }
+                                runGitHubAction(if (shouldClose) "已关闭 Issue #${issue.number}" else "已重新打开 Issue #${issue.number}") {
+                                    updateProjectGitHubIssueState(
+                                        repo = repo,
+                                        issueNumber = issue.number,
+                                        close = shouldClose,
+                                        token = token,
+                                        apiBaseUrl = config.getGitHubApiBaseUrl()
+                                    )
+                                }
+                            },
+                            onOpenIssuePage = { issue ->
+                                openGitHubPage(
+                                    issue.htmlUrl,
+                                    "当前 Issue 还没有可打开的 GitHub 页面地址。"
+                                )
+                            },
+                            onCreatePullRequest = {
+                                resetCreatePullRequestDraft()
+                                showCreatePullRequestDialog = true
+                            },
+                            onOpenPullRequestDetail = ::openPullRequestDetail,
+                            onTogglePullRequestState = { pullRequest, shouldClose ->
+                                val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                                val token = config.githubToken.trim()
+                                if (token.isBlank()) {
+                                    feedbackMessage = "请先在设置页填写 GitHub Token。"
+                                    return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                                }
+                                runGitHubAction(if (shouldClose) "已关闭 PR #${pullRequest.number}" else "已重新打开 PR #${pullRequest.number}") {
+                                    updateProjectGitHubPullRequestState(
+                                        repo = repo,
+                                        pullNumber = pullRequest.number,
+                                        close = shouldClose,
+                                        token = token,
+                                        apiBaseUrl = config.getGitHubApiBaseUrl()
+                                    )
+                                }
+                            },
+                            onMergePullRequest = { pullRequest ->
+                                val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                                val token = config.githubToken.trim()
+                                if (token.isBlank()) {
+                                    feedbackMessage = "请先在设置页填写 GitHub Token。"
+                                    return@ProjectGitHubWorkspaceRepoWorkbenchPage
+                                }
+                                runGitHubAction("已合并 PR #${pullRequest.number}") {
+                                    mergeProjectGitHubPullRequest(
+                                        repo = repo,
+                                        pullNumber = pullRequest.number,
+                                        title = pullRequest.title,
+                                        token = token,
+                                        apiBaseUrl = config.getGitHubApiBaseUrl()
+                                    )
+                                }
+                            },
+                            onOpenPullRequestPage = { pullRequest ->
+                                openGitHubPage(
+                                    pullRequest.htmlUrl,
+                                    "当前 Pull Request 还没有可打开的 GitHub 页面地址。"
+                                )
+                            },
+                            onCreateRelease = {
+                                releaseDraftState = createProjectGitHubReleaseDraftState(gitState.currentBranch)
+                                showCreateReleaseDialog = true
+                            },
+                            onEditRelease = { release ->
+                                releaseEditTarget = release
+                                releaseDraftState = editProjectGitHubReleaseDraftState(release)
+                            },
+                            onToggleReleaseMode = { release, makeDraft ->
+                                runGitHubMutationAction(
+                                    block = {
+                                        toggleProjectGitHubReleaseModeAction(
+                                            repo = githubActionsState.repo,
+                                            release = release,
+                                            token = config.githubToken.trim(),
+                                            apiBaseUrl = config.getGitHubApiBaseUrl(),
+                                            makeDraft = makeDraft
+                                        )
+                                    }
+                                )
+                            },
+                            onTogglePrerelease = { release, makePrerelease ->
+                                runGitHubMutationAction(
+                                    block = {
+                                        toggleProjectGitHubReleasePrereleaseAction(
+                                            repo = githubActionsState.repo,
+                                            release = release,
+                                            token = config.githubToken.trim(),
+                                            apiBaseUrl = config.getGitHubApiBaseUrl(),
+                                            makePrerelease = makePrerelease
+                                        )
+                                    }
+                                )
+                            },
+                            onDeleteRelease = { release ->
+                                runGitHubMutationAction(
+                                    block = {
+                                        deleteProjectGitHubReleaseAction(
+                                            repo = githubActionsState.repo,
+                                            release = release,
+                                            token = config.githubToken.trim(),
+                                            apiBaseUrl = config.getGitHubApiBaseUrl()
+                                        )
+                                    }
+                                )
+                            },
+                            onOpenReleasePage = { release ->
+                                openGitHubPage(
+                                    release.htmlUrl,
+                                    "当前 Release 还没有可打开的 GitHub 页面地址。"
+                                )
+                            },
+                            onOpenReleaseAssets = { release ->
+                                releaseAssetDialogState = ProjectGitHubReleaseAssetDialogUi(
+                                    releaseTitle = release.name.ifBlank { release.tagName },
+                                    assets = release.assets,
+                                    releaseHtmlUrl = release.htmlUrl
+                                )
+                            },
+                            downloads = downloadStore.records,
+                            onOpenSystemDownloads = ::openSystemDownloads,
+                            onOpenDownloadSource = { item ->
+                                openGitHubPage(
+                                    item.sourceUrl,
+                                    "这条下载记录暂时没有可打开的来源页面。"
+                                )
+                            },
+                            selectedTab = workspaceWorkbenchSelectedTab,
+                            onSelectTab = { tab ->
+                                workspaceNavigationState = workspaceNavigationState.copy(
+                                    workbenchSelectedTab = tab
+                                )
+                            },
+                            onExitWorkbench = {
+                                workspaceNavigationState = closeProjectGitHubWorkspaceRepoWorkbench(
+                                    currentState = workspaceNavigationState
+                                )
+                            },
+                            backProgress = projectSecondaryBackProgress
+                        )
                     }
                 },
-                onBatchAction = ::runGitHubWorkspaceBatchAction,
-                backProgress = projectSecondaryBackProgress
+                listContent = {
+                    val overviewRepoCards = remember(
+                        detectedRepos,
+                        repoStatusSummaries,
+                        selectedRepoRoot,
+                        workspaceRemoteSummaryStore.summaries,
+                        workspaceFilterType,
+                        workspaceSearchQuery
+                    ) {
+                        buildProjectGitHubWorkspaceRepoCards(
+                            repos = detectedRepos,
+                            repoStatusSummaries = repoStatusSummaries,
+                            selectedRepoRoot = selectedRepoRoot,
+                            remoteSummaries = workspaceRemoteSummaryStore.summaries,
+                            filterType = workspaceFilterType,
+                            searchQuery = workspaceSearchQuery
+                        )
+                    }
+                    val overview = remember(
+                        overviewRepoCards,
+                        workspaceRemoteSummaryStore.summaries.size,
+                        workspaceRemoteSummaryStore.lastUpdatedMillis,
+                        gitState.remoteUrl,
+                        githubActionsState
+                    ) {
+                        buildProjectGitHubWorkspaceOverview(
+                            repoCards = overviewRepoCards,
+                            remoteSummaryCount = workspaceRemoteSummaryStore.summaries.size,
+                            activeRepo = parseProjectGitHubRepoRef(gitState.remoteUrl),
+                            activeGitHubState = githubActionsState,
+                            lastUpdatedMillis = workspaceRemoteSummaryStore.lastUpdatedMillis
+                        )
+                    }
+                    val remoteSummaryStatusLabel = remember(
+                        config.githubToken,
+                        overviewRepoCards,
+                        workspaceRemoteSummaryStore
+                    ) {
+                        buildProjectGitHubWorkspaceRemoteSummaryStatusLabel(
+                            tokenConfigured = config.githubToken.isNotBlank(),
+                            targetRepoCount = overviewRepoCards.count { it.hasGitHubRepo },
+                            currentStore = workspaceRemoteSummaryStore
+                        )
+                    }
+                    ProjectGitHubWorkspaceOverviewPage(
+                        overview = overview,
+                        repoCards = overviewRepoCards,
+                        tokenConfigured = config.githubToken.isNotBlank(),
+                        remoteSummaryStatusLabel = remoteSummaryStatusLabel,
+                        isRemoteSummaryLoading = workspaceRemoteSummaryStore.isLoading,
+                        remoteSummaryErrorMessage = workspaceRemoteSummaryStore.globalErrorMessage,
+                        onRefreshRemoteSummaries = ::refreshGitHubWorkspaceRemoteSummaries,
+                        downloads = downloadStore.records,
+                        onOpenDownloadCenter = ::openGitHubWorkspaceDownloadCenter,
+                        onOpenSystemDownloads = ::openSystemDownloads,
+                        onOpenRepoWorkbench = ::openGitHubWorkspaceRepoWorkbench,
+                        onOpenWorkflowRunDetailTarget = ::openWorkflowRunDetailForRepo,
+                        onOpenIssueDetailTarget = ::openIssueDetailForRepo,
+                        onOpenPullRequestDetailTarget = ::openPullRequestDetailForRepo,
+                        currentFilter = workspaceFilterType,
+                        onFilterChange = { workspaceFilterType = it },
+                        searchQuery = workspaceSearchQuery,
+                        onSearchQueryChange = { workspaceSearchQuery = it },
+                        onOpenGlobalSearch = { globalSearchStore = globalSearchStore.copy(isVisible = true) },
+                        onOpenGlobalTaskCenter = {
+                            globalTaskCenter = buildProjectGitHubGlobalTaskCenter(overviewRepoCards).copy(isVisible = true)
+                        },
+                        isSelectionMode = isWorkspaceSelectionMode,
+                        onToggleSelectionMode = {
+                            isWorkspaceSelectionMode = !isWorkspaceSelectionMode
+                            if (!isWorkspaceSelectionMode) workspaceSelectedRepoPaths = emptySet()
+                        },
+                        selectedRepoPaths = workspaceSelectedRepoPaths,
+                        onToggleRepoSelection = { path ->
+                            workspaceSelectedRepoPaths = if (workspaceSelectedRepoPaths.contains(path)) {
+                                workspaceSelectedRepoPaths - path
+                            } else {
+                                workspaceSelectedRepoPaths + path
+                            }
+                        },
+                        onBatchAction = ::runGitHubWorkspaceBatchAction,
+                        backProgress = projectSecondaryBackProgress
+                    )
+                }
             )
-            }
         }
         return
     }

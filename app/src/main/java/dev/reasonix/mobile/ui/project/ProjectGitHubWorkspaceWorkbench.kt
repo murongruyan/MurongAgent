@@ -15,7 +15,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import dev.reasonix.mobile.ui.ReasonixOutlinedActionButton
 import dev.reasonix.mobile.ui.ReasonixSecondaryPageFrame
@@ -512,13 +511,7 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchPage(
         title = summary.repo.displayName.ifBlank { "仓库工作台" },
         subtitle = "统一承接仓库级概览、工作流、远端、README、Issue、PR 和 Release。"
     ) {
-        Column(
-            modifier = Modifier.graphicsLayer {
-                translationX = 180f * backProgress
-                alpha = 1f - (backProgress * 0.08f)
-            },
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             ProjectGitHubWorkspaceRepoWorkbenchHeader(
                 header = buildProjectGitHubWorkspaceWorkbenchHeader(
                     summary = summary,

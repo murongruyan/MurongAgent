@@ -33,7 +33,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import dev.reasonix.mobile.ui.ReasonixSecondaryPageFrame
 import dev.reasonix.mobile.ui.rememberReasonixChromeColor
@@ -81,13 +80,7 @@ internal fun ProjectGitHubWorkspaceOverviewPage(
         title = "GitHub 工作区",
         subtitle = "优先回答整个工作区哪里有问题、先处理什么，再进入仓库工作台。"
     ) {
-        Column(
-            modifier = Modifier.graphicsLayer {
-                translationX = 180f * backProgress
-                alpha = 1f - (backProgress * 0.08f)
-            },
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             ProjectSectionCard(
                 shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
                 surfaceColorOverride = chromeColor.copy(alpha = 0.38f)
