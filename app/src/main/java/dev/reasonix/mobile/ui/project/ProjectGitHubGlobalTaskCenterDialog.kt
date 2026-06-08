@@ -18,8 +18,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import dev.reasonix.mobile.ui.ReasonixGlassSurface
+import dev.reasonix.mobile.ui.ReasonixLargeDialogScaffold
 
 @Composable
 internal fun ProjectGitHubGlobalTaskCenterDialog(
@@ -28,24 +28,21 @@ internal fun ProjectGitHubGlobalTaskCenterDialog(
     onTaskClick: (ProjectGitHubWorkspaceTaskUi) -> Unit,
     chromeColor: Color = MaterialTheme.colorScheme.surfaceVariant
 ) {
-    Dialog(
-        onDismissRequest = onClose,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ReasonixLargeDialogScaffold(
+        onDismissRequest = onClose
     ) {
-        Surface(
+        val totalTasks = taskCenter.criticalTasks.size + taskCenter.attentionTasks.size
+        ReasonixGlassSurface(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(top = 24.dp),
-            color = MaterialTheme.colorScheme.background,
-            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            contentPadding = PaddingValues(16.dp)
         ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                // Header
-                val totalTasks = taskCenter.criticalTasks.size + taskCenter.attentionTasks.size
+            Column(modifier = Modifier.fillMaxWidth()) {
                 Row(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
+                        .fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -71,6 +68,7 @@ internal fun ProjectGitHubGlobalTaskCenterDialog(
                         Text("$totalTasks 个待处理")
                     }
                 }
+                Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = buildString {
                         append("优先 ${taskCenter.criticalTasks.size}")
@@ -80,79 +78,81 @@ internal fun ProjectGitHubGlobalTaskCenterDialog(
                         }
                     },
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+        }
 
-                Divider(color = chromeColor.copy(alpha = 0.2f))
+        HorizontalDivider(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            color = chromeColor.copy(alpha = 0.16f)
+        )
 
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    if (taskCenter.criticalTasks.isEmpty() && taskCenter.attentionTasks.isEmpty()) {
-                        item {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 64.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(
-                                        Icons.Default.CheckCircle,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(64.dp),
-                                        tint = Color(0xFF238636).copy(alpha = 0.5f)
-                                    )
-                                    Spacer(modifier = Modifier.height(16.dp))
-                                    Text(
-                                        "暂无紧急任务，一切正常！",
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    if (taskCenter.criticalTasks.isNotEmpty()) {
-                        item {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            if (taskCenter.criticalTasks.isEmpty() && taskCenter.attentionTasks.isEmpty()) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 64.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                modifier = Modifier.size(64.dp),
+                                tint = Color(0xFF238636).copy(alpha = 0.5f)
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
                             Text(
-                                "紧急任务",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.error,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        items(taskCenter.criticalTasks) { task ->
-                            GlobalTaskItem(
-                                task = task,
-                                onClick = { onTaskClick(task) },
-                                chromeColor = chromeColor
+                                "暂无紧急任务，一切正常！",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
+                }
+            }
 
-                    if (taskCenter.attentionTasks.isNotEmpty()) {
-                        item {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                "建议处理",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        items(taskCenter.attentionTasks) { task ->
-                            GlobalTaskItem(
-                                task = task,
-                                onClick = { onTaskClick(task) },
-                                chromeColor = chromeColor
-                            )
-                        }
-                    }
+            if (taskCenter.criticalTasks.isNotEmpty()) {
+                item {
+                    Text(
+                        "紧急任务",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                items(taskCenter.criticalTasks) { task ->
+                    GlobalTaskItem(
+                        task = task,
+                        onClick = { onTaskClick(task) },
+                        chromeColor = chromeColor
+                    )
+                }
+            }
+
+            if (taskCenter.attentionTasks.isNotEmpty()) {
+                item {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "建议处理",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                items(taskCenter.attentionTasks) { task ->
+                    GlobalTaskItem(
+                        task = task,
+                        onClick = { onTaskClick(task) },
+                        chromeColor = chromeColor
+                    )
                 }
             }
         }

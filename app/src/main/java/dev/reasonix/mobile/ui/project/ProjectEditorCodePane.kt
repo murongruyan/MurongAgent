@@ -1,36 +1,58 @@
 package dev.reasonix.mobile.ui.project
 
-import androidx.compose.foundation.ScrollState
+import android.graphics.Typeface
+import android.view.View
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.defaultMinSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import dev.reasonix.mobile.ui.applyReasonixEditorLanguage
+import io.github.rosemoe.sora.event.ContentChangeEvent
+import io.github.rosemoe.sora.event.EditorFocusChangeEvent
+import io.github.rosemoe.sora.event.PublishSearchResultEvent
+import io.github.rosemoe.sora.event.ScrollEvent
+import io.github.rosemoe.sora.event.SelectionChangeEvent
+import io.github.rosemoe.sora.lang.diagnostic.DiagnosticDetail
+import io.github.rosemoe.sora.lang.diagnostic.DiagnosticRegion
+import io.github.rosemoe.sora.lang.diagnostic.DiagnosticsContainer
+import io.github.rosemoe.sora.text.Content
+import io.github.rosemoe.sora.widget.CodeEditor
+import io.github.rosemoe.sora.widget.EditorSearcher
+import io.github.rosemoe.sora.widget.component.EditorAutoCompletion
+import io.github.rosemoe.sora.widget.component.Magnifier
+import io.github.rosemoe.sora.widget.getComponent
+import io.github.rosemoe.sora.widget.subscribeEvent
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
+
+internal enum class ProjectEditorSearchAction {
+    NEXT,
+    PREVIOUS,
+    REPLACE_CURRENT,
+    REPLACE_ALL
+}
+
+internal data class ProjectEditorSearchRequest(
+    val token: Int = 0,
+    val action: ProjectEditorSearchAction? = null
+)
+
+internal data class ProjectEditorSearchState(
+    val currentMatch: TextRange? = null
+)
 
 @Composable
 internal fun ProjectCodeEditorPane(
@@ -38,154 +60,272 @@ internal fun ProjectCodeEditorPane(
     onValueChange: (TextFieldValue) -> Unit,
     language: String?,
     searchQuery: String,
-    currentMatch: TextRange?,
+    searchRequest: ProjectEditorSearchRequest = ProjectEditorSearchRequest(),
+    replaceQuery: String = "",
+    onSearchStateChange: (ProjectEditorSearchState) -> Unit = {},
     diagnostics: List<ProjectEditorDiagnostic>,
-    verticalScrollState: androidx.compose.foundation.ScrollState,
+    initialScrollOffset: Int,
+    onScrollOffsetChange: (Int) -> Unit,
     backgroundColor: Color,
     surfaceColor: Color,
-    mutedTextColor: Color,
+    focusClearSignal: Int = 0,
+    onEditorFocusChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    val onSurfaceColor = MaterialTheme.colorScheme.onSurface
-    val visibleTextStyle = TextStyle(
-        fontFamily = FontFamily.Monospace,
-        fontSize = 13.sp,
-        lineHeight = 20.sp,
-        color = onSurfaceColor
-    )
-    val annotatedText = remember(editorValue.text, language, searchQuery, currentMatch, diagnostics) {
-        buildHighlightedEditorText(
-            code = editorValue.text,
-            language = language.orEmpty(),
-            query = searchQuery,
-            currentMatch = currentMatch,
-            diagnostics = diagnostics
-        )
-    }
-    val lineNumbersText = remember(editorValue.text, diagnostics) {
-        buildEditorLineNumbersText(editorValue.text, diagnostics)
+    val context = LocalContext.current
+    val latestValueChange by rememberUpdatedState(onValueChange)
+    val latestFocusChange by rememberUpdatedState(onEditorFocusChanged)
+    val latestScrollOffsetChange by rememberUpdatedState(onScrollOffsetChange)
+    val latestEditorValue by rememberUpdatedState(editorValue)
+    val latestSearchStateChange by rememberUpdatedState(onSearchStateChange)
+    val suppressExternalSync = remember { AtomicBoolean(false) }
+    val editor = remember {
+        CodeEditor(context).apply {
+            setText(Content(editorValue.text))
+            setBackgroundColor(backgroundColor.copy(alpha = 0.08f).toArgb())
+            setTextSize(13f)
+            setTabWidth(4)
+            typefaceText = Typeface.MONOSPACE
+            typefaceLineNumber = Typeface.MONOSPACE
+            isWordwrap = false
+            props.overScrollEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            setDividerWidth(1f)
+            setDividerMargin(12f)
+            setLineSpacing(2f, 1.1f)
+            setHighlightCurrentLine(true)
+            setHighlightCurrentBlock(true)
+            props.stickyScroll = true
+            props.stickyScrollMaxLines = 3
+            props.symbolPairAutoCompletion = true
+            props.autoIndent = true
+            props.deleteMultiSpaces = -1
+            props.highlightMatchingDelimiters = true
+            props.boldMatchingDelimiters = true
+            props.awareScrollbarWhenAdjust = true
+            nonPrintablePaintingFlags =
+                CodeEditor.FLAG_DRAW_WHITESPACE_LEADING or
+                    CodeEditor.FLAG_DRAW_LINE_SEPARATOR or
+                    CodeEditor.FLAG_DRAW_WHITESPACE_IN_SELECTION or
+                    CodeEditor.FLAG_DRAW_SOFT_WRAP
+            searcher.replaceOptions = EditorSearcher.ReplaceOptions(true)
+            searcher.setEnsureOccurrenceVisible(true)
+            getComponent<EditorAutoCompletion>().setEnabledAnimation(true)
+            getComponent(Magnifier::class.java).isEnabled = true
+        }
     }
 
-    Row(modifier = modifier) {
-        Box(
-            modifier = Modifier
-                .width(56.dp)
-                .fillMaxHeight()
-                .background(surfaceColor.copy(alpha = 0.18f))
-        ) {
-            Text(
-                text = lineNumbersText,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(verticalScrollState)
-                    .padding(horizontal = 8.dp, vertical = 10.dp),
-                style = visibleTextStyle.copy(
-                    color = mutedTextColor
-                )
+    DisposableEffect(editor) {
+        val contentReceipt = editor.subscribeEvent<ContentChangeEvent> { _, _ ->
+            if (suppressExternalSync.get()) return@subscribeEvent
+            val newText = editor.text.toString()
+            val currentValue = latestEditorValue
+            val nextValue = currentValue.copy(
+                text = newText,
+                selection = TextRange(editor.cursor.left, editor.cursor.right)
             )
+            if (nextValue != currentValue) {
+                latestValueChange(nextValue)
+            }
         }
-        Box(
-            modifier = Modifier
-                .width(1.dp)
-                .fillMaxHeight()
-                .background(mutedTextColor.copy(alpha = 0.25f))
+        val selectionReceipt = editor.subscribeEvent<SelectionChangeEvent> { event, _ ->
+            if (suppressExternalSync.get()) return@subscribeEvent
+            val currentValue = latestEditorValue
+            val selection = TextRange(event.left.index, event.right.index)
+            if (selection != currentValue.selection) {
+                latestValueChange(currentValue.copy(selection = selection))
+            }
+        }
+        val scrollReceipt = editor.subscribeEvent<ScrollEvent> { event, _ ->
+            if (suppressExternalSync.get()) return@subscribeEvent
+            latestScrollOffsetChange(event.endY.coerceAtLeast(0))
+        }
+        val searchReceipt = editor.subscribeEvent<PublishSearchResultEvent> { _, _ ->
+            latestSearchStateChange(editor.readSearchState())
+        }
+        val focusReceipt = editor.subscribeEvent<EditorFocusChangeEvent> { event, _ ->
+            latestFocusChange(event.isGainFocus)
+        }
+        editor.setOnFocusChangeListener { _, hasFocus ->
+            latestFocusChange(hasFocus)
+        }
+        onDispose {
+            contentReceipt.unsubscribe()
+            selectionReceipt.unsubscribe()
+            scrollReceipt.unsubscribe()
+            searchReceipt.unsubscribe()
+            focusReceipt.unsubscribe()
+            editor.onFocusChangeListener = null
+        }
+    }
+
+    LaunchedEffect(editorValue.text) {
+        val currentText = editor.text.toString()
+        if (currentText != editorValue.text) {
+            suppressExternalSync.set(true)
+            editor.setText(Content(editorValue.text))
+            editor.syncSelection(editorValue.selection)
+            suppressExternalSync.set(false)
+        }
+    }
+
+    LaunchedEffect(editorValue.selection, editorValue.text) {
+        val currentSelection = TextRange(editor.cursor.left, editor.cursor.right)
+        if (currentSelection != editorValue.selection) {
+            suppressExternalSync.set(true)
+            editor.syncSelection(editorValue.selection)
+            suppressExternalSync.set(false)
+        }
+    }
+
+    LaunchedEffect(initialScrollOffset) {
+        val targetOffset = initialScrollOffset.coerceAtLeast(0)
+        if (abs(editor.offsetY - targetOffset) > 1) {
+            suppressExternalSync.set(true)
+            editor.scroller.startScroll(
+                editor.offsetX,
+                editor.offsetY,
+                0,
+                targetOffset - editor.offsetY,
+                0
+            )
+            editor.scroller.abortAnimation()
+            editor.postInvalidate()
+            suppressExternalSync.set(false)
+        }
+    }
+
+    LaunchedEffect(language, backgroundColor) {
+        editor.applyReasonixEditorLanguage(
+            context = context.applicationContext,
+            language = language,
+            darkTheme = backgroundColor.luminance() < 0.5f
         )
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-        ) {
-            Box(
-                modifier = Modifier
-                    .verticalScroll(verticalScrollState)
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
-                    .defaultMinSize(minHeight = 420.dp)
-            ) {
-                Text(
-                    text = annotatedText,
-                    style = visibleTextStyle,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                BasicTextField(
-                    value = editorValue,
-                    onValueChange = onValueChange,
-                    modifier = Modifier
-                        .matchParentSize()
-                        .heightIn(min = 420.dp),
-                    textStyle = visibleTextStyle.copy(color = Color.Transparent),
-                    cursorBrush = SolidColor(onSurfaceColor),
-                    decorationBox = { innerTextField ->
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(backgroundColor.copy(alpha = 0.08f))
-                        ) {
-                            innerTextField()
-                        }
-                    }
-                )
+    }
+
+    LaunchedEffect(diagnostics, editorValue.text) {
+        editor.applyDiagnostics(diagnostics, editorValue.text.length)
+    }
+
+    LaunchedEffect(searchQuery) {
+        val query = searchQuery.trim()
+        if (query.isBlank()) {
+            if (editor.searcher.hasQuery()) {
+                editor.searcher.stopSearch()
+            } else {
+                latestSearchStateChange(ProjectEditorSearchState())
+            }
+            return@LaunchedEffect
+        }
+        runCatching {
+            editor.searcher.search(query, EditorSearcher.SearchOptions(false, false))
+        }.onFailure {
+            latestSearchStateChange(ProjectEditorSearchState())
+        }
+    }
+
+    LaunchedEffect(searchRequest, replaceQuery, searchQuery) {
+        val action = searchRequest.action ?: return@LaunchedEffect
+        if (searchRequest.token <= 0) return@LaunchedEffect
+        val query = searchQuery.trim()
+        if (query.isBlank()) return@LaunchedEffect
+        runCatching {
+            when (action) {
+                ProjectEditorSearchAction.NEXT -> editor.searcher.gotoNext()
+                ProjectEditorSearchAction.PREVIOUS -> editor.searcher.gotoPrevious()
+                ProjectEditorSearchAction.REPLACE_CURRENT -> editor.searcher.replaceCurrentMatch(replaceQuery)
+                ProjectEditorSearchAction.REPLACE_ALL -> editor.searcher.replaceAll(replaceQuery)
             }
         }
     }
-}
 
-private fun buildHighlightedEditorText(
-    code: String,
-    language: String,
-    query: String,
-    currentMatch: TextRange?,
-    diagnostics: List<ProjectEditorDiagnostic>
-): AnnotatedString {
-    val safeCode = code.ifEmpty { " " }
-    val builder = AnnotatedString.Builder(highlightSyntaxWithSearchQuery(safeCode, language, query))
-    diagnostics.forEach { diagnostic ->
-        val safeStart = diagnostic.startIndex.coerceIn(0, safeCode.length)
-        val safeEnd = diagnostic.endIndex.coerceIn(safeStart, safeCode.length)
-        if (safeEnd > safeStart) {
-            builder.addStyle(
-                SpanStyle(
-                    background = Color(0x55FF5252),
-                    textDecoration = TextDecoration.Underline
-                ),
-                start = safeStart,
-                end = safeEnd
-            )
+    LaunchedEffect(focusClearSignal) {
+        if (focusClearSignal > 0) {
+            editor.hideSoftInput()
+            editor.clearFocus()
+            latestFocusChange(false)
         }
     }
-    currentMatch?.let { range ->
-        if (range.min >= 0 && range.max <= safeCode.length && range.max > range.min) {
-            builder.addStyle(
-                SpanStyle(
-                    background = Color(0x88FFB300),
-                    color = Color(0xFF111111),
-                    fontWeight = FontWeight.Bold
-                ),
-                start = range.min,
-                end = range.max
-            )
-        }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(surfaceColor.copy(alpha = 0.06f))
+    ) {
+        AndroidView(
+            factory = { editor },
+            modifier = Modifier.fillMaxSize(),
+            update = {
+                it.setBackgroundColor(backgroundColor.copy(alpha = 0.08f).toArgb())
+            },
+            onRelease = {
+                it.release()
+            }
+        )
     }
-    return builder.toAnnotatedString()
 }
 
-private fun buildEditorLineNumbersText(
-    content: String,
-    diagnostics: List<ProjectEditorDiagnostic>
-): AnnotatedString {
-    val lineCount = projectLineCount(content)
-    val lineWidth = lineCount.toString().length.coerceAtLeast(2)
-    val errorLines = diagnostics.map { it.lineNumber }.toSet()
-    return buildAnnotatedString {
-        for (lineNumber in 1..lineCount) {
-            pushStyle(
-                SpanStyle(
-                    color = if (errorLines.contains(lineNumber)) Color(0xFFFF6B6B) else Color(0xFF6A9955),
-                    fontWeight = if (errorLines.contains(lineNumber)) FontWeight.Bold else FontWeight.Normal
+private fun CodeEditor.readSearchState(): ProjectEditorSearchState {
+    val searcher = searcher
+    if (!searcher.hasQuery()) {
+        return ProjectEditorSearchState()
+    }
+    val currentMatchIndex = searcher.currentMatchedPositionIndex
+    val currentMatch = if (cursor.isSelected && currentMatchIndex >= 0) {
+        TextRange(cursor.left, cursor.right)
+    } else {
+        null
+    }
+    return ProjectEditorSearchState(currentMatch = currentMatch)
+}
+
+private fun CodeEditor.applyDiagnostics(
+    diagnostics: List<ProjectEditorDiagnostic>,
+    textLength: Int
+) {
+    val container = DiagnosticsContainer()
+    diagnostics.forEachIndexed { index, diagnostic ->
+        val start = diagnostic.startIndex.coerceIn(0, textLength)
+        val end = diagnostic.endIndex.coerceIn(start, textLength)
+        if (end > start) {
+            container.addDiagnostic(
+                DiagnosticRegion(
+                    start,
+                    end,
+                    DiagnosticRegion.SEVERITY_ERROR,
+                    index.toLong(),
+                    DiagnosticDetail(diagnostic.message, diagnostic.message)
                 )
             )
-            append(lineNumber.toString().padStart(lineWidth, ' '))
-            pop()
-            if (lineNumber < lineCount) append('\n')
         }
+    }
+    this.diagnostics = container
+}
+
+private fun CodeEditor.syncSelection(selection: TextRange) {
+    val textLength = text.length
+    val leftIndex = selection.min.coerceIn(0, textLength)
+    val rightIndex = selection.max.coerceIn(0, textLength)
+    val leftPosition = text.indexer.getCharPosition(leftIndex)
+    val rightPosition = text.indexer.getCharPosition(rightIndex)
+    if (leftIndex == rightIndex) {
+        setSelection(
+            leftPosition.line,
+            leftPosition.column,
+            false,
+            SelectionChangeEvent.CAUSE_KEYBOARD_OR_CODE
+        )
+        ensurePositionVisible(leftPosition.line, leftPosition.column, true)
+    } else {
+        setSelectionRegion(
+            leftPosition.line,
+            leftPosition.column,
+            rightPosition.line,
+            rightPosition.column,
+            false,
+            SelectionChangeEvent.CAUSE_KEYBOARD_OR_CODE
+        )
+        ensurePositionVisible(leftPosition.line, leftPosition.column, true)
+        ensurePositionVisible(rightPosition.line, rightPosition.column, true)
     }
 }

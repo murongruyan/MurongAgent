@@ -3,10 +3,12 @@ package dev.reasonix.mobile.ui.project
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -23,8 +25,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
-import dev.reasonix.mobile.ui.ReasonixAlertDialog
+import dev.reasonix.mobile.ui.ReasonixGlassSurface
+import dev.reasonix.mobile.ui.ReasonixLargeDialogScaffold
 
 private enum class ProjectGitHubWorkflowInputSourceFilter {
     ALL,
@@ -112,41 +116,60 @@ internal fun ProjectGitHubWorkflowDispatchDialog(
                 input.value.trim().ifBlank { input.defaultValue?.trim().orEmpty() }.isBlank()
         }
     }
-    ReasonixAlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            Button(
-                onClick = onConfirm,
-                enabled = refDraft.isNotBlank() &&
-                    missingRequiredInputs.isEmpty() &&
-                    !isActionRunning
+    ReasonixLargeDialogScaffold(onDismissRequest = onDismiss) {
+        ReasonixGlassSurface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            contentPadding = PaddingValues(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("运行")
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("配置工作流", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = workflow.name.ifBlank { workflow.path },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = workflow.path,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onDismiss) {
+                        Text("取消")
+                    }
+                    Button(
+                        onClick = onConfirm,
+                        enabled = refDraft.isNotBlank() &&
+                            missingRequiredInputs.isEmpty() &&
+                            !isActionRunning
+                    ) {
+                        Text("运行")
+                    }
+                }
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
-            }
-        },
-        title = { Text("配置工作流") },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 460.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text(
-                    text = workflow.name.ifBlank { workflow.path },
-                    style = MaterialTheme.typography.titleSmall
-                )
-                Text(
-                    text = workflow.path,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(horizontal = 16.dp)
+                .heightIn(max = 460.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
                 OutlinedTextField(
                     value = refDraft,
                     onValueChange = onRefDraftChange,
@@ -370,12 +393,11 @@ internal fun ProjectGitHubWorkflowDispatchDialog(
                         )
                     }
                 }
-                OutlinedButton(onClick = onAddInput, enabled = !isActionRunning) {
-                    Text("新增参数")
-                }
+            OutlinedButton(onClick = onAddInput, enabled = !isActionRunning) {
+                Text("新增参数")
             }
         }
-    )
+    }
 }
 
 @Composable

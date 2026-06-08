@@ -3,9 +3,12 @@ package dev.reasonix.mobile.ui.project
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -17,11 +20,59 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import dev.reasonix.mobile.ui.ReasonixAlertDialog
+import dev.reasonix.mobile.ui.ReasonixGlassSurface
+import dev.reasonix.mobile.ui.ReasonixLargeDialogScaffold
 import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
 import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
+
+@Composable
+private fun ProjectGitHubLargeDetailDialog(
+    title: String,
+    subtitle: String,
+    pageUrl: String?,
+    onOpenPage: (String?) -> Unit,
+    onDismiss: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    ReasonixLargeDialogScaffold(onDismissRequest = onDismiss) {
+        ReasonixGlassSurface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            contentPadding = PaddingValues(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    pageUrl?.takeIf { it.isNotBlank() }?.let {
+                        TextButton(onClick = { onOpenPage(pageUrl) }) {
+                            Text("网页")
+                        }
+                    }
+                    TextButton(onClick = onDismiss) {
+                        Text("关闭")
+                    }
+                }
+            }
+        }
+        content()
+    }
+}
 
 @Composable
 internal fun ProjectGitHubIssueDetailDialog(
@@ -48,35 +99,23 @@ internal fun ProjectGitHubIssueDetailDialog(
         )
     }
 
-    ReasonixAlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("关闭")
-            }
-        },
-        dismissButton = {
-            issue.htmlUrl?.takeIf { it.isNotBlank() }?.let {
-                TextButton(onClick = { onOpenIssuePage(issue.htmlUrl) }) {
-                    Text("网页")
-                }
-            }
-        },
-        title = { Text("Issue #${issue.number}") },
-        text = {
+    ProjectGitHubLargeDetailDialog(
+        title = "Issue #${issue.number}",
+        subtitle = "${issue.authorLabel} · 更新于 ${issue.updatedAt}",
+        pageUrl = issue.htmlUrl,
+        onOpenPage = onOpenIssuePage,
+        onDismiss = onDismiss
+    ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .weight(1f)
+                    .padding(horizontal = 16.dp)
                     .heightIn(max = 460.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(issue.title, style = MaterialTheme.typography.titleSmall)
-                Text(
-                    text = "${issue.authorLabel} · 更新于 ${issue.updatedAt}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor
-                )
                 Row(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -173,8 +212,7 @@ internal fun ProjectGitHubIssueDetailDialog(
                     onSubmit = onSubmitComment
                 )
             }
-        }
-    )
+    }
 }
 
 @Composable
@@ -241,35 +279,23 @@ internal fun ProjectGitHubPullRequestDetailDialog(
         )
     }
 
-    ReasonixAlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("关闭")
-            }
-        },
-        dismissButton = {
-            pullRequest.htmlUrl?.takeIf { it.isNotBlank() }?.let {
-                TextButton(onClick = { onOpenPullRequestPage(pullRequest.htmlUrl) }) {
-                    Text("网页")
-                }
-            }
-        },
-        title = { Text("PR #${pullRequest.number}") },
-        text = {
+    ProjectGitHubLargeDetailDialog(
+        title = "PR #${pullRequest.number}",
+        subtitle = "${pullRequest.authorLabel} · 更新于 ${pullRequest.updatedAt}",
+        pageUrl = pullRequest.htmlUrl,
+        onOpenPage = onOpenPullRequestPage,
+        onDismiss = onDismiss
+    ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .weight(1f)
+                    .padding(horizontal = 16.dp)
                     .heightIn(max = 460.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(pullRequest.title, style = MaterialTheme.typography.titleSmall)
-                Text(
-                    text = "${pullRequest.authorLabel} · 更新于 ${pullRequest.updatedAt}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor
-                )
                 Row(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -398,8 +424,7 @@ internal fun ProjectGitHubPullRequestDetailDialog(
                     onReplyToComment = onReplyToReviewComment
                 )
             }
-        }
-    )
+    }
 }
 
 private data class ProjectGitHubIssueDetailSummaryUi(

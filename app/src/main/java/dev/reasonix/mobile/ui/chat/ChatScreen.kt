@@ -16,8 +16,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -31,6 +31,7 @@ import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,7 +50,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import dev.reasonix.mobile.core.mcp.McpServerConfig
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -80,9 +80,10 @@ import dev.reasonix.mobile.core.loop.MIN_MESSAGES_TO_COMPRESS
 import dev.reasonix.mobile.core.loop.RECENT_MESSAGES_TO_KEEP
 import dev.reasonix.mobile.core.loop.WEB_FETCH_RESULT_PREFIX
 import dev.reasonix.mobile.core.config.WorkflowExecutionMode
-import dev.reasonix.mobile.ui.ReasonixAlertDialog
+import dev.reasonix.mobile.ui.ReasonixDialog
 import dev.reasonix.mobile.ui.ReasonixGlassSurface
 import dev.reasonix.mobile.ui.ReasonixOutlinedActionButton
+import dev.reasonix.mobile.ui.ReasonixPopupSurface
 import dev.reasonix.mobile.ui.ReasonixTagButton
 import dev.reasonix.mobile.ui.MarkdownText
 import dev.reasonix.mobile.ui.ProjectKnowledgeOutlineUi
@@ -188,7 +189,9 @@ fun ChatScreen(
             .take(8)
             .toList()
     }
-    val listState = rememberLazyListState()
+    val listState = rememberSaveable(state.sessionId, saver = LazyListState.Saver) {
+        LazyListState()
+    }
     val context = LocalContext.current
     val compressionSuggestion = remember(
         state.messages.size,
@@ -240,12 +243,26 @@ fun ChatScreen(
     val itemCount = state.messages.size
     suspend fun scrollMessagesToBottom() {
         if (itemCount > 0) {
-            listState.animateScrollToItem(itemCount - 1)
+            listState.scrollToItem(itemCount - 1)
         }
     }
 
     // 新消息时自动滚动到底部
     LaunchedEffect(itemCount) {
+        if (!isScreenActive) return@LaunchedEffect
+        // #region debug-point U:chat-auto-scroll
+        reportGitBackChatFlashChatDebug(
+            hypothesisId = "U1",
+            location = "ChatScreen.kt:autoScrollOnItemCount",
+            msg = "[DEBUG] chat auto scroll triggered by itemCount",
+            data = JSONObject()
+                .put("isScreenActive", isScreenActive)
+                .put("sessionId", state.sessionId)
+                .put("itemCount", itemCount)
+                .put("firstVisibleItemIndex", listState.firstVisibleItemIndex)
+                .put("firstVisibleItemScrollOffset", listState.firstVisibleItemScrollOffset)
+        )
+        // #endregion
         scrollMessagesToBottom()
     }
 
@@ -254,7 +271,22 @@ fun ChatScreen(
         selectedImages.size,
         selectedMentions.size
     ) {
-        if (inputHasFocus) {
+        if (isScreenActive && inputHasFocus) {
+            // #region debug-point U:chat-focus-scroll
+            reportGitBackChatFlashChatDebug(
+                hypothesisId = "U1",
+                location = "ChatScreen.kt:autoScrollOnFocus",
+                msg = "[DEBUG] chat auto scroll triggered by focus",
+                data = JSONObject()
+                    .put("isScreenActive", isScreenActive)
+                    .put("sessionId", state.sessionId)
+                    .put("inputHasFocus", inputHasFocus)
+                    .put("selectedImages", selectedImages.size)
+                    .put("selectedMentions", selectedMentions.size)
+                    .put("firstVisibleItemIndex", listState.firstVisibleItemIndex)
+                    .put("firstVisibleItemScrollOffset", listState.firstVisibleItemScrollOffset)
+            )
+            // #endregion
             scrollMessagesToBottom()
         }
     }
@@ -278,6 +310,57 @@ fun ChatScreen(
         if (!isScreenActive) {
             dismissTransientOverlays()
         }
+    }
+
+    LaunchedEffect(
+        isScreenActive,
+        state.sessionId,
+        state.messages.size,
+        state.isProcessing,
+        state.sessionTitle,
+        state.projectPath
+    ) {
+        // #region debug-point D:chat-render-snapshot
+        reportGitBackChatFlashChatDebug(
+            hypothesisId = "D",
+            location = "ChatScreen.kt:renderSnapshot",
+            msg = "[DEBUG] chat render snapshot",
+            data = JSONObject()
+                .put("isScreenActive", isScreenActive)
+                .put("sessionId", state.sessionId)
+                .put("sessionTitle", state.sessionTitle)
+                .put("messageCount", state.messages.size)
+                .put("isProcessing", state.isProcessing)
+                .put("projectPath", state.projectPath ?: JSONObject.NULL)
+                .put("showMentionPicker", showMentionPicker)
+                .put("showSubagentHistory", showSubagentHistory)
+                .put("showCompressionHistory", showCompressionHistory)
+                .put("showFileChangeHistory", showFileChangeHistory)
+        )
+        // #endregion
+    }
+
+    LaunchedEffect(
+        isScreenActive,
+        state.sessionId,
+        listState.firstVisibleItemIndex,
+        listState.firstVisibleItemScrollOffset
+    ) {
+        // #region debug-point U:chat-list-position
+        reportGitBackChatFlashChatDebug(
+            hypothesisId = "U1",
+            location = "ChatScreen.kt:listPosition",
+            msg = "[DEBUG] chat list position snapshot",
+            data = JSONObject()
+                .put("isScreenActive", isScreenActive)
+                .put("sessionId", state.sessionId)
+                .put("itemCount", itemCount)
+                .put("firstVisibleItemIndex", listState.firstVisibleItemIndex)
+                .put("firstVisibleItemScrollOffset", listState.firstVisibleItemScrollOffset)
+                .put("showMentionPicker", showMentionPicker)
+                .put("showSubagentHistory", showSubagentHistory)
+        )
+        // #endregion
     }
 
     LaunchedEffect(state.sessionId, state.projectPath, projectKnowledgeMentions) {
@@ -771,12 +854,15 @@ fun ChatScreen(
 }
 
 // #region debug-point D:chat-debug-reporter
+private const val ENABLE_REASONIX_BACK_DEBUG_REPORTS = false
+
 private fun reportGitBackChatFlashChatDebug(
     hypothesisId: String,
     location: String,
     msg: String,
     data: JSONObject
 ) {
+    if (!ENABLE_REASONIX_BACK_DEBUG_REPORTS) return
     Thread {
         runCatching {
             val connection = (URL("http://192.168.2.3:7777/event").openConnection() as HttpURLConnection).apply {
@@ -787,7 +873,7 @@ private fun reportGitBackChatFlashChatDebug(
                 setRequestProperty("Content-Type", "application/json")
             }
             val payload = JSONObject()
-                .put("sessionId", "git-back-chat-flash")
+                .put("sessionId", "ui-nav-regressions")
                 .put("runId", "pre-fix")
                 .put("hypothesisId", hypothesisId)
                 .put("location", location)
@@ -1652,112 +1738,128 @@ private fun MentionFilePickerDialog(
     val regularResults = remember(localQuery, results, knowledgePaths) {
         if (localQuery.isBlank()) results else results.filterNot { it.path in knowledgePaths }
     }
-    ReasonixAlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("@文件") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = localQuery,
-                    onValueChange = {
-                        localQuery = it
-                        onQueryChange(it)
-                    },
+    ReasonixDialog(onDismissRequest = onDismiss) {
+        ReasonixPopupSurface(
+            shape = RoundedCornerShape(24.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    placeholder = { Text("输入文件名或相对路径") }
-                )
-                if (recentMentions.isNotEmpty() && localQuery.isBlank()) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            text = "最近引用",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            recentMentions.forEach { mention ->
-                                InputChip(
-                                    selected = false,
-                                    onClick = { onSelect(mention) },
-                                    label = {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            if (mention.path in knowledgePaths) {
-                                                MentionKnowledgeBadge(compact = true)
-                                            }
-                                            snapshotNamesByPath[mention.path]
-                                                .orEmpty()
-                                                .take(1)
-                                                .forEach { snapshotName ->
-                                                    MentionSnapshotBadge(label = snapshotName, compact = true)
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "@文件",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    ReasonixOutlinedActionButton(text = "关闭", onClick = onDismiss)
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = localQuery,
+                        onValueChange = {
+                            localQuery = it
+                            onQueryChange(it)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        placeholder = { Text("输入文件名或相对路径") }
+                    )
+                    if (recentMentions.isNotEmpty() && localQuery.isBlank()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                text = "最近引用",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                recentMentions.forEach { mention ->
+                                    InputChip(
+                                        selected = false,
+                                        onClick = { onSelect(mention) },
+                                        label = {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                if (mention.path in knowledgePaths) {
+                                                    MentionKnowledgeBadge(compact = true)
                                                 }
-                                            Text(
-                                                text = mention.displayPath,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
+                                                snapshotNamesByPath[mention.path]
+                                                    .orEmpty()
+                                                    .take(1)
+                                                    .forEach { snapshotName ->
+                                                        MentionSnapshotBadge(label = snapshotName, compact = true)
+                                                    }
+                                                Text(
+                                                    text = mention.displayPath,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
                                         }
-                                    }
-                                )
+                                    )
+                                }
                             }
                         }
                     }
-                }
-                if (results.isEmpty()) {
-                    Text(
-                        text = "当前没有匹配文件，先进入项目任务并确保项目目录已绑定。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = mutedTextColor
-                    )
-                } else {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        if (localQuery.isBlank()) {
-                            results.take(8).forEach { mention ->
-                                MentionCandidateRow(
-                                    mention = mention,
+                    if (results.isEmpty()) {
+                        Text(
+                            text = "当前没有匹配文件，先进入项目任务并确保项目目录已绑定。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            if (localQuery.isBlank()) {
+                                results.take(8).forEach { mention ->
+                                    MentionCandidateRow(
+                                        mention = mention,
+                                        query = localQuery,
+                                        containerColor = surfaceColor.copy(alpha = 0.66f),
+                                        isKnowledge = mention.path in knowledgePaths,
+                                        knowledgeOutline = knowledgeOutlines[mention.path],
+                                        snapshotNames = snapshotNamesByPath[mention.path].orEmpty(),
+                                        onClick = { onSelect(mention) }
+                                    )
+                                }
+                            } else {
+                                MentionCandidateSection(
+                                    title = "知识文件",
+                                    results = knowledgeResults.take(8),
                                     query = localQuery,
+                                    knowledgePaths = knowledgePaths,
+                                    knowledgeOutlines = knowledgeOutlines,
+                                    snapshotNamesByPath = snapshotNamesByPath,
+                                    containerColor = chromeColor.copy(alpha = 0.52f),
+                                    onSelect = onSelect
+                                )
+                                MentionCandidateSection(
+                                    title = "其他文件",
+                                    results = regularResults.take(8),
+                                    query = localQuery,
+                                    knowledgePaths = knowledgePaths,
+                                    knowledgeOutlines = knowledgeOutlines,
+                                    snapshotNamesByPath = snapshotNamesByPath,
                                     containerColor = surfaceColor.copy(alpha = 0.66f),
-                                    isKnowledge = mention.path in knowledgePaths,
-                                    knowledgeOutline = knowledgeOutlines[mention.path],
-                                    snapshotNames = snapshotNamesByPath[mention.path].orEmpty(),
-                                    onClick = { onSelect(mention) }
+                                    onSelect = onSelect
                                 )
                             }
-                        } else {
-                            MentionCandidateSection(
-                                title = "知识文件",
-                                results = knowledgeResults.take(8),
-                                query = localQuery,
-                                knowledgePaths = knowledgePaths,
-                                knowledgeOutlines = knowledgeOutlines,
-                                snapshotNamesByPath = snapshotNamesByPath,
-                                containerColor = chromeColor.copy(alpha = 0.52f),
-                                onSelect = onSelect
-                            )
-                            MentionCandidateSection(
-                                title = "其他文件",
-                                results = regularResults.take(8),
-                                query = localQuery,
-                                knowledgePaths = knowledgePaths,
-                                knowledgeOutlines = knowledgeOutlines,
-                                snapshotNamesByPath = snapshotNamesByPath,
-                                containerColor = surfaceColor.copy(alpha = 0.66f),
-                                onSelect = onSelect
-                            )
                         }
                     }
                 }
             }
-        },
-        confirmButton = {
-            ReasonixOutlinedActionButton(text = "关闭", onClick = onDismiss)
         }
-    )
+    }
 }
 
 @Composable
@@ -3435,10 +3537,9 @@ private fun ImagePreviewDialog(
     }
     val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
-    Dialog(onDismissRequest = onDismiss) {
-        Surface(
-            shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.surface,
+    ReasonixDialog(onDismissRequest = onDismiss) {
+        ReasonixPopupSurface(
+            shape = RoundedCornerShape(24.dp),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp)
@@ -5033,9 +5134,7 @@ private fun calculateRunApprovalWaitMillis(run: SubagentRunUi): Long? {
 
 private fun calculateRunQueueWaitMillis(run: SubagentRunUi): Long? {
     val queuedAt = run.queuedAt ?: return null
-    val endAt = run.executionStartedAt
-        ?: if (run.status == "queued") System.currentTimeMillis() else null
-        ?: return null
+    val endAt = run.executionStartedAt ?: if (run.status == "queued") System.currentTimeMillis() else return null
     return (endAt - queuedAt).coerceAtLeast(0L)
 }
 
@@ -5060,9 +5159,7 @@ private fun calculateBatchApprovalWaitMillis(batch: SubagentBatchUi): Long? {
 
 private fun calculateBatchQueueWaitMillis(batch: SubagentBatchUi): Long? {
     val queuedAt = batch.queuedAt ?: return null
-    val endAt = batch.firstRunStartedAt
-        ?: if (batch.status == "queued") System.currentTimeMillis() else null
-        ?: return null
+    val endAt = batch.firstRunStartedAt ?: if (batch.status == "queued") System.currentTimeMillis() else return null
     return (endAt - queuedAt).coerceAtLeast(0L)
 }
 
@@ -5109,8 +5206,6 @@ fun SessionDrawerContent(
     val mutedTextColor = rememberReasonixMutedTextColor()
     Column(
         modifier = modifier
-            .fillMaxHeight()
-            .width(320.dp)
             .background(MaterialTheme.colorScheme.surface)
             .padding(horizontal = 12.dp, vertical = 16.dp)
     ) {

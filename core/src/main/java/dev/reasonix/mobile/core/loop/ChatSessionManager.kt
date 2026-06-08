@@ -4608,9 +4608,7 @@ class ChatSessionManager(
         now: Long = System.currentTimeMillis()
     ): Long? {
         val queuedAt = run.queuedAt ?: return null
-        val endAt = run.executionStartedAt
-            ?: if (run.status == "queued") now else null
-            ?: return null
+        val endAt = run.executionStartedAt ?: if (run.status == "queued") now else return null
         return (endAt - queuedAt).coerceAtLeast(0L)
     }
 
@@ -4647,9 +4645,7 @@ class ChatSessionManager(
         now: Long = System.currentTimeMillis()
     ): Long? {
         val queuedAt = batch.queuedAt ?: return null
-        val endAt = batch.firstRunStartedAt
-            ?: if (batch.status == "queued") now else null
-            ?: return null
+        val endAt = batch.firstRunStartedAt ?: if (batch.status == "queued") now else return null
         return (endAt - queuedAt).coerceAtLeast(0L)
     }
 
@@ -5262,9 +5258,10 @@ class ChatSessionManager(
                     return@forEachIndexed
                 }
 
-                if (currentMultilineKey != null && line.isNotBlank()) {
-                    fields[currentMultilineKey!!] = buildString {
-                        append(fields[currentMultilineKey!!].orEmpty())
+                val multilineKey = currentMultilineKey
+                if (multilineKey != null && line.isNotBlank()) {
+                    fields[multilineKey] = buildString {
+                        append(fields[multilineKey].orEmpty())
                         if (isNotBlank()) append('\n')
                         append(line.trim())
                     }.trim()

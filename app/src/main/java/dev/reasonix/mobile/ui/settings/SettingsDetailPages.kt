@@ -10,8 +10,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -27,7 +29,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -46,10 +47,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import dev.reasonix.mobile.ui.LocalReasonixUiController
+import dev.reasonix.mobile.ui.ReasonixDialog
 import dev.reasonix.mobile.ui.ReasonixBackgroundMode
 import dev.reasonix.mobile.ui.ReasonixGlassSurface
 import dev.reasonix.mobile.ui.ReasonixInfoCard
 import dev.reasonix.mobile.ui.ReasonixOutlinedActionButton
+import dev.reasonix.mobile.ui.ReasonixPopupSurface
 import dev.reasonix.mobile.ui.ReasonixSectionCard
 import dev.reasonix.mobile.ui.ReasonixSecondaryPageFrame
 import dev.reasonix.mobile.ui.ReasonixSecondaryPageSurface
@@ -566,19 +569,21 @@ fun ThemeSettingsPage() {
     }
 
     if (showWallpaperAccessDialog) {
-        AlertDialog(
+        SettingsPopupDialog(
+            title = "需要背景访问权限",
             onDismissRequest = {
                 showWallpaperAccessDialog = false
                 pendingWallpaperAction = null
             },
-            title = { Text("需要背景访问权限") },
-            text = {
-                Text(
-                    text = ReasonixWallpaperAccess.explanation(),
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            },
-            confirmButton = {
+            actions = {
+                TextButton(
+                    onClick = {
+                        showWallpaperAccessDialog = false
+                        pendingWallpaperAction = null
+                    }
+                ) {
+                    Text("取消")
+                }
                 TextButton(
                     onClick = {
                         showWallpaperAccessDialog = false
@@ -608,18 +613,13 @@ fun ThemeSettingsPage() {
                         }
                     )
                 }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        showWallpaperAccessDialog = false
-                        pendingWallpaperAction = null
-                    }
-                ) {
-                    Text("取消")
-                }
             }
-        )
+        ) {
+            Text(
+                text = ReasonixWallpaperAccess.explanation(),
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
     }
 
     if (showStyleDialog) {
@@ -864,6 +864,62 @@ private fun ThemePreviewSwatch(
 }
 
 @Composable
+private fun SettingsPopupDialog(
+    title: String,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    actions: @Composable RowScope.() -> Unit = {},
+    content: @Composable ColumnScope.() -> Unit
+) {
+    ReasonixDialog(onDismissRequest = onDismissRequest) {
+        ReasonixPopupSurface(
+            shape = MaterialTheme.shapes.large,
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        subtitle?.takeIf { it.isNotBlank() }?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        content = actions
+                    )
+                }
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    content = content
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun ThemeColorHexDialog(
     title: String,
     initialValue: String,
@@ -879,41 +935,36 @@ private fun ThemeColorHexDialog(
         }
     }
     val isValid = normalizedValue.length == 7 || normalizedValue.length == 9
-    dev.reasonix.mobile.ui.ReasonixAlertDialog(
+    SettingsPopupDialog(
+        title = title,
         onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = value,
-                    onValueChange = { value = it.uppercase() },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("颜色值") },
-                    placeholder = { Text("#F663A6 或 #FFF663A6") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii)
-                )
-                Text(
-                    text = "支持 `#RRGGBB` 和 `#AARRGGBB`。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+        actions = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
             }
-        },
-        confirmButton = {
             TextButton(
                 onClick = { onConfirm(normalizedValue) },
                 enabled = isValid
             ) {
                 Text("应用")
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
-            }
         }
-    )
+    ) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = { value = it.uppercase() },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("颜色值") },
+            placeholder = { Text("#F663A6 或 #FFF663A6") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii)
+        )
+        Text(
+            text = "支持 `#RRGGBB` 和 `#AARRGGBB`。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
 }
 
 @Composable
@@ -924,37 +975,36 @@ private fun <T> ThemeChoiceDialog(
     onDismiss: () -> Unit,
     onSelect: (T) -> Unit
 ) {
-    dev.reasonix.mobile.ui.ReasonixAlertDialog(
+    SettingsPopupDialog(
+        title = title,
         onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                options.forEach { (label, value) ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(MaterialTheme.shapes.medium)
-                            .clickable { onSelect(value) }
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = currentValue == value,
-                            onClick = { onSelect(value) }
-                        )
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
+        actions = {
             ReasonixOutlinedActionButton(text = "关闭", onClick = onDismiss)
         }
-    )
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            options.forEach { (label, value) ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(MaterialTheme.shapes.medium)
+                        .clickable { onSelect(value) }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = currentValue == value,
+                        onClick = { onSelect(value) }
+                    )
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable

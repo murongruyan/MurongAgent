@@ -33,7 +33,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import dev.reasonix.mobile.ui.ReasonixAlertDialog
+import dev.reasonix.mobile.ui.ReasonixGlassSurface
+import dev.reasonix.mobile.ui.ReasonixLargeDialogScaffold
 import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
 import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
 
@@ -702,7 +703,7 @@ internal fun ProjectGitHubPullRequestReviewCommentSection(
                             TextButton(
                                 onClick = {
                                     val targetFile = files.firstOrNull { it.path == comment.path }
-                                    val targetLine = comment.line ?: return@TextButton
+                                    val targetLine = comment.line
                                     onPickPath(comment.path)
                                     onPickLine(targetLine.toString())
                                     expandedFilePath = comment.path
@@ -735,145 +736,172 @@ internal fun ProjectGitHubPullRequestReviewCommentSection(
                 dialogScrollState.animateScrollTo(dialogScrollState.maxValue)
             }
         }
-        ReasonixAlertDialog(
+        ReasonixLargeDialogScaffold(
             onDismissRequest = {
                 lineCommentDialogTarget = null
                 lineCommentReplyTargetId = null
                 lineCommentReplyDraft = ""
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    lineCommentDialogTarget = null
-                    lineCommentReplyTargetId = null
-                    lineCommentReplyDraft = ""
-                }) {
-                    Text("关闭")
-                }
-            },
-            title = { Text("${dialogPath.substringAfterLast('/')} · L$dialogLine") },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 420.dp)
-                        .verticalScroll(dialogScrollState),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+            }
+        ) {
+            ReasonixGlassSurface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                shape = RoundedCornerShape(24.dp),
+                contentPadding = PaddingValues(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (threadedDialogComments.isEmpty()) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
                         Text(
-                            text = "当前行暂时没有可显示的评论。",
+                            text = "${dialogPath.substringAfterLast('/')} · L$dialogLine",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = "行评论线程共 ${threadedDialogComments.size} 条",
                             style = MaterialTheme.typography.bodySmall,
                             color = mutedTextColor
                         )
-                    } else {
-                        threadedDialogComments.forEach { threadItem ->
-                            val comment = threadItem.comment
-                            ProjectInsetCard(
-                                shape = RoundedCornerShape(10.dp),
-                                surfaceColorOverride = surfaceColor.copy(alpha = 0.42f),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(start = (threadItem.depth * 14).dp)
-                            ) {
-                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    }
+                    TextButton(onClick = {
+                        lineCommentDialogTarget = null
+                        lineCommentReplyTargetId = null
+                        lineCommentReplyDraft = ""
+                    }) {
+                        Text("关闭")
+                    }
+                }
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(horizontal = 16.dp)
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(dialogScrollState),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (threadedDialogComments.isEmpty()) {
+                    Text(
+                        text = "当前行暂时没有可显示的评论。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                } else {
+                    threadedDialogComments.forEach { threadItem ->
+                        val comment = threadItem.comment
+                        ProjectInsetCard(
+                            shape = RoundedCornerShape(10.dp),
+                            surfaceColorOverride = surfaceColor.copy(alpha = 0.42f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = (threadItem.depth * 14).dp)
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = "${comment.authorLabel} · ${comment.timeLabel}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
+                                )
+                                SelectionContainer {
                                     Text(
-                                        text = "${comment.authorLabel} · ${comment.timeLabel}",
+                                        text = comment.body.ifBlank { "(空评论)" },
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                                threadItem.replyToAuthorLabel?.let { replyTo ->
+                                    Text(
+                                        text = "回复 $replyTo",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = mutedTextColor
                                     )
-                                    SelectionContainer {
-                                        Text(
-                                            text = comment.body.ifBlank { "(空评论)" },
-                                            style = MaterialTheme.typography.bodySmall
-                                        )
-                                    }
-                                    threadItem.replyToAuthorLabel?.let { replyTo ->
-                                        Text(
-                                            text = "回复 $replyTo",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = mutedTextColor
-                                        )
-                                    }
-                                    TextButton(
-                                        onClick = { lineCommentReplyTargetId = comment.id },
-                                        enabled = !isActionRunning
-                                    ) {
-                                        Text(if (lineCommentReplyTargetId == comment.id) "正在回复此条" else "回复此条")
-                                    }
+                                }
+                                TextButton(
+                                    onClick = { lineCommentReplyTargetId = comment.id },
+                                    enabled = !isActionRunning
+                                ) {
+                                    Text(if (lineCommentReplyTargetId == comment.id) "正在回复此条" else "回复此条")
                                 }
                             }
                         }
-                        lineCommentReplyTargetId?.let { replyTargetId ->
-                            val replyTarget = dialogComments.firstOrNull { it.id == replyTargetId }
-                            ProjectInsetCard(
-                                shape = RoundedCornerShape(10.dp),
-                                surfaceColorOverride = surfaceColor.copy(alpha = 0.42f),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text(
-                                        text = buildString {
-                                            append("回复当前行评论")
-                                            replyTarget?.authorLabel?.takeIf { it.isNotBlank() }?.let {
-                                                append(" · ")
-                                                append(it)
-                                            }
-                                        },
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = mutedTextColor
-                                    )
-                                    OutlinedTextField(
-                                        value = lineCommentReplyDraft,
-                                        onValueChange = { lineCommentReplyDraft = it },
-                                        modifier = Modifier.fillMaxWidth(),
-                                        label = { Text("回复内容") },
-                                        placeholder = { Text("补充修改说明、答复或后续处理") },
-                                        minLines = 3,
-                                        maxLines = 6
-                                    )
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Button(
-                                            onClick = {
-                                                val body = lineCommentReplyDraft.trim()
-                                                if (body.isBlank()) return@Button
-                                                onReplyToComment(replyTargetId, body) {
-                                                    localLineCommentReplies =
-                                                        localLineCommentReplies.toMutableMap().apply {
-                                                            val key = dialogPath to dialogLine
-                                                            val existing = get(key).orEmpty()
-                                                            put(
-                                                                key,
-                                                                existing + ProjectGitHubPullRequestReviewCommentUi(
-                                                                    id = -System.currentTimeMillis(),
-                                                                    authorLogin = "我",
-                                                                    body = body,
-                                                                    path = dialogPath,
-                                                                    line = dialogLine,
-                                                                    side = "RIGHT",
-                                                                    parentCommentId = replyTargetId,
-                                                                    createdAt = "",
-                                                                    updatedAt = "刚刚",
-                                                                    htmlUrl = null
-                                                                )
-                                                            )
-                                                        }
-                                                    lineCommentReplyDraft = ""
-                                                    lineCommentReplyTargetId = null
-                                                }
-                                            },
-                                            enabled = lineCommentReplyDraft.isNotBlank() && !isActionRunning
-                                        ) {
-                                            Text("发送回复")
+                    }
+                    lineCommentReplyTargetId?.let { replyTargetId ->
+                        val replyTarget = dialogComments.firstOrNull { it.id == replyTargetId }
+                        ProjectInsetCard(
+                            shape = RoundedCornerShape(10.dp),
+                            surfaceColorOverride = surfaceColor.copy(alpha = 0.42f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    text = buildString {
+                                        append("回复当前行评论")
+                                        replyTarget?.authorLabel?.takeIf { it.isNotBlank() }?.let {
+                                            append(" · ")
+                                            append(it)
                                         }
-                                        TextButton(
-                                            onClick = {
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = mutedTextColor
+                                )
+                                OutlinedTextField(
+                                    value = lineCommentReplyDraft,
+                                    onValueChange = { lineCommentReplyDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    label = { Text("回复内容") },
+                                    placeholder = { Text("补充修改说明、答复或后续处理") },
+                                    minLines = 3,
+                                    maxLines = 6
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = {
+                                            val body = lineCommentReplyDraft.trim()
+                                            if (body.isBlank()) return@Button
+                                            onReplyToComment(replyTargetId, body) {
+                                                localLineCommentReplies =
+                                                    localLineCommentReplies.toMutableMap().apply {
+                                                        val key = dialogPath to dialogLine
+                                                        val existing = get(key).orEmpty()
+                                                        put(
+                                                            key,
+                                                            existing + ProjectGitHubPullRequestReviewCommentUi(
+                                                                id = -System.currentTimeMillis(),
+                                                                authorLogin = "我",
+                                                                body = body,
+                                                                path = dialogPath,
+                                                                line = dialogLine,
+                                                                side = "RIGHT",
+                                                                parentCommentId = replyTargetId,
+                                                                createdAt = "",
+                                                                updatedAt = "刚刚",
+                                                                htmlUrl = null
+                                                            )
+                                                        )
+                                                    }
                                                 lineCommentReplyDraft = ""
                                                 lineCommentReplyTargetId = null
-                                            },
-                                            enabled = !isActionRunning
-                                        ) {
-                                            Text("取消")
-                                        }
+                                            }
+                                        },
+                                        enabled = lineCommentReplyDraft.isNotBlank() && !isActionRunning
+                                    ) {
+                                        Text("发送回复")
+                                    }
+                                    TextButton(
+                                        onClick = {
+                                            lineCommentReplyDraft = ""
+                                            lineCommentReplyTargetId = null
+                                        },
+                                        enabled = !isActionRunning
+                                    ) {
+                                        Text("取消")
                                     }
                                 }
                             }
@@ -881,7 +909,7 @@ internal fun ProjectGitHubPullRequestReviewCommentSection(
                     }
                 }
             }
-        )
+        }
     }
 }
 

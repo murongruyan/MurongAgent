@@ -13,6 +13,13 @@ if "%DIRNAME%" == "" set DIRNAME=.
 set APP_BASE_NAME=%~n0
 set APP_HOME=%DIRNAME%
 
+@rem Prefer the Android SDK platform-tools adb over any stale adb.exe from System32.
+if defined LOCALAPPDATA (
+    if exist "%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe" (
+        set "PATH=%LOCALAPPDATA%\Android\Sdk\platform-tools;%PATH%"
+    )
+)
+
 @rem Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
 set DEFAULT_JVM_OPTS=
 

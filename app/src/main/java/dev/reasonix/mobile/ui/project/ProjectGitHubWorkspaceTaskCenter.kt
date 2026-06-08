@@ -4,9 +4,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -23,13 +25,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Search
-import dev.reasonix.mobile.ui.ReasonixAlertDialog
+import dev.reasonix.mobile.ui.ReasonixGlassSurface
+import dev.reasonix.mobile.ui.ReasonixLargeDialogScaffold
 import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
 import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
 
@@ -73,54 +77,73 @@ internal fun ProjectGitHubWorkspaceTaskCenterDialog(
         buildProjectGitHubWorkspaceTaskShortcuts(filteredTasks)
     }
 
-    ReasonixAlertDialog(
-        onDismissRequest = onClose,
-        confirmButton = {
-            TextButton(onClick = onClose) {
-                Text("关闭")
-            }
-        },
-        dismissButton = {},
-        title = { Text("任务中心") },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 500.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+    ReasonixLargeDialogScaffold(onDismissRequest = onClose) {
+        ReasonixGlassSurface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            contentPadding = PaddingValues(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                ProjectInsetCard(
-                    shape = RoundedCornerShape(12.dp),
-                    surfaceColorOverride = chromeColor.copy(alpha = 0.30f)
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("待处理摘要", style = MaterialTheme.typography.labelMedium)
-                        Text(
-                            text = "优先处理 ${taskCenter.criticalTasks.size} · 待跟进 ${taskCenter.attentionTasks.size} · 总计 ${allTasks.size}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (taskCenter.criticalTasks.isNotEmpty()) {
-                                MaterialTheme.colorScheme.error
-                            } else {
-                                MaterialTheme.colorScheme.primary
-                            }
-                        )
-                        if (kindSummary.isNotEmpty()) {
-                            Row(
-                                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                kindSummary.forEach { (kind, count) ->
-                                    FilterChip(
-                                        selected = true,
-                                        onClick = {},
-                                        label = { Text("${kind.label} $count") }
-                                    )
-                                }
-                            }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("任务中心", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = "优先处理 ${taskCenter.criticalTasks.size} · 待跟进 ${taskCenter.attentionTasks.size} · 总计 ${allTasks.size}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (taskCenter.criticalTasks.isNotEmpty()) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.primary
                         }
+                    )
+                }
+                TextButton(onClick = onClose) {
+                    Text("关闭")
+                }
+            }
+            if (kindSummary.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    kindSummary.forEach { (kind, count) ->
+                        FilterChip(
+                            selected = true,
+                            onClick = {},
+                            label = { Text("${kind.label} $count") }
+                        )
                     }
                 }
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(horizontal = 16.dp)
+                .heightIn(max = 500.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            ProjectInsetCard(
+                shape = RoundedCornerShape(12.dp),
+                surfaceColorOverride = chromeColor.copy(alpha = 0.30f)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("待处理摘要", style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        text = "当前筛选会同步影响快捷处理和列表内容。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                }
+            }
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
@@ -212,9 +235,8 @@ internal fun ProjectGitHubWorkspaceTaskCenterDialog(
                     mutedTextColor = mutedTextColor,
                     onTaskClick = onTaskClick
                 )
-            }
         }
-    )
+    }
 }
 
 @Composable

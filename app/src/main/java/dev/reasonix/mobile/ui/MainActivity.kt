@@ -17,12 +17,19 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Menu
@@ -31,12 +38,15 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,6 +68,7 @@ import dev.reasonix.mobile.ui.auth.AuthViewModel
 import dev.reasonix.mobile.ui.auth.GitHubAuthFlow
 import dev.reasonix.mobile.ui.auth.GitHubLoginScreen
 import dev.reasonix.mobile.ui.project.ProjectEditorMenuAction
+import dev.reasonix.mobile.ui.project.ProjectSecondaryHostBridgeState
 import dev.reasonix.mobile.ui.project.ProjectScreen
 import dev.reasonix.mobile.ui.settings.AboutPage
 import dev.reasonix.mobile.ui.settings.SettingsScreen
@@ -72,6 +83,8 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.floor
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -114,7 +127,7 @@ sealed class Screen(val route: String, val title: String) {
     data object Settings : Screen("settings", "设置")
 }
 
-private sealed interface SettingsSubpage {
+internal sealed interface SettingsSubpage {
     data object Main : SettingsSubpage
     data object Theme : SettingsSubpage
     data object About : SettingsSubpage
@@ -133,22 +146,21 @@ fun MainScreen() {
     val shellScreens = remember {
         listOf(Screen.Chat, Screen.Projects, Screen.Tools, Screen.Settings)
     }
-    var selectedTopLevelPage by remember { mutableIntStateOf(0) }
-    var settingsSubpage by remember { mutableStateOf<SettingsSubpage>(SettingsSubpage.Main) }
-    var settingsBackProgress by remember { mutableFloatStateOf(0f) }
-    var topLevelBackProgress by remember { mutableFloatStateOf(0f) }
-    var showTaskDialog by remember { mutableStateOf(false) }
-    var taskProjectPath by remember { mutableStateOf("") }
-    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    var topLevelNavigationState by remember { mutableStateOf(MainScreenTopLevelNavigationState()) }
+    val selectedTopLevelPage = topLevelNavigationState.selectedPage
+    val settledTopLevelPage = topLevelNavigationState.lastSettledPage
+    val topLevelNavigationTargetPage = topLevelNavigationState.navigationTargetPage
+    val topLevelHistory = topLevelNavigationState.history
+    val topLevelBackProgress = topLevelNavigationState.backProgress
+    var settingsState by remember { mutableStateOf(MainScreenSettingsState()) }
+    var projectSecondaryHostState by remember { mutableStateOf(MainScreenProjectSecondaryHostState()) }
+    val settingsSubpage = settingsState.subpage
+    val settingsBackProgress = settingsState.backProgress
     val scope = rememberCoroutineScope()
     val pagerState = rememberPagerState(
         initialPage = selectedTopLevelPage,
         pageCount = { shellScreens.size }
     )
-    val topLevelHistory = remember { mutableStateListOf<Int>() }
-    var lastSettledTopLevelPage by remember { mutableIntStateOf(selectedTopLevelPage) }
-    var topLevelNavigationTargetPage by remember { mutableStateOf<Int?>(null) }
-    var consumingTopLevelBack by remember { mutableStateOf(false) }
     val authVm: AuthViewModel = hiltViewModel()
     val chatVm: ChatViewModel = hiltViewModel()
     val settingsVm: SettingsViewModel = hiltViewModel()
@@ -170,27 +182,106 @@ fun MainScreen() {
     }
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
-    var showChatMenu by remember { mutableStateOf(false) }
+    var overlayVisibilityState by remember { mutableStateOf(MainScreenOverlayVisibilityState()) }
+    var isChatSessionPanelVisible by rememberSaveable { mutableStateOf(false) }
+    var chatSessionPanelBackProgress by remember { mutableFloatStateOf(0f) }
+    var dialogState by remember { mutableStateOf(MainScreenDialogState()) }
     val snackbarHostState = remember { SnackbarHostState() }
-    var renameSessionTargetId by remember { mutableStateOf<String?>(null) }
-    var renameSessionDraft by remember { mutableStateOf("") }
-    var showExportDialog by remember { mutableStateOf(false) }
-    var exportFormat by remember { mutableStateOf(ConversationExportFormat.MARKDOWN) }
-    var pendingExportData by remember { mutableStateOf<ConversationExportData?>(null) }
     val uiController = LocalReasonixUiController.current
-    var projectSecondaryChromeState by remember { mutableStateOf(ProjectSecondaryChromeState()) }
-    var projectSecondaryCloseRequestSignal by remember { mutableIntStateOf(0) }
-    var projectSecondaryBackProgress by remember { mutableFloatStateOf(0f) }
-    var projectEditorMenuAction by remember { mutableStateOf<ProjectEditorMenuAction?>(null) }
-    var projectEditorMenuActionSignal by remember { mutableIntStateOf(0) }
-    var showProjectEditorMenu by remember { mutableStateOf(false) }
-    val selectedScreen = shellScreens[selectedTopLevelPage]
     val visibleTopLevelPage = pagerState.currentPage.coerceIn(0, shellScreens.lastIndex)
     val visibleScreen = shellScreens[visibleTopLevelPage]
+    val chatPageIndex = remember(shellScreens) {
+        shellScreens.indexOfFirst { it.route == Screen.Chat.route }.coerceAtLeast(0)
+    }
     val darkMode = uiController.themeMode == ReasonixThemeMode.DARK ||
         (uiController.themeMode == ReasonixThemeMode.SYSTEM &&
             reasonixIsDarkColor(MaterialTheme.colorScheme.background))
     val chromeColor = rememberReasonixChromeColor()
+    val projectEditorMenuAction = projectSecondaryHostState.editorMenuAction
+    val projectEditorMenuActionSignal = projectSecondaryHostState.editorMenuActionSignal
+    val showChatMenu = overlayVisibilityState.showChatMenu
+    val showProjectEditorMenu = overlayVisibilityState.showProjectEditorMenu
+    val showTaskDialog = dialogState.showTaskDialog
+    val taskProjectPath = dialogState.taskProjectPath
+    val renameSessionTargetId = dialogState.renameSessionTargetId
+    val renameSessionDraft = dialogState.renameSessionDraft
+    val showExportDialog = dialogState.showExportDialog
+    val exportFormat = dialogState.exportFormat
+    val pendingExportData = dialogState.pendingExportData
+
+    fun dispatchOverlayVisibilityAction(action: MainScreenOverlayVisibilityAction) {
+        overlayVisibilityState = reduceMainScreenOverlayVisibilityState(
+            state = overlayVisibilityState,
+            action = action
+        )
+    }
+
+    fun dispatchDialogAction(action: MainScreenDialogAction) {
+        dialogState = reduceMainScreenDialogState(
+            state = dialogState,
+            action = action
+        )
+    }
+
+    fun dispatchTopLevelNavigationAction(action: MainScreenTopLevelNavigationAction) {
+        topLevelNavigationState = reduceMainScreenTopLevelNavigationState(
+            state = topLevelNavigationState,
+            action = action
+        )
+    }
+
+    fun dispatchSettingsAction(action: MainScreenSettingsAction) {
+        settingsState = reduceMainScreenSettingsState(
+            state = settingsState,
+            action = action
+        )
+    }
+
+    fun dispatchProjectSecondaryHostAction(action: MainScreenProjectSecondaryHostAction) {
+        projectSecondaryHostState = reduceMainScreenProjectSecondaryHostState(
+            state = projectSecondaryHostState,
+            action = action
+        )
+    }
+
+    fun dispatchHostAction(action: MainScreenHostAction) {
+        when (action) {
+            MainScreenHostAction.None -> Unit
+            MainScreenHostAction.CloseSettingsSecondary -> {
+                dispatchSettingsAction(MainScreenSettingsAction.CloseSecondaryPage)
+            }
+            MainScreenHostAction.CloseProjectSecondary -> {
+                dispatchProjectSecondaryHostAction(
+                    MainScreenProjectSecondaryHostAction.RequestCloseSecondary
+                )
+            }
+            MainScreenHostAction.OpenChatDrawer -> {
+                dispatchTopLevelNavigationAction(
+                    MainScreenTopLevelNavigationAction.RequestDrawerCommand(
+                        MainScreenDrawerCommand.OPEN
+                    )
+                )
+            }
+            MainScreenHostAction.CloseChatDrawer -> {
+                dispatchTopLevelNavigationAction(
+                    MainScreenTopLevelNavigationAction.RequestDrawerCommand(
+                        MainScreenDrawerCommand.CLOSE
+                    )
+                )
+            }
+            MainScreenHostAction.NavigateTopLevelBack -> {
+                dispatchSettingsAction(MainScreenSettingsAction.CloseSecondaryPage)
+                dispatchTopLevelNavigationAction(MainScreenTopLevelNavigationAction.NavigateBack)
+            }
+            is MainScreenHostAction.NavigateToTopLevelPage -> {
+                dispatchSettingsAction(MainScreenSettingsAction.CloseSecondaryPage)
+                dispatchOverlayVisibilityAction(MainScreenOverlayVisibilityAction.DISMISS_MENUS)
+                dispatchTopLevelNavigationAction(
+                    MainScreenTopLevelNavigationAction.NavigateToPage(action.page)
+                )
+            }
+        }
+    }
 
     fun navigateToTopLevel(target: Screen) {
         val targetIndex = shellScreens.indexOfFirst { it.route == target.route }
@@ -206,17 +297,75 @@ fun MainScreen() {
                 .put("selectedTopLevelPage", selectedTopLevelPage)
                 .put("visibleTopLevelPage", visibleTopLevelPage)
                 .put("visibleRoute", visibleScreen.route)
-                .put("drawerValue", drawerState.currentValue.name)
+                .put("drawerValue", if (isChatSessionPanelVisible) "Open" else "Closed")
         )
         // #endregion
-        settingsSubpage = SettingsSubpage.Main
-        selectedTopLevelPage = targetIndex
+        dispatchHostAction(MainScreenHostAction.NavigateToTopLevelPage(targetIndex))
+    }
+
+    fun dispatchChatAction(action: MainScreenChatAction) {
+        when (action) {
+            is MainScreenChatAction.StartNewSession -> {
+                chatVm.newSession()
+                if (action.closeDrawer) {
+                    dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
+                }
+                if (action.dismissMenu) {
+                    dispatchOverlayVisibilityAction(MainScreenOverlayVisibilityAction.HIDE_CHAT_MENU)
+                }
+            }
+            is MainScreenChatAction.LoadSession -> {
+                chatVm.loadSession(action.sessionId)
+                if (action.closeDrawer) {
+                    dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
+                }
+                if (action.dismissMenu) {
+                    dispatchOverlayVisibilityAction(MainScreenOverlayVisibilityAction.HIDE_CHAT_MENU)
+                }
+            }
+            is MainScreenChatAction.DeleteSession -> {
+                chatVm.deleteSession(action.sessionId)
+                if (action.closeDrawer) {
+                    dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
+                }
+                if (action.dismissMenu) {
+                    dispatchOverlayVisibilityAction(MainScreenOverlayVisibilityAction.HIDE_CHAT_MENU)
+                }
+            }
+            is MainScreenChatAction.OpenTaskDialog -> {
+                dispatchDialogAction(MainScreenDialogAction.ShowTaskDialog(action.projectPath))
+                if (action.dismissMenu) {
+                    dispatchOverlayVisibilityAction(MainScreenOverlayVisibilityAction.HIDE_CHAT_MENU)
+                }
+            }
+            is MainScreenChatAction.OpenRenameDialog -> {
+                dispatchDialogAction(
+                    MainScreenDialogAction.OpenRenameDialog(action.sessionId, action.title)
+                )
+                if (action.dismissMenu) {
+                    dispatchOverlayVisibilityAction(MainScreenOverlayVisibilityAction.HIDE_CHAT_MENU)
+                }
+            }
+            is MainScreenChatAction.OpenExportDialog -> {
+                dispatchDialogAction(MainScreenDialogAction.ShowExportDialog(action.format))
+                if (action.dismissMenu) {
+                    dispatchOverlayVisibilityAction(MainScreenOverlayVisibilityAction.HIDE_CHAT_MENU)
+                }
+            }
+            is MainScreenChatAction.ImportConversationSucceeded -> {
+                navigateToTopLevel(Screen.Chat)
+                scope.launch {
+                    snackbarHostState.showSnackbar("已导入 ${action.importedMessageCount} 条消息")
+                }
+            }
+        }
     }
 
     fun dispatchProjectEditorMenuAction(action: ProjectEditorMenuAction) {
-        projectEditorMenuAction = action
-        projectEditorMenuActionSignal += 1
-        showProjectEditorMenu = false
+        dispatchProjectSecondaryHostAction(
+            MainScreenProjectSecondaryHostAction.DispatchEditorMenuAction(action)
+        )
+        dispatchOverlayVisibilityAction(MainScreenOverlayVisibilityAction.HIDE_PROJECT_EDITOR_MENU)
     }
 
     LaunchedEffect(Unit) {
@@ -224,14 +373,6 @@ fun MainScreen() {
             authVm.handleGitHubCallback(callbackUri)
             settingsVm.handleGitHubOAuthCallback(callbackUri)
         }
-    }
-
-    suspend fun navigateBackToPreviousTopLevel() {
-        val targetPage = topLevelHistory.removeLastOrNull() ?: return
-        consumingTopLevelBack = true
-        settingsSubpage = SettingsSubpage.Main
-        selectedTopLevelPage = targetPage
-        drawerState.close()
     }
 
     LaunchedEffect(pagerState.settledPage) {
@@ -248,30 +389,19 @@ fun MainScreen() {
                 .put("visibleTopLevelPage", visibleTopLevelPage)
                 .put("visibleRoute", visibleScreen.route)
                 .put("navigationTargetPage", navigationTargetPage ?: JSONObject.NULL)
-                .put("drawerValue", drawerState.currentValue.name)
+                .put("drawerValue", if (isChatSessionPanelVisible) "Open" else "Closed")
         )
         // #endregion
         if (navigationTargetPage != null && settledPage != navigationTargetPage) {
             return@LaunchedEffect
         }
-        if (settledPage != lastSettledTopLevelPage) {
-            if (consumingTopLevelBack) {
-                consumingTopLevelBack = false
-            } else if (topLevelHistory.lastOrNull() != lastSettledTopLevelPage) {
-                topLevelHistory.add(lastSettledTopLevelPage)
-            }
-            lastSettledTopLevelPage = settledPage
-        }
-        if (selectedTopLevelPage != settledPage) {
-            selectedTopLevelPage = settledPage
-        }
-        if (navigationTargetPage == settledPage) {
-            topLevelNavigationTargetPage = null
-        }
-        drawerState.close()
+        dispatchTopLevelNavigationAction(
+            MainScreenTopLevelNavigationAction.SyncSettledPage(settledPage)
+        )
     }
 
-    LaunchedEffect(selectedTopLevelPage) {
+    LaunchedEffect(topLevelNavigationTargetPage) {
+        val navigationTargetPage = topLevelNavigationTargetPage ?: return@LaunchedEffect
         // #region debug-point C:chat-selected
         reportGitBackChatFlashMainDebug(
             hypothesisId = "C",
@@ -282,21 +412,43 @@ fun MainScreen() {
                 .put("visibleTopLevelPage", visibleTopLevelPage)
                 .put("visibleRoute", visibleScreen.route)
                 .put("pagerCurrentPage", pagerState.currentPage)
-                .put("navigationTargetPage", topLevelNavigationTargetPage ?: JSONObject.NULL)
-                .put("drawerValue", drawerState.currentValue.name)
+                .put("navigationTargetPage", navigationTargetPage)
+                .put("drawerValue", if (isChatSessionPanelVisible) "Open" else "Closed")
         )
         // #endregion
-        if (selectedTopLevelPage != pagerState.currentPage) {
-            topLevelNavigationTargetPage = selectedTopLevelPage
-            pagerState.scrollToPage(selectedTopLevelPage)
-        } else if (topLevelNavigationTargetPage == selectedTopLevelPage) {
-            topLevelNavigationTargetPage = null
+        if (navigationTargetPage != pagerState.currentPage) {
+            pagerState.scrollToPage(navigationTargetPage)
         }
-        drawerState.close()
-        if (selectedScreen !is Screen.Projects) {
-            projectSecondaryChromeState = ProjectSecondaryChromeState()
-            projectEditorMenuAction = null
+    }
+
+    LaunchedEffect(topLevelNavigationState.drawerCommand) {
+        when (topLevelNavigationState.drawerCommand) {
+            MainScreenDrawerCommand.NONE -> Unit
+            MainScreenDrawerCommand.OPEN -> {
+                isChatSessionPanelVisible = true
+                dispatchTopLevelNavigationAction(
+                    MainScreenTopLevelNavigationAction.ConsumeDrawerCommand
+                )
+            }
+            MainScreenDrawerCommand.CLOSE -> {
+                isChatSessionPanelVisible = false
+                chatSessionPanelBackProgress = 0f
+                dispatchTopLevelNavigationAction(
+                    MainScreenTopLevelNavigationAction.ConsumeDrawerCommand
+                )
+            }
         }
+    }
+
+    LaunchedEffect(
+        projectSecondaryHostState.command,
+        projectSecondaryHostState.bridgeState.backRequest
+    ) {
+        if (projectSecondaryHostState.command != MainScreenProjectSecondaryCommand.CLOSE) {
+            return@LaunchedEffect
+        }
+        projectSecondaryHostState.bridgeState.backRequest?.invoke()
+        dispatchProjectSecondaryHostAction(MainScreenProjectSecondaryHostAction.ConsumeCommand)
     }
 
     LaunchedEffect(authState.authorizationUrl) {
@@ -311,24 +463,181 @@ fun MainScreen() {
         }
     }
 
-    BackHandler(enabled = drawerState.isOpen) {
-        scope.launch {
-            drawerState.close()
+    BackHandler(enabled = isChatSessionPanelVisible) {
+        dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
+    }
+
+    PredictiveBackHandler(enabled = isChatSessionPanelVisible) { progress ->
+        try {
+            progress.collect { backEvent ->
+                chatSessionPanelBackProgress = backEvent.progress
+            }
+            chatSessionPanelBackProgress = 1f
+            dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
+        } catch (_: CancellationException) {
+            chatSessionPanelBackProgress = 0f
+        } finally {
+            chatSessionPanelBackProgress = 0f
         }
     }
 
-    BackHandler(enabled = settingsSubpage != SettingsSubpage.Main) {
-        settingsSubpage = SettingsSubpage.Main
+    val projectSecondaryHostBridgeState = projectSecondaryHostState.bridgeState
+    val projectSecondaryChromeState = projectSecondaryHostBridgeState.chromeState
+    val projectSecondaryBackRequest = projectSecondaryHostBridgeState.backRequest
+    val projectSecondaryBackProgress = projectSecondaryHostBridgeState.backProgress
+    val shellState = resolveMainScreenShellState(
+        shellScreens = shellScreens,
+        selectedTopLevelPage = settledTopLevelPage,
+        visibleTopLevelPage = visibleTopLevelPage,
+        topLevelNavigationTargetPage = topLevelNavigationTargetPage,
+        pagerIsScrollInProgress = pagerState.isScrollInProgress,
+        pagerCurrentPage = pagerState.currentPage,
+        pagerSettledPage = pagerState.settledPage,
+        settingsSubpage = settingsSubpage,
+        projectSecondaryChromeState = projectSecondaryChromeState,
+        chatPageIndex = chatPageIndex,
+        topLevelHistoryLastPage = topLevelHistory.lastOrNull(),
+        topLevelBackProgress = topLevelBackProgress
+    )
+    val chromeScreen = shellState.chromeScreen
+    val secondaryHostState = resolveMainScreenSecondaryHostState(
+        shellState = shellState,
+        settingsBackProgress = settingsBackProgress,
+        projectSecondaryBackProgress = projectSecondaryHostState.bridgeState.backProgress
+    )
+    val secondaryHostRuntimeState = resolveMainScreenSecondaryHostRuntimeState(
+        secondaryHostState = secondaryHostState,
+        projectSecondaryHostState = projectSecondaryHostState
+    )
+    val isSettingsSecondaryPage = secondaryHostRuntimeState.isSettingsSecondaryPage
+    val isProjectSecondaryPage = secondaryHostRuntimeState.isProjectSecondaryPage
+    val hasSecondaryPage = secondaryHostRuntimeState.hasSecondaryPage
+    val showBottomBar = shellState.showBottomBar
+    val isChatChromeVisible = shellState.isChatChromeVisible
+    val topBarState = resolveMainScreenTopBarState(
+        settingsSubpage = settingsSubpage,
+        chromeScreen = chromeScreen,
+        chatSessionTitle = chatState.sessionTitle,
+        usageSummary = chatState.usageSummary,
+        projectSecondaryChromeState = projectSecondaryChromeState,
+        isProjectSecondaryPage = isProjectSecondaryPage,
+        isChatChromeVisible = isChatChromeVisible,
+        hasTopLevelHistory = shellState.hasTopLevelHistory,
+        isTopLevelNavigationSettled = shellState.isTopLevelNavigationSettled
+    )
+    val overlayState = resolveMainScreenOverlayState(
+        shellState = shellState,
+        topBarState = topBarState,
+        isChatDrawerOpen = isChatSessionPanelVisible
+    )
+    val topLevelBackProgressBucket = if (topLevelBackProgress > 0f) {
+        (topLevelBackProgress * 10).toInt().coerceIn(0, 10)
+    } else {
+        -1
+    }
+    val secondaryHostBackProgressBucket = if (secondaryHostRuntimeState.hostBackProgress > 0f) {
+        (secondaryHostRuntimeState.hostBackProgress * 10).toInt().coerceIn(0, 10)
+    } else {
+        -1
+    }
+    val pagerVisualIndex = (
+        pagerState.currentPage.toFloat() + pagerState.currentPageOffsetFraction
+        ).coerceIn(0f, shellScreens.lastIndex.toFloat())
+    val topLevelPreviewState = resolveMainScreenTopLevelPredictivePreviewState(
+        selectedTopLevelPage = selectedTopLevelPage,
+        shellState = shellState
+    )
+
+    BackHandler(enabled = secondaryHostRuntimeState.canHandleHostBackGesture) {
+        dispatchHostAction(secondaryHostRuntimeState.hostBackAction)
     }
 
-    val isProjectSecondaryPage = visibleScreen is Screen.Projects && projectSecondaryChromeState.active
+    LaunchedEffect(
+        shellState.chromeScreen.route,
+        visibleScreen.route,
+        selectedTopLevelPage,
+        visibleTopLevelPage,
+        isChatChromeVisible,
+        isChatSessionPanelVisible,
+        showChatMenu,
+        chatState.sessionId,
+        chatState.messages.size
+    ) {
+        // #region debug-point E:chat-host-snapshot
+        reportGitBackChatFlashMainDebug(
+            hypothesisId = "E",
+            location = "MainActivity.kt:chatHostSnapshot",
+            msg = "[DEBUG] chat host snapshot",
+            data = JSONObject()
+                .put("chromeRoute", shellState.chromeScreen.route)
+                .put("visibleRoute", visibleScreen.route)
+                .put("selectedTopLevelPage", selectedTopLevelPage)
+                .put("visibleTopLevelPage", visibleTopLevelPage)
+                .put("isChatChromeVisible", isChatChromeVisible)
+                .put("drawerOpen", isChatSessionPanelVisible)
+                .put("showChatMenu", showChatMenu)
+                .put("chatSessionId", chatState.sessionId)
+                .put("chatMessageCount", chatState.messages.size)
+        )
+        // #endregion
+    }
 
     LaunchedEffect(
+        topLevelBackProgressBucket,
+        topLevelPreviewState.currentPage,
+        topLevelPreviewState.targetPage,
+        topLevelPreviewState.isVisible
+    ) {
+        if (topLevelBackProgressBucket < 0) return@LaunchedEffect
+        // #region debug-point E:top-level-progress-bucket
+        reportGitBackChatFlashMainDebug(
+            hypothesisId = "E",
+            location = "MainActivity.kt:topLevelBackProgressBucket",
+            msg = "[DEBUG] top-level back progress bucket",
+            data = JSONObject()
+                .put("bucket", topLevelBackProgressBucket)
+                .put("progress", topLevelBackProgress)
+                .put("previewVisible", topLevelPreviewState.isVisible)
+                .put("previewCurrentPage", topLevelPreviewState.currentPage)
+                .put("previewTargetPage", topLevelPreviewState.targetPage ?: JSONObject.NULL)
+                .put("selectedTopLevelPage", selectedTopLevelPage)
+                .put("visibleTopLevelPage", visibleTopLevelPage)
+        )
+        // #endregion
+    }
+
+    LaunchedEffect(
+        secondaryHostBackProgressBucket,
+        secondaryHostRuntimeState.isSettingsSecondaryPage,
+        secondaryHostRuntimeState.isProjectSecondaryPage,
+        secondaryHostRuntimeState.hostBackAction::class.simpleName
+    ) {
+        if (secondaryHostBackProgressBucket < 0) return@LaunchedEffect
+        // #region debug-point E:secondary-host-progress-bucket
+        reportGitBackChatFlashMainDebug(
+            hypothesisId = "E",
+            location = "MainActivity.kt:secondaryHostBackProgressBucket",
+            msg = "[DEBUG] secondary host back progress bucket",
+            data = JSONObject()
+                .put("bucket", secondaryHostBackProgressBucket)
+                .put("progress", secondaryHostRuntimeState.hostBackProgress)
+                .put("isSettingsSecondaryPage", secondaryHostRuntimeState.isSettingsSecondaryPage)
+                .put("isProjectSecondaryPage", secondaryHostRuntimeState.isProjectSecondaryPage)
+                .put(
+                    "hostBackAction",
+                    secondaryHostRuntimeState.hostBackAction::class.simpleName ?: "unknown"
+                )
+        )
+        // #endregion
+    }
+
+    LaunchedEffect(
+        shellState.shellOwnerTopLevelPage,
         visibleTopLevelPage,
         visibleScreen.route,
         projectSecondaryChromeState.active,
         projectSecondaryChromeState.title,
-        projectSecondaryCloseRequestSignal
+        projectSecondaryBackRequest
     ) {
         // #region debug-point B:project-secondary-state
         reportGitBackChatFlashMainDebug(
@@ -336,97 +645,114 @@ fun MainScreen() {
             location = "MainActivity.kt:projectSecondaryState",
             msg = "[DEBUG] project secondary state snapshot",
             data = JSONObject()
+                .put("shellOwnerTopLevelPage", shellState.shellOwnerTopLevelPage)
                 .put("visibleTopLevelPage", visibleTopLevelPage)
                 .put("visibleRoute", visibleScreen.route)
                 .put("selectedTopLevelPage", selectedTopLevelPage)
                 .put("projectSecondaryActive", projectSecondaryChromeState.active)
                 .put("projectSecondaryTitle", projectSecondaryChromeState.title)
                 .put("isProjectSecondaryPage", isProjectSecondaryPage)
-                .put("closeRequestSignal", projectSecondaryCloseRequestSignal)
+                .put("hasBackRequest", projectSecondaryBackRequest != null)
         )
         // #endregion
     }
 
-    BackHandler(enabled = isProjectSecondaryPage) {
-        // #region debug-point B:project-secondary-back
+    LaunchedEffect(secondaryHostRuntimeState.shouldResetProjectSecondaryCarrier) {
+        if (secondaryHostRuntimeState.shouldResetProjectSecondaryCarrier) {
+            dispatchProjectSecondaryHostAction(MainScreenProjectSecondaryHostAction.Reset)
+        }
+    }
+
+    LaunchedEffect(
+        selectedTopLevelPage,
+        visibleTopLevelPage,
+        visibleScreen.route,
+        settingsSubpage,
+        showChatMenu,
+        isChatSessionPanelVisible,
+        topLevelNavigationTargetPage,
+        topLevelHistory.size
+    ) {
+        // #region debug-point C:shell-visibility-snapshot
         reportGitBackChatFlashMainDebug(
-            hypothesisId = "B",
-            location = "MainActivity.kt:projectSecondaryBackHandler",
-            msg = "[DEBUG] project secondary back handler fired",
+            hypothesisId = "C",
+            location = "MainActivity.kt:shellVisibilitySnapshot",
+            msg = "[DEBUG] shell visibility snapshot",
             data = JSONObject()
+                .put("selectedTopLevelPage", selectedTopLevelPage)
+                .put("visibleTopLevelPage", visibleTopLevelPage)
                 .put("visibleRoute", visibleScreen.route)
+                .put("settingsSubpage", settingsSubpage.toString())
+                .put("showChatMenu", showChatMenu)
+                .put("drawerCurrentValue", if (isChatSessionPanelVisible) "Open" else "Closed")
+                .put("drawerTargetValue", if (isChatSessionPanelVisible) "Open" else "Closed")
+                .put("topLevelNavigationTargetPage", topLevelNavigationTargetPage ?: JSONObject.NULL)
+                .put("topLevelHistorySize", topLevelHistory.size)
+                .put("projectSecondaryActive", projectSecondaryChromeState.active)
                 .put("projectSecondaryTitle", projectSecondaryChromeState.title)
-                .put("closeRequestSignalBefore", projectSecondaryCloseRequestSignal)
         )
         // #endregion
-        projectSecondaryCloseRequestSignal += 1
     }
 
-    PredictiveBackHandler(enabled = isProjectSecondaryPage) { progress ->
+    BackHandler(enabled = overlayState.canHandleTopLevelBack) {
+        // #region debug-point C:top-level-back
+        reportGitBackChatFlashMainDebug(
+            hypothesisId = "C",
+            location = "MainActivity.kt:topLevelBackHandler",
+            msg = "[DEBUG] top-level back handler fired",
+            data = JSONObject()
+                .put("selectedTopLevelPage", selectedTopLevelPage)
+                .put("visibleTopLevelPage", visibleTopLevelPage)
+                .put("visibleRoute", visibleScreen.route)
+                .put("topLevelHistorySize", topLevelHistory.size)
+                .put("projectSecondaryActive", projectSecondaryChromeState.active)
+        )
+        // #endregion
+        dispatchHostAction(MainScreenHostAction.NavigateTopLevelBack)
+    }
+
+    PredictiveBackHandler(enabled = overlayState.canHandleTopLevelBack) { progress ->
         try {
             progress.collect { backEvent ->
-                projectSecondaryBackProgress = backEvent.progress
+                dispatchTopLevelNavigationAction(
+                    MainScreenTopLevelNavigationAction.UpdateBackProgress(backEvent.progress)
+                )
             }
-            projectSecondaryBackProgress = 1f
-            // #region debug-point B:project-secondary-predictive
+            dispatchTopLevelNavigationAction(MainScreenTopLevelNavigationAction.UpdateBackProgress(1f))
+            // #region debug-point C:top-level-predictive
             reportGitBackChatFlashMainDebug(
-                hypothesisId = "B",
-                location = "MainActivity.kt:projectSecondaryPredictiveBack",
-                msg = "[DEBUG] project secondary predictive back committed",
+                hypothesisId = "C",
+                location = "MainActivity.kt:topLevelPredictiveBack",
+                msg = "[DEBUG] top-level predictive back committed",
                 data = JSONObject()
+                    .put("selectedTopLevelPage", selectedTopLevelPage)
+                    .put("visibleTopLevelPage", visibleTopLevelPage)
                     .put("visibleRoute", visibleScreen.route)
-                    .put("projectSecondaryTitle", projectSecondaryChromeState.title)
-                    .put("closeRequestSignalBefore", projectSecondaryCloseRequestSignal)
+                    .put("topLevelHistorySize", topLevelHistory.size)
+                    .put("projectSecondaryActive", projectSecondaryChromeState.active)
             )
             // #endregion
-            projectSecondaryCloseRequestSignal += 1
+            dispatchHostAction(MainScreenHostAction.NavigateTopLevelBack)
         } catch (_: CancellationException) {
-            projectSecondaryBackProgress = 0f
+            dispatchTopLevelNavigationAction(MainScreenTopLevelNavigationAction.UpdateBackProgress(0f))
         } finally {
-            projectSecondaryBackProgress = 0f
+            dispatchTopLevelNavigationAction(MainScreenTopLevelNavigationAction.UpdateBackProgress(0f))
         }
     }
 
-    BackHandler(
-        enabled = settingsSubpage == SettingsSubpage.Main &&
-            topLevelHistory.isNotEmpty() &&
-            !drawerState.isOpen
-    ) {
-        scope.launch {
-            navigateBackToPreviousTopLevel()
-        }
-    }
-
-    PredictiveBackHandler(
-        enabled = settingsSubpage == SettingsSubpage.Main &&
-            topLevelHistory.isNotEmpty() &&
-            !drawerState.isOpen &&
-            !isProjectSecondaryPage
-    ) { progress ->
+    PredictiveBackHandler(enabled = secondaryHostRuntimeState.canHandleHostBackGesture) { progress ->
         try {
             progress.collect { backEvent ->
-                topLevelBackProgress = backEvent.progress
+                dispatchSettingsAction(
+                    MainScreenSettingsAction.UpdateBackProgress(backEvent.progress)
+                )
             }
-            topLevelBackProgress = 1f
-            navigateBackToPreviousTopLevel()
+            dispatchSettingsAction(MainScreenSettingsAction.UpdateBackProgress(1f))
+            dispatchHostAction(secondaryHostRuntimeState.hostBackAction)
         } catch (_: CancellationException) {
-            topLevelBackProgress = 0f
+            dispatchSettingsAction(MainScreenSettingsAction.UpdateBackProgress(0f))
         } finally {
-            topLevelBackProgress = 0f
-        }
-    }
-
-    PredictiveBackHandler(enabled = settingsSubpage != SettingsSubpage.Main) { progress ->
-        try {
-            progress.collect { backEvent ->
-                settingsBackProgress = backEvent.progress
-            }
-            settingsBackProgress = 1f
-            settingsSubpage = SettingsSubpage.Main
-        } catch (_: CancellationException) {
-            settingsBackProgress = 0f
-        } finally {
-            settingsBackProgress = 0f
+            dispatchSettingsAction(MainScreenSettingsAction.UpdateBackProgress(0f))
         }
     }
 
@@ -458,10 +784,11 @@ fun MainScreen() {
                 val sourceName = resolveDisplayName(context, uri)
                 chatVm.importConversation(content, sourceName)
                     .onSuccess { count ->
-                        navigateToTopLevel(Screen.Chat)
-                        scope.launch {
-                            snackbarHostState.showSnackbar("已导入 $count 条消息")
-                        }
+                        dispatchChatAction(
+                            MainScreenChatAction.ImportConversationSucceeded(
+                                importedMessageCount = count
+                            )
+                        )
                     }
                     .onFailure { error ->
                         scope.launch {
@@ -476,7 +803,7 @@ fun MainScreen() {
     ) { uri ->
         val exportData = pendingExportData
         if (uri == null || exportData == null) {
-            pendingExportData = null
+            dispatchDialogAction(MainScreenDialogAction.ClearPendingExport)
             return@rememberLauncherForActivityResult
         }
 
@@ -495,12 +822,11 @@ fun MainScreen() {
             }
         }
 
-        pendingExportData = null
+        dispatchDialogAction(MainScreenDialogAction.ClearPendingExport)
     }
 
     fun openRenameDialog(sessionId: String, title: String) {
-        renameSessionTargetId = sessionId
-        renameSessionDraft = title.ifBlank { "新对话" }
+        dispatchChatAction(MainScreenChatAction.OpenRenameDialog(sessionId, title))
     }
 
     val folderPickerLauncher = rememberLauncherForActivityResult(
@@ -516,7 +842,9 @@ fun MainScreen() {
         }
 
         val resolvedPath = resolveTreeUriToPath(uri)
-        taskProjectPath = resolvedPath ?: uri.toString()
+        dispatchDialogAction(
+            MainScreenDialogAction.UpdateTaskProjectPath(resolvedPath ?: uri.toString())
+        )
 
         if (resolvedPath == null) {
             scope.launch {
@@ -525,51 +853,6 @@ fun MainScreen() {
         }
     }
 
-    val topBarTitle = when (settingsSubpage) {
-        SettingsSubpage.Theme -> "主题界面"
-        SettingsSubpage.About -> "关于"
-        SettingsSubpage.Main -> when (visibleScreen) {
-            is Screen.Chat -> chatState.sessionTitle.ifBlank { "新对话" }
-            is Screen.Projects -> projectSecondaryChromeState.title.ifBlank { Screen.Projects.title }
-            is Screen.Tools -> Screen.Tools.title
-            is Screen.Settings -> Screen.Settings.title
-        }
-    }
-    val topBarSubtitle = when (settingsSubpage) {
-        SettingsSubpage.Theme -> "风格、模式与强调色"
-        SettingsSubpage.About -> "应用信息与产品方向"
-        SettingsSubpage.Main -> when (visibleScreen) {
-            is Screen.Chat -> ""
-            is Screen.Projects -> if (isProjectSecondaryPage) {
-                projectSecondaryChromeState.subtitle
-            } else {
-                "项目浏览、文件编辑与 Git 工作流"
-            }
-            is Screen.Tools -> "工具状态、审批与执行记录"
-            is Screen.Settings -> "账号、模型与全局偏好"
-        }
-    }
-    val topBarTag = when (settingsSubpage) {
-        SettingsSubpage.Theme -> "外观"
-        SettingsSubpage.About -> "信息"
-        SettingsSubpage.Main -> when (visibleScreen) {
-            is Screen.Chat -> "对话"
-            is Screen.Projects -> "项目"
-            is Screen.Tools -> "工具"
-            is Screen.Settings -> "设置"
-        }
-    }
-    val pagerVisualIndex = (
-        pagerState.currentPage.toFloat() + pagerState.currentPageOffsetFraction
-        ).coerceIn(0f, shellScreens.lastIndex.toFloat())
-    val showBottomBar = settingsSubpage == SettingsSubpage.Main && !isProjectSecondaryPage
-    val topLevelPredictivePreviewTargetPage = topLevelHistory.lastOrNull()
-    val showTopLevelPredictivePreview =
-        settingsSubpage == SettingsSubpage.Main &&
-            !isProjectSecondaryPage &&
-            topLevelPredictivePreviewTargetPage != null &&
-            topLevelBackProgress > 0.02f
-
     @Composable
     fun TopLevelPageContent(
         page: Int,
@@ -577,186 +860,327 @@ fun MainScreen() {
         previewMode: Boolean = false
     ) {
         val pageScreen = shellScreens[page]
-        val pageBottomPadding = when {
-            !showBottomBar -> 12.dp
-            pageScreen is Screen.Chat -> 82.dp
-            else -> 24.dp
-        }
+        val pageOwnsShellState = ownsMainScreenShellState(
+            page = page,
+            previewMode = previewMode,
+            shellState = shellState
+        )
+        val pageLayoutState = resolveMainScreenPageLayoutState(
+            pageScreen = pageScreen,
+            shellState = shellState
+        )
         Box(
             modifier = modifier
                 .fillMaxSize()
-                .padding(bottom = pageBottomPadding)
+                .padding(bottom = pageLayoutState.bottomPadding)
         ) {
             when (pageScreen) {
                 is Screen.Chat -> {
-                    ChatScreen(
-                        state = chatState,
-                        isScreenActive = !previewMode &&
-                            selectedTopLevelPage == page &&
-                            settingsSubpage == SettingsSubpage.Main,
-                        projectKnowledgePaths = chatState.projectKnowledgePaths,
-                        onSend = { text, mentions, images ->
-                            chatVm.sendMessage(text, mentions, images)
-                        },
-                        onStopSending = {
-                            val message = if (chatVm.stopSending()) {
-                                "已终止当前处理"
-                            } else {
-                                "当前没有可终止的处理"
-                            }
-                            scope.launch {
-                                snackbarHostState.showSnackbar(message)
-                            }
-                        },
-                        onClear = { chatVm.clear() },
-                        onNewSession = { chatVm.newSession() },
-                        title = chatState.sessionTitle,
-                        hasApiKey = chatVm.hasActiveApiKey(chatConfig),
-                        workflowExecutionMode = effectiveChatConfig.workflowExecutionMode,
-                        autoRouteBeforeExecution = false,
-                        onNavigateToSettings = {
-                            navigateToTopLevel(Screen.Settings)
-                        },
-                        onEditMessage = { messageId ->
-                            chatVm.rollbackToUserMessage(messageId)
-                        },
-                        onCompressContext = {
-                            scope.launch {
-                                val message = chatVm.compressCurrentContext()
-                                    .fold(
-                                        onSuccess = {
-                                            "已压缩 ${it.sourceMessageCount} 条历史消息，生成摘要 V${it.version} 后续将基于摘要续聊"
-                                        },
-                                        onFailure = { error ->
-                                            error.message ?: "上下文压缩失败"
-                                        }
-                                    )
-                                snackbarHostState.showSnackbar(message)
-                            }
-                        },
-                        onGeneratePlan = { input, mentions ->
-                            chatVm.generateWorkflowPlan(input, mentions)
-                        },
-                        onExecutePlan = {
-                            chatVm.executePendingWorkflowPlan()
-                        },
-                        onDismissPlan = {
-                            chatVm.dismissPendingWorkflowPlan()
-                        },
-                        onSubmitClarificationAnswer = { answer ->
-                            chatVm.submitClarificationAnswer(answer)
-                        },
-                        onDismissClarification = {
-                            chatVm.dismissPendingClarification()
-                        },
-                        onSearchFiles = { query ->
-                            chatVm.searchProjectFiles(query)
-                        },
-                        onRetrySubagent = { runId ->
-                            chatVm.retrySubagentRun(runId)
-                            scope.launch {
-                                snackbarHostState.showSnackbar("已重新发起子代理")
-                            }
-                        },
-                        onCancelSubagent = { runId ->
-                            val message = if (chatVm.cancelSubagentRun(runId)) {
-                                "已请求终止子代理"
-                            } else {
-                                "当前子代理无法终止"
-                            }
-                            scope.launch {
-                                snackbarHostState.showSnackbar(message)
-                            }
-                        },
-                        onRollbackFileCheckpoint = { checkpointId ->
-                            val message = chatVm.rollbackFileCheckpoint(checkpointId)
-                                .fold(
-                                    onSuccess = { count ->
-                                        "已按该对话前状态回滚这一批修改，恢复 $count 个文件"
-                                    },
-                                    onFailure = { error ->
-                                        error.message ?: "回滚文件修改失败"
+                    LaunchedEffect(
+                        page,
+                        previewMode,
+                        pageOwnsShellState,
+                        isChatChromeVisible,
+                        shellState.chromeScreen.route,
+                        visibleScreen.route,
+                        chatState.sessionId,
+                        chatState.messages.size
+                    ) {
+                        // #region debug-point E:chat-page-composition
+                        reportGitBackChatFlashMainDebug(
+                            hypothesisId = "E",
+                            location = "MainActivity.kt:chatPageComposition",
+                            msg = "[DEBUG] chat page composition snapshot",
+                            data = JSONObject()
+                                .put("page", page)
+                                .put("previewMode", previewMode)
+                                .put("pageOwnsShellState", pageOwnsShellState)
+                                .put("isChatChromeVisible", isChatChromeVisible)
+                                .put("computedIsScreenActive", pageOwnsShellState &&
+                                    isChatChromeVisible &&
+                                    page == chatPageIndex)
+                                .put("chromeRoute", shellState.chromeScreen.route)
+                                .put("visibleRoute", visibleScreen.route)
+                                .put("chatSessionId", chatState.sessionId)
+                                .put("chatMessageCount", chatState.messages.size)
+                        )
+                        // #endregion
+                    }
+                    val shouldRenderFullChat = !previewMode
+                    val chatSecondaryVisible = shouldRenderFullChat &&
+                        pageOwnsShellState &&
+                        page == chatPageIndex &&
+                        isChatSessionPanelVisible
+
+                    @Composable
+                    fun ChatMainPage() {
+                        if (shouldRenderFullChat) {
+                            ChatScreen(
+                                state = chatState,
+                                isScreenActive = pageOwnsShellState &&
+                                    isChatChromeVisible &&
+                                    page == chatPageIndex,
+                                projectKnowledgePaths = chatState.projectKnowledgePaths,
+                                onSend = { text, mentions, images ->
+                                    chatVm.sendMessage(text, mentions, images)
+                                },
+                                onStopSending = {
+                                    val message = if (chatVm.stopSending()) {
+                                        "已终止当前处理"
+                                    } else {
+                                        "当前没有可终止的处理"
                                     }
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar(message)
+                                    }
+                                },
+                                onClear = { chatVm.clear() },
+                                onNewSession = {
+                                    dispatchChatAction(MainScreenChatAction.StartNewSession())
+                                },
+                                title = chatState.sessionTitle,
+                                hasApiKey = chatVm.hasActiveApiKey(chatConfig),
+                                workflowExecutionMode = effectiveChatConfig.workflowExecutionMode,
+                                autoRouteBeforeExecution = false,
+                                onNavigateToSettings = {
+                                    navigateToTopLevel(Screen.Settings)
+                                },
+                                onEditMessage = { messageId ->
+                                    chatVm.rollbackToUserMessage(messageId)
+                                },
+                                onCompressContext = {
+                                    scope.launch {
+                                        val message = chatVm.compressCurrentContext()
+                                            .fold(
+                                                onSuccess = {
+                                                    "已压缩 ${it.sourceMessageCount} 条历史消息，生成摘要 V${it.version} 后续将基于摘要续聊"
+                                                },
+                                                onFailure = { error ->
+                                                    error.message ?: "上下文压缩失败"
+                                                }
+                                            )
+                                        snackbarHostState.showSnackbar(message)
+                                    }
+                                },
+                                onGeneratePlan = { input, mentions ->
+                                    chatVm.generateWorkflowPlan(input, mentions)
+                                },
+                                onExecutePlan = {
+                                    chatVm.executePendingWorkflowPlan()
+                                },
+                                onDismissPlan = {
+                                    chatVm.dismissPendingWorkflowPlan()
+                                },
+                                onSubmitClarificationAnswer = { answer ->
+                                    chatVm.submitClarificationAnswer(answer)
+                                },
+                                onDismissClarification = {
+                                    chatVm.dismissPendingClarification()
+                                },
+                                onSearchFiles = { query ->
+                                    chatVm.searchProjectFiles(query)
+                                },
+                                onRetrySubagent = { runId ->
+                                    chatVm.retrySubagentRun(runId)
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar("已重新发起子代理")
+                                    }
+                                },
+                                onCancelSubagent = { runId ->
+                                    val message = if (chatVm.cancelSubagentRun(runId)) {
+                                        "已请求终止子代理"
+                                    } else {
+                                        "当前子代理无法终止"
+                                    }
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar(message)
+                                    }
+                                },
+                                onRollbackFileCheckpoint = { checkpointId ->
+                                    val message = chatVm.rollbackFileCheckpoint(checkpointId)
+                                        .fold(
+                                            onSuccess = { count ->
+                                                "已按该对话前状态回滚这一批修改，恢复 $count 个文件"
+                                            },
+                                            onFailure = { error ->
+                                                error.message ?: "回滚文件修改失败"
+                                            }
+                                        )
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar(message)
+                                    }
+                                }
+                            )
+                        } else {
+                            ChatPagePreviewPlaceholder(
+                                title = chatState.sessionTitle,
+                                messageCount = chatState.messages.size
+                            )
+                        }
+                    }
+
+                    if (previewMode) {
+                        ChatMainPage()
+                    } else {
+                        val panelWidth = 320.dp
+                        val panelWidthPx = with(LocalDensity.current) { panelWidth.toPx() }
+                        val animatedPanelProgress by animateFloatAsState(
+                            targetValue = if (chatSecondaryVisible) 1f else 0f,
+                            animationSpec = tween(
+                                durationMillis = 320,
+                                easing = FastOutSlowInEasing
+                            ),
+                            label = "chatSessionPanelProgress"
+                        )
+                        val panelProgress = if (
+                            chatSecondaryVisible && chatSessionPanelBackProgress > 0f
+                        ) {
+                            1f - chatSessionPanelBackProgress
+                        } else {
+                            animatedPanelProgress
+                        }.coerceIn(0f, 1f)
+
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            ChatMainPage()
+
+                            if (panelProgress > 0.001f) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(Color.Black.copy(alpha = 0.12f * panelProgress))
+                                        .clickable(
+                                            enabled = chatSecondaryVisible,
+                                            indication = null,
+                                            interactionSource = remember { MutableInteractionSource() }
+                                        ) {
+                                            dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
+                                        }
                                 )
-                            scope.launch {
-                                snackbarHostState.showSnackbar(message)
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.CenterStart
+                                ) {
+                                    SessionDrawerContent(
+                                        currentSessionId = chatState.sessionId,
+                                        sessions = chatSessions,
+                                        onNewSession = {
+                                            dispatchChatAction(
+                                                MainScreenChatAction.StartNewSession(closeDrawer = true)
+                                            )
+                                        },
+                                        onNewTask = {
+                                            dispatchChatAction(
+                                                MainScreenChatAction.OpenTaskDialog(projectPath = "")
+                                            )
+                                        },
+                                        onLoadSession = { sessionId ->
+                                            dispatchChatAction(
+                                                MainScreenChatAction.LoadSession(sessionId = sessionId)
+                                            )
+                                        },
+                                        onRenameSession = { sessionId ->
+                                            val sessionTitle = chatSessions
+                                                .firstOrNull { it.id == sessionId }
+                                                ?.title
+                                                .orEmpty()
+                                            dispatchChatAction(
+                                                MainScreenChatAction.OpenRenameDialog(
+                                                    sessionId = sessionId,
+                                                    title = sessionTitle
+                                                )
+                                            )
+                                        },
+                                        onDeleteSession = { sessionId ->
+                                            dispatchChatAction(
+                                                MainScreenChatAction.DeleteSession(sessionId = sessionId)
+                                            )
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxHeight()
+                                            .width(panelWidth)
+                                            .graphicsLayer {
+                                                translationX = -(1f - panelProgress) * panelWidthPx
+                                            }
+                                    )
+                                }
                             }
                         }
-                    )
+                    }
                 }
 
                 is Screen.Projects -> {
-                    Box(
-                        modifier = if (!previewMode && isProjectSecondaryPage) {
-                            Modifier.graphicsLayer {
-                                translationX = size.width * projectSecondaryBackProgress
-                                alpha = 1f - (projectSecondaryBackProgress * 0.08f)
+                    ProjectScreen(
+                        config = settingsConfig,
+                        currentProjectPath = chatState.projectPath,
+                        currentProjectScopePath = chatState.activeProjectScopePath,
+                        projectKnowledgeDraftPaths = chatState.projectKnowledgePaths,
+                        projectKnowledgeSnapshots = chatState.projectKnowledgeSnapshots,
+                        projectRules = chatState.projectRules,
+                        projectMemories = chatState.projectMemories,
+                        projectSkills = chatState.projectSkills,
+                        projectToolPreferences = chatState.projectToolPreferences,
+                        repoScopedConfigs = chatState.repoScopedConfigs,
+                        mcpToolNames = mcpStatuses.flatMap { status ->
+                            status.toolNames.map { "mcp_$it" }
+                        }.distinct().sorted(),
+                        sessions = chatSessions,
+                        onNewTask = {
+                            dispatchDialogAction(
+                                MainScreenDialogAction.ShowTaskDialog(
+                                    chatState.projectPath.orEmpty()
+                                )
+                            )
+                        },
+                        onOpenChat = {
+                            navigateToTopLevel(Screen.Chat)
+                        },
+                        onProjectScopeChanged = { scopePath ->
+                            chatVm.switchProjectScope(scopePath)
+                        },
+                        onUpdateProjectConfig = { scopePath, rules, memories, skills ->
+                            chatVm.updateProjectConfig(scopePath, rules, memories, skills)
+                        },
+                        onUpdateProjectToolPreferences = { scopePath, preferences ->
+                            chatVm.updateProjectToolPreferences(scopePath, preferences)
+                        },
+                        onUpdateProjectKnowledgeDraftPaths = { paths ->
+                            chatVm.updateProjectKnowledgePaths(paths)
+                        },
+                        onSaveProjectKnowledgeSnapshot = { name, paths ->
+                            chatVm.saveProjectKnowledgeSnapshot(name, paths)
+                        },
+                        onRenameProjectKnowledgeSnapshot = { snapshotId, newName ->
+                            chatVm.renameProjectKnowledgeSnapshot(snapshotId, newName)
+                        },
+                        onApplyProjectKnowledgeSnapshot = { snapshotId ->
+                            chatVm.applyProjectKnowledgeSnapshot(snapshotId)
+                        },
+                        onDeleteProjectKnowledgeSnapshot = { snapshotId ->
+                            chatVm.deleteProjectKnowledgeSnapshot(snapshotId)
+                        },
+                        onProjectSecondaryHostBridgeStateChanged = { state ->
+                            if (pageOwnsShellState) {
+                                dispatchProjectSecondaryHostAction(
+                                    MainScreenProjectSecondaryHostAction.UpdateBridgeState(state)
+                                )
                             }
+                        },
+                        projectSecondaryHostBackProgress = if (pageOwnsShellState) {
+                            projectSecondaryBackProgress
                         } else {
-                            Modifier
+                            0f
+                        },
+                        editorMenuActionSignal = if (pageOwnsShellState) {
+                            projectEditorMenuActionSignal
+                        } else {
+                            0
+                        },
+                        editorMenuAction = if (pageOwnsShellState) {
+                            projectEditorMenuAction
+                        } else {
+                            null
                         }
-                    ) {
-                        ProjectScreen(
-                            config = settingsConfig,
-                            currentProjectPath = chatState.projectPath,
-                            currentProjectScopePath = chatState.activeProjectScopePath,
-                            projectKnowledgeDraftPaths = chatState.projectKnowledgePaths,
-                            projectKnowledgeSnapshots = chatState.projectKnowledgeSnapshots,
-                            projectRules = chatState.projectRules,
-                            projectMemories = chatState.projectMemories,
-                            projectSkills = chatState.projectSkills,
-                            projectToolPreferences = chatState.projectToolPreferences,
-                            repoScopedConfigs = chatState.repoScopedConfigs,
-                            mcpToolNames = mcpStatuses.flatMap { status ->
-                                status.toolNames.map { "mcp_$it" }
-                            }.distinct().sorted(),
-                            sessions = chatSessions,
-                            onNewTask = {
-                                taskProjectPath = chatState.projectPath.orEmpty()
-                                showTaskDialog = true
-                            },
-                            onOpenChat = {
-                                navigateToTopLevel(Screen.Chat)
-                            },
-                            onProjectScopeChanged = { scopePath ->
-                                chatVm.switchProjectScope(scopePath)
-                            },
-                            onUpdateProjectConfig = { scopePath, rules, memories, skills ->
-                                chatVm.updateProjectConfig(scopePath, rules, memories, skills)
-                            },
-                            onUpdateProjectToolPreferences = { scopePath, preferences ->
-                                chatVm.updateProjectToolPreferences(scopePath, preferences)
-                            },
-                            onUpdateProjectKnowledgeDraftPaths = { paths ->
-                                chatVm.updateProjectKnowledgePaths(paths)
-                            },
-                            onSaveProjectKnowledgeSnapshot = { name, paths ->
-                                chatVm.saveProjectKnowledgeSnapshot(name, paths)
-                            },
-                            onRenameProjectKnowledgeSnapshot = { snapshotId, newName ->
-                                chatVm.renameProjectKnowledgeSnapshot(snapshotId, newName)
-                            },
-                            onApplyProjectKnowledgeSnapshot = { snapshotId ->
-                                chatVm.applyProjectKnowledgeSnapshot(snapshotId)
-                            },
-                            onDeleteProjectKnowledgeSnapshot = { snapshotId ->
-                                chatVm.deleteProjectKnowledgeSnapshot(snapshotId)
-                            },
-                            onProjectSecondaryPageChanged = { state ->
-                                if (!previewMode) {
-                                    projectSecondaryChromeState = state
-                                }
-                            },
-                            closeProjectSecondaryPageRequestSignal = if (previewMode) {
-                                0
-                            } else {
-                                projectSecondaryCloseRequestSignal
-                            },
-                            projectSecondaryBackProgress = if (previewMode) 0f else projectSecondaryBackProgress,
-                            editorMenuActionSignal = if (previewMode) 0 else projectEditorMenuActionSignal,
-                            editorMenuAction = if (previewMode) null else projectEditorMenuAction
-                        )
-                    }
+                    )
                 }
 
                 is Screen.Tools -> {
@@ -807,71 +1231,486 @@ fun MainScreen() {
                 }
 
                 is Screen.Settings -> {
-                    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                        @Composable
-                        fun SettingsMainPage() {
-                            SettingsScreen(
-                                config = settingsConfig,
-                                onConfigChanged = { settingsVm.updateConfig(it) },
-                                gitHubAuthState = gitHubAuthState,
-                                rootStatus = rootStatus,
-                                isCheckingRoot = isCheckingRoot,
-                                onCheckRoot = { settingsVm.checkRoot() },
-                                sessions = settingsSessions,
-                                balanceSyncStates = balanceSyncStates,
-                                mcpServers = mcpServers,
-                                mcpStatuses = mcpStatuses,
-                                mcpConnectError = mcpConnectError,
-                                onRefreshProviderBalance = { settingsVm.refreshProviderBalance(it) },
-                                supportsBalanceFetch = { settingsVm.supportsBalanceFetch(it) },
-                                onAddMcpServer = { settingsVm.addMcpServer(it) },
-                                onRemoveMcpServer = { settingsVm.removeMcpServer(it) },
-                                onConnectMcpServers = { settingsVm.connectMcpServers() },
-                                onRefreshMcpStatus = { settingsVm.refreshMcpStatus() },
-                                onRefreshGitHubAuthStatus = { settingsVm.refreshGitHubAuthStatus() },
-                                onStartGitHubOAuthLogin = { settingsVm.startGitHubOAuthLogin() },
-                                onClearGitHubToken = { settingsVm.clearGitHubToken() },
-                                onOpenThemePage = { settingsSubpage = SettingsSubpage.Theme },
-                                onOpenAboutPage = { settingsSubpage = SettingsSubpage.About }
+                    @Composable
+                    fun SettingsMainPage() {
+                        SettingsScreen(
+                            config = settingsConfig,
+                            onConfigChanged = { settingsVm.updateConfig(it) },
+                            gitHubAuthState = gitHubAuthState,
+                            rootStatus = rootStatus,
+                            isCheckingRoot = isCheckingRoot,
+                            onCheckRoot = { settingsVm.checkRoot() },
+                            sessions = settingsSessions,
+                            balanceSyncStates = balanceSyncStates,
+                            mcpServers = mcpServers,
+                            mcpStatuses = mcpStatuses,
+                            mcpConnectError = mcpConnectError,
+                            onRefreshProviderBalance = { settingsVm.refreshProviderBalance(it) },
+                            supportsBalanceFetch = { settingsVm.supportsBalanceFetch(it) },
+                            onAddMcpServer = { settingsVm.addMcpServer(it) },
+                            onRemoveMcpServer = { settingsVm.removeMcpServer(it) },
+                            onConnectMcpServers = { settingsVm.connectMcpServers() },
+                            onRefreshMcpStatus = { settingsVm.refreshMcpStatus() },
+                            onRefreshGitHubAuthStatus = { settingsVm.refreshGitHubAuthStatus() },
+                            onStartGitHubOAuthLogin = { settingsVm.startGitHubOAuthLogin() },
+                            onClearGitHubToken = { settingsVm.clearGitHubToken() },
+                            onOpenThemePage = {
+                                dispatchSettingsAction(MainScreenSettingsAction.OpenThemePage)
+                            },
+                            onOpenAboutPage = {
+                                dispatchSettingsAction(MainScreenSettingsAction.OpenAboutPage)
+                            }
+                        )
+                    }
+                    @Composable
+                    fun SettingsDetailPage() {
+                        when (settingsSubpage) {
+                            SettingsSubpage.Main -> SettingsMainPage()
+                            SettingsSubpage.Theme -> ThemeSettingsPage()
+                            SettingsSubpage.About -> AboutPage()
+                        }
+                    }
+
+                    LaunchedEffect(
+                        previewMode,
+                        settingsSubpage,
+                        secondaryHostRuntimeState.hostBackProgress
+                    ) {
+                        // #region debug-point U:settings-host-state
+                        reportGitBackChatFlashMainDebug(
+                            hypothesisId = "U2",
+                            location = "MainActivity.kt:settingsHostState",
+                            msg = "[DEBUG] settings host state snapshot",
+                            data = JSONObject()
+                                .put("previewMode", previewMode)
+                                .put("settingsSubpage", settingsSubpage.toString())
+                                .put("hostBackProgress", secondaryHostRuntimeState.hostBackProgress)
+                                .put("isSettingsSecondaryPage", isSettingsSecondaryPage)
+                        )
+                        // #endregion
+                    }
+
+                    if (previewMode) {
+                        SettingsDetailPage()
+                    } else {
+                        ReasonixNestedPredictiveBackHost(
+                            detailVisible = isSettingsSecondaryPage,
+                            backProgress = secondaryHostRuntimeState.hostBackProgress,
+                            modifier = Modifier.fillMaxSize(),
+                            wrapDetailInSecondarySurface = false,
+                            wrapListInSecondarySurface = false,
+                            detailContent = { SettingsDetailPage() },
+                            listContent = { SettingsMainPage() }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun MainTopBarChrome(
+        topBarStateValue: MainScreenTopBarState,
+        modifier: Modifier = Modifier
+    ) {
+        ReasonixGlassSurface(
+            modifier = modifier
+                .statusBarsPadding()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            shape = RoundedCornerShape(26.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            surfaceColorOverride = chromeColor.copy(alpha = if (darkMode) 0.60f else 0.68f)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier.width(92.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    when (topBarStateValue.leadingAction) {
+                        MainScreenTopBarLeadingAction.SETTINGS_BACK -> {
+                            ReasonixOutlinedActionButton(
+                                text = "返回",
+                                onClick = {
+                                    dispatchHostAction(topBarStateValue.leadingHostAction)
+                                }
                             )
                         }
-                        @Composable
-                        fun SettingsDetailPage() {
-                            when (settingsSubpage) {
-                                SettingsSubpage.Main -> SettingsMainPage()
-                                SettingsSubpage.Theme -> ThemeSettingsPage()
-                                SettingsSubpage.About -> AboutPage()
+                        MainScreenTopBarLeadingAction.PROJECT_BACK -> {
+                            ReasonixOutlinedActionButton(
+                                text = "返回",
+                                onClick = {
+                                    dispatchHostAction(topBarStateValue.leadingHostAction)
+                                }
+                            )
+                        }
+                        MainScreenTopBarLeadingAction.CHAT_DRAWER -> {
+                            IconButton(
+                                onClick = {
+                                    dispatchHostAction(
+                                        if (isChatSessionPanelVisible) {
+                                            MainScreenHostAction.CloseChatDrawer
+                                        } else {
+                                            topBarStateValue.leadingHostAction
+                                        }
+                                    )
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Menu,
+                                    contentDescription = if (isChatSessionPanelVisible) {
+                                        "关闭会话列表"
+                                    } else {
+                                        "打开会话列表"
+                                    }
+                                )
                             }
                         }
-
-                        if (previewMode || settingsSubpage == SettingsSubpage.Main) {
-                            SettingsDetailPage()
-                        } else if (settingsBackProgress > 0.02f) {
-                            val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
-                            val currentTranslationX = widthPx * settingsBackProgress
-                            val previousTranslationX = currentTranslationX - widthPx
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .graphicsLayer {
-                                        translationX = previousTranslationX
-                                        alpha = 1f
+                        MainScreenTopBarLeadingAction.TOP_LEVEL_BACK -> {
+                            ReasonixOutlinedActionButton(
+                                text = "返回",
+                                onClick = {
+                                    dispatchHostAction(topBarStateValue.leadingHostAction)
+                                }
+                            )
+                        }
+                        MainScreenTopBarLeadingAction.BRAND -> {
+                            Text(
+                                text = "Reasonix",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = topBarStateValue.title,
+                        modifier = if (
+                            topBarStateValue.showProjectEditorMenu &&
+                            projectSecondaryChromeState.title.isNotBlank()
+                        ) {
+                            Modifier.combinedClickable(
+                                onClick = {},
+                                onLongClick = {
+                                    copyTextToClipboard(context, projectSecondaryChromeState.title)
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar("已复制文件名")
                                     }
-                            ) {
-                                SettingsMainPage()
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .graphicsLayer {
-                                        translationX = currentTranslationX
-                                        alpha = 1f
-                                    }
-                            ) {
-                                SettingsDetailPage()
-                            }
+                                }
+                            )
                         } else {
-                            SettingsDetailPage()
+                            Modifier
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (topBarStateValue.subtitle.isNotBlank()) {
+                        Text(
+                            text = topBarStateValue.subtitle,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.widthIn(min = 92.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    if (topBarStateValue.showProjectEditorMenu) {
+                        Box {
+                            IconButton(
+                                onClick = {
+                                    dispatchOverlayVisibilityAction(
+                                        MainScreenOverlayVisibilityAction.SHOW_PROJECT_EDITOR_MENU
+                                    )
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.MoreVert,
+                                    contentDescription = "文件操作"
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showProjectEditorMenu,
+                                onDismissRequest = {
+                                    dispatchOverlayVisibilityAction(
+                                        MainScreenOverlayVisibilityAction.HIDE_PROJECT_EDITOR_MENU
+                                    )
+                                }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("复制文件名") },
+                                    onClick = {
+                                        copyTextToClipboard(context, projectSecondaryChromeState.title)
+                                        dispatchOverlayVisibilityAction(
+                                            MainScreenOverlayVisibilityAction.HIDE_PROJECT_EDITOR_MENU
+                                        )
+                                    }
+                                )
+                                projectSecondaryChromeState.subtitle
+                                    .takeIf { it.isNotBlank() }
+                                    ?.let { relativePath ->
+                                        DropdownMenuItem(
+                                            text = { Text("复制相对路径") },
+                                            onClick = {
+                                                copyTextToClipboard(context, relativePath)
+                                                dispatchOverlayVisibilityAction(
+                                                    MainScreenOverlayVisibilityAction.HIDE_PROJECT_EDITOR_MENU
+                                                )
+                                            }
+                                        )
+                                    }
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text(ProjectEditorMenuAction.SEARCH_REPLACE.label) },
+                                    onClick = {
+                                        dispatchProjectEditorMenuAction(ProjectEditorMenuAction.SEARCH_REPLACE)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(ProjectEditorMenuAction.LANGUAGE.label) },
+                                    onClick = {
+                                        dispatchProjectEditorMenuAction(ProjectEditorMenuAction.LANGUAGE)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(ProjectEditorMenuAction.DIAGNOSTICS.label) },
+                                    onClick = {
+                                        dispatchProjectEditorMenuAction(ProjectEditorMenuAction.DIAGNOSTICS)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(ProjectEditorMenuAction.CONFLICTS.label) },
+                                    onClick = {
+                                        dispatchProjectEditorMenuAction(ProjectEditorMenuAction.CONFLICTS)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(ProjectEditorMenuAction.OUTLINE.label) },
+                                    onClick = {
+                                        dispatchProjectEditorMenuAction(ProjectEditorMenuAction.OUTLINE)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(ProjectEditorMenuAction.AI_COMPLETION.label) },
+                                    onClick = {
+                                        dispatchProjectEditorMenuAction(ProjectEditorMenuAction.AI_COMPLETION)
+                                    }
+                                )
+                                HorizontalDivider()
+                                listOf(
+                                    ProjectEditorMenuAction.LINE_COPY,
+                                    ProjectEditorMenuAction.LINE_CUT,
+                                    ProjectEditorMenuAction.LINE_DELETE,
+                                    ProjectEditorMenuAction.LINE_CLEAR,
+                                    ProjectEditorMenuAction.LINE_REPLACE,
+                                    ProjectEditorMenuAction.LINE_DUPLICATE,
+                                    ProjectEditorMenuAction.LINE_UPPERCASE,
+                                    ProjectEditorMenuAction.LINE_LOWERCASE,
+                                    ProjectEditorMenuAction.LINE_INDENT_MORE,
+                                    ProjectEditorMenuAction.LINE_INDENT_LESS,
+                                    ProjectEditorMenuAction.LINE_TOGGLE_COMMENT
+                                ).forEach { action ->
+                                    DropdownMenuItem(
+                                        text = { Text(action.label) },
+                                        onClick = {
+                                            dispatchProjectEditorMenuAction(action)
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        if (topBarStateValue.showChatUsageSummary) {
+                            ChatUsageSummaryBadge(usageSummary = chatState.usageSummary)
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
+                    }
+                    if (topBarStateValue.showTag) {
+                        ReasonixTagButton(text = topBarStateValue.tag, onClick = {})
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
+                    if (topBarStateValue.showChatOverflowMenu) {
+                        Box {
+                            IconButton(
+                                onClick = {
+                                    dispatchOverlayVisibilityAction(
+                                        MainScreenOverlayVisibilityAction.SHOW_CHAT_MENU
+                                    )
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.MoreVert,
+                                    contentDescription = "聊天操作"
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showChatMenu,
+                                onDismissRequest = {
+                                    dispatchOverlayVisibilityAction(
+                                        MainScreenOverlayVisibilityAction.HIDE_CHAT_MENU
+                                    )
+                                }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("新对话") },
+                                    onClick = {
+                                        dispatchChatAction(
+                                            MainScreenChatAction.StartNewSession(
+                                                dismissMenu = true
+                                            )
+                                        )
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("新任务") },
+                                    onClick = {
+                                        dispatchChatAction(
+                                            MainScreenChatAction.OpenTaskDialog(
+                                                projectPath = "",
+                                                dismissMenu = true
+                                            )
+                                        )
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("重命名会话") },
+                                    onClick = {
+                                        dispatchChatAction(
+                                            MainScreenChatAction.OpenRenameDialog(
+                                                sessionId = chatState.sessionId,
+                                                title = chatState.sessionTitle,
+                                                dismissMenu = true
+                                            )
+                                        )
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("导出会话") },
+                                    onClick = {
+                                        dispatchChatAction(
+                                            MainScreenChatAction.OpenExportDialog(
+                                                dismissMenu = true
+                                            )
+                                        )
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (chatState.compressionSnapshot == null) {
+                                                "压缩上下文"
+                                            } else if (chatState.compressionSnapshot?.active == true) {
+                                                "停用压缩"
+                                            } else {
+                                                "启用压缩"
+                                            }
+                                        )
+                                    },
+                                    onClick = {
+                                        scope.launch {
+                                            val message = when {
+                                                chatState.compressionSnapshot == null -> {
+                                                    chatVm.compressCurrentContext()
+                                                        .fold(
+                                                            onSuccess = {
+                                                                "已压缩 ${it.sourceMessageCount} 条历史消息，生成摘要 V${it.version} 后续将基于摘要续聊"
+                                                            },
+                                                            onFailure = { error ->
+                                                                error.message ?: "上下文压缩失败"
+                                                            }
+                                                        )
+                                                }
+
+                                                chatState.compressionSnapshot?.active == true -> {
+                                                    if (chatVm.disableContextCompression()) {
+                                                        "已停用上下文压缩，将恢复使用完整历史"
+                                                    } else {
+                                                        "停用上下文压缩失败"
+                                                    }
+                                                }
+
+                                                else -> {
+                                                    if (chatVm.enableContextCompression()) {
+                                                        "已重新启用上下文压缩"
+                                                    } else {
+                                                        "启用上下文压缩失败"
+                                                    }
+                                                }
+                                            }
+                                            snackbarHostState.showSnackbar(message)
+                                        }
+                                        dispatchOverlayVisibilityAction(
+                                            MainScreenOverlayVisibilityAction.HIDE_CHAT_MENU
+                                        )
+                                    }
+                                )
+                                if (chatState.compressionSnapshot != null) {
+                                    DropdownMenuItem(
+                                        text = { Text("重新压缩摘要") },
+                                        onClick = {
+                                            scope.launch {
+                                                val message = chatVm.compressCurrentContext()
+                                                    .fold(
+                                                        onSuccess = {
+                                                            "已生成摘要 V${it.version}，压缩 ${it.sourceMessageCount} 条历史消息"
+                                                        },
+                                                        onFailure = { error ->
+                                                            error.message ?: "重新压缩摘要失败"
+                                                        }
+                                                    )
+                                                snackbarHostState.showSnackbar(message)
+                                            }
+                                            dispatchOverlayVisibilityAction(
+                                                MainScreenOverlayVisibilityAction.HIDE_CHAT_MENU
+                                            )
+                                        }
+                                    )
+                                }
+                                DropdownMenuItem(
+                                    text = { Text("导入对话") },
+                                    onClick = {
+                                        importConversationLauncher.launch(
+                                            arrayOf("text/*", "application/json")
+                                        )
+                                        dispatchOverlayVisibilityAction(
+                                            MainScreenOverlayVisibilityAction.HIDE_CHAT_MENU
+                                        )
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("复制全部") },
+                                    onClick = {
+                                        copyTextToClipboard(
+                                            context = context,
+                                            text = buildConversationText(chatState.messages)
+                                        )
+                                        dispatchOverlayVisibilityAction(
+                                            MainScreenOverlayVisibilityAction.HIDE_CHAT_MENU
+                                        )
+                                    }
+                                )
+                                if (chatState.messages.any { it.role == "user" }) {
+                                    DropdownMenuItem(
+                                        text = { Text("回退最近一轮") },
+                                        onClick = {
+                                            chatVm.rollbackLastTurn()
+                                            dispatchOverlayVisibilityAction(
+                                                MainScreenOverlayVisibilityAction.HIDE_CHAT_MENU
+                                            )
+                                        }
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -879,49 +1718,23 @@ fun MainScreen() {
         }
     }
 
-    LaunchedEffect(visibleScreen, settingsSubpage) {
-        if (visibleScreen !is Screen.Chat || settingsSubpage != SettingsSubpage.Main) {
-            drawerState.close()
+    LaunchedEffect(overlayState.shouldCloseChatDrawer) {
+        if (overlayState.shouldCloseChatDrawer) {
+            dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
+        }
+    }
+    LaunchedEffect(overlayState.shouldDismissChatMenu) {
+        if (overlayState.shouldDismissChatMenu) {
+            dispatchOverlayVisibilityAction(MainScreenOverlayVisibilityAction.HIDE_CHAT_MENU)
+        }
+    }
+    LaunchedEffect(overlayState.shouldDismissProjectEditorMenu) {
+        if (overlayState.shouldDismissProjectEditorMenu) {
+            dispatchOverlayVisibilityAction(MainScreenOverlayVisibilityAction.HIDE_PROJECT_EDITOR_MENU)
         }
     }
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        gesturesEnabled = visibleScreen is Screen.Chat && showBottomBar,
-        drawerContent = {
-            if (visibleScreen is Screen.Chat) {
-                ModalDrawerSheet {
-                    SessionDrawerContent(
-                        currentSessionId = chatState.sessionId,
-                        sessions = chatSessions,
-                        onNewSession = {
-                            chatVm.newSession()
-                            scope.launch { drawerState.close() }
-                        },
-                        onNewTask = {
-                            taskProjectPath = ""
-                            showTaskDialog = true
-                        },
-                        onLoadSession = { sessionId ->
-                            chatVm.loadSession(sessionId)
-                            scope.launch { drawerState.close() }
-                        },
-                        onRenameSession = { sessionId ->
-                            val sessionTitle = chatSessions
-                                .firstOrNull { it.id == sessionId }
-                                ?.title
-                                .orEmpty()
-                            openRenameDialog(sessionId, sessionTitle)
-                        },
-                        onDeleteSession = { sessionId ->
-                            chatVm.deleteSession(sessionId)
-                        }
-                    )
-                }
-            }
-        },
-    ) {
-        Box(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = Modifier.fillMaxSize()) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -938,356 +1751,46 @@ fun MainScreen() {
                 },
                 containerColor = Color.Transparent,
                 topBar = {
-                    ReasonixGlassSurface(
-                        modifier = Modifier
-                            .statusBarsPadding()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        shape = RoundedCornerShape(26.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                        surfaceColorOverride = chromeColor.copy(alpha = if (darkMode) 0.60f else 0.68f)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
+                    if (showBottomBar && !hasSecondaryPage) {
+                        BoxWithConstraints(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clipToBounds()
                         ) {
+                            val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
+                            val lowerPage = floor(pagerVisualIndex).toInt()
+                                .coerceIn(0, shellScreens.lastIndex)
+                            val upperPage = ceil(pagerVisualIndex).toInt()
+                                .coerceIn(0, shellScreens.lastIndex)
+                            val renderedPages = listOf(lowerPage, upperPage).distinct()
                             Box(
-                                modifier = Modifier.width(92.dp),
-                                contentAlignment = Alignment.CenterStart
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clipToBounds()
                             ) {
-                                when {
-                                    settingsSubpage != SettingsSubpage.Main -> {
-                                        ReasonixOutlinedActionButton(
-                                            text = "返回",
-                                            onClick = { settingsSubpage = SettingsSubpage.Main }
-                                        )
-                                    }
-                                    isProjectSecondaryPage -> {
-                                        ReasonixOutlinedActionButton(
-                                            text = "返回",
-                                            onClick = { projectSecondaryCloseRequestSignal += 1 }
-                                        )
-                                    }
-                                    visibleScreen is Screen.Chat -> {
-                                        IconButton(
-                                            onClick = {
-                                                scope.launch {
-                                                    drawerState.open()
-                                                }
-                                            }
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Outlined.Menu,
-                                                contentDescription = "打开会话列表"
-                                            )
+                                renderedPages.forEach { page ->
+                                    val pageTopBarState = resolveMainScreenTopBarState(
+                                        settingsSubpage = SettingsSubpage.Main,
+                                        chromeScreen = shellScreens[page],
+                                        chatSessionTitle = chatState.sessionTitle,
+                                        usageSummary = chatState.usageSummary,
+                                        projectSecondaryChromeState = ProjectSecondaryChromeState(),
+                                        isProjectSecondaryPage = false,
+                                        isChatChromeVisible = page == chatPageIndex,
+                                        hasTopLevelHistory = shellState.hasTopLevelHistory,
+                                        isTopLevelNavigationSettled = page == settledTopLevelPage
+                                    )
+                                    MainTopBarChrome(
+                                        topBarStateValue = pageTopBarState,
+                                        modifier = Modifier.graphicsLayer {
+                                            translationX = (page - pagerVisualIndex) * widthPx
                                         }
-                                    }
-                                    topLevelHistory.isNotEmpty() -> {
-                                        ReasonixOutlinedActionButton(
-                                            text = "返回",
-                                            onClick = {
-                                                scope.launch {
-                                                    navigateBackToPreviousTopLevel()
-                                                }
-                                            }
-                                        )
-                                    }
-                                    else -> {
-                                        Text(
-                                            text = "Reasonix",
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            }
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Text(
-                                    text = topBarTitle,
-                                    modifier = if (
-                                        isProjectSecondaryPage &&
-                                        projectSecondaryChromeState.supportsEditorMenu &&
-                                        projectSecondaryChromeState.title.isNotBlank()
-                                    ) {
-                                        Modifier.combinedClickable(
-                                            onClick = {},
-                                            onLongClick = {
-                                                copyTextToClipboard(context, projectSecondaryChromeState.title)
-                                                scope.launch {
-                                                    snackbarHostState.showSnackbar("已复制文件名")
-                                                }
-                                            }
-                                        )
-                                    } else {
-                                        Modifier
-                                    },
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                if (topBarSubtitle.isNotBlank()) {
-                                    Text(
-                                        text = topBarSubtitle,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }
-                            Row(
-                                modifier = Modifier.widthIn(min = 92.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.End
-                            ) {
-                                if (isProjectSecondaryPage && projectSecondaryChromeState.supportsEditorMenu) {
-                                    Box {
-                                        IconButton(onClick = { showProjectEditorMenu = true }) {
-                                            Icon(
-                                                imageVector = Icons.Outlined.MoreVert,
-                                                contentDescription = "文件操作"
-                                            )
-                                        }
-                                        DropdownMenu(
-                                            expanded = showProjectEditorMenu,
-                                            onDismissRequest = { showProjectEditorMenu = false }
-                                        ) {
-                                            DropdownMenuItem(
-                                                text = { Text("复制文件名") },
-                                                onClick = {
-                                                    copyTextToClipboard(context, projectSecondaryChromeState.title)
-                                                    showProjectEditorMenu = false
-                                                }
-                                            )
-                                            projectSecondaryChromeState.subtitle
-                                                .takeIf { it.isNotBlank() }
-                                                ?.let { relativePath ->
-                                                    DropdownMenuItem(
-                                                        text = { Text("复制相对路径") },
-                                                        onClick = {
-                                                            copyTextToClipboard(context, relativePath)
-                                                            showProjectEditorMenu = false
-                                                        }
-                                                    )
-                                                }
-                                            HorizontalDivider()
-                                            DropdownMenuItem(
-                                                text = { Text(ProjectEditorMenuAction.SEARCH_REPLACE.label) },
-                                                onClick = {
-                                                    dispatchProjectEditorMenuAction(ProjectEditorMenuAction.SEARCH_REPLACE)
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = { Text(ProjectEditorMenuAction.LANGUAGE.label) },
-                                                onClick = {
-                                                    dispatchProjectEditorMenuAction(ProjectEditorMenuAction.LANGUAGE)
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = { Text(ProjectEditorMenuAction.DIAGNOSTICS.label) },
-                                                onClick = {
-                                                    dispatchProjectEditorMenuAction(ProjectEditorMenuAction.DIAGNOSTICS)
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = { Text(ProjectEditorMenuAction.CONFLICTS.label) },
-                                                onClick = {
-                                                    dispatchProjectEditorMenuAction(ProjectEditorMenuAction.CONFLICTS)
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = { Text(ProjectEditorMenuAction.OUTLINE.label) },
-                                                onClick = {
-                                                    dispatchProjectEditorMenuAction(ProjectEditorMenuAction.OUTLINE)
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = { Text(ProjectEditorMenuAction.AI_COMPLETION.label) },
-                                                onClick = {
-                                                    dispatchProjectEditorMenuAction(ProjectEditorMenuAction.AI_COMPLETION)
-                                                }
-                                            )
-                                            HorizontalDivider()
-                                            listOf(
-                                                ProjectEditorMenuAction.LINE_COPY,
-                                                ProjectEditorMenuAction.LINE_CUT,
-                                                ProjectEditorMenuAction.LINE_DELETE,
-                                                ProjectEditorMenuAction.LINE_CLEAR,
-                                                ProjectEditorMenuAction.LINE_REPLACE,
-                                                ProjectEditorMenuAction.LINE_DUPLICATE,
-                                                ProjectEditorMenuAction.LINE_UPPERCASE,
-                                                ProjectEditorMenuAction.LINE_LOWERCASE,
-                                                ProjectEditorMenuAction.LINE_INDENT_MORE,
-                                                ProjectEditorMenuAction.LINE_INDENT_LESS,
-                                                ProjectEditorMenuAction.LINE_TOGGLE_COMMENT
-                                            ).forEach { action ->
-                                                DropdownMenuItem(
-                                                    text = { Text(action.label) },
-                                                    onClick = {
-                                                        dispatchProjectEditorMenuAction(action)
-                                                    }
-                                                )
-                                            }
-                                        }
-                                    }
-                                } else if (visibleScreen is Screen.Chat && settingsSubpage == SettingsSubpage.Main) {
-                                    chatState.usageSummary
-                                        .takeIf { it.totalTokens > 0 || it.promptTokens > 0 }
-                                        ?.let { usageSummary ->
-                                            ChatUsageSummaryBadge(usageSummary = usageSummary)
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                    }
-                                } else {
-                                    ReasonixTagButton(text = topBarTag, onClick = {})
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                }
-                                if (visibleScreen is Screen.Chat && settingsSubpage == SettingsSubpage.Main) {
-                                    Box {
-                                        IconButton(onClick = { showChatMenu = true }) {
-                                            Icon(
-                                                imageVector = Icons.Outlined.MoreVert,
-                                                contentDescription = "聊天操作"
-                                            )
-                                        }
-                                        DropdownMenu(
-                                            expanded = showChatMenu,
-                                            onDismissRequest = { showChatMenu = false }
-                                        ) {
-                                            DropdownMenuItem(
-                                                text = { Text("新对话") },
-                                                onClick = {
-                                                    chatVm.newSession()
-                                                    showChatMenu = false
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = { Text("新任务") },
-                                                onClick = {
-                                                    taskProjectPath = ""
-                                                    showTaskDialog = true
-                                                    showChatMenu = false
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = { Text("重命名会话") },
-                                                onClick = {
-                                                    openRenameDialog(
-                                                        chatState.sessionId,
-                                                        chatState.sessionTitle
-                                                    )
-                                                    showChatMenu = false
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = { Text("导出会话") },
-                                                onClick = {
-                                                    exportFormat = ConversationExportFormat.MARKDOWN
-                                                    showExportDialog = true
-                                                    showChatMenu = false
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = {
-                                                    Text(
-                                                        if (chatState.compressionSnapshot == null) {
-                                                            "压缩上下文"
-                                                        } else if (chatState.compressionSnapshot?.active == true) {
-                                                            "停用压缩"
-                                                        } else {
-                                                            "启用压缩"
-                                                        }
-                                                    )
-                                                },
-                                                onClick = {
-                                                    scope.launch {
-                                                        val message = when {
-                                                            chatState.compressionSnapshot == null -> {
-                                                                chatVm.compressCurrentContext()
-                                                                    .fold(
-                                                                        onSuccess = {
-                                                                            "已压缩 ${it.sourceMessageCount} 条历史消息，生成摘要 V${it.version} 后续将基于摘要续聊"
-                                                                        },
-                                                                        onFailure = { error ->
-                                                                            error.message ?: "上下文压缩失败"
-                                                                        }
-                                                                    )
-                                                            }
-
-                                                            chatState.compressionSnapshot?.active == true -> {
-                                                                if (chatVm.disableContextCompression()) {
-                                                                    "已停用上下文压缩，将恢复使用完整历史"
-                                                                } else {
-                                                                    "停用上下文压缩失败"
-                                                                }
-                                                            }
-
-                                                            else -> {
-                                                                if (chatVm.enableContextCompression()) {
-                                                                    "已重新启用上下文压缩"
-                                                                } else {
-                                                                    "启用上下文压缩失败"
-                                                                }
-                                                            }
-                                                        }
-                                                        snackbarHostState.showSnackbar(message)
-                                                    }
-                                                    showChatMenu = false
-                                                }
-                                            )
-                                            if (chatState.compressionSnapshot != null) {
-                                                DropdownMenuItem(
-                                                    text = { Text("重新压缩摘要") },
-                                                    onClick = {
-                                                        scope.launch {
-                                                            val message = chatVm.compressCurrentContext()
-                                                                .fold(
-                                                                    onSuccess = {
-                                                                        "已生成摘要 V${it.version}，压缩 ${it.sourceMessageCount} 条历史消息"
-                                                                    },
-                                                                    onFailure = { error ->
-                                                                        error.message ?: "重新压缩摘要失败"
-                                                                    }
-                                                                )
-                                                            snackbarHostState.showSnackbar(message)
-                                                        }
-                                                        showChatMenu = false
-                                                    }
-                                                )
-                                            }
-                                            DropdownMenuItem(
-                                                text = { Text("导入对话") },
-                                                onClick = {
-                                                    importConversationLauncher.launch(
-                                                        arrayOf("text/*", "application/json")
-                                                    )
-                                                    showChatMenu = false
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = { Text("复制全部") },
-                                                onClick = {
-                                                    copyTextToClipboard(
-                                                        context = context,
-                                                        text = buildConversationText(chatState.messages)
-                                                    )
-                                                    showChatMenu = false
-                                                }
-                                            )
-                                            if (chatState.messages.any { it.role == "user" }) {
-                                                DropdownMenuItem(
-                                                    text = { Text("回退最近一轮") },
-                                                    onClick = {
-                                                        chatVm.rollbackLastTurn()
-                                                        showChatMenu = false
-                                                    }
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
                         }
+                    } else {
+                        MainTopBarChrome(topBarState)
                     }
                 }
             ) { innerPadding ->
@@ -1295,13 +1798,20 @@ fun MainScreen() {
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(innerPadding)
-                        .reasonixGlassSource(LocalReasonixHazeState.current)
+                        .clipToBounds()
                 ) {
                     val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        topLevelPredictivePreviewTargetPage?.takeIf { showTopLevelPredictivePreview }?.let { targetPage ->
-                            val currentTranslationX = widthPx * topLevelBackProgress
-                            val previousTranslationX = currentTranslationX - widthPx
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .reasonixGlassSource(LocalReasonixHazeState.current)
+                    ) {
+                        topLevelPreviewState.targetPage?.takeIf { topLevelPreviewState.isVisible }?.let { targetPage ->
+                            val directionMultiplier = topLevelPreviewState.directionMultiplier
+                            val currentTranslationX =
+                                widthPx * topLevelBackProgress * directionMultiplier
+                            val previousTranslationX =
+                                currentTranslationX - (widthPx * directionMultiplier)
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -1324,14 +1834,16 @@ fun MainScreen() {
                                     }
                             ) {
                                 TopLevelPageContent(
-                                    page = selectedTopLevelPage,
+                                    page = topLevelPreviewState.currentPage,
                                     previewMode = true
                                 )
                             }
                         } ?: HorizontalPager(
                             state = pagerState,
-                            modifier = Modifier.fillMaxSize(),
-                            userScrollEnabled = false
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clipToBounds(),
+                            userScrollEnabled = showBottomBar
                         ) { page ->
                             TopLevelPageContent(page = page)
                         }
@@ -1350,29 +1862,30 @@ fun MainScreen() {
                     selectedIndex = selectedTopLevelPage,
                     visualIndex = pagerVisualIndex,
                     onSelect = { index ->
-                        selectedTopLevelPage = index
+                        dispatchHostAction(MainScreenHostAction.NavigateToTopLevelPage(index))
                     },
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
                 )
             }
         }
 
         if (showTaskDialog) {
             CreateTaskDialog(
-                onDismiss = { showTaskDialog = false },
+                onDismiss = { dispatchDialogAction(MainScreenDialogAction.HideTaskDialog) },
                 projectPath = taskProjectPath,
-                onProjectPathChange = { taskProjectPath = it },
+                onProjectPathChange = {
+                    dispatchDialogAction(MainScreenDialogAction.UpdateTaskProjectPath(it))
+                },
                 onPickFolder = {
                     folderPickerLauncher.launch(null)
                 },
                 onCreateTask = { projectPath ->
                     chatVm.startTask(projectPath)
-                    taskProjectPath = ""
-                    showTaskDialog = false
-                    scope.launch { drawerState.close() }
+                    dispatchDialogAction(MainScreenDialogAction.HideTaskDialog)
+                    dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
                     navigateToTopLevel(Screen.Chat)
                 }
             )
@@ -1381,8 +1894,10 @@ fun MainScreen() {
         renameSessionTargetId?.let { sessionId ->
             RenameSessionDialog(
                 value = renameSessionDraft,
-                onValueChange = { renameSessionDraft = it },
-                onDismiss = { renameSessionTargetId = null },
+                onValueChange = {
+                    dispatchDialogAction(MainScreenDialogAction.UpdateRenameDraft(it))
+                },
+                onDismiss = { dispatchDialogAction(MainScreenDialogAction.CloseRenameDialog) },
                 onConfirm = {
                     val renamed = chatVm.renameSession(sessionId, renameSessionDraft)
                     scope.launch {
@@ -1391,7 +1906,7 @@ fun MainScreen() {
                         )
                     }
                     if (renamed) {
-                        renameSessionTargetId = null
+                        dispatchDialogAction(MainScreenDialogAction.CloseRenameDialog)
                     }
                 }
             )
@@ -1400,12 +1915,16 @@ fun MainScreen() {
         if (showExportDialog) {
             ExportConversationDialog(
                 selectedFormat = exportFormat,
-                onSelectFormat = { exportFormat = it },
-                onDismiss = { showExportDialog = false },
+                onSelectFormat = {
+                    dispatchDialogAction(MainScreenDialogAction.SelectExportFormat(it))
+                },
+                onDismiss = { dispatchDialogAction(MainScreenDialogAction.HideExportDialog) },
                 onConfirm = {
                     chatVm.exportCurrentConversation(exportFormat)
                         .onSuccess { exportData ->
-                            pendingExportData = exportData
+                            dispatchDialogAction(
+                                MainScreenDialogAction.PreparePendingExport(exportData)
+                            )
                             exportConversationLauncher.launch(exportData.fileName)
                         }
                         .onFailure { error ->
@@ -1413,7 +1932,7 @@ fun MainScreen() {
                                 snackbarHostState.showSnackbar(error.message ?: "导出失败")
                             }
                         }
-                    showExportDialog = false
+                    dispatchDialogAction(MainScreenDialogAction.HideExportDialog)
                 }
             )
         }
@@ -1426,7 +1945,6 @@ fun MainScreen() {
                 onReject = { chatVm.rejectPendingTool() }
             )
             }
-        }
     }
 }
 
@@ -1435,13 +1953,67 @@ private fun copyTextToClipboard(context: Context, text: String) {
     clipboard.setPrimaryClip(ClipData.newPlainText(null, text))
 }
 
+@Composable
+private fun ChatPagePreviewPlaceholder(
+    title: String,
+    messageCount: Int
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        ReasonixGlassSurface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(28.dp),
+            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 16.dp)
+        ) {
+            Text(
+                text = title.ifBlank { "新对话" },
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = if (messageCount > 0) {
+                    "保留聊天预览壳层，避免切页时提前直显完整对话。"
+                } else {
+                    "准备进入聊天页。"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        repeat(2) {
+            ReasonixGlassSurface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)
+            ) {
+                Text(
+                    text = if (it == 0) "聊天预览占位" else "切页时不再挂载完整消息列表",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Spacer(modifier = Modifier.weight(1f))
+    }
+}
+
 // #region debug-point C:chat-debug-reporter
+private const val ENABLE_REASONIX_BACK_DEBUG_REPORTS = false
+
 private fun reportGitBackChatFlashMainDebug(
     hypothesisId: String,
     location: String,
     msg: String,
     data: JSONObject
 ) {
+    if (!ENABLE_REASONIX_BACK_DEBUG_REPORTS) return
     Thread {
         runCatching {
             val connection = (URL("http://192.168.2.3:7777/event").openConnection() as HttpURLConnection).apply {
@@ -1452,7 +2024,7 @@ private fun reportGitBackChatFlashMainDebug(
                 setRequestProperty("Content-Type", "application/json")
             }
             val payload = JSONObject()
-                .put("sessionId", "git-back-chat-flash")
+                .put("sessionId", "ui-nav-regressions")
                 .put("runId", "pre-fix")
                 .put("hypothesisId", hypothesisId)
                 .put("location", location)
@@ -1528,38 +2100,151 @@ private fun ChatUsageSummaryBadge(usageSummary: UsageSummarySnapshot) {
 }
 
 @Composable
+private fun MainScreenPopupDialog(
+    title: String,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    actions: @Composable RowScope.() -> Unit = {},
+    content: @Composable ColumnScope.() -> Unit
+) {
+    ReasonixDialog(onDismissRequest = onDismissRequest) {
+        ReasonixPopupSurface(
+            shape = RoundedCornerShape(24.dp),
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        subtitle?.takeIf { it.isNotBlank() }?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        content = actions
+                    )
+                }
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    content = content
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MainScreenLargeDialog(
+    title: String,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    actions: @Composable RowScope.() -> Unit = {},
+    content: @Composable ColumnScope.() -> Unit
+) {
+    ReasonixLargeDialogScaffold(
+        onDismissRequest = onDismissRequest,
+        modifier = modifier
+    ) {
+        ReasonixGlassSurface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            contentPadding = PaddingValues(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    subtitle?.takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    content = actions
+                )
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            content = content
+        )
+    }
+}
+
+@Composable
 private fun RenameSessionDialog(
     value: String,
     onValueChange: (String) -> Unit,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    ReasonixAlertDialog(
+    MainScreenPopupDialog(
+        title = "重命名会话",
         onDismissRequest = onDismiss,
-        title = { Text("重命名会话") },
-        text = {
-            OutlinedTextField(
-                value = value,
-                onValueChange = onValueChange,
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("会话标题") },
-                singleLine = true
-            )
-        },
-        confirmButton = {
+        actions = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
             TextButton(
                 onClick = onConfirm,
                 enabled = value.trim().isNotBlank()
             ) {
                 Text("保存")
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
-            }
         }
-    )
+    ) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("会话标题") },
+            singleLine = true
+        )
+    }
 }
 
 @Composable
@@ -1569,51 +2254,46 @@ private fun ExportConversationDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    ReasonixAlertDialog(
+    MainScreenPopupDialog(
+        title = "导出会话",
         onDismissRequest = onDismiss,
-        title = { Text("导出会话") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "选择导出格式，首版支持 Markdown 和 JSON。",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                ConversationExportFormat.entries.forEach { format ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onSelectFormat(format) }
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = selectedFormat == format,
-                            onClick = { onSelectFormat(format) }
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column {
-                            Text(format.label)
-                            Text(
-                                text = format.mimeType,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onConfirm) {
-                Text("保存")
-            }
-        },
-        dismissButton = {
+        actions = {
             TextButton(onClick = onDismiss) {
                 Text("取消")
             }
+            TextButton(onClick = onConfirm) {
+                Text("保存")
+            }
         }
-    )
+    ) {
+        Text(
+            text = "选择导出格式，首版支持 Markdown 和 JSON。",
+            style = MaterialTheme.typography.bodySmall
+        )
+        ConversationExportFormat.entries.forEach { format ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onSelectFormat(format) }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RadioButton(
+                    selected = selectedFormat == format,
+                    onClick = { onSelectFormat(format) }
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text(format.label)
+                    Text(
+                        text = format.mimeType,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1624,50 +2304,45 @@ private fun CreateTaskDialog(
     onPickFolder: () -> Unit,
     onCreateTask: (String) -> Unit
 ) {
-    ReasonixAlertDialog(
+    MainScreenPopupDialog(
+        title = "新建任务",
         onDismissRequest = onDismiss,
-        title = { Text("新建任务") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    text = "可以直接手动输入项目目录，也可以用系统文件夹选择器选择项目。",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                OutlinedButton(
-                    onClick = onPickFolder,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("选择文件夹")
-                }
-                OutlinedTextField(
-                    value = projectPath,
-                    onValueChange = onProjectPathChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("项目目录") },
-                    placeholder = { Text("/data/local/tmp/project 或 /sdcard/项目 或内容 Uri") },
-                    singleLine = true
-                )
-                Text(
-                    text = "优先使用可解析成绝对路径的目录；如果系统只返回 Uri，也会先保留该值作为项目上下文。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+        actions = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
             }
-        },
-        confirmButton = {
             TextButton(
                 onClick = { onCreateTask(projectPath.trim()) },
                 enabled = projectPath.isNotBlank()
             ) {
                 Text("创建")
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
-            }
         }
-    )
+    ) {
+        Text(
+            text = "可以直接手动输入项目目录，也可以用系统文件夹选择器选择项目。",
+            style = MaterialTheme.typography.bodySmall
+        )
+        OutlinedButton(
+            onClick = onPickFolder,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("选择文件夹")
+        }
+        OutlinedTextField(
+            value = projectPath,
+            onValueChange = onProjectPathChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("项目目录") },
+            placeholder = { Text("/data/local/tmp/project 或 /sdcard/项目 或内容 Uri") },
+            singleLine = true
+        )
+        Text(
+            text = "优先使用可解析成绝对路径的目录；如果系统只返回 Uri，也会先保留该值作为项目上下文。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
 }
 
 private fun resolveDisplayName(context: Context, uri: Uri): String? {
@@ -1729,45 +2404,35 @@ private fun ApprovalDialog(
     val presentation = remember(approval.toolName, approval.summary, approval.detail, approval.rawArgs) {
         approval.toPendingApprovalPresentation()
     }
-    ReasonixAlertDialog(
+    MainScreenLargeDialog(
+        title = "审批请求",
+        subtitle = approval.toolName,
         onDismissRequest = {},
-        title = { Text("审批请求") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                RiskBadge(approval.riskLevel)
-                Text(
-                    text = presentation.headline,
-                    style = MaterialTheme.typography.titleSmall
-                )
-                PendingApprovalSummaryCard(presentation = presentation)
-                approval.explanationLabel?.let { label ->
-                    Surface(
-                        shape = MaterialTheme.shapes.medium,
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text(
-                                text = label,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            approval.explanationDetail?.takeIf { it.isNotBlank() }?.let { detail ->
-                                Text(
-                                    text = detail,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
+        actions = {
+            TextButton(onClick = onReject) {
+                Text(presentation.rejectLabel)
+            }
+            Button(onClick = onApprove) {
+                Text(presentation.approveLabel)
+            }
+        }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            RiskBadge(approval.riskLevel)
+            Text(
+                text = presentation.headline,
+                style = MaterialTheme.typography.titleSmall
+            )
+            PendingApprovalSummaryCard(presentation = presentation)
+            approval.explanationLabel?.let { label ->
                 Surface(
                     shape = MaterialTheme.shapes.medium,
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
@@ -1775,29 +2440,42 @@ private fun ApprovalDialog(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            text = presentation.rawArgsLabel,
+                            text = label,
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary
                         )
-                        Text(
-                            text = approval.rawArgs,
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                        approval.explanationDetail?.takeIf { it.isNotBlank() }?.let { detail ->
+                            Text(
+                                text = detail,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onApprove) {
-                Text(presentation.approveLabel)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onReject) {
-                Text(presentation.rejectLabel)
+            Surface(
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = presentation.rawArgsLabel,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = approval.rawArgs,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
             }
         }
-    )
+    }
 }
 
 @Composable

@@ -2,9 +2,7 @@ package dev.reasonix.mobile.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material3.MaterialTheme
@@ -63,7 +61,6 @@ fun MarkdownText(
     val codeBlockBackground = lerp(Color(CODE_BG), surfaceColor, 0.72f)
     val codeBlockHeaderBackground = lerp(Color(CODE_LANG_BG), chromeColor, 0.58f)
     val codeBlockLanguageColor = lerp(MaterialTheme.colorScheme.primary, mutedTextColor, 0.28f)
-    val codeBlockTextColor = MaterialTheme.colorScheme.onSurface
 
     Column(
         modifier = modifier,
@@ -113,8 +110,7 @@ fun MarkdownText(
                         block = segment,
                         backgroundColor = codeBlockBackground,
                         languageBarColor = codeBlockHeaderBackground,
-                        languageTextColor = codeBlockLanguageColor,
-                        codeTextColor = codeBlockTextColor
+                        languageTextColor = codeBlockLanguageColor
                     )
                 }
                 is MarkdownSegment.UnorderedListItem -> {
@@ -195,8 +191,7 @@ private fun CodeBlockView(
     block: MarkdownSegment.CodeBlock,
     backgroundColor: Color,
     languageBarColor: Color,
-    languageTextColor: Color,
-    codeTextColor: Color
+    languageTextColor: Color
 ) {
     Column(
         modifier = Modifier
@@ -221,21 +216,16 @@ private fun CodeBlockView(
             }
         }
 
-        // Code content with syntax highlighting
-        val highlighted = highlightSyntax(block.code, block.language)
-        val scrollState = rememberScrollState()
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalScroll(scrollState)
-                .padding(12.dp)
+                .padding(8.dp)
         ) {
-            Text(
-                text = highlighted,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 12.sp,
-                lineHeight = 18.sp,
-                color = codeTextColor
+            ReasonixReadOnlyCodeBlock(
+                code = block.code,
+                language = block.language,
+                backgroundColor = backgroundColor,
+                modifier = Modifier.fillMaxWidth()
             )
         }
     }

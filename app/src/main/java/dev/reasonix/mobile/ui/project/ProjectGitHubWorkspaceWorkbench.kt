@@ -502,11 +502,12 @@ internal fun ProjectGitHubWorkspaceRepoWorkbenchPage(
     selectedTab: ProjectGitHubWorkspaceRepoWorkbenchTab,
     onSelectTab: (ProjectGitHubWorkspaceRepoWorkbenchTab) -> Unit,
     onExitWorkbench: () -> Unit,
-    backProgress: Float
+    backProgress: Float,
+    tabBackProgress: Float
 ) {
     ProjectNestedPredictiveBackHost(
         detailVisible = selectedTab != ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW,
-        backProgress = backProgress,
+        backProgress = tabBackProgress,
         detailContent = {
             ProjectGitHubWorkspaceRepoWorkbenchFrame(
                 summary = summary,

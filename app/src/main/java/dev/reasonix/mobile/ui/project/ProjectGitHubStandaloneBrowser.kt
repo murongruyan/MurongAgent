@@ -108,31 +108,51 @@ internal fun ProjectGitHubStandaloneBrowserSection(
     onMergePullRequest: (ProjectGitHubPullRequestUi) -> Unit,
     onOpenPullRequestPage: (ProjectGitHubPullRequestUi) -> Unit,
     onEditReadme: (ProjectGitHubReadmeUi) -> Unit,
-    closeRequestSignal: Int,
+    onRegisterNestedCloseRequest: (((() -> Unit)?) -> Unit),
     backProgress: Float
 ) {
     val chromeColor = rememberReasonixChromeColor()
     val surfaceColor = rememberReasonixSurfaceColor()
     val mutedTextColor = rememberReasonixMutedTextColor()
+    val outerBackProgress = if (
+        selectedRepo != null && activeSection == ProjectGitHubStandaloneSection.OVERVIEW
+    ) {
+        backProgress
+    } else {
+        0f
+    }
+    val innerBackProgress = if (
+        selectedRepo != null && activeSection != ProjectGitHubStandaloneSection.OVERVIEW
+    ) {
+        backProgress
+    } else {
+        0f
+    }
 
-    LaunchedEffect(closeRequestSignal, selectedRepo?.fullName, activeSection) {
-        if (closeRequestSignal == 0 || selectedRepo == null) return@LaunchedEffect
-        when (activeSection) {
-            ProjectGitHubStandaloneSection.OVERVIEW -> onBackToRepoList()
-            ProjectGitHubStandaloneSection.WORKFLOWS -> Unit
-            else -> onChangeSection(ProjectGitHubStandaloneSection.OVERVIEW)
-        }
+    LaunchedEffect(selectedRepo?.fullName, activeSection) {
+        onRegisterNestedCloseRequest(
+            if (selectedRepo == null) {
+                null
+            } else {
+                {
+                    when (activeSection) {
+                        ProjectGitHubStandaloneSection.OVERVIEW -> onBackToRepoList()
+                        else -> onChangeSection(ProjectGitHubStandaloneSection.OVERVIEW)
+                    }
+                }
+            }
+        )
     }
 
     ProjectNestedPredictiveBackHost(
         detailVisible = selectedRepo != null,
-        backProgress = backProgress,
+        backProgress = outerBackProgress,
         modifier = Modifier.fillMaxWidth(),
         detailContent = {
             val currentRepo = selectedRepo ?: return@ProjectNestedPredictiveBackHost
             ProjectNestedPredictiveBackHost(
                 detailVisible = activeSection != ProjectGitHubStandaloneSection.OVERVIEW,
-                backProgress = backProgress,
+                backProgress = innerBackProgress,
                 detailContent = {
                     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         when (activeSection) {
@@ -165,7 +185,7 @@ internal fun ProjectGitHubStandaloneBrowserSection(
                                     onLoadRunDetail = onLoadRunDetail,
                                     onRefreshRunDetail = onRefreshRunDetail,
                                     onDownloadWorkflowArtifact = onDownloadWorkflowArtifact,
-                                    closeRequestSignal = closeRequestSignal,
+                                    onRegisterNestedCloseRequest = onRegisterNestedCloseRequest,
                                     onExitWorkflowPage = {
                                         onChangeSection(ProjectGitHubStandaloneSection.OVERVIEW)
                                     },
@@ -434,7 +454,7 @@ private fun ProjectGitHubStandaloneWorkflowPage(
     onLoadRunDetail: (ProjectGitHubWorkflowRunUi, (ProjectGitHubWorkflowRunDetailUi?) -> Unit) -> Unit,
     onRefreshRunDetail: (ProjectGitHubWorkflowRunDetailUi, (ProjectGitHubWorkflowRunDetailUi?) -> Unit) -> Unit,
     onDownloadWorkflowArtifact: (ProjectGitHubWorkflowRunDetailUi, ProjectGitHubArtifactUi) -> Unit,
-    closeRequestSignal: Int,
+    onRegisterNestedCloseRequest: (((() -> Unit)?) -> Unit),
     onExitWorkflowPage: () -> Unit,
     backProgress: Float
 ) {
@@ -462,31 +482,32 @@ private fun ProjectGitHubStandaloneWorkflowPage(
             runs = state.recentRuns
         )
     }
-    LaunchedEffect(closeRequestSignal) {
-        if (closeRequestSignal == 0) return@LaunchedEffect
-        when {
-            selectedJob != null -> {
-                selectedJob = null
-            }
+    LaunchedEffect(selectedRepo.fullName, selectedWorkflow, selectedRun, selectedJob) {
+        onRegisterNestedCloseRequest {
+            when {
+                selectedJob != null -> {
+                    selectedJob = null
+                }
 
-            selectedRun != null -> {
-                selectedRun = null
-                selectedRunDetail = null
-                selectedJob = null
-                workflowRunDetailErrorMessage = null
-                isWorkflowRunDetailLoading = false
-            }
+                selectedRun != null -> {
+                    selectedRun = null
+                    selectedRunDetail = null
+                    selectedJob = null
+                    workflowRunDetailErrorMessage = null
+                    isWorkflowRunDetailLoading = false
+                }
 
-            selectedWorkflow != null -> {
-                selectedWorkflow = null
-                selectedRun = null
-                selectedRunDetail = null
-                selectedJob = null
-                workflowRunDetailErrorMessage = null
-                isWorkflowRunDetailLoading = false
-            }
+                selectedWorkflow != null -> {
+                    selectedWorkflow = null
+                    selectedRun = null
+                    selectedRunDetail = null
+                    selectedJob = null
+                    workflowRunDetailErrorMessage = null
+                    isWorkflowRunDetailLoading = false
+                }
 
-            else -> onExitWorkflowPage()
+                else -> onExitWorkflowPage()
+            }
         }
     }
     fun openWorkflowRun(run: ProjectGitHubWorkflowRunUi) {

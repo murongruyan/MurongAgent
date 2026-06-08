@@ -16,8 +16,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import dev.reasonix.mobile.ui.ReasonixGlassSurface
+import dev.reasonix.mobile.ui.ReasonixLargeDialogScaffold
 
 @Composable
 internal fun ProjectGitHubGlobalSearchDialog(
@@ -28,23 +28,20 @@ internal fun ProjectGitHubGlobalSearchDialog(
     onResultClick: (ProjectGitHubGlobalSearchResultUi) -> Unit,
     chromeColor: Color = MaterialTheme.colorScheme.surfaceVariant
 ) {
-    Dialog(
-        onDismissRequest = onClose,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ReasonixLargeDialogScaffold(
+        onDismissRequest = onClose
     ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(top = 24.dp),
-            color = MaterialTheme.colorScheme.background,
-            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
-        ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                // Header / Search Bar
+        Column(modifier = Modifier.fillMaxSize()) {
+            ReasonixGlassSurface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                shape = RoundedCornerShape(24.dp),
+                contentPadding = PaddingValues(16.dp)
+            ) {
                 Row(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
+                        .fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = onClose) {
@@ -87,69 +84,77 @@ internal fun ProjectGitHubGlobalSearchDialog(
                         }
                     }
                 }
+            }
+        }
 
-                Divider(color = chromeColor.copy(alpha = 0.2f))
+        HorizontalDivider(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            color = chromeColor.copy(alpha = 0.16f)
+        )
 
-                // Results
-                Box(modifier = Modifier.weight(1f)) {
-                    if (store.results.isEmpty() && !store.isLoading && store.errorMessage == null) {
-                        Column(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.Center,
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Icon(
-                                Icons.Default.Search,
-                                contentDescription = null,
-                                modifier = Modifier.size(64.dp),
-                                tint = chromeColor.copy(alpha = 0.3f)
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text(
-                                text = if (store.query.isBlank()) "输入关键字开始全局搜索" else "未找到匹配项",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = chromeColor.copy(alpha = 0.6f)
-                            )
-                        }
-                    } else if (store.errorMessage != null) {
-                        Column(
-                            modifier = Modifier.fillMaxSize().padding(32.dp),
-                            verticalArrangement = Arrangement.Center,
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(
-                                text = "!",
-                                style = MaterialTheme.typography.displaySmall,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text(
-                                text = store.errorMessage,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                            Spacer(modifier = Modifier.height(24.dp))
-                            Button(onClick = onSearch) {
-                                Text("重试")
-                            }
-                        }
-                    } else {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(bottom = 32.dp)
-                        ) {
-                            items(store.results) { result ->
-                                GlobalSearchResultItem(
-                                    result = result,
-                                    onClick = { onResultClick(result) },
-                                    chromeColor = chromeColor
-                                )
-                                Divider(
-                                    modifier = Modifier.padding(horizontal = 16.dp),
-                                    color = chromeColor.copy(alpha = 0.1f)
-                                )
-                            }
-                        }
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        ) {
+            if (store.results.isEmpty() && !store.isLoading && store.errorMessage == null) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = null,
+                        modifier = Modifier.size(64.dp),
+                        tint = chromeColor.copy(alpha = 0.3f)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = if (store.query.isBlank()) "输入关键字开始全局搜索" else "未找到匹配项",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = chromeColor.copy(alpha = 0.6f)
+                    )
+                }
+            } else if (store.errorMessage != null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "!",
+                        style = MaterialTheme.typography.displaySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = store.errorMessage,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Button(onClick = onSearch) {
+                        Text("重试")
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 32.dp)
+                ) {
+                    items(store.results) { result ->
+                        GlobalSearchResultItem(
+                            result = result,
+                            onClick = { onResultClick(result) },
+                            chromeColor = chromeColor
+                        )
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                            color = chromeColor.copy(alpha = 0.1f)
+                        )
                     }
                 }
             }

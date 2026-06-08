@@ -1,12 +1,15 @@
 package dev.reasonix.mobile.ui.project
 
+import android.content.ClipData
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
@@ -28,12 +31,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.LocalContext
+import android.content.Context
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.reasonix.mobile.ui.ReasonixAlertDialog
+import dev.reasonix.mobile.ui.ReasonixGlassSurface
+import dev.reasonix.mobile.ui.ReasonixLargeDialogScaffold
 import dev.reasonix.mobile.ui.rememberReasonixChromeColor
 import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
 import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
@@ -48,89 +52,107 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
     onDownloadLogs: (ProjectGitHubWorkflowRunDetailUi) -> Unit,
     onDownloadArtifact: (ProjectGitHubWorkflowRunDetailUi, ProjectGitHubArtifactUi) -> Unit
 ) {
-    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
 
-    ReasonixAlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("关闭")
-            }
-        },
-        dismissButton = {
-            detail.htmlUrl?.takeIf { it.isNotBlank() }?.let {
-                TextButton(onClick = { onOpenRunPage(detail.htmlUrl) }) {
-                    Text("网页")
+    ReasonixLargeDialogScaffold(onDismissRequest = onDismiss) {
+        ReasonixGlassSurface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("运行详情", style = MaterialTheme.typography.titleMedium)
+                    Spacer(modifier = Modifier.padding(vertical = 2.dp))
+                    Text(
+                        text = "${detail.repo.owner}/${detail.repo.repo}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    detail.htmlUrl?.takeIf { it.isNotBlank() }?.let {
+                        TextButton(onClick = { onOpenRunPage(detail.htmlUrl) }) {
+                            Text("网页")
+                        }
+                    }
+                    TextButton(onClick = onDismiss) {
+                        Text("关闭")
+                    }
                 }
             }
-        },
-        title = { Text("运行详情") },
-        text = {
-            val surfaceColor = rememberReasonixSurfaceColor()
-            val chromeColor = rememberReasonixChromeColor()
-            val mutedTextColor = rememberReasonixMutedTextColor()
-            val issueJobs = remember(detail.jobs) { detail.jobs.filter { it.hasIssue } }
-            var selectedIssueJobName by remember(detail.id) {
-                mutableStateOf(issueJobs.firstOrNull()?.name)
+        }
+
+        val surfaceColor = rememberReasonixSurfaceColor()
+        val chromeColor = rememberReasonixChromeColor()
+        val mutedTextColor = rememberReasonixMutedTextColor()
+        val issueJobs = remember(detail.jobs) { detail.jobs.filter { it.hasIssue } }
+        var selectedIssueJobName by remember(detail.id) {
+            mutableStateOf(issueJobs.firstOrNull()?.name)
+        }
+        var selectedIssueStepName by remember(detail.id) {
+            mutableStateOf<String?>(null)
+        }
+        var showOnlyIssueLogs by remember(detail.id) {
+            mutableStateOf(issueJobs.isNotEmpty())
+        }
+        var showOnlySelectedStepLogs by remember(detail.id) {
+            mutableStateOf(false)
+        }
+        var logSearchQuery by remember(detail.id) {
+            mutableStateOf("")
+        }
+        var selectedLogSearchPresets by remember(detail.id) {
+            mutableStateOf(setOf<String>())
+        }
+        var logSearchRequireAllTerms by remember(detail.id) {
+            mutableStateOf(false)
+        }
+        var showOnlyMatchedLogs by remember(detail.id) {
+            mutableStateOf(false)
+        }
+        var activeMatchedLogEntryName by remember(detail.id) {
+            mutableStateOf<String?>(null)
+        }
+        val activeMatchedLineIndexByEntry = remember(detail.id) {
+            mutableStateMapOf<String, Int>()
+        }
+        var expandedLogEntries by remember(detail.id) {
+            mutableStateOf(setOf<String>())
+        }
+        val autoExpandedLogEntries = remember(
+            detail.status,
+            detail.jobs,
+            detail.logEntries
+        ) {
+            buildProjectGitHubAutoExpandedLogEntries(detail)
+        }
+        val autoExpandHint = remember(
+            detail.status,
+            detail.jobs,
+            detail.logEntries
+        ) {
+            buildProjectGitHubAutoExpandHint(detail)
+        }
+        val filteredLogEntries = remember(
+            detail.logEntries,
+            selectedIssueJobName,
+            showOnlyIssueLogs,
+            issueJobs
+        ) {
+            detail.logEntries.filter { entry ->
+                val matchesSelected = selectedIssueJobName.isNullOrBlank() ||
+                    projectGitHubLogMatchesJob(entry, selectedIssueJobName.orEmpty())
+                val matchesIssueOnly = !showOnlyIssueLogs ||
+                    issueJobs.any { job -> projectGitHubLogMatchesJob(entry, job.name) }
+                matchesSelected && matchesIssueOnly
             }
-            var selectedIssueStepName by remember(detail.id) {
-                mutableStateOf<String?>(null)
-            }
-            var showOnlyIssueLogs by remember(detail.id) {
-                mutableStateOf(issueJobs.isNotEmpty())
-            }
-            var showOnlySelectedStepLogs by remember(detail.id) {
-                mutableStateOf(false)
-            }
-            var logSearchQuery by remember(detail.id) {
-                mutableStateOf("")
-            }
-            var selectedLogSearchPresets by remember(detail.id) {
-                mutableStateOf(setOf<String>())
-            }
-            var logSearchRequireAllTerms by remember(detail.id) {
-                mutableStateOf(false)
-            }
-            var showOnlyMatchedLogs by remember(detail.id) {
-                mutableStateOf(false)
-            }
-            var activeMatchedLogEntryName by remember(detail.id) {
-                mutableStateOf<String?>(null)
-            }
-            val activeMatchedLineIndexByEntry = remember(detail.id) {
-                mutableStateMapOf<String, Int>()
-            }
-            var expandedLogEntries by remember(detail.id) {
-                mutableStateOf(setOf<String>())
-            }
-            val autoExpandedLogEntries = remember(
-                detail.status,
-                detail.jobs,
-                detail.logEntries
-            ) {
-                buildProjectGitHubAutoExpandedLogEntries(detail)
-            }
-            val autoExpandHint = remember(
-                detail.status,
-                detail.jobs,
-                detail.logEntries
-            ) {
-                buildProjectGitHubAutoExpandHint(detail)
-            }
-            val filteredLogEntries = remember(
-                detail.logEntries,
-                selectedIssueJobName,
-                showOnlyIssueLogs,
-                issueJobs
-            ) {
-                detail.logEntries.filter { entry ->
-                    val matchesSelected = selectedIssueJobName.isNullOrBlank() ||
-                        projectGitHubLogMatchesJob(entry, selectedIssueJobName.orEmpty())
-                    val matchesIssueOnly = !showOnlyIssueLogs ||
-                        issueJobs.any { job -> projectGitHubLogMatchesJob(entry, job.name) }
-                    matchesSelected && matchesIssueOnly
-                }
-            }
+        }
             val focusedStepMatchedEntries = remember(filteredLogEntries, selectedIssueStepName) {
                 filteredLogEntries
                     .filter { entry ->
@@ -1001,7 +1023,7 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                             } else if (searchActive && matchesSearch) {
                                 projectGitHubCollapsedLogPreviewAroundMatch(
                                     preview = entry.preview,
-                                    matchedLineIndices = searchHit?.matchedLineIndices.orEmpty(),
+                                    matchedLineIndices = searchHit.matchedLineIndices,
                                     activeMatchIndex = activeMatchedLineIndex
                                 )
                             } else {
@@ -1030,7 +1052,7 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                                     }
                                 },
                                 onCopyPreview = {
-                                    clipboardManager.setText(AnnotatedString(entry.preview))
+                                    copyWorkflowDetailText(context, entry.preview)
                                 },
                                 onJumpToPreviousMatch = {
                                     val totalMatches = searchHit?.matchedLineIndices?.size ?: 0
@@ -1294,8 +1316,12 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                     }
                 }
             }
-        }
-    )
+    }
+}
+
+private fun copyWorkflowDetailText(context: Context, text: String) {
+    val clipboard = context.getSystemService(android.content.ClipboardManager::class.java) ?: return
+    clipboard.setPrimaryClip(ClipData.newPlainText(null, text))
 }
 
 @Composable

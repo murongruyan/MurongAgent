@@ -408,7 +408,7 @@ internal fun buildProjectGitHubWorkspaceRepoCards(
             highlightRemoteSummary = remoteSummary?.latestRunHasIssue == true || remoteSummary?.hasOpenWorkItems == true,
             remoteErrorMessage = remoteSummary?.errorMessage,
             latestWorkflowSummary = latestWorkflowTitle?.let { title ->
-                "最近工作流：$title · ${remoteSummary.latestRun?.statusLabel.orEmpty()}"
+                "最近工作流：$title · ${remoteSummary.latestRun.statusLabel}"
             },
             latestWorkflowHasIssue = remoteSummary?.latestRunHasIssue == true,
             isSelected = repo.rootPath == selectedRepoRoot,

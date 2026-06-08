@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,9 +20,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
@@ -58,9 +59,13 @@ import dev.reasonix.mobile.core.loop.PendingApprovalUi
 import dev.reasonix.mobile.core.loop.ToolCallRecordUi
 import dev.reasonix.mobile.core.mcp.McpServerStatus
 import dev.reasonix.mobile.ui.PendingApprovalSummaryCard
+import dev.reasonix.mobile.ui.ReasonixDialog
 import dev.reasonix.mobile.ui.ReasonixGlassSurface
 import dev.reasonix.mobile.ui.ReasonixInfoCard
-import dev.reasonix.mobile.ui.ReasonixSecondaryPageSurface
+import dev.reasonix.mobile.ui.ReasonixLargeDialogScaffold
+import dev.reasonix.mobile.ui.rememberReasonixBottomBarScrollPadding
+import dev.reasonix.mobile.ui.ReasonixPopupSurface
+import dev.reasonix.mobile.ui.ReasonixPrimaryPageSurface
 import dev.reasonix.mobile.ui.toPendingApprovalPresentation
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -99,6 +104,7 @@ fun ToolsScreen(
     onRefreshMcpStatus: () -> Unit,
     onUpdateConfig: (ProviderConfig) -> Unit
 ) {
+    val bottomBarScrollPadding = rememberReasonixBottomBarScrollPadding()
     var showApprovalDetail by remember(pendingApproval?.toolName, pendingApproval?.rawArgs) {
         mutableStateOf(false)
     }
@@ -157,7 +163,7 @@ fun ToolsScreen(
         )
     }
 
-    ReasonixSecondaryPageSurface(
+    ReasonixPrimaryPageSurface(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 12.dp, vertical = 8.dp),
@@ -165,7 +171,7 @@ fun ToolsScreen(
     ) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = 2.dp, bottom = 132.dp),
+            contentPadding = PaddingValues(top = 2.dp, bottom = bottomBarScrollPadding),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             item {
@@ -608,6 +614,122 @@ private fun ToolsPanelCard(content: @Composable ColumnScope.() -> Unit) {
 }
 
 @Composable
+private fun ToolsPopupDialog(
+    title: String,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    actions: @Composable RowScope.() -> Unit = {},
+    content: @Composable ColumnScope.() -> Unit
+) {
+    ReasonixDialog(onDismissRequest = onDismissRequest) {
+        ReasonixPopupSurface(
+            shape = RoundedCornerShape(24.dp),
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        subtitle?.takeIf { it.isNotBlank() }?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        content = actions
+                    )
+                }
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    content = content
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolsLargeDialog(
+    title: String,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    actions: @Composable RowScope.() -> Unit = {},
+    content: @Composable ColumnScope.() -> Unit
+) {
+    ReasonixLargeDialogScaffold(
+        onDismissRequest = onDismissRequest,
+        modifier = modifier
+    ) {
+        ReasonixGlassSurface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            contentPadding = PaddingValues(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    subtitle?.takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    content = actions
+                )
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            content = content
+        )
+    }
+}
+
+@Composable
 private fun PendingApprovalSheet(
     approval: PendingApprovalUi,
     onDismiss: () -> Unit,
@@ -617,33 +739,29 @@ private fun PendingApprovalSheet(
     val presentation = remember(approval.toolName, approval.summary, approval.detail, approval.rawArgs) {
         approval.toPendingApprovalPresentation()
     }
-    AlertDialog(
+    ToolsLargeDialog(
+        title = "待审批工具调用",
+        subtitle = approval.toolName,
         onDismissRequest = onDismiss,
-        title = { Text("待审批工具调用") },
-        text = {
-            SelectionContainer {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("工具: ${approval.toolName}")
-                    Text("摘要: ${presentation.headline}")
-                    Text("风险: ${approval.riskLevel}")
-                    PendingApprovalSummaryCard(presentation = presentation)
-                    approval.explanationLabel?.let { Text("原因: $it") }
-                    approval.explanationDetail?.let { Text(it) }
-                    Text(presentation.rawArgsLabel, style = MaterialTheme.typography.labelLarge)
-                    CodeBlock(approval.rawArgs)
-                }
-            }
-        },
-        confirmButton = {
+        actions = {
+            TextButton(onClick = onReject) { Text(presentation.rejectLabel) }
+            TextButton(onClick = onDismiss) { Text("关闭") }
             FilledTonalButton(onClick = onApprove) { Text(presentation.approveLabel) }
-        },
-        dismissButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onReject) { Text(presentation.rejectLabel) }
-                TextButton(onClick = onDismiss) { Text("关闭") }
+        }
+    ) {
+        SelectionContainer {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("工具: ${approval.toolName}")
+                Text("摘要: ${presentation.headline}")
+                Text("风险: ${approval.riskLevel}")
+                PendingApprovalSummaryCard(presentation = presentation)
+                approval.explanationLabel?.let { Text("原因: $it") }
+                approval.explanationDetail?.let { Text(it) }
+                Text(presentation.rawArgsLabel, style = MaterialTheme.typography.labelLarge)
+                CodeBlock(approval.rawArgs)
             }
         }
-    )
+    }
 }
 
 @Composable
@@ -653,30 +771,23 @@ private fun ApprovalPolicyEditorDialog(
     onSave: (ToolApprovalMode) -> Unit
 ) {
     var selectedMode by remember(currentMode) { mutableStateOf(currentMode) }
-    AlertDialog(
+    ToolsPopupDialog(
+        title = "审批模式",
         onDismissRequest = onDismiss,
-        title = { Text("审批模式") },
-        text = {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                ToolApprovalMode.entries.forEach { mode ->
-                    item(mode.name) {
-                        SelectableRow(
-                            title = approvalModeLabel(mode),
-                            subtitle = approvalModeDescription(mode),
-                            selected = selectedMode == mode,
-                            onClick = { selectedMode = mode }
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            FilledTonalButton(onClick = { onSave(selectedMode) }) { Text("保存") }
-        },
-        dismissButton = {
+        actions = {
             TextButton(onClick = onDismiss) { Text("取消") }
+            FilledTonalButton(onClick = { onSave(selectedMode) }) { Text("保存") }
         }
-    )
+    ) {
+        ToolApprovalMode.entries.forEach { mode ->
+            SelectableRow(
+                title = approvalModeLabel(mode),
+                subtitle = approvalModeDescription(mode),
+                selected = selectedMode == mode,
+                onClick = { selectedMode = mode }
+            )
+        }
+    }
 }
 
 @Composable
@@ -690,66 +801,63 @@ private fun WorkflowExecutionPreferenceDialog(
     var selectedMode by remember(currentMode) { mutableStateOf(currentMode) }
     var autoRouteEnabled by remember(initialAutoRouteEnabled) { mutableStateOf(initialAutoRouteEnabled) }
     var fallbackMode by remember(initialFallbackMode) { mutableStateOf(initialFallbackMode) }
-    AlertDialog(
+    ToolsLargeDialog(
+        title = "工作流执行偏好",
         onDismissRequest = onDismiss,
-        title = { Text("工作流执行偏好") },
-        text = {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                item("mode-title") {
-                    Text("执行模式", style = MaterialTheme.typography.labelLarge)
-                }
-                WorkflowExecutionMode.entries.forEach { mode ->
-                    item(mode.name) {
-                        SelectableRow(
-                            title = workflowExecutionModeLabel(mode),
-                            subtitle = workflowExecutionModeDescription(mode),
-                            selected = selectedMode == mode,
-                            onClick = { selectedMode = mode }
-                        )
-                    }
-                }
-                item("auto-route") {
-                    ToggleRow(
-                        title = "发送前自动分流",
-                        subtitle = "在发起任务前先判断是否更适合直接执行、先计划或先澄清。",
-                        checked = autoRouteEnabled,
-                        onCheckedChange = { autoRouteEnabled = it }
-                    )
-                }
-                item("fallback-title") {
-                    Text("失败回退", style = MaterialTheme.typography.labelLarge)
-                }
-                WorkflowFailureFallbackMode.entries.forEach { mode ->
-                    item("fallback-${mode.name}") {
-                        SelectableRow(
-                            title = workflowFailureFallbackModeLabel(mode),
-                            subtitle = workflowFailureFallbackModeDescription(mode),
-                            selected = fallbackMode == mode,
-                            onClick = { fallbackMode = mode }
-                        )
-                    }
-                }
-                item("summary-title") {
-                    Text("当前生效摘要", style = MaterialTheme.typography.labelLarge)
-                }
-                items(buildWorkflowFailureSummary(autoRouteEnabled, fallbackMode)) { item ->
-                    Text(
-                        text = "• $item",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        },
-        confirmButton = {
+        actions = {
+            TextButton(onClick = onDismiss) { Text("取消") }
             FilledTonalButton(onClick = { onSave(selectedMode, autoRouteEnabled, fallbackMode) }) {
                 Text("保存")
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
         }
-    )
+    ) {
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            item("mode-title") {
+                Text("执行模式", style = MaterialTheme.typography.labelLarge)
+            }
+            WorkflowExecutionMode.entries.forEach { mode ->
+                item(mode.name) {
+                    SelectableRow(
+                        title = workflowExecutionModeLabel(mode),
+                        subtitle = workflowExecutionModeDescription(mode),
+                        selected = selectedMode == mode,
+                        onClick = { selectedMode = mode }
+                    )
+                }
+            }
+            item("auto-route") {
+                ToggleRow(
+                    title = "发送前自动分流",
+                    subtitle = "在发起任务前先判断是否更适合直接执行、先计划或先澄清。",
+                    checked = autoRouteEnabled,
+                    onCheckedChange = { autoRouteEnabled = it }
+                )
+            }
+            item("fallback-title") {
+                Text("失败回退", style = MaterialTheme.typography.labelLarge)
+            }
+            WorkflowFailureFallbackMode.entries.forEach { mode ->
+                item("fallback-${mode.name}") {
+                    SelectableRow(
+                        title = workflowFailureFallbackModeLabel(mode),
+                        subtitle = workflowFailureFallbackModeDescription(mode),
+                        selected = fallbackMode == mode,
+                        onClick = { fallbackMode = mode }
+                    )
+                }
+            }
+            item("summary-title") {
+                Text("当前生效摘要", style = MaterialTheme.typography.labelLarge)
+            }
+            items(buildWorkflowFailureSummary(autoRouteEnabled, fallbackMode)) { item ->
+                Text(
+                    text = "• $item",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -772,75 +880,11 @@ private fun ToolAccessEditorDialog(
         mutableStateOf(config.allowedMcpTools.toMutableSet())
     }
 
-    AlertDialog(
+    ToolsLargeDialog(
+        title = "工具权限",
         onDismissRequest = onDismiss,
-        title = { Text("工具权限") },
-        text = {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                item("builtin-title") {
-                    Text("内置工具", style = MaterialTheme.typography.labelLarge)
-                }
-                builtInToolCatalog().forEach { tool ->
-                    item("builtin-${tool.name}") {
-                        ToggleRow(
-                            title = tool.title,
-                            subtitle = tool.description,
-                            checked = tool.name in enabledBuiltinTools,
-                            onCheckedChange = { checked ->
-                                enabledBuiltinTools = enabledBuiltinTools.toMutableSet().also { set ->
-                                    if (checked) set.add(tool.name) else set.remove(tool.name)
-                                }
-                            }
-                        )
-                    }
-                }
-                item("file-title") {
-                    Text("文件操作", style = MaterialTheme.typography.labelLarge)
-                }
-                DEFAULT_ENABLED_FILE_TOOL_OPERATIONS.forEach { operation ->
-                    item("file-op-$operation") {
-                        ToggleRow(
-                            title = fileOperationLabel(operation),
-                            subtitle = fileOperationDescription(operation),
-                            checked = operation in enabledFileOperations,
-                            onCheckedChange = { checked ->
-                                enabledFileOperations = enabledFileOperations.toMutableSet().also { set ->
-                                    if (checked) set.add(operation) else set.remove(operation)
-                                }
-                            }
-                        )
-                    }
-                }
-                item("mcp-toggle") {
-                    ToggleRow(
-                        title = "允许全部 MCP 工具",
-                        subtitle = "开启后不再单独维护 MCP 工具白名单。",
-                        checked = allowAllMcpTools,
-                        onCheckedChange = { allowAllMcpTools = it }
-                    )
-                }
-                if (!allowAllMcpTools && mcpToolNames.isNotEmpty()) {
-                    item("mcp-title") {
-                        Text("MCP 工具白名单", style = MaterialTheme.typography.labelLarge)
-                    }
-                    mcpToolNames.forEach { toolName ->
-                        item("mcp-$toolName") {
-                            ToggleRow(
-                                title = toolName,
-                                subtitle = "仅允许当前工具自动进入调用列表。",
-                                checked = toolName in allowedMcpTools,
-                                onCheckedChange = { checked ->
-                                    allowedMcpTools = allowedMcpTools.toMutableSet().also { set ->
-                                        if (checked) set.add(toolName) else set.remove(toolName)
-                                    }
-                                }
-                            )
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
+        actions = {
+            TextButton(onClick = onDismiss) { Text("取消") }
             FilledTonalButton(
                 onClick = {
                     onSave(
@@ -853,11 +897,72 @@ private fun ToolAccessEditorDialog(
                     )
                 }
             ) { Text("保存") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
         }
-    )
+    ) {
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            item("builtin-title") {
+                Text("内置工具", style = MaterialTheme.typography.labelLarge)
+            }
+            builtInToolCatalog().forEach { tool ->
+                item("builtin-${tool.name}") {
+                    ToggleRow(
+                        title = tool.title,
+                        subtitle = tool.description,
+                        checked = tool.name in enabledBuiltinTools,
+                        onCheckedChange = { checked ->
+                            enabledBuiltinTools = enabledBuiltinTools.toMutableSet().also { set ->
+                                if (checked) set.add(tool.name) else set.remove(tool.name)
+                            }
+                        }
+                    )
+                }
+            }
+            item("file-title") {
+                Text("文件操作", style = MaterialTheme.typography.labelLarge)
+            }
+            DEFAULT_ENABLED_FILE_TOOL_OPERATIONS.forEach { operation ->
+                item("file-op-$operation") {
+                    ToggleRow(
+                        title = fileOperationLabel(operation),
+                        subtitle = fileOperationDescription(operation),
+                        checked = operation in enabledFileOperations,
+                        onCheckedChange = { checked ->
+                            enabledFileOperations = enabledFileOperations.toMutableSet().also { set ->
+                                if (checked) set.add(operation) else set.remove(operation)
+                            }
+                        }
+                    )
+                }
+            }
+            item("mcp-toggle") {
+                ToggleRow(
+                    title = "允许全部 MCP 工具",
+                    subtitle = "开启后不再单独维护 MCP 工具白名单。",
+                    checked = allowAllMcpTools,
+                    onCheckedChange = { allowAllMcpTools = it }
+                )
+            }
+            if (!allowAllMcpTools && mcpToolNames.isNotEmpty()) {
+                item("mcp-title") {
+                    Text("MCP 工具白名单", style = MaterialTheme.typography.labelLarge)
+                }
+                mcpToolNames.forEach { toolName ->
+                    item("mcp-$toolName") {
+                        ToggleRow(
+                            title = toolName,
+                            subtitle = "仅允许当前工具自动进入调用列表。",
+                            checked = toolName in allowedMcpTools,
+                            onCheckedChange = { checked ->
+                                allowedMcpTools = allowedMcpTools.toMutableSet().also { set ->
+                                    if (checked) set.add(toolName) else set.remove(toolName)
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -925,44 +1030,42 @@ private fun ToolCallDetailSheet(record: ToolCallRecordUi, onDismiss: () -> Unit)
 
 @Composable
 private fun ErrorDetailSheet(record: ErrorRecordUi, onDismiss: () -> Unit) {
-    AlertDialog(
+    ToolsPopupDialog(
+        title = "错误详情",
+        subtitle = formatTime(record.timestamp),
         onDismissRequest = onDismiss,
-        title = { Text("错误详情") },
-        text = {
-            SelectionContainer {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(formatTime(record.timestamp), style = MaterialTheme.typography.bodySmall)
-                    CodeBlock(record.message)
-                }
-            }
-        },
-        confirmButton = {
+        actions = {
             TextButton(onClick = onDismiss) { Text("关闭") }
         }
-    )
+    ) {
+        SelectionContainer {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                CodeBlock(record.message)
+            }
+        }
+    }
 }
 
 @Composable
 private fun McpStatusDetailSheet(status: McpServerStatus, onDismiss: () -> Unit) {
-    AlertDialog(
+    ToolsPopupDialog(
+        title = "MCP 状态",
+        subtitle = status.name,
         onDismissRequest = onDismiss,
-        title = { Text("MCP 状态") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("服务器: ${status.name}")
-                Text("连接状态: ${if (status.connected) "已连接" else "未连接"}")
-                Text("工具数量: ${status.toolCount}")
-                status.error?.let { Text("错误: $it", color = MaterialTheme.colorScheme.error) }
-                if (status.toolNames.isNotEmpty()) {
-                    Text("工具列表", style = MaterialTheme.typography.labelLarge)
-                    status.toolNames.forEach { Text("• $it") }
-                }
-            }
-        },
-        confirmButton = {
+        actions = {
             TextButton(onClick = onDismiss) { Text("关闭") }
         }
-    )
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("连接状态: ${if (status.connected) "已连接" else "未连接"}")
+            Text("工具数量: ${status.toolCount}")
+            status.error?.let { Text("错误: $it", color = MaterialTheme.colorScheme.error) }
+            if (status.toolNames.isNotEmpty()) {
+                Text("工具列表", style = MaterialTheme.typography.labelLarge)
+                status.toolNames.forEach { Text("• $it") }
+            }
+        }
+    }
 }
 
 @Composable

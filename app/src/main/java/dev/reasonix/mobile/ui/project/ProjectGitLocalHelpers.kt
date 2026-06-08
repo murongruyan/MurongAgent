@@ -246,7 +246,7 @@ private fun parseProjectGitConfig(content: String): Map<String, Map<String, Stri
         if (line.isBlank() || line.startsWith("#") || line.startsWith(";")) return@forEach
         if (line.startsWith("[") && line.endsWith("]")) {
             currentSection = line.removePrefix("[").removeSuffix("]").trim()
-            sections.getOrPut(currentSection!!) { linkedMapOf() }
+            sections.getOrPut(currentSection) { linkedMapOf() }
             return@forEach
         }
         val section = currentSection ?: return@forEach

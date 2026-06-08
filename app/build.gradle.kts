@@ -1,13 +1,14 @@
 import java.util.Base64
 import java.util.Properties
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    id("org.jetbrains.kotlin.kapt")
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.hilt.android)
-    alias(libs.plugins.ksp)
 }
 
 val localProperties = Properties().apply {
@@ -30,7 +31,7 @@ android {
 
     defaultConfig {
         applicationId = "dev.reasonix.mobile"
-        minSdk = 26
+        minSdk = 33
         targetSdk = 36
         versionCode = appVersionCode
         versionName = appVersionName
@@ -109,15 +110,26 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = "17"
+        isCoreLibraryDesugaringEnabled = true
     }
 
     buildFeatures {
         compose = true
     }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
+    }
+}
+
+kapt {
+    correctErrorTypes = true
+}
+
+hilt {
+    enableAggregatingTask = false
 }
 
 dependencies {
@@ -151,12 +163,19 @@ dependencies {
 
     // DI
     implementation(libs.hilt.android)
-    ksp(libs.hilt.compiler)
+    kapt(libs.hilt.compiler)
+    kapt(libs.kotlin.metadata.jvm)
     implementation(libs.hilt.navigation.compose)
 
     // UI
     implementation(libs.haze)
     implementation(libs.jgit)
+    implementation(platform(libs.sora.editor.bom))
+    implementation(libs.sora.editor)
+    implementation(libs.sora.language.monarch)
+    implementation(libs.sora.language.textmate)
+    implementation(libs.monarch.language.pack)
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
 
     testImplementation(kotlin("test"))
 }

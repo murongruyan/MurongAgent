@@ -108,7 +108,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gradle --no-daemon \
+          chmod +x ./gradlew
+          ./gradlew --no-daemon \
             :app:assembleRelease \
             -PAPP_VERSION_NAME="${APP_VERSION}" \
             -PAPP_VERSION_CODE="${APP_VERSION_CODE}" \

@@ -1,6 +1,7 @@
 package dev.reasonix.mobile.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.LocalOverscrollFactory
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -88,7 +89,6 @@ fun ReasonixTheme(
         ReasonixThemeMode.SYSTEM -> isSystemInDarkTheme()
         ReasonixThemeMode.LIGHT -> false
         ReasonixThemeMode.DARK -> true
-        else -> isSystemInDarkTheme()
     }
     val accent = uiController.accentColor
     val backgroundSeed = parseReasonixColor(
@@ -118,7 +118,8 @@ fun ReasonixTheme(
     CompositionLocalProvider(
         LocalDensity provides scaledDensity,
         LocalReasonixUiController provides uiController,
-        LocalReasonixHazeState provides hazeState
+        LocalReasonixHazeState provides hazeState,
+        LocalOverscrollFactory provides null
     ) {
         MaterialTheme(
             colorScheme = colorScheme,

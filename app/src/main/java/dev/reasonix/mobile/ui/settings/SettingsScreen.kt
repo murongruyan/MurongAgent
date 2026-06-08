@@ -16,9 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -40,8 +38,9 @@ import dev.reasonix.mobile.ui.McpDraftImportCard
 import dev.reasonix.mobile.ui.ReasonixGlassSurface
 import dev.reasonix.mobile.ui.ReasonixInfoCard
 import dev.reasonix.mobile.ui.ReasonixOutlinedActionButton
-import dev.reasonix.mobile.ui.ReasonixSecondaryPageSurface
+import dev.reasonix.mobile.ui.ReasonixPrimaryPageSurface
 import dev.reasonix.mobile.ui.ReasonixSectionCard
+import dev.reasonix.mobile.ui.rememberReasonixBottomBarScrollPadding
 import dev.reasonix.mobile.ui.normalizeSkillAllowedTools
 import dev.reasonix.mobile.ui.sanitizeSkillAllowedTools
 import dev.reasonix.mobile.ui.SkillAllowedToolsBudgetView
@@ -73,10 +72,10 @@ fun SettingsScreen(
     onOpenThemePage: () -> Unit = {},
     onOpenAboutPage: () -> Unit = {}
 ) {
+    val bottomBarScrollPadding = rememberReasonixBottomBarScrollPadding()
     val providers = remember { ProviderRegistry.getAllProviders() }
     var showApiKey by remember { mutableStateOf(false) }
     val uriHandler = LocalUriHandler.current
-    val clipboardManager = LocalClipboardManager.current
     var lastOpenedGitHubAuthUrl by remember { mutableStateOf<String?>(null) }
     var providerSectionExpanded by remember { mutableStateOf(true) }
 
@@ -103,7 +102,7 @@ fun SettingsScreen(
         }
     }
 
-    ReasonixSecondaryPageSurface(
+    ReasonixPrimaryPageSurface(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 12.dp, vertical = 8.dp),
@@ -113,7 +112,7 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(start = 12.dp, top = 10.dp, end = 12.dp, bottom = 132.dp),
+                .padding(start = 12.dp, top = 10.dp, end = 12.dp, bottom = bottomBarScrollPadding),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
 

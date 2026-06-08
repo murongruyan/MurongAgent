@@ -5,9 +5,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -25,7 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.reasonix.mobile.ui.highlightSyntax
+import dev.reasonix.mobile.ui.ReasonixReadOnlyCodeBlock
 import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
 import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
 import java.util.Locale
@@ -160,18 +162,7 @@ private fun PreviewCodeLine(
     query: String?,
     onClick: (() -> Unit)?
 ) {
-    val onSurfaceColor = MaterialTheme.colorScheme.onSurface
-    val annotated = remember(lineNumber, lineText, lineNumberWidth, language, query) {
-        buildPreviewCodeLine(
-            lineNumber = lineNumber,
-            lineText = lineText,
-            lineNumberWidth = lineNumberWidth,
-            language = language,
-            query = query
-        )
-    }
-    Text(
-        text = annotated,
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .let { base ->
@@ -181,12 +172,24 @@ private fun PreviewCodeLine(
                     base
                 }
             }
-            .padding(vertical = 1.dp),
-        fontFamily = FontFamily.Monospace,
-        fontSize = 12.sp,
-        lineHeight = 18.sp,
-        color = onSurfaceColor
-    )
+            .padding(vertical = 1.dp)
+    ) {
+        Text(
+            text = lineNumber.toString().padStart(lineNumberWidth, ' ') + " |",
+            modifier = Modifier.width((lineNumberWidth * 9 + 18).dp),
+            fontFamily = FontFamily.Monospace,
+            fontSize = 12.sp,
+            lineHeight = 18.sp,
+            color = Color(0xFF6A9955)
+        )
+        ReasonixReadOnlyCodeBlock(
+            code = lineText.ifEmpty { " " },
+            language = language,
+            searchQuery = query.orEmpty(),
+            backgroundColor = Color.Transparent,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
 }
 
 @Composable
@@ -197,29 +200,20 @@ private fun FoldedPreviewRow(
     query: String?,
     onToggle: () -> Unit
 ) {
-    val onSurfaceColor = MaterialTheme.colorScheme.onSurface
     val mutedTextColor = rememberReasonixMutedTextColor()
-    val annotated = remember(region, lineNumberWidth, language, query) {
-        buildPreviewCodeLine(
-            lineNumber = region.startLine,
-            lineText = region.headerLine,
-            lineNumberWidth = lineNumberWidth,
-            language = language,
-            query = query
-        )
-    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onToggle)
             .padding(vertical = 1.dp)
     ) {
-        Text(
-            text = annotated,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 12.sp,
-            lineHeight = 18.sp,
-            color = onSurfaceColor
+        PreviewCodeLine(
+            lineNumber = region.startLine,
+            lineText = region.headerLine,
+            lineNumberWidth = lineNumberWidth,
+            language = language,
+            query = query,
+            onClick = null
         )
         Text(
             text = " ".repeat(lineNumberWidth + 3) + "... 已折叠 ${region.endLine - region.startLine} 行，点击展开",
@@ -264,53 +258,4 @@ private fun highlightSearchKeyword(text: String, query: String) = buildAnnotated
         pop()
         startIndex = matchIndex + normalizedQuery.length
     }
-}
-
-internal fun highlightSyntaxWithSearchQuery(
-    code: String,
-    language: String,
-    query: String?
-): AnnotatedString {
-    val base = highlightSyntax(code, language)
-    val normalizedQuery = query?.trim().orEmpty()
-    if (normalizedQuery.isBlank()) return base
-
-    val builder = AnnotatedString.Builder(base)
-    val lowerText = code.lowercase(Locale.getDefault())
-    val lowerQuery = normalizedQuery.lowercase(Locale.getDefault())
-    var startIndex = 0
-    while (startIndex < code.length) {
-        val matchIndex = lowerText.indexOf(lowerQuery, startIndex)
-        if (matchIndex < 0) break
-        builder.addStyle(
-            SpanStyle(
-                background = Color(0x55FFD54F),
-                fontWeight = FontWeight.Bold
-            ),
-            start = matchIndex,
-            end = matchIndex + normalizedQuery.length
-        )
-        startIndex = matchIndex + normalizedQuery.length
-    }
-    return builder.toAnnotatedString()
-}
-
-private fun buildPreviewCodeLine(
-    lineNumber: Int,
-    lineText: String,
-    lineNumberWidth: Int,
-    language: String,
-    query: String?
-): AnnotatedString {
-    val builder = AnnotatedString.Builder()
-    builder.pushStyle(
-        SpanStyle(
-            color = Color(0xFF6A9955)
-        )
-    )
-    builder.append(lineNumber.toString().padStart(lineNumberWidth, ' '))
-    builder.append(" | ")
-    builder.pop()
-    builder.append(highlightSyntaxWithSearchQuery(lineText, language, query))
-    return builder.toAnnotatedString()
 }

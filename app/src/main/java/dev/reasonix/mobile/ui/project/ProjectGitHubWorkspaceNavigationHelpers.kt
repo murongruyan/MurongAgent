@@ -9,12 +9,175 @@ internal data class ProjectGitHubWorkspaceNavigationState(
     val isDownloadCenterVisible: Boolean = false,
     val workbenchRepoRoot: String? = null,
     val workbenchSelectedTab: ProjectGitHubWorkspaceRepoWorkbenchTab =
-        ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
+        ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW,
+    val pendingDetailTarget: ProjectGitHubWorkspaceDetailTarget? = null
 )
+
+internal data class ProjectGitHubWorkspaceDetailTarget(
+    val rootPath: String,
+    val selectedTab: ProjectGitHubWorkspaceRepoWorkbenchTab,
+    val workflowRun: ProjectGitHubWorkflowRunUi? = null,
+    val issue: ProjectGitHubIssueUi? = null,
+    val pullRequest: ProjectGitHubPullRequestUi? = null
+)
+
+internal sealed interface ProjectGitHubWorkspaceNavigationAction {
+    data class OpenRepoWorkbench(
+        val rootPath: String,
+        val selectedTab: ProjectGitHubWorkspaceRepoWorkbenchTab =
+            ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
+    ) : ProjectGitHubWorkspaceNavigationAction
+
+    data class OpenDetailTarget(
+        val target: ProjectGitHubWorkspaceDetailTarget
+    ) : ProjectGitHubWorkspaceNavigationAction
+
+    data object OpenDownloadCenter : ProjectGitHubWorkspaceNavigationAction
+
+    data object OpenOverview : ProjectGitHubWorkspaceNavigationAction
+
+    data class SelectWorkbenchTab(
+        val selectedTab: ProjectGitHubWorkspaceRepoWorkbenchTab
+    ) : ProjectGitHubWorkspaceNavigationAction
+
+    data object ClearPendingDetailTarget : ProjectGitHubWorkspaceNavigationAction
+
+    data object CloseRepoWorkbench : ProjectGitHubWorkspaceNavigationAction
+
+    data object CloseNavigationLayer : ProjectGitHubWorkspaceNavigationAction
+
+    data class NormalizeDetectedRepos(
+        val detectedRepos: List<ProjectDetectedRepoUi>
+    ) : ProjectGitHubWorkspaceNavigationAction
+}
 
 internal fun clearProjectGitHubWorkspaceNavigationState():
     ProjectGitHubWorkspaceNavigationState {
     return ProjectGitHubWorkspaceNavigationState()
+}
+
+internal fun reduceProjectGitHubWorkspaceNavigationState(
+    currentState: ProjectGitHubWorkspaceNavigationState,
+    action: ProjectGitHubWorkspaceNavigationAction
+): ProjectGitHubWorkspaceNavigationState {
+    return when (action) {
+        is ProjectGitHubWorkspaceNavigationAction.OpenRepoWorkbench -> {
+            currentState.copy(
+                isVisible = true,
+                isDownloadCenterVisible = false,
+                workbenchRepoRoot = action.rootPath,
+                workbenchSelectedTab = action.selectedTab,
+                pendingDetailTarget = null
+            )
+        }
+
+        is ProjectGitHubWorkspaceNavigationAction.OpenDetailTarget -> {
+            currentState.copy(
+                isVisible = true,
+                isDownloadCenterVisible = false,
+                workbenchRepoRoot = action.target.rootPath,
+                workbenchSelectedTab = action.target.selectedTab,
+                pendingDetailTarget = action.target
+            )
+        }
+
+        ProjectGitHubWorkspaceNavigationAction.OpenDownloadCenter -> {
+            currentState.copy(
+                isVisible = true,
+                isDownloadCenterVisible = true,
+                workbenchRepoRoot = null,
+                workbenchSelectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW,
+                pendingDetailTarget = null
+            )
+        }
+
+        ProjectGitHubWorkspaceNavigationAction.OpenOverview -> {
+            currentState.copy(
+                isVisible = true,
+                isDownloadCenterVisible = false,
+                workbenchRepoRoot = null,
+                workbenchSelectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW,
+                pendingDetailTarget = null
+            )
+        }
+
+        is ProjectGitHubWorkspaceNavigationAction.SelectWorkbenchTab -> {
+            currentState.copy(
+                isVisible = true,
+                isDownloadCenterVisible = false,
+                workbenchSelectedTab = action.selectedTab,
+                pendingDetailTarget = null
+            )
+        }
+
+        ProjectGitHubWorkspaceNavigationAction.ClearPendingDetailTarget -> {
+            currentState.copy(pendingDetailTarget = null)
+        }
+
+        ProjectGitHubWorkspaceNavigationAction.CloseRepoWorkbench -> {
+            currentState.copy(
+                workbenchRepoRoot = null,
+                workbenchSelectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW,
+                pendingDetailTarget = null
+            )
+        }
+
+        ProjectGitHubWorkspaceNavigationAction.CloseNavigationLayer -> {
+            // #region debug-point A:git-helper-entry
+            reportGitBackChatFlashWorkspaceNavDebug(
+                hypothesisId = "A",
+                location = "ProjectGitHubWorkspaceNavigationHelpers.kt:closeLayer",
+                msg = "[DEBUG] workspace navigation helper invoked",
+                data = JSONObject()
+                    .put("isVisible", currentState.isVisible)
+                    .put("isDownloadCenterVisible", currentState.isDownloadCenterVisible)
+                    .put("workbenchRepoRoot", currentState.workbenchRepoRoot ?: JSONObject.NULL)
+                    .put("workbenchSelectedTab", currentState.workbenchSelectedTab.name)
+            )
+            // #endregion
+            when {
+                currentState.workbenchRepoRoot != null &&
+                    currentState.workbenchSelectedTab != ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW -> {
+                    reduceProjectGitHubWorkspaceNavigationState(
+                        currentState = currentState,
+                        action = ProjectGitHubWorkspaceNavigationAction.SelectWorkbenchTab(
+                            selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
+                        )
+                    )
+                }
+
+                currentState.workbenchRepoRoot != null -> {
+                    reduceProjectGitHubWorkspaceNavigationState(
+                        currentState = currentState,
+                        action = ProjectGitHubWorkspaceNavigationAction.CloseRepoWorkbench
+                    )
+                }
+
+                currentState.isDownloadCenterVisible -> {
+                    reduceProjectGitHubWorkspaceNavigationState(
+                        currentState = currentState,
+                        action = ProjectGitHubWorkspaceNavigationAction.OpenOverview
+                    )
+                }
+
+                else -> {
+                    clearProjectGitHubWorkspaceNavigationState()
+                }
+            }
+        }
+
+        is ProjectGitHubWorkspaceNavigationAction.NormalizeDetectedRepos -> {
+            val workbenchRepoRoot = currentState.workbenchRepoRoot ?: return currentState
+            if (action.detectedRepos.any { it.rootPath == workbenchRepoRoot }) {
+                currentState
+            } else {
+                reduceProjectGitHubWorkspaceNavigationState(
+                    currentState = currentState,
+                    action = ProjectGitHubWorkspaceNavigationAction.CloseRepoWorkbench
+                )
+            }
+        }
+    }
 }
 
 internal fun openProjectGitHubWorkspaceRepoWorkbench(
@@ -23,81 +186,90 @@ internal fun openProjectGitHubWorkspaceRepoWorkbench(
     selectedTab: ProjectGitHubWorkspaceRepoWorkbenchTab =
         ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
 ): ProjectGitHubWorkspaceNavigationState {
-    return currentState.copy(
-        isVisible = true,
-        isDownloadCenterVisible = false,
-        workbenchRepoRoot = rootPath,
-        workbenchSelectedTab = selectedTab
+    return reduceProjectGitHubWorkspaceNavigationState(
+        currentState = currentState,
+        action = ProjectGitHubWorkspaceNavigationAction.OpenRepoWorkbench(
+            rootPath = rootPath,
+            selectedTab = selectedTab
+        )
+    )
+}
+
+internal fun openProjectGitHubWorkspaceDetailTarget(
+    currentState: ProjectGitHubWorkspaceNavigationState,
+    target: ProjectGitHubWorkspaceDetailTarget
+): ProjectGitHubWorkspaceNavigationState {
+    return reduceProjectGitHubWorkspaceNavigationState(
+        currentState = currentState,
+        action = ProjectGitHubWorkspaceNavigationAction.OpenDetailTarget(target)
     )
 }
 
 internal fun openProjectGitHubWorkspaceDownloadCenter(
     currentState: ProjectGitHubWorkspaceNavigationState
 ): ProjectGitHubWorkspaceNavigationState {
-    return currentState.copy(
-        isVisible = true,
-        isDownloadCenterVisible = true,
-        workbenchRepoRoot = null,
-        workbenchSelectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
+    return reduceProjectGitHubWorkspaceNavigationState(
+        currentState = currentState,
+        action = ProjectGitHubWorkspaceNavigationAction.OpenDownloadCenter
+    )
+}
+
+internal fun openProjectGitHubWorkspaceOverview(
+    currentState: ProjectGitHubWorkspaceNavigationState
+): ProjectGitHubWorkspaceNavigationState {
+    return reduceProjectGitHubWorkspaceNavigationState(
+        currentState = currentState,
+        action = ProjectGitHubWorkspaceNavigationAction.OpenOverview
+    )
+}
+
+internal fun selectProjectGitHubWorkspaceWorkbenchTab(
+    currentState: ProjectGitHubWorkspaceNavigationState,
+    selectedTab: ProjectGitHubWorkspaceRepoWorkbenchTab
+): ProjectGitHubWorkspaceNavigationState {
+    return reduceProjectGitHubWorkspaceNavigationState(
+        currentState = currentState,
+        action = ProjectGitHubWorkspaceNavigationAction.SelectWorkbenchTab(selectedTab)
+    )
+}
+
+internal fun clearProjectGitHubWorkspacePendingDetailTarget(
+    currentState: ProjectGitHubWorkspaceNavigationState
+): ProjectGitHubWorkspaceNavigationState {
+    return reduceProjectGitHubWorkspaceNavigationState(
+        currentState = currentState,
+        action = ProjectGitHubWorkspaceNavigationAction.ClearPendingDetailTarget
     )
 }
 
 internal fun closeProjectGitHubWorkspaceRepoWorkbench(
     currentState: ProjectGitHubWorkspaceNavigationState
 ): ProjectGitHubWorkspaceNavigationState {
-    return currentState.copy(
-        workbenchRepoRoot = null,
-        workbenchSelectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
+    return reduceProjectGitHubWorkspaceNavigationState(
+        currentState = currentState,
+        action = ProjectGitHubWorkspaceNavigationAction.CloseRepoWorkbench
     )
 }
 
 internal fun closeProjectGitHubWorkspaceNavigationLayer(
     currentState: ProjectGitHubWorkspaceNavigationState
 ): ProjectGitHubWorkspaceNavigationState {
-    // #region debug-point A:git-helper-entry
-    reportGitBackChatFlashWorkspaceNavDebug(
-        hypothesisId = "A",
-        location = "ProjectGitHubWorkspaceNavigationHelpers.kt:closeLayer",
-        msg = "[DEBUG] workspace navigation helper invoked",
-        data = JSONObject()
-            .put("isVisible", currentState.isVisible)
-            .put("isDownloadCenterVisible", currentState.isDownloadCenterVisible)
-            .put("workbenchRepoRoot", currentState.workbenchRepoRoot ?: JSONObject.NULL)
-            .put("workbenchSelectedTab", currentState.workbenchSelectedTab.name)
+    return reduceProjectGitHubWorkspaceNavigationState(
+        currentState = currentState,
+        action = ProjectGitHubWorkspaceNavigationAction.CloseNavigationLayer
     )
-    // #endregion
-    return when {
-        currentState.workbenchRepoRoot != null &&
-            currentState.workbenchSelectedTab != ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW -> {
-            currentState.copy(
-                workbenchSelectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
-            )
-        }
-
-        currentState.workbenchRepoRoot != null -> {
-            currentState.copy(
-                workbenchRepoRoot = null,
-                workbenchSelectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
-            )
-        }
-
-        currentState.isDownloadCenterVisible -> {
-            currentState.copy(isDownloadCenterVisible = false)
-        }
-
-        else -> {
-            clearProjectGitHubWorkspaceNavigationState()
-        }
-    }
 }
 
 // #region debug-point A:git-helper-reporter
+private const val ENABLE_REASONIX_BACK_DEBUG_REPORTS = false
+
 private fun reportGitBackChatFlashWorkspaceNavDebug(
     hypothesisId: String,
     location: String,
     msg: String,
     data: JSONObject
 ) {
+    if (!ENABLE_REASONIX_BACK_DEBUG_REPORTS) return
     Thread {
         runCatching {
             val connection = (URL("http://192.168.2.3:7777/event").openConnection() as HttpURLConnection).apply {
@@ -108,7 +280,7 @@ private fun reportGitBackChatFlashWorkspaceNavDebug(
                 setRequestProperty("Content-Type", "application/json")
             }
             val payload = JSONObject()
-                .put("sessionId", "git-back-chat-flash")
+                .put("sessionId", "chat-entry-back-animation")
                 .put("runId", "pre-fix")
                 .put("hypothesisId", hypothesisId)
                 .put("location", location)
@@ -128,10 +300,16 @@ internal fun normalizeProjectGitHubWorkspaceNavigationState(
     currentState: ProjectGitHubWorkspaceNavigationState,
     detectedRepos: List<ProjectDetectedRepoUi>
 ): ProjectGitHubWorkspaceNavigationState {
-    val workbenchRepoRoot = currentState.workbenchRepoRoot ?: return currentState
-    if (detectedRepos.any { it.rootPath == workbenchRepoRoot }) return currentState
-    return currentState.copy(
-        workbenchRepoRoot = null,
-        workbenchSelectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
+    return reduceProjectGitHubWorkspaceNavigationState(
+        currentState = currentState,
+        action = ProjectGitHubWorkspaceNavigationAction.NormalizeDetectedRepos(
+            detectedRepos = detectedRepos
+        )
     )
+}
+
+internal fun isProjectGitHubWorkspaceSecondaryPage(
+    currentState: ProjectGitHubWorkspaceNavigationState
+): Boolean {
+    return currentState.isVisible
 }

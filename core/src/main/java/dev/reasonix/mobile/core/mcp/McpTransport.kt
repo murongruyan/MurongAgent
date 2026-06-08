@@ -6,6 +6,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.*
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
@@ -454,40 +455,42 @@ internal fun buildInitializeParams(): JsonObject {
  * 简单的 CompletableFuture 实现（不依赖 java.util.concurrent）
  */
 class CompletableFuture<T> {
+    private val completedSignal = CountDownLatch(1)
     private var result: T? = null
     private var exception: Exception? = null
     private var completed = false
-    private var waiting = false
 
-    @Synchronized
     fun complete(value: T) {
-        result = value
-        completed = true
-        if (waiting) (this as Object).notifyAll()
+        synchronized(this) {
+            result = value
+            completed = true
+            completedSignal.countDown()
+        }
     }
 
-    @Synchronized
     fun completeExceptionally(e: Exception) {
-        exception = e
-        completed = true
-        if (waiting) (this as Object).notifyAll()
+        synchronized(this) {
+            exception = e
+            completed = true
+            completedSignal.countDown()
+        }
     }
 
-    @Synchronized
     fun get(timeout: Long, unit: TimeUnit): T {
-        if (completed) {
+        if (!completed) {
+            try {
+                if (!completedSignal.await(timeout, unit)) {
+                    throw Exception("Request timed out after $timeout ${unit}")
+                }
+            } catch (_: InterruptedException) {
+                throw Exception("Request timed out")
+            }
+        }
+        synchronized(this) {
+            if (!completed) throw Exception("Request timed out after $timeout ${unit}")
             exception?.let { throw it }
-            return result!!
+            @Suppress("UNCHECKED_CAST")
+            return result as T
         }
-        waiting = true
-        try {
-            (this as Object).wait(unit.toMillis(timeout))
-        } catch (_: InterruptedException) {
-            throw Exception("Request timed out")
-        }
-        waiting = false
-        if (!completed) throw Exception("Request timed out after $timeout ${unit}")
-        exception?.let { throw it }
-        return result!!
     }
 }
