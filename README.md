@@ -36,7 +36,7 @@ cd reasonix-mobile
 
 # 设置 Android SDK/NDK（参考 local.properties）
 # sdk.dir=C:\\Users\\...\\AppData\\Local\\Android\\Sdk
-# ndk.dir=C:\\android-ndk-r27d-windows
+# ndk.dir=C:\\Users\\...\\AppData\\Local\\Android\\Sdk\\ndk\\30.0.14904198
 
 # 构建
 ./gradlew :app:assembleDebug

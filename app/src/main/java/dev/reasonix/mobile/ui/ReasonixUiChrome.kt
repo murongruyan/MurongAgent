@@ -1029,7 +1029,8 @@ fun ReasonixAlertDialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(max = 560.dp),
-                shape = RoundedCornerShape(30.dp)
+                shape = RoundedCornerShape(30.dp),
+                forceOpaque = true
             ) {
                 Column(
                     modifier = Modifier.padding(horizontal = 22.dp, vertical = 20.dp),
@@ -1312,9 +1313,11 @@ private fun reportChatEntryBackAnimationChromeDebug(
 fun ReasonixPopupSurface(
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(30.dp),
+    forceOpaque: Boolean = false,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val tokens = rememberReasonixSurfaceTokens()
+    val opaqueColor = rememberOpaqueReasonixSecondaryPageColor()
     val ui = LocalReasonixUiController.current
     val hazeState = LocalReasonixHazeState.current
     val isGlassStyle = ui.themeStyle == ReasonixThemeStyle.GLASS
@@ -1336,7 +1339,7 @@ fun ReasonixPopupSurface(
             )
             .clip(shape),
         shape = shape,
-        color = tokens.popupContainerColor,
+        color = if (forceOpaque) opaqueColor else tokens.popupContainerColor,
         border = if (effectiveBlurRadius > 0) null else {
             BorderStroke(1.dp, tokens.accent.copy(alpha = 0.16f))
         },

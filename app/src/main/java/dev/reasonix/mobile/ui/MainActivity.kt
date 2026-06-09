@@ -2164,6 +2164,7 @@ private fun MainScreenPopupDialog(
     ReasonixDialog(onDismissRequest = onDismissRequest) {
         ReasonixPopupSurface(
             shape = RoundedCornerShape(24.dp),
+            forceOpaque = true,
             modifier = modifier
                 .fillMaxWidth()
                 .padding(16.dp)
