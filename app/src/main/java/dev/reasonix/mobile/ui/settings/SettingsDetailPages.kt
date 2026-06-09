@@ -770,12 +770,12 @@ fun AboutPage() {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         ReasonixOutlinedActionButton(
                             text = "GitHub",
-                            onClick = { uriHandler.openUri("https://github.com/murongruyan/reasonix-mobile") },
+                            onClick = { uriHandler.openUri("https://github.com/murongruyan/MurongAgent") },
                             modifier = Modifier.weight(1f)
                         )
                         ReasonixOutlinedActionButton(
                             text = "README",
-                            onClick = { uriHandler.openUri("https://github.com/murongruyan/reasonix-mobile/blob/main/README.md") },
+                            onClick = { uriHandler.openUri("https://github.com/murongruyan/MurongAgent/blob/main/README.md") },
                             modifier = Modifier.weight(1f)
                         )
                     }

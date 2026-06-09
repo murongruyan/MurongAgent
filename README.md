@@ -48,41 +48,59 @@ README 中保留借鉴说明，应用内不再展示这些来源。
 
 ### Android / 构建
 
-- Kotlin
-- Android Gradle Plugin
-- Gradle
-- Java 17
-- KSP
+| 项目 | 版本 / 说明 |
+|---|---|
+| Android Gradle Plugin | 9.2.1 |
+| Gradle（CI） | 9.6.0-rc-1 |
+| Kotlin | 2.3.21 |
+| KSP | 2.3.7 |
+| JDK（CI / 构建环境） | 26 |
+| Java / Kotlin 目标字节码 | 17 |
+| compileSdk / targetSdk | 37 / 37 |
+| minSdk | 33 |
+| Android Build Tools（CI） | 37.0.0 |
+| Android API Level（CI） | 37 |
 
 ### UI
 
-- Jetpack Compose
-- Material 3
-- AndroidX Activity Compose
-- Navigation Compose
-- Chris Banes Haze
+| 项目 | 版本 / 说明 |
+|---|---|
+| Jetpack Compose BOM | 2025.10.00 |
+| Material 3 | 跟随 Compose BOM |
+| Activity Compose | 1.12.0 |
+| Navigation Compose | 2.7.7 |
+| Lifecycle Compose | 2.6.2 |
+| Haze | 1.6.10 |
 
 ### 状态 / 持久化 / 后台
 
-- Hilt
-- DataStore Preferences
-- WorkManager
-- Kotlin Coroutines
-- kotlinx-serialization
+| 项目 | 版本 / 说明 |
+|---|---|
+| Hilt | 2.59.2 |
+| Hilt Navigation Compose | 1.4.0-beta01 |
+| DataStore Preferences | 1.1.3 |
+| WorkManager | 2.9.0 |
+| Kotlin Coroutines | 1.7.3 |
+| kotlinx-serialization-json | 1.7.3 |
 
 ### 网络 / 平台集成
 
-- OkHttp
-- GitHub REST API
-- Android DownloadManager
+| 项目 | 版本 / 说明 |
+|---|---|
+| OkHttp | 4.12.0 |
+| GitHub REST API | v3 / 2022-11-28 版本头 |
+| Android DownloadManager | 系统组件 |
 
 ### 代码与项目能力
 
-- JGit
-- Sora Editor
-- TextMate grammar support
-- Monarch grammar support
-- `monarch-language-pack`
+| 项目 | 版本 / 说明 |
+|---|---|
+| JGit | 7.2.1.202505142326-r |
+| Sora Editor BOM | 0.24.5 |
+| Sora Editor | 跟随 BOM |
+| Sora TextMate | 跟随 BOM |
+| Sora Monarch | 跟随 BOM |
+| monarch-language-pack | 1.0.2 |
 
 ### Agent 与系统能力
 
@@ -128,6 +146,9 @@ cd MurongAgent
 # 设置 Android SDK/NDK（参考 local.properties）
 # sdk.dir=C:\\Users\\...\\AppData\\Local\\Android\\Sdk
 # ndk.dir=C:\\Users\\...\\AppData\\Local\\Android\\Sdk\\ndk\\30.0.14904198
+
+# 推荐使用与 CI 一致的 JDK 26
+# 产物目标仍为 Java 17 / JVM 17
 
 # 调试构建
 ./gradlew :app:assembleDebug

@@ -17,10 +17,10 @@ on:
         description: "APK 小版本号 versionCode，默认读取 app/build.gradle.kts"
         required: false
       release_tag:
-        description: "GitHub Release 标签，默认固定标签 reasonix-mobile"
+        description: "GitHub Release 标签，默认固定标签 murong-agent"
         required: false
       release_name:
-        description: "Release 标题，默认 Reasonix Mobile APK"
+        description: "Release 标题，默认 Murong Agent APK"
         required: false
 
 env:
@@ -95,9 +95,9 @@ jobs:
             exit 1
           fi
 
-          RELEASE_TAG="${INPUT_RELEASE_TAG:-reasonix-mobile}"
-          RELEASE_NAME="${INPUT_RELEASE_NAME:-Reasonix Mobile APK}"
-          APK_FILE="ReasonixMobile-${APP_VERSION}.apk"
+          RELEASE_TAG="${INPUT_RELEASE_TAG:-murong-agent}"
+          RELEASE_NAME="${INPUT_RELEASE_NAME:-Murong Agent APK}"
+          APK_FILE="MurongAgent-${APP_VERSION}.apk"
 
           {
             echo "APP_VERSION=${APP_VERSION}"
@@ -130,7 +130,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v7
         with:
-          name: reasonix-mobile-apk
+          name: murong-agent-apk
           path: dist/${{ env.APK_FILE }}
 
       - name: Publish GitHub Release
