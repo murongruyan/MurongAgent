@@ -19,7 +19,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.viewinterop.AndroidView
-import com.murong.agent.ui.applyReasonixEditorLanguage
+import com.murong.agent.ui.applyMurongEditorLanguage
 import io.github.rosemoe.sora.event.ContentChangeEvent
 import io.github.rosemoe.sora.event.EditorFocusChangeEvent
 import io.github.rosemoe.sora.event.PublishSearchResultEvent
@@ -196,7 +196,7 @@ internal fun ProjectCodeEditorPane(
     }
 
     LaunchedEffect(language, backgroundColor) {
-        editor.applyReasonixEditorLanguage(
+        editor.applyMurongEditorLanguage(
             context = context.applicationContext,
             language = language,
             darkTheme = backgroundColor.luminance() < 0.5f

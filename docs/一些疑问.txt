@@ -1,6 +1,6 @@
 和模型对话发现了一点问题：
 
-1.模型agent是否能够精确读取，一些大文件不可能使用cat命令全部读取吧？就像C:\android-ndk-r27d-windows\diaodu\apk\reasonix-mobile\app\src\main\java\dev\reasonix\mobile\ui\project\ProjectScreen.kt这种9000多行的大文件，直接cat，不说会不会闪退，那样token消耗如流水了。（问了一下是有的，可以通过file的read操作）
+1.模型agent是否能够精确读取，一些大文件不可能使用cat命令全部读取吧？就像C:\android-ndk-r27d-windows\diaodu\apk\murongagent\app\src\main\java\com\murong\agent\ui\project\ProjectScreen.kt这种9000多行的大文件，直接cat，不说会不会闪退，那样token消耗如流水了。（问了一下是有的，可以通过file的read操作）
 
 2.模型agent是否能够搜索具体代码段，是否能定位到具体函数行？
 
@@ -236,7 +236,7 @@ toybox 0.8.12-android (is not GNU sed 9.0)
 RMX5200
 36
 === storage ===
-/dev/block/dm-79 455G 328G  127G  73% /data/misc/profiles/ref/dev.reasonix.mobile
+/dev/block/dm-79 455G 328G  127G  73% /data/misc/profiles/ref/com.murong.agent
 === /system/bin 下可用的工具 ===
 xargs: Unknown option 'I{}' (see "xargs --help")
 ```

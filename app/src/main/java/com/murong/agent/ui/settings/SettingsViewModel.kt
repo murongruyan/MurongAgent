@@ -357,7 +357,7 @@ class SettingsViewModel @Inject constructor(
                 callbackUri = trimmedUri,
                 message = "正在完成 GitHub 登录..."
             )
-            val tokenResult = exchangeReasonixLoginCode(
+            val tokenResult = exchangeMurongLoginCode(
                 apiUrl = currentConfig.getMurongBackendAuthApiUrl(),
                 exchangeCode = exchangeCode
             )
@@ -421,7 +421,7 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    private fun exchangeReasonixLoginCode(
+    private fun exchangeMurongLoginCode(
         apiUrl: String,
         exchangeCode: String
     ): GitHubOAuthTokenResult {

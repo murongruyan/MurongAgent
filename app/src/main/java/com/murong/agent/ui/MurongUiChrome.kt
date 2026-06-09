@@ -171,7 +171,7 @@ class MurongUiController(private val context: Context) {
         private set
 
     var themeColorHex by mutableStateOf(
-        normalizeReasonixColorHex(
+        normalizeMurongColorHex(
             prefs.getString(KEY_THEME_COLOR_HEX, null),
             AccentPresets.first().color
         )
@@ -189,7 +189,7 @@ class MurongUiController(private val context: Context) {
         private set
 
     var backgroundColorHex by mutableStateOf(
-        normalizeReasonixColorHex(
+        normalizeMurongColorHex(
             prefs.getString(KEY_BACKGROUND_COLOR_HEX, null),
             Color(0xFFF5F7FD)
         )
@@ -197,7 +197,7 @@ class MurongUiController(private val context: Context) {
         private set
 
     var surfaceColorHex by mutableStateOf(
-        normalizeReasonixColorHex(
+        normalizeMurongColorHex(
             prefs.getString(KEY_SURFACE_COLOR_HEX, null),
             Color.White
         )
@@ -205,7 +205,7 @@ class MurongUiController(private val context: Context) {
         private set
 
     var chromeColorHex by mutableStateOf(
-        normalizeReasonixColorHex(
+        normalizeMurongColorHex(
             prefs.getString(KEY_CHROME_COLOR_HEX, null),
             Color.White
         )
@@ -213,7 +213,7 @@ class MurongUiController(private val context: Context) {
         private set
 
     var mutedTextColorHex by mutableStateOf(
-        normalizeReasonixColorHex(
+        normalizeMurongColorHex(
             prefs.getString(KEY_MUTED_TEXT_COLOR_HEX, null),
             Color(0xFF6A738A)
         )
@@ -251,10 +251,10 @@ class MurongUiController(private val context: Context) {
             ?: MurongAccentPreset("自定义", accentColor)
 
     val accentColor: Color
-        get() = parseReasonixColor(themeColorHex, AccentPresets.first().color)
+        get() = parseMurongColor(themeColorHex, AccentPresets.first().color)
 
     val backgroundColor: Color
-        get() = parseReasonixColor(
+        get() = parseMurongColor(
             backgroundColorHex,
             if (themeMode == MurongThemeMode.DARK) Color(0xFF090B12) else Color(0xFFF5F7FD)
         )
@@ -271,11 +271,11 @@ class MurongUiController(private val context: Context) {
 
     fun updateAccentIndex(value: Int) {
         val safeValue = value.coerceIn(0, AccentPresets.lastIndex)
-        updateThemeColorHex(AccentPresets[safeValue].color.toReasonixHex())
+        updateThemeColorHex(AccentPresets[safeValue].color.toMurongHex())
     }
 
     fun updateThemeColorHex(value: String) {
-        themeColorHex = normalizeReasonixColorHex(value, accentColor)
+        themeColorHex = normalizeMurongColorHex(value, accentColor)
         prefs.edit().putString(KEY_THEME_COLOR_HEX, themeColorHex).apply()
     }
 
@@ -285,7 +285,7 @@ class MurongUiController(private val context: Context) {
     }
 
     fun updateBackgroundColorHex(value: String) {
-        backgroundColorHex = normalizeReasonixColorHex(value, backgroundColor)
+        backgroundColorHex = normalizeMurongColorHex(value, backgroundColor)
         prefs.edit().putString(KEY_BACKGROUND_COLOR_HEX, backgroundColorHex).apply()
     }
 
@@ -295,17 +295,17 @@ class MurongUiController(private val context: Context) {
     }
 
     fun updateSurfaceColorHex(value: String) {
-        surfaceColorHex = normalizeReasonixColorHex(value, Color.White)
+        surfaceColorHex = normalizeMurongColorHex(value, Color.White)
         prefs.edit().putString(KEY_SURFACE_COLOR_HEX, surfaceColorHex).apply()
     }
 
     fun updateChromeColorHex(value: String) {
-        chromeColorHex = normalizeReasonixColorHex(value, Color.White)
+        chromeColorHex = normalizeMurongColorHex(value, Color.White)
         prefs.edit().putString(KEY_CHROME_COLOR_HEX, chromeColorHex).apply()
     }
 
     fun updateMutedTextColorHex(value: String) {
-        mutedTextColorHex = normalizeReasonixColorHex(value, Color(0xFF6A738A))
+        mutedTextColorHex = normalizeMurongColorHex(value, Color(0xFF6A738A))
         prefs.edit().putString(KEY_MUTED_TEXT_COLOR_HEX, mutedTextColorHex).apply()
     }
 
@@ -335,36 +335,36 @@ class MurongUiController(private val context: Context) {
     fun accentPresets(): List<MurongAccentPreset> = AccentPresets
 }
 
-internal fun defaultReasonixBackgroundColor(darkMode: Boolean): Color {
+internal fun defaultMurongBackgroundColor(darkMode: Boolean): Color {
     return if (darkMode) Color(0xFF090B12) else Color(0xFFF5F7FD)
 }
 
-internal fun defaultReasonixSurfaceColor(darkMode: Boolean): Color {
+internal fun defaultMurongSurfaceColor(darkMode: Boolean): Color {
     return if (darkMode) Color(0xFF151A24) else Color.White
 }
 
-internal fun defaultReasonixChromeColor(darkMode: Boolean): Color {
+internal fun defaultMurongChromeColor(darkMode: Boolean): Color {
     return if (darkMode) Color(0xFF121924) else Color.White
 }
 
-internal fun defaultReasonixMutedTextColor(darkMode: Boolean): Color {
+internal fun defaultMurongMutedTextColor(darkMode: Boolean): Color {
     return if (darkMode) Color(0xFF9EA8C4) else Color(0xFF6A738A)
 }
 
-internal fun normalizeReasonixColorHex(raw: String?, fallback: Color): String {
-    val value = raw?.trim().orEmpty().ifBlank { fallback.toReasonixHex() }
+internal fun normalizeMurongColorHex(raw: String?, fallback: Color): String {
+    val value = raw?.trim().orEmpty().ifBlank { fallback.toMurongHex() }
     val normalized = if (value.startsWith("#")) value else "#$value"
     return when (normalized.length) {
         7, 9 -> normalized.uppercase()
-        else -> fallback.toReasonixHex()
+        else -> fallback.toMurongHex()
     }
 }
 
-internal fun parseReasonixColor(hex: String, fallback: Color): Color {
+internal fun parseMurongColor(hex: String, fallback: Color): Color {
     return runCatching { Color(AndroidColor.parseColor(hex)) }.getOrDefault(fallback)
 }
 
-internal fun Color.toReasonixHex(): String {
+internal fun Color.toMurongHex(): String {
     return String.format("#%08X", toArgb())
 }
 
@@ -436,7 +436,7 @@ fun rememberMurongBottomBarScrollPadding(): Dp {
 fun rememberMurongSurfaceColor(): Color {
     val ui = LocalMurongUiController.current
     val darkMode = murongIsDarkColor(MaterialTheme.colorScheme.background)
-    return parseReasonixColor(ui.surfaceColorHex, defaultReasonixSurfaceColor(darkMode))
+    return parseMurongColor(ui.surfaceColorHex, defaultMurongSurfaceColor(darkMode))
 }
 
 @Composable
@@ -444,7 +444,7 @@ fun rememberMurongSurfaceColor(): Color {
 fun rememberMurongChromeColor(): Color {
     val ui = LocalMurongUiController.current
     val darkMode = murongIsDarkColor(MaterialTheme.colorScheme.background)
-    return parseReasonixColor(ui.chromeColorHex, defaultReasonixChromeColor(darkMode))
+    return parseMurongColor(ui.chromeColorHex, defaultMurongChromeColor(darkMode))
 }
 
 @Composable
@@ -452,7 +452,7 @@ fun rememberMurongChromeColor(): Color {
 fun rememberMurongMutedTextColor(): Color {
     val ui = LocalMurongUiController.current
     val darkMode = murongIsDarkColor(MaterialTheme.colorScheme.background)
-    return parseReasonixColor(ui.mutedTextColorHex, defaultReasonixMutedTextColor(darkMode))
+    return parseMurongColor(ui.mutedTextColorHex, defaultMurongMutedTextColor(darkMode))
 }
 
 @Composable
@@ -554,7 +554,7 @@ fun rememberMurongSurfaceTokens(): MurongSurfaceTokens {
 }
 
 @Composable
-fun rememberOpaqueReasonixSecondaryPageColor(): Color {
+fun rememberOpaqueMurongSecondaryPageColor(): Color {
     val ui = LocalMurongUiController.current
     val chromeSeed = rememberMurongChromeColor()
     val surfaceSeed = rememberMurongSurfaceColor()
@@ -1127,7 +1127,7 @@ fun MurongSecondaryPageSurface(
     content: @Composable ColumnScope.() -> Unit
 ) {
     val tokens = rememberMurongSurfaceTokens()
-    val opaqueColor = rememberOpaqueReasonixSecondaryPageColor()
+    val opaqueColor = rememberOpaqueMurongSecondaryPageColor()
     val hazeState = LocalMurongHazeState.current
     val surfaceModifier = if (tokens.secondaryPageBlurRadius > 0) {
         modifier
@@ -1317,7 +1317,7 @@ fun MurongPopupSurface(
     content: @Composable ColumnScope.() -> Unit
 ) {
     val tokens = rememberMurongSurfaceTokens()
-    val opaqueColor = rememberOpaqueReasonixSecondaryPageColor()
+    val opaqueColor = rememberOpaqueMurongSecondaryPageColor()
     val ui = LocalMurongUiController.current
     val hazeState = LocalMurongHazeState.current
     val isGlassStyle = ui.themeStyle == MurongThemeStyle.GLASS

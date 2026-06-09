@@ -91,17 +91,17 @@ fun MurongTheme(
         MurongThemeMode.DARK -> true
     }
     val accent = uiController.accentColor
-    val backgroundSeed = parseReasonixColor(
+    val backgroundSeed = parseMurongColor(
         uiController.backgroundColorHex,
-        defaultReasonixBackgroundColor(isDark)
+        defaultMurongBackgroundColor(isDark)
     )
-    val surfaceSeed = parseReasonixColor(
+    val surfaceSeed = parseMurongColor(
         uiController.surfaceColorHex,
-        defaultReasonixSurfaceColor(isDark)
+        defaultMurongSurfaceColor(isDark)
     )
-    val mutedTextSeed = parseReasonixColor(
+    val mutedTextSeed = parseMurongColor(
         uiController.mutedTextColorHex,
-        defaultReasonixMutedTextColor(isDark)
+        defaultMurongMutedTextColor(isDark)
     )
     val scaledDensity = remember(baseDensity, uiController.uiScale, uiController.fontScale) {
         Density(

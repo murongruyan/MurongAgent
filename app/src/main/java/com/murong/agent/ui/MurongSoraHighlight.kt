@@ -144,7 +144,7 @@ private object MurongSoraMonarchRegistry {
     }
 }
 
-internal fun normalizeReasonixHighlightLanguage(language: String?): String? {
+internal fun normalizeMurongHighlightLanguage(language: String?): String? {
     val normalized = language?.trim()?.lowercase().orEmpty()
     if (normalized.isBlank()) return null
     return when (normalized) {
@@ -168,12 +168,12 @@ internal fun normalizeReasonixHighlightLanguage(language: String?): String? {
     }
 }
 
-internal fun CodeEditor.applyReasonixEditorLanguage(
+internal fun CodeEditor.applyMurongEditorLanguage(
     context: Context,
     language: String?,
     darkTheme: Boolean
 ) {
-    val normalized = normalizeReasonixHighlightLanguage(language)
+    val normalized = normalizeMurongHighlightLanguage(language)
     val monarchScopeName = when (normalized) {
         "c", "cpp", "hpp" -> "source.cpp"
         "go" -> "source.go"
@@ -277,7 +277,7 @@ internal fun MurongReadOnlyCodeBlock(
                 setDividerWidth(if (showLineNumbers) 1f else 0f)
                 setDividerMargin(12f)
                 setLineSpacing(2f, 1.1f)
-                applyReasonixEditorLanguage(
+                applyMurongEditorLanguage(
                     context = context.applicationContext,
                     language = language,
                     darkTheme = backgroundColor.luminance() < 0.5f
@@ -291,7 +291,7 @@ internal fun MurongReadOnlyCodeBlock(
             editor.setBackgroundColor(backgroundColor.toArgb())
             editor.setLineNumberEnabled(showLineNumbers)
             editor.setDividerWidth(if (showLineNumbers) 1f else 0f)
-            editor.applyReasonixEditorLanguage(
+            editor.applyMurongEditorLanguage(
                 context = context.applicationContext,
                 language = language,
                 darkTheme = backgroundColor.luminance() < 0.5f

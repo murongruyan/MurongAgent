@@ -277,14 +277,14 @@ fun MurongNestedPredictiveBackHost(
                 ) {
                     if (layer.showDetail) {
                         activeDetailContent?.let { currentDetailContent ->
-                            RenderReasonixNestedLayerContent(
+                            RenderMurongNestedLayerContent(
                                 wrapInSecondarySurface = wrapDetailInSecondarySurface,
                                 shape = detailShape,
                                 content = currentDetailContent
                             )
                         }
                     } else {
-                        RenderReasonixNestedLayerContent(
+                        RenderMurongNestedLayerContent(
                             wrapInSecondarySurface = wrapListInSecondarySurface,
                             shape = detailShape,
                             content = listContent
@@ -312,7 +312,7 @@ fun MurongNestedPredictiveBackHost(
 }
 
 @Composable
-private fun RenderReasonixNestedLayerContent(
+private fun RenderMurongNestedLayerContent(
     wrapInSecondarySurface: Boolean,
     shape: Shape,
     content: @Composable () -> Unit
