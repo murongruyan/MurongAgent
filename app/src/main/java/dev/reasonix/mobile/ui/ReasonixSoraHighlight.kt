@@ -14,17 +14,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import io.github.dingyi222666.monarch.languages.CppLanguage
-import io.github.dingyi222666.monarch.languages.CssLanguage
 import io.github.dingyi222666.monarch.languages.GoLanguage
-import io.github.dingyi222666.monarch.languages.HtmlLanguage
-import io.github.dingyi222666.monarch.languages.JavaLanguage
-import io.github.dingyi222666.monarch.languages.JavascriptLanguage
-import io.github.dingyi222666.monarch.languages.LuaLanguage
-import io.github.dingyi222666.monarch.languages.PythonLanguage
+import io.github.dingyi222666.monarch.languages.RustLanguage
 import io.github.dingyi222666.monarch.languages.ShellLanguage
 import io.github.dingyi222666.monarch.languages.SqlLanguage
 import io.github.dingyi222666.monarch.languages.TypescriptLanguage
-import io.github.dingyi222666.monarch.languages.XmlLanguage
 import io.github.dingyi222666.monarch.languages.YamlLanguage
 import io.github.rosemoe.sora.lang.EmptyLanguage
 import io.github.rosemoe.sora.langs.monarch.MonarchColorScheme
@@ -80,84 +74,64 @@ private object ReasonixSoraTextMateRegistry {
 
 private object ReasonixSoraMonarchRegistry {
     private val initialized = AtomicBoolean(false)
+    private val available = AtomicBoolean(true)
 
-    fun ensureInitialized(context: Context) {
-        if (!initialized.compareAndSet(false, true)) return
-        io.github.rosemoe.sora.langs.monarch.registry.FileProviderRegistry.addProvider(
-            io.github.rosemoe.sora.langs.monarch.registry.provider.AssetsFileResolver(context.assets)
-        )
-        arrayOf("darcula", "ayu-dark", "quietlight", "solarized_dark").forEach { name ->
-            val path = "textmate/$name.json"
-            io.github.rosemoe.sora.langs.monarch.registry.ThemeRegistry.loadTheme(
-                io.github.rosemoe.sora.langs.monarch.registry.model.ThemeModel(
-                    ThemeSource(path, name)
-                ).apply {
-                    isDark = name != "quietlight"
-                },
-                false
+    fun ensureInitialized(context: Context): Boolean {
+        if (!available.get()) return false
+        if (!initialized.compareAndSet(false, true)) return available.get()
+        runCatching {
+            io.github.rosemoe.sora.langs.monarch.registry.FileProviderRegistry.addProvider(
+                io.github.rosemoe.sora.langs.monarch.registry.provider.AssetsFileResolver(context.assets)
             )
-        }
-        io.github.rosemoe.sora.langs.monarch.registry.ThemeRegistry.setTheme("quietlight")
-        MonarchGrammarRegistry.INSTANCE.loadGrammars(
-            monarchLanguages {
-                language("cpp") {
-                    monarchLanguage = CppLanguage
-                    defaultScopeName()
-                }
-                language("css") {
-                    monarchLanguage = CssLanguage
-                    defaultScopeName()
-                }
-                language("go") {
-                    monarchLanguage = GoLanguage
-                    defaultScopeName()
-                }
-                language("html") {
-                    monarchLanguage = HtmlLanguage
-                    defaultScopeName()
-                }
-                language("java") {
-                    monarchLanguage = JavaLanguage
-                    defaultScopeName()
-                }
-                language("javascript") {
-                    monarchLanguage = JavascriptLanguage
-                    defaultScopeName()
-                    languageConfiguration = "textmate/javascript/language-configuration.json"
-                }
-                language("lua") {
-                    monarchLanguage = LuaLanguage
-                    defaultScopeName()
-                    languageConfiguration = "textmate/lua/language-configuration.json"
-                }
-                language("python") {
-                    monarchLanguage = PythonLanguage
-                    defaultScopeName()
-                }
-                language("shell") {
-                    monarchLanguage = ShellLanguage
-                    defaultScopeName()
-                }
-                language("sql") {
-                    monarchLanguage = SqlLanguage
-                    defaultScopeName()
-                }
-                language("typescript") {
-                    monarchLanguage = TypescriptLanguage
-                    defaultScopeName()
-                    languageConfiguration = "textmate/javascript/language-configuration.json"
-                }
-                language("xml") {
-                    monarchLanguage = XmlLanguage
-                    defaultScopeName()
-                    languageConfiguration = "textmate/xml/language-configuration.json"
-                }
-                language("yaml") {
-                    monarchLanguage = YamlLanguage
-                    defaultScopeName()
-                }
+            arrayOf("darcula", "ayu-dark", "quietlight", "solarized_dark").forEach { name ->
+                val path = "textmate/$name.json"
+                io.github.rosemoe.sora.langs.monarch.registry.ThemeRegistry.loadTheme(
+                    io.github.rosemoe.sora.langs.monarch.registry.model.ThemeModel(
+                        ThemeSource(path, name)
+                    ).apply {
+                        isDark = name != "quietlight"
+                    },
+                    false
+                )
             }
-        )
+            io.github.rosemoe.sora.langs.monarch.registry.ThemeRegistry.setTheme("quietlight")
+            MonarchGrammarRegistry.INSTANCE.loadGrammars(
+                monarchLanguages {
+                    language("cpp") {
+                        monarchLanguage = CppLanguage
+                        defaultScopeName()
+                    }
+                    language("go") {
+                        monarchLanguage = GoLanguage
+                        defaultScopeName()
+                    }
+                    language("rust") {
+                        monarchLanguage = RustLanguage
+                        defaultScopeName()
+                    }
+                    language("shell") {
+                        monarchLanguage = ShellLanguage
+                        defaultScopeName()
+                    }
+                    language("sql") {
+                        monarchLanguage = SqlLanguage
+                        defaultScopeName()
+                    }
+                    language("typescript") {
+                        monarchLanguage = TypescriptLanguage
+                        defaultScopeName()
+                        languageConfiguration = "textmate/javascript/language-configuration.json"
+                    }
+                    language("yaml") {
+                        monarchLanguage = YamlLanguage
+                        defaultScopeName()
+                    }
+                }
+            )
+        }.onFailure {
+            available.set(false)
+        }
+        return available.get()
     }
 
     fun applyTheme(editor: CodeEditor, darkTheme: Boolean) {
@@ -175,17 +149,21 @@ internal fun normalizeReasonixHighlightLanguage(language: String?): String? {
     if (normalized.isBlank()) return null
     return when (normalized) {
         "kt", "kts" -> "kotlin"
+        "gradle", "groovy", "gvy" -> "java"
         "mjs", "cjs" -> "javascript"
         "ts", "mts", "cts" -> "typescript"
         "cc", "cxx", "c++" -> "cpp"
         "hh", "hxx", "h" -> "hpp"
         "c" -> "c"
+        "rs" -> "rust"
         "shell", "bash", "zsh" -> "sh"
+        "cmake" -> "sh"
         "yml" -> "yaml"
         "md", "mdown" -> "markdown"
         "jsonc", "geojson", "webmanifest" -> "json"
         "luau" -> "lua"
         "plist", "xaml", "svg" -> "xml"
+        "ini", "conf", "cfg", "properties", "prop", "pro", "toml" -> "properties"
         else -> normalized
     }
 }
@@ -198,22 +176,20 @@ internal fun CodeEditor.applyReasonixEditorLanguage(
     val normalized = normalizeReasonixHighlightLanguage(language)
     val monarchScopeName = when (normalized) {
         "c", "cpp", "hpp" -> "source.cpp"
-        "css" -> "source.css"
         "go" -> "source.go"
-        "html" -> "source.html"
-        "java" -> "source.java"
-        "javascript", "jsx" -> "source.javascript"
-        "lua" -> "source.lua"
-        "python" -> "source.python"
+        "rust" -> "source.rust"
+        "properties" -> "source.shell"
         "sh" -> "source.shell"
         "sql" -> "source.sql"
         "typescript", "tsx" -> "source.typescript"
-        "xml" -> "source.xml"
         "yaml" -> "source.yaml"
         else -> null
     }
     if (monarchScopeName != null) {
-        ReasonixSoraMonarchRegistry.ensureInitialized(context)
+        if (!ReasonixSoraMonarchRegistry.ensureInitialized(context)) {
+            setEditorLanguage(EmptyLanguage())
+            return
+        }
         ReasonixSoraMonarchRegistry.applyTheme(editor = this, darkTheme = darkTheme)
         runCatching {
             val existingLanguage = editorLanguage
@@ -233,6 +209,12 @@ internal fun CodeEditor.applyReasonixEditorLanguage(
     val textMateScopeName = when (normalized) {
         "json" -> "source.json"
         "kotlin" -> "source.kotlin"
+        "java" -> "source.java"
+        "python" -> "source.python"
+        "javascript", "jsx" -> "source.js"
+        "lua" -> "source.lua"
+        "html" -> "text.html.basic"
+        "xml" -> "text.xml"
         "markdown" -> "text.html.markdown"
         else -> null
     }

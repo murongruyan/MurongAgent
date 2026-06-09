@@ -5,10 +5,10 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
-    id("org.jetbrains.kotlin.kapt")
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.hilt.android)
+    alias(libs.plugins.ksp)
 }
 
 val localProperties = Properties().apply {
@@ -27,12 +27,12 @@ val appVersionCode = (findProperty("APP_VERSION_CODE") as String?)
 
 android {
     namespace = "dev.reasonix.mobile"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "dev.reasonix.mobile"
         minSdk = 33
-        targetSdk = 36
+        targetSdk = 37
         versionCode = appVersionCode
         versionName = appVersionName
 
@@ -124,14 +124,6 @@ kotlin {
     }
 }
 
-kapt {
-    correctErrorTypes = true
-}
-
-hilt {
-    enableAggregatingTask = false
-}
-
 dependencies {
     implementation(project(":core"))
     implementation(project(":common"))
@@ -163,8 +155,7 @@ dependencies {
 
     // DI
     implementation(libs.hilt.android)
-    kapt(libs.hilt.compiler)
-    kapt(libs.kotlin.metadata.jvm)
+    ksp(libs.hilt.compiler)
     implementation(libs.hilt.navigation.compose)
 
     // UI

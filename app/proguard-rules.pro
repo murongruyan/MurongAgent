@@ -14,6 +14,10 @@
 # Keep DataStore
 -keep class androidx.datastore.** { *; }
 
+# Keep WorkManager runtime internals used during Startup initialization.
+-keep class androidx.work.** { *; }
+-keep class androidx.startup.** { *; }
+
 # Keep Hilt
 -keep class dagger.hilt.** { *; }
 -keep class javax.inject.** { *; }

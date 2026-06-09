@@ -854,7 +854,7 @@ fun ChatScreen(
 }
 
 // #region debug-point D:chat-debug-reporter
-private const val ENABLE_REASONIX_BACK_DEBUG_REPORTS = false
+private const val ENABLE_REASONIX_BACK_DEBUG_REPORTS = true
 
 private fun reportGitBackChatFlashChatDebug(
     hypothesisId: String,
@@ -873,7 +873,7 @@ private fun reportGitBackChatFlashChatDebug(
                 setRequestProperty("Content-Type", "application/json")
             }
             val payload = JSONObject()
-                .put("sessionId", "ui-nav-regressions")
+                .put("sessionId", "app-launch-crash")
                 .put("runId", "pre-fix")
                 .put("hypothesisId", hypothesisId)
                 .put("location", location)

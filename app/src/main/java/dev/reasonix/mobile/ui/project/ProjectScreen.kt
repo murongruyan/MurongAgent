@@ -91,6 +91,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
@@ -141,6 +142,7 @@ import dev.reasonix.mobile.ui.rememberReasonixBottomBarScrollPadding
 import dev.reasonix.mobile.ui.rememberReasonixChromeColor
 import dev.reasonix.mobile.ui.rememberReasonixMutedTextColor
 import dev.reasonix.mobile.ui.rememberReasonixSurfaceColor
+import dev.reasonix.mobile.ui.rememberReasonixSurfaceTokens
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -158,7 +160,7 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
-private const val ENABLE_REASONIX_BACK_DEBUG_REPORTS = false
+private const val ENABLE_REASONIX_BACK_DEBUG_REPORTS = true
 
 private data class ProjectEditorDerivedState(
     val diagnostics: List<ProjectEditorDiagnostic> = emptyList(),
@@ -193,6 +195,22 @@ private fun ProjectScreenLargeDialog(
     actions: @Composable RowScope.() -> Unit = {},
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val tokens = rememberReasonixSurfaceTokens()
+    LaunchedEffect(title, subtitle, tokens.popupContainerColor, tokens.popupGlassColor, tokens.popupBlurRadius) {
+        // #region debug-point R1:project-dialog-appearance
+        reportGitBackChatFlashProjectDebugBootstrap(
+            hypothesisId = "R1",
+            location = "ProjectScreen.kt:ProjectScreenLargeDialog",
+            msg = "[DEBUG] project large dialog shown",
+            data = JSONObject()
+                .put("title", title)
+                .put("subtitle", subtitle ?: JSONObject.NULL)
+                .put("popupContainerArgb", tokens.popupContainerColor.toArgb())
+                .put("popupGlassArgb", tokens.popupGlassColor.toArgb())
+                .put("popupBlurRadius", tokens.popupBlurRadius)
+        )
+        // #endregion
+    }
     ReasonixLargeDialogScaffold(
         onDismissRequest = onDismissRequest,
         modifier = modifier
@@ -253,6 +271,22 @@ private fun ProjectScreenPopupDialog(
     actions: @Composable RowScope.() -> Unit = {},
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val tokens = rememberReasonixSurfaceTokens()
+    LaunchedEffect(title, subtitle, tokens.popupContainerColor, tokens.popupGlassColor, tokens.popupBlurRadius) {
+        // #region debug-point R1:project-dialog-appearance
+        reportGitBackChatFlashProjectDebugBootstrap(
+            hypothesisId = "R1",
+            location = "ProjectScreen.kt:ProjectScreenPopupDialog",
+            msg = "[DEBUG] project popup dialog shown",
+            data = JSONObject()
+                .put("title", title)
+                .put("subtitle", subtitle ?: JSONObject.NULL)
+                .put("popupContainerArgb", tokens.popupContainerColor.toArgb())
+                .put("popupGlassArgb", tokens.popupGlassColor.toArgb())
+                .put("popupBlurRadius", tokens.popupBlurRadius)
+        )
+        // #endregion
+    }
     ReasonixDialog(onDismissRequest = onDismissRequest) {
         ReasonixPopupSurface(
             shape = RoundedCornerShape(24.dp),
@@ -792,6 +826,7 @@ private fun ProjectEditorSection(
     var isAiCompleting by remember(currentProjectPath) { mutableStateOf(false) }
     var showAiCompletionDialog by remember(currentProjectPath) { mutableStateOf(false) }
     var aiCompletionCandidate by remember(currentProjectPath) { mutableStateOf<ProjectAiCompletionCandidateUi?>(null) }
+    var lastHandledEditorMenuSignal by rememberSaveable(currentProjectPath) { mutableStateOf(0) }
     var editorDerivedSeed by remember(currentProjectPath) { mutableStateOf<ProjectEditorDerivedSeed?>(null) }
     val collapsedFoldRegions = remember(currentProjectPath, selectedFilePath) { mutableStateMapOf<Int, Boolean>() }
     val undoStack = remember(currentProjectPath) { mutableStateListOf<TextFieldValue>() }
@@ -862,58 +897,135 @@ private fun ProjectEditorSection(
             aiCompletionCandidate = null
             showAiCompletionDialog = false
             ensurePathExpanded(path)
-            val result = withContext(Dispatchers.IO) {
-                runCatching { readProjectFile(File(path)) }
-            }
-            result
-                .onSuccess { content ->
-                    val initialValue = createInitialEditorValue(content, focusLine, focusQuery)
-                    val resolvedLanguage = languageOverride ?: projectLanguageForPath(path)
-                    val derivedSeedState = withContext(Dispatchers.Default) {
-                        val diagnostics = buildProjectEditorDiagnostics(content, resolvedLanguage)
-                        val conflictBlocks = detectGitConflictBlocks(content)
-                        val foldRegions = detectProjectFoldRegions(content, resolvedLanguage)
-                        ProjectEditorDerivedState(
-                            diagnostics = diagnostics,
-                            conflictBlocks = conflictBlocks,
-                            foldRegions = foldRegions,
-                            outlineEntries = buildProjectOutlineEntries(foldRegions, resolvedLanguage)
+            // #region debug-point F:project-open-file
+            reportGitBackChatFlashProjectDebugBootstrap(
+                hypothesisId = "F",
+                location = "ProjectScreen.kt:openFile:beforeRead",
+                msg = "[DEBUG] project open file requested",
+                data = JSONObject()
+                    .put("path", path)
+                    .put("focusLine", focusLine ?: JSONObject.NULL)
+                    .put("focusQuery", focusQuery ?: JSONObject.NULL)
+                    .put("languageOverride", languageOverride ?: JSONObject.NULL)
+                    .put("detectedLanguage", projectLanguageForPath(path) ?: JSONObject.NULL)
+            )
+            // #endregion
+            try {
+                val content = withContext(Dispatchers.IO) {
+                    readProjectFile(File(path))
+                }
+                // #region debug-point F:project-open-file
+                reportGitBackChatFlashProjectDebugBootstrap(
+                    hypothesisId = "F",
+                    location = "ProjectScreen.kt:openFile:afterRead",
+                    msg = "[DEBUG] project file read succeeded",
+                    data = JSONObject()
+                        .put("path", path)
+                        .put("contentLength", content.length)
+                        .put("focusLine", focusLine ?: JSONObject.NULL)
+                        .put("focusQuery", focusQuery ?: JSONObject.NULL)
+                )
+                // #endregion
+                val initialValue = createInitialEditorValue(content, focusLine, focusQuery)
+                val resolvedLanguage = languageOverride ?: projectLanguageForPath(path)
+                // #region debug-point F:project-open-file
+                reportGitBackChatFlashProjectDebugBootstrap(
+                    hypothesisId = "F",
+                    location = "ProjectScreen.kt:openFile:beforeDerivedState",
+                    msg = "[DEBUG] project file derived state requested",
+                    data = JSONObject()
+                        .put("path", path)
+                        .put("resolvedLanguage", resolvedLanguage ?: JSONObject.NULL)
+                        .put("languageOverride", languageOverride ?: JSONObject.NULL)
+                        .put("detectedLanguage", projectLanguageForPath(path) ?: JSONObject.NULL)
+                        .put("contentLength", content.length)
+                )
+                // #endregion
+                val derivedSeedState =
+                    try {
+                        withContext(Dispatchers.Default) {
+                            val diagnostics = buildProjectEditorDiagnostics(content, resolvedLanguage)
+                            val conflictBlocks = detectGitConflictBlocks(content)
+                            val foldRegions = detectProjectFoldRegions(content, resolvedLanguage)
+                            ProjectEditorDerivedState(
+                                diagnostics = diagnostics,
+                                conflictBlocks = conflictBlocks,
+                                foldRegions = foldRegions,
+                                outlineEntries = buildProjectOutlineEntries(foldRegions, resolvedLanguage)
+                            )
+                        }
+                    } catch (throwable: Throwable) {
+                        reportGitBackChatFlashProjectDebugBootstrap(
+                            hypothesisId = "F",
+                            location = "ProjectScreen.kt:openFile:derivedStateFailed",
+                            msg = "[DEBUG] project file derived state failed",
+                            data = JSONObject()
+                                .put("path", path)
+                                .put("resolvedLanguage", resolvedLanguage ?: JSONObject.NULL)
+                                .put("exceptionType", throwable::class.java.name)
+                                .put("exceptionMessage", throwable.message ?: JSONObject.NULL)
                         )
+                        throw throwable
                     }
-                    selectedFilePath = path
-                    loadedContent = content
-                    editorValue = initialValue
-                    editorDerivedSeed = ProjectEditorDerivedSeed(
-                        sourceText = content,
-                        language = resolvedLanguage.orEmpty(),
-                        derivedState = derivedSeedState
-                    )
-                    aiCompletionCandidate = null
-                    showAiCompletionDialog = false
-                    editorMode = if (isJsonLikeProjectFile(path)) {
-                        ProjectEditorMode.RAW_JSON
-                    } else {
-                        ProjectEditorMode.EDIT
-                    }
-                    focusedSearchLine = focusLine ?: currentLineNumber(content, initialValue.selection.start)
-                    focusedSearchQuery = focusQuery?.takeIf { it.isNotBlank() }
-                    undoStack.clear()
-                    redoStack.clear()
+                // #region debug-point F:project-open-file
+                reportGitBackChatFlashProjectDebugBootstrap(
+                    hypothesisId = "F",
+                    location = "ProjectScreen.kt:openFile:afterDerivedState",
+                    msg = "[DEBUG] project file derived state succeeded",
+                    data = JSONObject()
+                        .put("path", path)
+                        .put("resolvedLanguage", resolvedLanguage ?: JSONObject.NULL)
+                        .put("diagnosticCount", derivedSeedState.diagnostics.size)
+                        .put("conflictBlockCount", derivedSeedState.conflictBlocks.size)
+                        .put("foldRegionCount", derivedSeedState.foldRegions.size)
+                        .put("outlineEntryCount", derivedSeedState.outlineEntries.size)
+                )
+                // #endregion
+                selectedFilePath = path
+                loadedContent = content
+                editorValue = initialValue
+                editorDerivedSeed = ProjectEditorDerivedSeed(
+                    sourceText = content,
+                    language = resolvedLanguage.orEmpty(),
+                    derivedState = derivedSeedState
+                )
+                aiCompletionCandidate = null
+                showAiCompletionDialog = false
+                editorMode = if (isJsonLikeProjectFile(path)) {
+                    ProjectEditorMode.RAW_JSON
+                } else {
+                    ProjectEditorMode.EDIT
                 }
-                .onFailure { error ->
-                    selectedFilePath = path
-                    loadedContent = ""
-                    editorValue = TextFieldValue("")
-                    editorDerivedSeed = null
-                    aiCompletionCandidate = null
-                    showAiCompletionDialog = false
-                    focusedSearchLine = null
-                    focusedSearchQuery = null
-                    undoStack.clear()
-                    redoStack.clear()
-                    editorError = error.message ?: "文件读取失败"
-                }
-            isFileLoading = false
+                focusedSearchLine = focusLine ?: currentLineNumber(content, initialValue.selection.start)
+                focusedSearchQuery = focusQuery?.takeIf { it.isNotBlank() }
+                undoStack.clear()
+                redoStack.clear()
+            } catch (error: Throwable) {
+                // #region debug-point F:project-open-file
+                reportGitBackChatFlashProjectDebugBootstrap(
+                    hypothesisId = "F",
+                    location = "ProjectScreen.kt:openFile:readFailed",
+                    msg = "[DEBUG] project file read failed",
+                    data = JSONObject()
+                        .put("path", path)
+                        .put("exceptionType", error::class.java.name)
+                        .put("exceptionMessage", error.message ?: JSONObject.NULL)
+                )
+                // #endregion
+                selectedFilePath = path
+                loadedContent = ""
+                editorValue = TextFieldValue("")
+                editorDerivedSeed = null
+                aiCompletionCandidate = null
+                showAiCompletionDialog = false
+                focusedSearchLine = null
+                focusedSearchQuery = null
+                undoStack.clear()
+                redoStack.clear()
+                editorError = error.message ?: "文件读取失败"
+            } finally {
+                isFileLoading = false
+            }
         }
     }
 
@@ -1407,6 +1519,37 @@ private fun ProjectEditorSection(
     }
 
     fun handleEditorCloseRequest() {
+        // #region debug-point R2:editor-back-chain
+        reportGitBackChatFlashProjectDebugBootstrap(
+            hypothesisId = "R2",
+            location = "ProjectScreen.kt:handleEditorCloseRequest",
+            msg = "[DEBUG] editor close request consumed",
+            data = JSONObject()
+                .put(
+                    "closeTarget",
+                    when {
+                        showAiCompletionDialog -> "aiCompletion"
+                        showConflictResolverDialog -> "conflictResolver"
+                        showDiagnosticsDialog -> "diagnostics"
+                        showOutlineDialog -> "outline"
+                        showLanguageDialog -> "languageDialog"
+                        showLineReplaceDialog -> "lineReplaceDialog"
+                        showSearchReplaceDialog -> "searchReplaceDialog"
+                        editorTextFieldFocused || editorFocusClearPending -> "clearFocus"
+                        selectedFilePath != null -> "exitEditorPage"
+                        else -> "none"
+                    }
+                )
+                .put("showAiCompletionDialog", showAiCompletionDialog)
+                .put("showConflictResolverDialog", showConflictResolverDialog)
+                .put("showDiagnosticsDialog", showDiagnosticsDialog)
+                .put("showOutlineDialog", showOutlineDialog)
+                .put("showLanguageDialog", showLanguageDialog)
+                .put("showLineReplaceDialog", showLineReplaceDialog)
+                .put("showSearchReplaceDialog", showSearchReplaceDialog)
+                .put("selectedFilePath", selectedFilePath ?: JSONObject.NULL)
+        )
+        // #endregion
         when {
             showAiCompletionDialog -> {
                 showAiCompletionDialog = false
@@ -1765,6 +1908,19 @@ private fun ProjectEditorSection(
         }
 
         fun handleEditorMenuAction(action: ProjectEditorMenuAction) {
+            // #region debug-point R2:editor-menu-action
+            reportGitBackChatFlashProjectDebugBootstrap(
+                hypothesisId = "R2",
+                location = "ProjectScreen.kt:handleEditorMenuAction",
+                msg = "[DEBUG] editor menu action requested",
+                data = JSONObject()
+                    .put("action", action.name)
+                    .put("selectedFilePath", selectedFilePath ?: JSONObject.NULL)
+                    .put("showLanguageDialog", showLanguageDialog)
+                    .put("showSearchReplaceDialog", showSearchReplaceDialog)
+                    .put("showAiCompletionDialog", showAiCompletionDialog)
+            )
+            // #endregion
             when (action) {
                 ProjectEditorMenuAction.SEARCH_REPLACE -> showSearchReplaceDialog = true
                 ProjectEditorMenuAction.LANGUAGE -> showLanguageDialog = true
@@ -1783,7 +1939,23 @@ private fun ProjectEditorSection(
         }
 
         LaunchedEffect(editorMenuActionSignal) {
-            if (selectedFilePath != null && editorMenuActionSignal != 0) {
+            if (
+                selectedFilePath != null &&
+                editorMenuActionSignal != 0 &&
+                editorMenuActionSignal != lastHandledEditorMenuSignal
+            ) {
+                lastHandledEditorMenuSignal = editorMenuActionSignal
+                // #region debug-point R2:editor-menu-signal
+                reportGitBackChatFlashProjectDebugBootstrap(
+                    hypothesisId = "R2",
+                    location = "ProjectScreen.kt:editorMenuActionSignal",
+                    msg = "[DEBUG] editor menu action signal observed",
+                    data = JSONObject()
+                        .put("signal", editorMenuActionSignal)
+                        .put("action", editorMenuAction?.name ?: JSONObject.NULL)
+                        .put("selectedFilePath", selectedFilePath ?: JSONObject.NULL)
+                )
+                // #endregion
                 editorMenuAction?.let(::handleEditorMenuAction)
             }
         }
@@ -4840,7 +5012,7 @@ private fun ProjectGitSection(
                     setRequestProperty("Content-Type", "application/json")
                 }
                 val payload = JSONObject()
-                    .put("sessionId", "ui-nav-regressions")
+                    .put("sessionId", "ui-regression-followup")
                     .put("runId", "pre-fix")
                     .put("hypothesisId", hypothesisId)
                     .put("location", location)
@@ -9524,7 +9696,7 @@ private fun reportGitBackChatFlashProjectDebugBootstrap(
                 setRequestProperty("Content-Type", "application/json")
             }
             val payload = JSONObject()
-                .put("sessionId", "ui-nav-regressions")
+                .put("sessionId", "app-launch-crash")
                 .put("runId", "pre-fix")
                 .put("hypothesisId", hypothesisId)
                 .put("location", location)

@@ -25,6 +25,10 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  JAVA_VERSION: "26"
+  GRADLE_VERSION: "9.6.0-rc-1"
+  ANDROID_API_LEVEL: "37"
+  ANDROID_BUILD_TOOLS_VERSION: "37.0.0"
 
 jobs:
   build:
@@ -36,16 +40,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set Up JDK 17
+      - name: Set Up JDK ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v5
         with:
-          java-version: "17"
+          java-version: ${{ env.JAVA_VERSION }}
           distribution: "temurin"
+          check-latest: true
 
-      - name: Set Up Gradle 8.13
+      - name: Set Up Gradle ${{ env.GRADLE_VERSION }}
         uses: gradle/actions/setup-gradle@v6
         with:
-          gradle-version: "8.13"
+          gradle-version: ${{ env.GRADLE_VERSION }}
           cache-cleanup: never
 
       - name: Set Up Android SDK
@@ -56,10 +61,8 @@ jobs:
           yes | sdkmanager --licenses > /dev/null || true
           sdkmanager --install \
             "platform-tools" \
-            "platforms;android-36" \
-            "build-tools;36.0.0" \
-            "cmake;3.22.1" \
-            "ndk;27.3.13750724"
+            "platforms;android-${ANDROID_API_LEVEL}" \
+            "build-tools;${ANDROID_BUILD_TOOLS_VERSION}"
 
       - name: Prepare Release Metadata
         shell: bash

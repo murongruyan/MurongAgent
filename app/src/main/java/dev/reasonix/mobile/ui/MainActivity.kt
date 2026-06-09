@@ -51,7 +51,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import dagger.hilt.android.AndroidEntryPoint
 import dev.reasonix.mobile.core.config.WorkflowExecutionMode
 import dev.reasonix.mobile.core.loop.ConversationExportData
@@ -315,7 +315,35 @@ fun MainScreen() {
                 }
             }
             is MainScreenChatAction.LoadSession -> {
+                // #region debug-point F:load-local-project-session
+                reportGitBackChatFlashMainDebug(
+                    hypothesisId = "F",
+                    location = "MainActivity.kt:dispatchChatAction:loadSession:before",
+                    msg = "[DEBUG] loading chat session requested",
+                    data = JSONObject()
+                        .put("sessionId", action.sessionId)
+                        .put("selectedTopLevelPage", selectedTopLevelPage)
+                        .put("visibleTopLevelPage", visibleTopLevelPage)
+                        .put("visibleRoute", visibleScreen.route)
+                        .put("currentSessionId", chatState.sessionId)
+                        .put("currentProjectPath", chatState.projectPath ?: JSONObject.NULL)
+                )
+                // #endregion
                 chatVm.loadSession(action.sessionId)
+                // #region debug-point F:load-local-project-session
+                reportGitBackChatFlashMainDebug(
+                    hypothesisId = "F",
+                    location = "MainActivity.kt:dispatchChatAction:loadSession:after",
+                    msg = "[DEBUG] loading chat session returned",
+                    data = JSONObject()
+                        .put("sessionId", action.sessionId)
+                        .put("selectedTopLevelPage", selectedTopLevelPage)
+                        .put("visibleTopLevelPage", visibleTopLevelPage)
+                        .put("visibleRoute", visibleScreen.route)
+                        .put("currentSessionId", chatState.sessionId)
+                        .put("currentProjectPath", chatState.projectPath ?: JSONObject.NULL)
+                )
+                // #endregion
                 if (action.closeDrawer) {
                     dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
                 }
@@ -1883,7 +1911,32 @@ fun MainScreen() {
                     folderPickerLauncher.launch(null)
                 },
                 onCreateTask = { projectPath ->
+                    // #region debug-point F:create-local-project-task
+                    reportGitBackChatFlashMainDebug(
+                        hypothesisId = "F",
+                        location = "MainActivity.kt:CreateTaskDialog:onCreateTask:before",
+                        msg = "[DEBUG] create task requested",
+                        data = JSONObject()
+                            .put("projectPath", projectPath)
+                            .put("trimmedProjectPath", projectPath.trim())
+                            .put("selectedTopLevelPage", selectedTopLevelPage)
+                            .put("visibleTopLevelPage", visibleTopLevelPage)
+                            .put("visibleRoute", visibleScreen.route)
+                    )
+                    // #endregion
                     chatVm.startTask(projectPath)
+                    // #region debug-point F:create-local-project-task
+                    reportGitBackChatFlashMainDebug(
+                        hypothesisId = "F",
+                        location = "MainActivity.kt:CreateTaskDialog:onCreateTask:after",
+                        msg = "[DEBUG] create task returned",
+                        data = JSONObject()
+                            .put("projectPath", projectPath)
+                            .put("trimmedProjectPath", projectPath.trim())
+                            .put("currentSessionId", chatState.sessionId)
+                            .put("currentProjectPath", chatState.projectPath ?: JSONObject.NULL)
+                    )
+                    // #endregion
                     dispatchDialogAction(MainScreenDialogAction.HideTaskDialog)
                     dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
                     navigateToTopLevel(Screen.Chat)
@@ -2005,7 +2058,7 @@ private fun ChatPagePreviewPlaceholder(
 }
 
 // #region debug-point C:chat-debug-reporter
-private const val ENABLE_REASONIX_BACK_DEBUG_REPORTS = false
+private const val ENABLE_REASONIX_BACK_DEBUG_REPORTS = true
 
 private fun reportGitBackChatFlashMainDebug(
     hypothesisId: String,
@@ -2024,7 +2077,7 @@ private fun reportGitBackChatFlashMainDebug(
                 setRequestProperty("Content-Type", "application/json")
             }
             val payload = JSONObject()
-                .put("sessionId", "ui-nav-regressions")
+                .put("sessionId", "app-launch-crash")
                 .put("runId", "pre-fix")
                 .put("hypothesisId", hypothesisId)
                 .put("location", location)

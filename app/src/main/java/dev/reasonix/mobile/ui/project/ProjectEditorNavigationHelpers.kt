@@ -122,8 +122,10 @@ internal fun projectLanguageForPath(path: String?): String? {
         "hpp", "hh", "hxx" -> "hpp"
         "json", "jsonc", "geojson", "webmanifest" -> "json"
         "toml" -> "toml"
+        "pro" -> "pro"
         "ini" -> "ini"
         "conf", "cfg" -> "conf"
+        "cmake" -> "cmake"
         "sql" -> "sql"
         "css" -> "css"
         "html", "htm" -> "html"
@@ -133,7 +135,7 @@ internal fun projectLanguageForPath(path: String?): String? {
         "lua", "luau" -> "lua"
         "sh", "bash" -> "bash"
         "yml", "yaml" -> "yaml"
-        "properties" -> "properties"
+        "properties", "prop" -> "properties"
         else -> null
     }
 }
