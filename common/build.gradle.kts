@@ -7,7 +7,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.reasonix.mobile.common"
+    namespace = "com.murong.agent.common"
     compileSdk = 37
 
     defaultConfig {

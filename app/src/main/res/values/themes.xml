@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Reasonix" parent="Theme.AppCompat.DayNight.NoActionBar">
+    <style name="Theme.Murong" parent="Theme.AppCompat.DayNight.NoActionBar">
         <item name="android:statusBarColor">#FF0B0B0B</item>
         <item name="android:navigationBarColor">#FF0B0B0B</item>
         <item name="android:windowBackground">#FF0B0B0B</item>
     </style>
-    <style name="Theme.Reasonix.Splash" parent="Theme.Reasonix">
+    <style name="Theme.Murong.Splash" parent="Theme.Murong">
         <item name="android:windowBackground">@drawable/splash_background</item>
     </style>
 </resources>

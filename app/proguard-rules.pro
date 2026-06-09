@@ -1,4 +1,4 @@
-# Reasonix Mobile ProGuard Rules
+# Murong Agent ProGuard Rules
 
 # Keep serialization classes
 -keepattributes *Annotation*, InnerClasses
@@ -49,6 +49,6 @@
 -dontwarn org.slf4j.impl.StaticLoggerBinder
 
 # Keep our model classes
--keep class dev.reasonix.mobile.core.provider.** { *; }
--keep class dev.reasonix.mobile.core.config.** { *; }
--keep class dev.reasonix.mobile.core.loop.** { *; }
+-keep class com.murong.agent.core.provider.** { *; }
+-keep class com.murong.agent.core.config.** { *; }
+-keep class com.murong.agent.core.loop.** { *; }

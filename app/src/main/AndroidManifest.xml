@@ -17,17 +17,17 @@
         android:maxSdkVersion="32" />
 
     <application
-        android:name="dev.reasonix.mobile.ReasonixApp"
+        android:name="com.murong.agent.MurongApp"
         android:allowBackup="true"
         android:enableOnBackInvokedCallback="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Reasonix"
+        android:theme="@style/Theme.Murong"
         android:networkSecurityConfig="@xml/network_security_config">
 
         <activity
-            android:name="dev.reasonix.mobile.ui.MainActivity"
+            android:name="com.murong.agent.ui.MainActivity"
             android:exported="true"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
