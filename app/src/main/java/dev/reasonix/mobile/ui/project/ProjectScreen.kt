@@ -7353,7 +7353,7 @@ private fun ProjectGitSection(
                     onValueChange = { createGitHubRepoNameDraft = it },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("仓库名") },
-                    placeholder = { Text("例如：reasonix-mobile") },
+                    placeholder = { Text("例如：MurongAgent") },
                     singleLine = true
                 )
                 OutlinedTextField(

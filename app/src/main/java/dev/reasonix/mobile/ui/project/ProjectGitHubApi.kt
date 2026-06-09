@@ -567,7 +567,7 @@ private fun loadProjectGitHubWorkflowRunLogsPreview(
             .addHeader("Authorization", "Bearer $token")
             .addHeader("Accept", "application/vnd.github+json")
             .addHeader("X-GitHub-Api-Version", "2022-11-28")
-            .addHeader("User-Agent", "Reasonix-Mobile/1.0")
+            .addHeader("User-Agent", "MurongAgent/1.0")
             .get()
             .build()
         PROJECT_GITHUB_HTTP.newCall(request).execute().use { response ->
@@ -2077,7 +2077,7 @@ private fun runProjectGitHubApiRequest(
             .addHeader("Authorization", "Bearer $token")
             .addHeader("Accept", "application/vnd.github+json")
             .addHeader("X-GitHub-Api-Version", "2022-11-28")
-            .addHeader("User-Agent", "Reasonix-Mobile/1.0")
+            .addHeader("User-Agent", "MurongAgent/1.0")
         if (method.equals("GET", ignoreCase = true)) {
             requestBuilder.get()
         } else {

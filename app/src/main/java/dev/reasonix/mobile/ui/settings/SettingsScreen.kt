@@ -624,11 +624,11 @@ fun SettingsScreen(
             Column(modifier = Modifier.padding(16.dp)) {
                 InfoRow("版本", "1.0.0")
                 Spacer(modifier = Modifier.height(4.dp))
-                InfoRow("引擎", "Reasonix Mobile Core")
+                InfoRow("引擎", "Murong Agent Core")
                 Spacer(modifier = Modifier.height(4.dp))
                 InfoRow("支持的 Provider", "${providers.size} 个")
                 Spacer(modifier = Modifier.height(4.dp))
-                InfoRow("代码", "基于 esengine/DeepSeek-Reasonix")
+                InfoRow("借鉴", "详见 README 中的借鉴项目说明")
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = "💡 中转站用法：选「OpenAI Compatible」→ 填 Base URL → API Key → 模型名",
@@ -1964,7 +1964,7 @@ private fun AddMcpServerForm(
                     maxLines = 6,
                     textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                     placeholder = {
-                        Text("Authorization=Bearer xxx\nX-Client=reasonix", fontSize = 12.sp)
+                        Text("Authorization=Bearer xxx\nX-Client=murong-agent", fontSize = 12.sp)
                     }
                 )
             }

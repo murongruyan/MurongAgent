@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Reasonix Mobile</string>
+    <string name="app_name">慕容AI</string>
     <string name="chat_hint">输入你的问题或需求…</string>
     <string name="settings_title">设置</string>
     <string name="provider_title">AI 模型提供商</string>

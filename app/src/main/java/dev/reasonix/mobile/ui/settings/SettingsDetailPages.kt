@@ -722,11 +722,11 @@ fun AboutPage() {
         ) {
             ReasonixSecondaryPageFrame(
                 title = "关于",
-                subtitle = "Reasonix Mobile 是面向移动端的代码与项目助手，强调产品感、结构化工具输出和更完整的项目工作流。"
+                subtitle = "慕容AI 是面向移动端的多模型 AI Agent，强调代码与项目协作、结构化工具输出和更完整的工作流。"
             ) {
                 ReasonixInfoCard(title = "", titleVisible = false) {
                     Text(
-                        text = "Reasonix Mobile",
+                        text = "慕容AI",
                         style = MaterialTheme.typography.headlineMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = FontWeight.Bold
@@ -759,9 +759,9 @@ fun AboutPage() {
                 }
 
                 ReasonixSectionCard(title = "应用信息") {
-                    AboutInfoRow("应用", "Reasonix Mobile")
+                    AboutInfoRow("应用", "慕容AI")
                     AboutInfoRow("版本", versionName)
-                    AboutInfoRow("引擎", "Reasonix Mobile Core")
+                    AboutInfoRow("引擎", "Murong Agent Core")
                     AboutInfoRow("设计方向", "现代玻璃 / 桌面端式信息密度")
                     AboutInfoRow("当前重点", "统一 UI 壳层 / 编辑页 / 对话体验")
                 }

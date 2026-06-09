@@ -20,7 +20,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "reasonix-mobile"
+rootProject.name = "MurongAgent"
 
 include(":app")
 include(":core")

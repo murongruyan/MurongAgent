@@ -1406,7 +1406,7 @@ fun MainScreen() {
                         }
                         MainScreenTopBarLeadingAction.BRAND -> {
                             Text(
-                                text = "Reasonix",
+                                text = "慕容AI",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )

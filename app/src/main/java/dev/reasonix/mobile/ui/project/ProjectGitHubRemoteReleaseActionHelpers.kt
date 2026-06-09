@@ -109,7 +109,7 @@ internal fun enqueueProjectGitHubReleaseAssetDownload(
     runCatching {
         request.setDestinationInExternalPublicDir(
             Environment.DIRECTORY_DOWNLOADS,
-            "Reasonix/$fileName"
+            "MurongAgent/$fileName"
         )
     }.getOrElse {
         request.setDestinationInExternalFilesDir(

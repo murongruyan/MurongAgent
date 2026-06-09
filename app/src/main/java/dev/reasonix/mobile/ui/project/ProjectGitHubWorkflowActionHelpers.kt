@@ -134,7 +134,7 @@ internal fun enqueueProjectGitHubArtifactDownload(
     runCatching {
         request.setDestinationInExternalPublicDir(
             Environment.DIRECTORY_DOWNLOADS,
-            "Reasonix/$fileName"
+            "MurongAgent/$fileName"
         )
     }.getOrElse {
         request.setDestinationInExternalFilesDir(
@@ -177,7 +177,7 @@ internal fun enqueueProjectGitHubWorkflowLogsDownload(
     runCatching {
         request.setDestinationInExternalPublicDir(
             Environment.DIRECTORY_DOWNLOADS,
-            "Reasonix/$fileName"
+            "MurongAgent/$fileName"
         )
     }.getOrElse {
         request.setDestinationInExternalFilesDir(

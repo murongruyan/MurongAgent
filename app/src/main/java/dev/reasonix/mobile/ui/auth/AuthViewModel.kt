@@ -198,7 +198,7 @@ class AuthViewModel @Inject constructor(
                     .toString()
             )
             .addHeader("Accept", "application/json")
-            .addHeader("User-Agent", "Reasonix-Mobile/1.0")
+            .addHeader("User-Agent", "MurongAgent/1.0")
             .post(requestBody)
             .build()
 
@@ -247,7 +247,7 @@ class AuthViewModel @Inject constructor(
             )
             .addHeader("Accept", "application/json")
             .addHeader("Authorization", "Bearer $sessionToken")
-            .addHeader("User-Agent", "Reasonix-Mobile/1.0")
+            .addHeader("User-Agent", "MurongAgent/1.0")
             .post(ByteArray(0).toRequestBody("application/x-www-form-urlencoded".toMediaType()))
             .build()
 

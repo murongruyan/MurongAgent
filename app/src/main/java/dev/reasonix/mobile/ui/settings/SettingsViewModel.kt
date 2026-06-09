@@ -394,7 +394,7 @@ class SettingsViewModel @Inject constructor(
             .addHeader("Authorization", "Bearer $token")
             .addHeader("Accept", "application/vnd.github+json")
             .addHeader("X-GitHub-Api-Version", "2022-11-28")
-            .addHeader("User-Agent", "Reasonix-Mobile/1.0")
+            .addHeader("User-Agent", "MurongAgent/1.0")
             .get()
             .build()
         return runCatching {
@@ -437,7 +437,7 @@ class SettingsViewModel @Inject constructor(
                     .toString()
             )
             .addHeader("Accept", "application/json")
-            .addHeader("User-Agent", "Reasonix-Mobile/1.0")
+            .addHeader("User-Agent", "MurongAgent/1.0")
             .post(requestBody)
             .build()
         return runCatching {
@@ -507,7 +507,7 @@ class SettingsViewModel @Inject constructor(
             )
             .addHeader("Accept", "application/json")
             .addHeader("Authorization", "Bearer $sessionToken")
-            .addHeader("User-Agent", "Reasonix-Mobile/1.0")
+            .addHeader("User-Agent", "MurongAgent/1.0")
             .post(ByteArray(0).toRequestBody("application/x-www-form-urlencoded".toMediaType()))
             .build()
         runCatching {

@@ -617,10 +617,10 @@ private fun ensureEmbeddedGitIdentity(repository: Repository) {
     val hasEmail = !config.getString(ConfigConstants.CONFIG_USER_SECTION, null, ConfigConstants.CONFIG_KEY_EMAIL).isNullOrBlank()
     if (hasName && hasEmail) return
     if (!hasName) {
-        config.setString(ConfigConstants.CONFIG_USER_SECTION, null, ConfigConstants.CONFIG_KEY_NAME, "Reasonix Mobile")
+        config.setString(ConfigConstants.CONFIG_USER_SECTION, null, ConfigConstants.CONFIG_KEY_NAME, "Murong Agent")
     }
     if (!hasEmail) {
-        config.setString(ConfigConstants.CONFIG_USER_SECTION, null, ConfigConstants.CONFIG_KEY_EMAIL, "reasonix-mobile@local")
+        config.setString(ConfigConstants.CONFIG_USER_SECTION, null, ConfigConstants.CONFIG_KEY_EMAIL, "agent@murong.local")
     }
     config.save()
 }

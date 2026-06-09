@@ -3693,7 +3693,7 @@ private fun WelcomeView(
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = "🤖 Reasonix Mobile",
+            text = "🤖 慕容AI",
             fontSize = 28.sp,
             color = MaterialTheme.colorScheme.onBackground,
             fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
