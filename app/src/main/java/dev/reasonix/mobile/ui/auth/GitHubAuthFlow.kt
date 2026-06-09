@@ -23,11 +23,14 @@ internal object GitHubAuthFlow {
 
     fun isGitHubOAuthCallback(rawCallbackUri: String): Boolean {
         val callbackUri = runCatching { URI(rawCallbackUri.trim()) }.getOrNull() ?: return false
+        val isSupportedScheme =
+            callbackUri.scheme.equals("murongagent", ignoreCase = true) ||
+                callbackUri.scheme.equals("reasonix", ignoreCase = true)
         val isLegacyGitHubCallback =
-            callbackUri.scheme.equals("reasonix", ignoreCase = true) &&
+            isSupportedScheme &&
                 callbackUri.host.equals("github", ignoreCase = true)
         val isBackendGitHubCallback =
-            callbackUri.scheme.equals("reasonix", ignoreCase = true) &&
+            isSupportedScheme &&
                 callbackUri.host.equals("auth", ignoreCase = true) &&
                 callbackUri.path?.startsWith("/github") == true
         return isLegacyGitHubCallback || isBackendGitHubCallback

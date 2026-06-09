@@ -20,7 +20,7 @@ class ReasonixApp : Application() {
                     }
                 connection.outputStream.bufferedWriter().use { writer ->
                     writer.write(
-                        """{"sessionId":"app-launch-crash","runId":"pre-fix","hypothesisId":"B","location":"ReasonixApp:onCreate","msg":"[DEBUG] ReasonixApp onCreate entered","data":{"process":"dev.reasonix.mobile"},"ts":${System.currentTimeMillis()}}"""
+                        """{"sessionId":"app-launch-crash","runId":"pre-fix","hypothesisId":"B","location":"ReasonixApp:onCreate","msg":"[DEBUG] ReasonixApp onCreate entered","data":{"process":"com.murong.agent"},"ts":${System.currentTimeMillis()}}"""
                     )
                 }
                 connection.inputStream.close()

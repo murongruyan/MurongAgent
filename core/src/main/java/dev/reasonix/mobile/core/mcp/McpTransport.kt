@@ -434,7 +434,7 @@ class McpTransport(private val config: McpServerConfig) {
 
     companion object {
         internal const val PROTOCOL_VERSION = "2024-11-05"
-        internal const val CLIENT_NAME = "reasonix-mobile"
+        internal const val CLIENT_NAME = "murong-agent"
         internal const val CLIENT_VERSION = "1.0.0"
         private const val DEFAULT_REQUEST_TIMEOUT_MS = 30_000L
     }

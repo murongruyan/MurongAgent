@@ -9,7 +9,7 @@ Mobile multi-model AI Agent by Murong Xuerong. Inspired by deepseek-reasonix, ex
 - 应用中文名：慕容AI
 - 英文名：Murong Agent
 - 仓库名：MurongAgent
-- 规划包名：`com.murong.agent`
+- 包名 / applicationId：`com.murong.agent`
 - 产品方向：面向移动端的代码、项目与多模型协作型 AI Agent
 
 MurongAgent 不是单纯的聊天壳，而是强调移动端可用性的多模型 Agent 工具：既支持日常对话，也支持项目浏览、代码编辑、GitHub 工作流、仓库操作、Root Shell、文件系统访问和结构化工具调用。
@@ -174,7 +174,7 @@ cd MurongAgent
 - [x] 项目浏览、搜索与基础编辑
 - [x] GitHub 登录与仓库工作流浏览
 - [x] Sora 编辑器高亮接入
-- [ ] 包名 / applicationId 迁移到 `com.murong.agent`
+- [x] 包名 / applicationId 迁移到 `com.murong.agent`
 - [ ] README 与仓库名完全迁移到 `MurongAgent`
 - [ ] MCP 能力继续补全
 - [ ] 更完整的 Agent 工作流与后台能力

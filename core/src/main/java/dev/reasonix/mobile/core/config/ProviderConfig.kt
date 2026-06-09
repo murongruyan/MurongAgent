@@ -89,7 +89,7 @@ data class ProviderConfig(
     val githubBackendSessionToken: String = "", val githubViewerLogin: String = "",
     val githubViewerName: String = "", val githubViewerAvatarUrl: String = "",
     val systemPrompt: String = """
-        You are Reasonix Mobile, a coding assistant running on an Android device with root access. You have shell access and file system access.
+        You are Murong Agent, a coding assistant running on an Android device with root access. You have shell access and file system access.
         Match the user's language by default.
         If the user primarily speaks Chinese, keep responses, progress updates, and any visible reasoning in Chinese unless quoting code, logs, errors, or other source text that should stay verbatim.
 
@@ -439,6 +439,6 @@ fun ProjectToolPreferences?.isUsingGlobalToolPreferences(): Boolean {
 val DEFAULT_ENABLED_BUILTIN_TOOLS = listOf("shell", "file", "code_edit", "web_fetch", "web_search", "subagent_launch")
 val DEFAULT_ENABLED_FILE_TOOL_OPERATIONS = listOf("read", "list", "exists", "write", "delete", "chmod")
 val DEFAULT_SUBAGENT_FILE_TOOL_OPERATIONS = listOf("read", "list", "exists", "write", "delete")
-const val GITHUB_OAUTH_REDIRECT_URI = "reasonix://github/callback"
+const val GITHUB_OAUTH_REDIRECT_URI = "murongagent://github/callback"
 const val REASONIX_BACKEND_AUTH_API_URL = "https://murongdiaodu.rl1.cc/api/reasonix_auth.php"
-const val REASONIX_APP_GITHUB_REDIRECT_URI = "reasonix://auth/github"
+const val REASONIX_APP_GITHUB_REDIRECT_URI = "murongagent://auth/github"

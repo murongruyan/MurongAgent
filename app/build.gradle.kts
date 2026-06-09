@@ -26,11 +26,11 @@ val appVersionCode = (findProperty("APP_VERSION_CODE") as String?)
     ?: 1
 
 android {
-    namespace = "dev.reasonix.mobile"
+    namespace = "com.murong.agent"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "dev.reasonix.mobile"
+        applicationId = "com.murong.agent"
         minSdk = 33
         targetSdk = 37
         versionCode = appVersionCode
