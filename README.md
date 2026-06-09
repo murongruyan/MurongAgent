@@ -55,7 +55,7 @@ README 中保留借鉴说明，应用内不再展示这些来源。
 | Kotlin | 2.3.21 |
 | KSP | 2.3.7 |
 | JDK（CI / 构建环境） | 26 |
-| Java / Kotlin 目标字节码 | 17 |
+| Java / Kotlin 目标字节码 | 25 |
 | compileSdk / targetSdk | 37 / 37 |
 | minSdk | 33 |
 | Android Build Tools（CI） | 37.0.0 |
@@ -148,7 +148,7 @@ cd MurongAgent
 # ndk.dir=C:\\Users\\...\\AppData\\Local\\Android\\Sdk\\ndk\\30.0.14904198
 
 # 推荐使用与 CI 一致的 JDK 26
-# 产物目标仍为 Java 17 / JVM 17
+# 当前 Kotlin 工具链下，产物目标为 Java 25 / JVM 25
 
 # 调试构建
 ./gradlew :app:assembleDebug
