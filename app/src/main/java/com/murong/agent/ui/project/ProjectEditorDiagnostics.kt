@@ -102,6 +102,7 @@ private fun normalizeDiagnosticLanguage(language: String?): String {
         "kt" -> "kotlin"
         "js", "jsx" -> "javascript"
         "ts", "tsx" -> "typescript"
+        "jsonc", "geojson", "webmanifest" -> "json"
         "sh", "shell" -> "bash"
         "gradle" -> "groovy"
         "c++", "cxx", "hpp", "h", "hh", "hxx" -> "cpp"
@@ -193,11 +194,16 @@ private fun detectJsonDiagnostics(content: String): List<ProjectEditorDiagnostic
     if (normalized.isEmpty()) return emptyList()
     val error = runCatching { PROJECT_EDITOR_JSON.parseToJsonElement(content) }.exceptionOrNull() ?: return emptyList()
     val offset = extractJsonDiagnosticOffset(error.message).coerceIn(0, (content.length - 1).coerceAtLeast(0))
-    val message = error.message
+    val baseMessage = error.message
         ?.substringBefore('\n')
         ?.replace("Unexpected JSON token at offset", "JSON 错误，位置")
+        ?.replace("Expected beginning of the string, but got", "这里应该是字符串开头，实际遇到")
+        ?.replace("Expected JsonArray or JsonObject as the serialized body of", "这里需要 JSON 对象或数组")
         ?.ifBlank { "JSON 结构错误" }
         ?: "JSON 结构错误"
+    val lineNumber = currentLineNumber(content, offset)
+    val columnNumber = currentColumnNumber(content, offset)
+    val message = "JSON 结构错误，第 ${lineNumber} 行第 ${columnNumber} 列: $baseMessage"
     return listOf(diagnosticAtOffset(content, offset, message))
 }
 
@@ -626,4 +632,10 @@ private fun extractJsonDiagnosticOffset(message: String?): Int {
         ?.groupValues
         ?.getOrNull(1)
     return offsetText?.toIntOrNull() ?: 0
+}
+
+private fun currentColumnNumber(content: String, offset: Int): Int {
+    val safeOffset = offset.coerceIn(0, content.length.coerceAtLeast(0))
+    val lastLineBreak = content.lastIndexOf('\n', safeOffset.coerceAtMost((content.length - 1).coerceAtLeast(0)))
+    return safeOffset - lastLineBreak
 }

@@ -1,5 +1,6 @@
 package com.murong.agent.ui.project
 
+
 internal data class ProjectGitHubStandaloneNavigationState(
     val selectedRepo: ProjectGitHubAccountRepoUi? = null,
     val selectedSection: ProjectGitHubStandaloneSection =
@@ -73,19 +74,36 @@ internal fun reduceProjectGitHubStandaloneNavigationState(
 
 internal fun isProjectGitHubStandaloneSecondaryPage(
     activeProjectPath: String?,
-    currentState: ProjectGitHubStandaloneNavigationState
+    currentState: ProjectGitHubStandaloneNavigationState,
+    forceSecondaryPage: Boolean = false
 ): Boolean {
-    return activeProjectPath.isNullOrBlank() && currentState.selectedRepo != null
+    return if (activeProjectPath.isNullOrBlank()) {
+        currentState.selectedRepo != null
+    } else {
+        forceSecondaryPage
+    }
 }
 
 internal fun resolveProjectGitHubStandaloneCloseRequest(
     activeProjectPath: String?,
     currentState: ProjectGitHubStandaloneNavigationState,
     nestedCloseRequest: (() -> Unit)?,
-    fallbackCloseRequest: () -> Unit
+    fallbackCloseRequest: () -> Unit,
+    forceSecondaryPage: Boolean = false,
+    clearSecondaryPageRequest: (() -> Unit)? = null
 ): (() -> Unit)? {
-    if (!isProjectGitHubStandaloneSecondaryPage(activeProjectPath, currentState)) {
+    if (!isProjectGitHubStandaloneSecondaryPage(activeProjectPath, currentState, forceSecondaryPage)) {
         return null
     }
-    return nestedCloseRequest ?: fallbackCloseRequest
+    if (!activeProjectPath.isNullOrBlank() && currentState.selectedRepo == null) {
+        return clearSecondaryPageRequest ?: fallbackCloseRequest
+    }
+    return if (
+        currentState.selectedSection == ProjectGitHubStandaloneSection.WORKFLOWS &&
+            nestedCloseRequest != null
+    ) {
+        nestedCloseRequest
+    } else {
+        fallbackCloseRequest
+    }
 }

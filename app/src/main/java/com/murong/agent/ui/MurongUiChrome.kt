@@ -10,8 +10,6 @@ import android.graphics.Shader
 import android.os.Build
 import android.view.WindowManager
 import android.graphics.Color as AndroidColor
-import java.net.HttpURLConnection
-import java.net.URL
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -31,6 +29,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -80,7 +79,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.zIndex
-import org.json.JSONObject
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
@@ -114,8 +112,6 @@ enum class MurongBackgroundMode {
     CUSTOM_IMAGE
 }
 
-private const val ENABLE_REASONIX_BACK_DEBUG_REPORTS = false
-
 data class MurongAccentPreset(
     val label: String,
     val color: Color
@@ -130,6 +126,9 @@ private const val KEY_BACKGROUND_COLOR_HEX = "background_color_hex"
 private const val KEY_SURFACE_COLOR_HEX = "surface_color_hex"
 private const val KEY_CHROME_COLOR_HEX = "chrome_color_hex"
 private const val KEY_MUTED_TEXT_COLOR_HEX = "muted_text_color_hex"
+private const val KEY_TERMINAL_ICON_COLOR_HEX = "terminal_icon_color_hex"
+private const val KEY_TERMINAL_PATH_COLOR_HEX = "terminal_path_color_hex"
+private const val KEY_TERMINAL_ERROR_COLOR_HEX = "terminal_error_color_hex"
 private const val KEY_CUSTOM_BACKGROUND_URI = "custom_background_uri"
 private const val KEY_BACKGROUND_BLUR_RADIUS = "background_blur_radius"
 private const val KEY_FONT_SCALE = "font_scale"
@@ -189,33 +188,45 @@ class MurongUiController(private val context: Context) {
         private set
 
     var backgroundColorHex by mutableStateOf(
-        normalizeMurongColorHex(
-            prefs.getString(KEY_BACKGROUND_COLOR_HEX, null),
-            Color(0xFFF5F7FD)
-        )
+        prefs.getString(KEY_BACKGROUND_COLOR_HEX, "").orEmpty()
     )
         private set
 
     var surfaceColorHex by mutableStateOf(
-        normalizeMurongColorHex(
-            prefs.getString(KEY_SURFACE_COLOR_HEX, null),
-            Color.White
-        )
+        prefs.getString(KEY_SURFACE_COLOR_HEX, "").orEmpty()
     )
         private set
 
     var chromeColorHex by mutableStateOf(
-        normalizeMurongColorHex(
-            prefs.getString(KEY_CHROME_COLOR_HEX, null),
-            Color.White
-        )
+        prefs.getString(KEY_CHROME_COLOR_HEX, "").orEmpty()
     )
         private set
 
     var mutedTextColorHex by mutableStateOf(
+        prefs.getString(KEY_MUTED_TEXT_COLOR_HEX, "").orEmpty()
+    )
+        private set
+
+    var terminalIconColorHex by mutableStateOf(
         normalizeMurongColorHex(
-            prefs.getString(KEY_MUTED_TEXT_COLOR_HEX, null),
-            Color(0xFF6A738A)
+            prefs.getString(KEY_TERMINAL_ICON_COLOR_HEX, null),
+            Color(0xFF22C55E)
+        )
+    )
+        private set
+
+    var terminalPathColorHex by mutableStateOf(
+        normalizeMurongColorHex(
+            prefs.getString(KEY_TERMINAL_PATH_COLOR_HEX, null),
+            Color(0xFF86EFAC)
+        )
+    )
+        private set
+
+    var terminalErrorColorHex by mutableStateOf(
+        normalizeMurongColorHex(
+            prefs.getString(KEY_TERMINAL_ERROR_COLOR_HEX, null),
+            Color(0xFFEF4444)
         )
     )
         private set
@@ -258,6 +269,30 @@ class MurongUiController(private val context: Context) {
             backgroundColorHex,
             if (themeMode == MurongThemeMode.DARK) Color(0xFF090B12) else Color(0xFFF5F7FD)
         )
+
+    fun resolvedBackgroundColor(darkMode: Boolean): Color {
+        return parseMurongColor(backgroundColorHex, defaultMurongBackgroundColor(darkMode))
+    }
+
+    fun resolvedSurfaceColor(darkMode: Boolean): Color {
+        return parseMurongColor(surfaceColorHex, defaultMurongSurfaceColor(darkMode))
+    }
+
+    fun resolvedChromeColor(darkMode: Boolean): Color {
+        return parseMurongColor(chromeColorHex, defaultMurongChromeColor(darkMode))
+    }
+
+    fun resolvedMutedTextColor(darkMode: Boolean): Color {
+        return parseMurongColor(mutedTextColorHex, defaultMurongMutedTextColor(darkMode))
+    }
+
+    fun resolvedBackgroundColorHex(darkMode: Boolean): String = resolvedBackgroundColor(darkMode).toMurongHex()
+
+    fun resolvedSurfaceColorHex(darkMode: Boolean): String = resolvedSurfaceColor(darkMode).toMurongHex()
+
+    fun resolvedChromeColorHex(darkMode: Boolean): String = resolvedChromeColor(darkMode).toMurongHex()
+
+    fun resolvedMutedTextColorHex(darkMode: Boolean): String = resolvedMutedTextColor(darkMode).toMurongHex()
 
     fun updateThemeMode(value: MurongThemeMode) {
         themeMode = value
@@ -309,6 +344,21 @@ class MurongUiController(private val context: Context) {
         prefs.edit().putString(KEY_MUTED_TEXT_COLOR_HEX, mutedTextColorHex).apply()
     }
 
+    fun updateTerminalIconColorHex(value: String) {
+        terminalIconColorHex = normalizeMurongColorHex(value, Color(0xFF22C55E))
+        prefs.edit().putString(KEY_TERMINAL_ICON_COLOR_HEX, terminalIconColorHex).apply()
+    }
+
+    fun updateTerminalPathColorHex(value: String) {
+        terminalPathColorHex = normalizeMurongColorHex(value, Color(0xFF86EFAC))
+        prefs.edit().putString(KEY_TERMINAL_PATH_COLOR_HEX, terminalPathColorHex).apply()
+    }
+
+    fun updateTerminalErrorColorHex(value: String) {
+        terminalErrorColorHex = normalizeMurongColorHex(value, Color(0xFFEF4444))
+        prefs.edit().putString(KEY_TERMINAL_ERROR_COLOR_HEX, terminalErrorColorHex).apply()
+    }
+
     fun clearCustomBackgroundUri() {
         customBackgroundUri = ""
         prefs.edit().remove(KEY_CUSTOM_BACKGROUND_URI).apply()
@@ -333,22 +383,57 @@ class MurongUiController(private val context: Context) {
     }
 
     fun accentPresets(): List<MurongAccentPreset> = AccentPresets
+
+    fun restoreThemeDefaults() {
+        themeMode = MurongThemeMode.SYSTEM
+        themeStyle = MurongThemeStyle.GLASS
+        themeColorHex = AccentPresets.first().color.toMurongHex()
+        backgroundMode = MurongBackgroundMode.GRADIENT
+        backgroundColorHex = ""
+        surfaceColorHex = ""
+        chromeColorHex = ""
+        mutedTextColorHex = ""
+        terminalIconColorHex = Color(0xFF22C55E).toMurongHex()
+        terminalPathColorHex = Color(0xFF86EFAC).toMurongHex()
+        terminalErrorColorHex = Color(0xFFEF4444).toMurongHex()
+        customBackgroundUri = ""
+        backgroundBlurRadius = 18
+        fontScale = 1.0f
+        uiScale = 1.0f
+        prefs.edit()
+            .putString(KEY_THEME_MODE, themeMode.name)
+            .putString(KEY_THEME_STYLE, themeStyle.name)
+            .putString(KEY_THEME_COLOR_HEX, themeColorHex)
+            .putString(KEY_BACKGROUND_MODE, backgroundMode.name)
+            .remove(KEY_BACKGROUND_COLOR_HEX)
+            .remove(KEY_SURFACE_COLOR_HEX)
+            .remove(KEY_CHROME_COLOR_HEX)
+            .remove(KEY_MUTED_TEXT_COLOR_HEX)
+            .putString(KEY_TERMINAL_ICON_COLOR_HEX, terminalIconColorHex)
+            .putString(KEY_TERMINAL_PATH_COLOR_HEX, terminalPathColorHex)
+            .putString(KEY_TERMINAL_ERROR_COLOR_HEX, terminalErrorColorHex)
+            .remove(KEY_CUSTOM_BACKGROUND_URI)
+            .putInt(KEY_BACKGROUND_BLUR_RADIUS, backgroundBlurRadius)
+            .putFloat(KEY_FONT_SCALE, fontScale)
+            .putFloat(KEY_UI_SCALE, uiScale)
+            .apply()
+    }
 }
 
 internal fun defaultMurongBackgroundColor(darkMode: Boolean): Color {
-    return if (darkMode) Color(0xFF090B12) else Color(0xFFF5F7FD)
+    return if (darkMode) Color(0xFF09101A) else Color(0xFFF5F7FD)
 }
 
 internal fun defaultMurongSurfaceColor(darkMode: Boolean): Color {
-    return if (darkMode) Color(0xFF151A24) else Color.White
+    return if (darkMode) Color(0xFF141C28) else Color.White
 }
 
 internal fun defaultMurongChromeColor(darkMode: Boolean): Color {
-    return if (darkMode) Color(0xFF121924) else Color.White
+    return if (darkMode) Color(0xFF0F1723) else Color.White
 }
 
 internal fun defaultMurongMutedTextColor(darkMode: Boolean): Color {
-    return if (darkMode) Color(0xFF9EA8C4) else Color(0xFF6A738A)
+    return if (darkMode) Color(0xFF97A4BF) else Color(0xFF6A738A)
 }
 
 internal fun normalizeMurongColorHex(raw: String?, fallback: Color): String {
@@ -436,7 +521,7 @@ fun rememberMurongBottomBarScrollPadding(): Dp {
 fun rememberMurongSurfaceColor(): Color {
     val ui = LocalMurongUiController.current
     val darkMode = murongIsDarkColor(MaterialTheme.colorScheme.background)
-    return parseMurongColor(ui.surfaceColorHex, defaultMurongSurfaceColor(darkMode))
+    return ui.resolvedSurfaceColor(darkMode)
 }
 
 @Composable
@@ -444,7 +529,7 @@ fun rememberMurongSurfaceColor(): Color {
 fun rememberMurongChromeColor(): Color {
     val ui = LocalMurongUiController.current
     val darkMode = murongIsDarkColor(MaterialTheme.colorScheme.background)
-    return parseMurongColor(ui.chromeColorHex, defaultMurongChromeColor(darkMode))
+    return ui.resolvedChromeColor(darkMode)
 }
 
 @Composable
@@ -452,7 +537,28 @@ fun rememberMurongChromeColor(): Color {
 fun rememberMurongMutedTextColor(): Color {
     val ui = LocalMurongUiController.current
     val darkMode = murongIsDarkColor(MaterialTheme.colorScheme.background)
-    return parseMurongColor(ui.mutedTextColorHex, defaultMurongMutedTextColor(darkMode))
+    return ui.resolvedMutedTextColor(darkMode)
+}
+
+@Composable
+@ReadOnlyComposable
+fun rememberMurongTerminalIconColor(): Color {
+    val ui = LocalMurongUiController.current
+    return parseMurongColor(ui.terminalIconColorHex, Color(0xFF22C55E))
+}
+
+@Composable
+@ReadOnlyComposable
+fun rememberMurongTerminalPathColor(): Color {
+    val ui = LocalMurongUiController.current
+    return parseMurongColor(ui.terminalPathColorHex, Color(0xFF86EFAC))
+}
+
+@Composable
+@ReadOnlyComposable
+fun rememberMurongTerminalErrorColor(): Color {
+    val ui = LocalMurongUiController.current
+    return parseMurongColor(ui.terminalErrorColorHex, Color(0xFFEF4444))
 }
 
 @Composable
@@ -460,6 +566,7 @@ fun rememberMurongSurfaceTokens(): MurongSurfaceTokens {
     val ui = LocalMurongUiController.current
     val darkMode = murongIsDarkColor(MaterialTheme.colorScheme.background)
     val accent = rememberMurongAccentColor()
+    val backgroundSeed = ui.resolvedBackgroundColor(darkMode)
     val surfaceSeed = rememberMurongSurfaceColor()
     val chromeSeed = rememberMurongChromeColor()
     val imageBackgroundMode = ui.backgroundMode == MurongBackgroundMode.WALLPAPER ||
@@ -479,7 +586,7 @@ fun rememberMurongSurfaceTokens(): MurongSurfaceTokens {
     val bottomBarBase = when (ui.backgroundMode) {
         MurongBackgroundMode.SOLID -> Color(
             ColorUtils.blendARGB(
-                ui.backgroundColor.toArgb(),
+                backgroundSeed.toArgb(),
                 accent.toArgb(),
                 if (darkMode) 0.14f else 0.18f
             )
@@ -504,7 +611,7 @@ fun rememberMurongSurfaceTokens(): MurongSurfaceTokens {
     val secondaryPageBase = when (ui.backgroundMode) {
         MurongBackgroundMode.WALLPAPER,
         MurongBackgroundMode.CUSTOM_IMAGE -> surfaceSeed
-        MurongBackgroundMode.SOLID -> ui.backgroundColor
+        MurongBackgroundMode.SOLID -> backgroundSeed
         MurongBackgroundMode.GRADIENT -> chromeSeed
     }
 
@@ -556,12 +663,14 @@ fun rememberMurongSurfaceTokens(): MurongSurfaceTokens {
 @Composable
 fun rememberOpaqueMurongSecondaryPageColor(): Color {
     val ui = LocalMurongUiController.current
+    val darkMode = murongIsDarkColor(MaterialTheme.colorScheme.background)
+    val backgroundSeed = ui.resolvedBackgroundColor(darkMode)
     val chromeSeed = rememberMurongChromeColor()
     val surfaceSeed = rememberMurongSurfaceColor()
     return when (ui.backgroundMode) {
         MurongBackgroundMode.WALLPAPER,
         MurongBackgroundMode.CUSTOM_IMAGE -> surfaceSeed.copy(alpha = 1f)
-        MurongBackgroundMode.SOLID -> ui.backgroundColor.copy(alpha = 1f)
+        MurongBackgroundMode.SOLID -> backgroundSeed.copy(alpha = 1f)
         MurongBackgroundMode.GRADIENT -> chromeSeed.copy(alpha = 1f)
     }
 }
@@ -573,6 +682,7 @@ fun MurongBackgroundLayer(
 ) {
     val context = LocalContext.current
     val ui = LocalMurongUiController.current
+    val backgroundSeed = ui.resolvedBackgroundColor(darkMode)
     val hazeState = LocalMurongHazeState.current
     val bitmapState = produceState<Bitmap?>(initialValue = null, ui.backgroundMode, ui.customBackgroundUri) {
         value = withContext(Dispatchers.IO) {
@@ -614,21 +724,21 @@ fun MurongBackgroundLayer(
                 MurongGradientBackground(
                     modifier = modifier.fillMaxSize().murongGlassSource(hazeState),
                     darkMode = darkMode,
-                    baseColor = ui.backgroundColor,
+                    baseColor = backgroundSeed,
                     accent = ui.accentColor
                 )
             }
         }
 
         MurongBackgroundMode.SOLID -> {
-            Box(modifier = backgroundModifier.background(ui.backgroundColor))
+            Box(modifier = backgroundModifier.background(backgroundSeed))
         }
 
         MurongBackgroundMode.GRADIENT -> {
             MurongGradientBackground(
                 modifier = modifier.fillMaxSize().murongGlassSource(hazeState),
                 darkMode = darkMode,
-                baseColor = ui.backgroundColor,
+                baseColor = backgroundSeed,
                 accent = ui.accentColor
             )
         }
@@ -1023,6 +1133,7 @@ fun MurongAlertDialog(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
+                .imePadding()
                 .padding(horizontal = 20.dp)
         ) {
             MurongPopupSurface(
@@ -1104,6 +1215,7 @@ fun MurongLargeDialogScaffold(
         MurongSecondaryPageSurface(
             modifier = modifier
                 .fillMaxSize()
+                .imePadding()
                 .padding(top = topPadding, start = horizontalPadding, end = horizontalPadding),
             shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
             forceOpaque = true,
@@ -1227,31 +1339,6 @@ private fun MurongBottomBarSurface(
             if (isGlassStyle) 56 else 46
         )
     )
-    LaunchedEffect(
-        ui.themeStyle,
-        ui.backgroundMode,
-        tokens.bottomBarBlurRadius,
-        glassTintColor,
-        containerColor
-    ) {
-        // #region debug-point E:bottom-bar-snapshot
-        reportChatEntryBackAnimationChromeDebug(
-            hypothesisId = "E",
-            location = "MurongUiChrome.kt:bottomBarSurface",
-            msg = "[DEBUG] bottom bar surface snapshot",
-            data = JSONObject()
-                .put("themeStyle", ui.themeStyle.name)
-                .put("backgroundMode", ui.backgroundMode.name)
-                .put("isGlassStyle", isGlassStyle)
-                .put("bottomBarBlurRadius", tokens.bottomBarBlurRadius)
-                .put("effectiveBlurRadius", effectiveBlurRadius)
-                .put("glassTintArgb", glassTintColor.toArgb())
-                .put("containerArgb", containerColor.toArgb())
-                .put("bottomBarGlassArgb", tokens.bottomBarGlassColor.toArgb())
-                .put("bottomBarContainerArgb", tokens.bottomBarContainerColor.toArgb())
-        )
-        // #endregion
-    }
     Surface(
         modifier = modifier
             .clip(shape)
@@ -1275,39 +1362,6 @@ private fun MurongBottomBarSurface(
     }
 }
 
-// #region debug-point E:chrome-debug-reporter
-private fun reportChatEntryBackAnimationChromeDebug(
-    hypothesisId: String,
-    location: String,
-    msg: String,
-    data: JSONObject
-) {
-    if (!ENABLE_REASONIX_BACK_DEBUG_REPORTS) return
-    Thread {
-        runCatching {
-            val connection = (URL("http://192.168.2.3:7777/event").openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 1200
-                readTimeout = 1200
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json")
-            }
-            val payload = JSONObject()
-                .put("sessionId", "chat-entry-back-animation")
-                .put("runId", "pre-fix")
-                .put("hypothesisId", hypothesisId)
-                .put("location", location)
-                .put("msg", msg)
-                .put("data", data)
-                .put("ts", System.currentTimeMillis())
-                .toString()
-            connection.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-            runCatching { connection.inputStream.use { input -> while (input.read() != -1) {} } }
-            connection.disconnect()
-        }
-    }.start()
-}
-// #endregion
 
 @Composable
 fun MurongPopupSurface(
@@ -1591,13 +1645,19 @@ fun MurongFloatingBottomBar(
 fun MurongSecondaryPageFrame(
     title: String,
     subtitle: String? = null,
+    includeBottomBarPadding: Boolean = true,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val bottomBarScrollPadding = rememberMurongBottomBarScrollPadding()
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(start = 12.dp, top = 12.dp, end = 12.dp, bottom = bottomBarScrollPadding),
+            .padding(
+                start = 12.dp,
+                top = 12.dp,
+                end = 12.dp,
+                bottom = if (includeBottomBarPadding) bottomBarScrollPadding else 12.dp
+            ),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         MurongInfoCard(title = title, titleVisible = false) {

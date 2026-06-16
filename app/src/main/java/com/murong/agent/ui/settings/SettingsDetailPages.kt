@@ -2,11 +2,11 @@ package com.murong.agent.ui.settings
 
 import android.content.Intent
 import android.os.Build
-import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,10 +23,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -44,8 +42,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
+import com.murong.agent.ui.defaultMurongChromeColor
+import com.murong.agent.ui.defaultMurongMutedTextColor
+import com.murong.agent.ui.defaultMurongSurfaceColor
 import com.murong.agent.ui.LocalMurongUiController
 import com.murong.agent.ui.MurongDialog
 import com.murong.agent.ui.MurongBackgroundMode
@@ -59,10 +60,16 @@ import com.murong.agent.ui.MurongSecondaryPageSurface
 import com.murong.agent.ui.MurongTagButton
 import com.murong.agent.ui.MurongThemeMode
 import com.murong.agent.ui.MurongThemeStyle
+import com.murong.agent.ui.MurongTransientMessageBus
+import com.murong.agent.ui.murongIsDarkColor
+import com.murong.agent.ui.parseMurongColor
 import com.murong.agent.ui.rememberMurongAccentColor
 import com.murong.agent.ui.rememberMurongChromeColor
 import com.murong.agent.ui.rememberMurongMutedTextColor
 import com.murong.agent.ui.rememberMurongSurfaceColor
+import com.murong.agent.ui.rememberMurongTerminalErrorColor
+import com.murong.agent.ui.rememberMurongTerminalIconColor
+import com.murong.agent.ui.rememberMurongTerminalPathColor
 
 @Composable
 fun ThemeSettingsPage() {
@@ -73,9 +80,18 @@ fun ThemeSettingsPage() {
     val surfaceColor = rememberMurongSurfaceColor()
     val chromeColor = rememberMurongChromeColor()
     val mutedTextColor = rememberMurongMutedTextColor()
+    val terminalIconColor = rememberMurongTerminalIconColor()
+    val terminalPathColor = rememberMurongTerminalPathColor()
+    val terminalErrorColor = rememberMurongTerminalErrorColor()
+    val darkMode = when (ui.themeMode) {
+        MurongThemeMode.DARK -> true
+        MurongThemeMode.LIGHT -> false
+        MurongThemeMode.SYSTEM -> isSystemInDarkTheme()
+    }
     var showModeDialog by remember { mutableStateOf(false) }
     var showStyleDialog by remember { mutableStateOf(false) }
     var showBackgroundDialog by remember { mutableStateOf(false) }
+    var showRestoreDefaultsDialog by remember { mutableStateOf(false) }
     var showWallpaperAccessDialog by remember { mutableStateOf(false) }
     var pendingWallpaperAction by remember { mutableStateOf<MurongBackgroundMode?>(null) }
     var colorDialogMode by remember { mutableStateOf<String?>(null) }
@@ -95,7 +111,7 @@ fun ThemeSettingsPage() {
         }
         ui.updateCustomBackgroundUri(uri.toString())
         ui.updateBackgroundMode(MurongBackgroundMode.CUSTOM_IMAGE)
-        Toast.makeText(context, "已应用自定义背景图", Toast.LENGTH_SHORT).show()
+        MurongTransientMessageBus.show("已应用自定义背景图")
     }
     val permissionRequester = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -109,7 +125,7 @@ fun ThemeSettingsPage() {
                 }
             }
         } else {
-            Toast.makeText(context, "未授予背景图访问权限", Toast.LENGTH_SHORT).show()
+            MurongTransientMessageBus.show("未授予背景图访问权限")
         }
         pendingWallpaperAction = null
     }
@@ -125,7 +141,7 @@ fun ThemeSettingsPage() {
                 }
             }
         } else {
-            Toast.makeText(context, "未授予所有文件访问权限", Toast.LENGTH_SHORT).show()
+            MurongTransientMessageBus.show("未授予所有文件访问权限")
         }
         pendingWallpaperAction = null
     }
@@ -158,15 +174,21 @@ fun ThemeSettingsPage() {
         "surface" -> "自定义卡片色"
         "chrome" -> "自定义顶栏色"
         "muted" -> "自定义次级文字色"
+        "terminal_icon" -> "终端图标色"
+        "terminal_path" -> "终端路径色"
+        "terminal_error" -> "终端错误色"
         else -> ""
     }
-    val colorDialogValue = when (colorDialogMode) {
-        "theme" -> ui.themeColorHex
-        "background" -> ui.backgroundColorHex
-        "surface" -> ui.surfaceColorHex
-        "chrome" -> ui.chromeColorHex
-        "muted" -> ui.mutedTextColorHex
-        else -> ""
+    val colorDialogInitialColor = when (colorDialogMode) {
+        "theme" -> ui.accentColor
+        "background" -> ui.resolvedBackgroundColor(darkMode)
+        "surface" -> ui.resolvedSurfaceColor(darkMode)
+        "chrome" -> ui.resolvedChromeColor(darkMode)
+        "muted" -> ui.resolvedMutedTextColor(darkMode)
+        "terminal_icon" -> parseMurongColor(ui.terminalIconColorHex, Color(0xFF22C55E))
+        "terminal_path" -> parseMurongColor(ui.terminalPathColorHex, Color(0xFF86EFAC))
+        "terminal_error" -> parseMurongColor(ui.terminalErrorColorHex, Color(0xFFEF4444))
+        else -> Color.Transparent
     }
 
     MurongSecondaryPageSurface(
@@ -227,6 +249,12 @@ fun ThemeSettingsPage() {
                             modifier = Modifier.weight(1f)
                         )
                     }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    MurongOutlinedActionButton(
+                        text = "还原默认",
+                        onClick = { showRestoreDefaultsDialog = true },
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
 
                 MurongSectionCard(title = "风格与模式") {
@@ -243,7 +271,11 @@ fun ThemeSettingsPage() {
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = "现代玻璃会启用悬浮底栏、长按后滑动切页、模糊卡片和更柔和的背景层；经典纯色更接近传统 Material。",
+                        text = if (darkMode) {
+                            "深色模式已改成更明确的三层结构：更深的背景、更稳的卡片层和更克制的顶栏层，避免整页发灰发闷。"
+                        } else {
+                            "现代玻璃会启用悬浮底栏、长按后滑动切页、模糊卡片和更柔和的背景层；经典纯色更接近传统 Material。"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -262,7 +294,7 @@ fun ThemeSettingsPage() {
                         } else {
                             "背景颜色"
                         },
-                        value = ui.backgroundColorHex,
+                        value = ui.resolvedBackgroundColorHex(darkMode),
                         onClick = { colorDialogMode = "background" }
                     )
                     Spacer(modifier = Modifier.height(10.dp))
@@ -357,20 +389,44 @@ fun ThemeSettingsPage() {
                     Spacer(modifier = Modifier.height(10.dp))
                     ThemeValueRow(
                         title = "卡片色",
-                        value = ui.surfaceColorHex,
+                        value = ui.resolvedSurfaceColorHex(darkMode),
                         onClick = { colorDialogMode = "surface" }
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                     ThemeValueRow(
                         title = "顶栏色",
-                        value = ui.chromeColorHex,
+                        value = ui.resolvedChromeColorHex(darkMode),
                         onClick = { colorDialogMode = "chrome" }
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                     ThemeValueRow(
                         title = "次级文字色",
-                        value = ui.mutedTextColorHex,
+                        value = ui.resolvedMutedTextColorHex(darkMode),
                         onClick = { colorDialogMode = "muted" }
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = "终端颜色",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = accent
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    ThemeValueRow(
+                        title = "终端图标色",
+                        value = ui.terminalIconColorHex,
+                        onClick = { colorDialogMode = "terminal_icon" }
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    ThemeValueRow(
+                        title = "终端路径色",
+                        value = ui.terminalPathColorHex,
+                        onClick = { colorDialogMode = "terminal_path" }
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    ThemeValueRow(
+                        title = "终端错误色",
+                        value = ui.terminalErrorColorHex,
+                        onClick = { colorDialogMode = "terminal_error" }
                     )
                 }
 
@@ -500,7 +556,7 @@ fun ThemeSettingsPage() {
                         )
                         ThemePreviewSwatch(
                             label = "背景色",
-                            color = ui.backgroundColor,
+                            color = ui.resolvedBackgroundColor(darkMode),
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -600,7 +656,7 @@ fun ThemeSettingsPage() {
                             }
                             else -> {
                                 pendingWallpaperAction = null
-                                Toast.makeText(context, "当前页面无法发起权限请求", Toast.LENGTH_SHORT).show()
+                                MurongTransientMessageBus.show("当前页面无法发起权限请求")
                             }
                         }
                     }
@@ -617,6 +673,35 @@ fun ThemeSettingsPage() {
         ) {
             Text(
                 text = MurongWallpaperAccess.explanation(),
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    }
+
+    if (showRestoreDefaultsDialog) {
+        SettingsPopupDialog(
+            title = "还原默认主题",
+            onDismissRequest = { showRestoreDefaultsDialog = false },
+            actions = {
+                TextButton(onClick = { showRestoreDefaultsDialog = false }) {
+                    Text("取消")
+                }
+                TextButton(
+                    onClick = {
+                        ui.restoreThemeDefaults()
+                        fontScaleDraft = ui.fontScale
+                        uiScaleDraft = ui.uiScale
+                        blurRadiusDraft = ui.backgroundBlurRadius.toFloat()
+                        showRestoreDefaultsDialog = false
+                        MurongTransientMessageBus.show("已还原默认主题")
+                    }
+                ) {
+                    Text("确认")
+                }
+            }
+        ) {
+            Text(
+                text = "这会恢复默认主题模式、风格、背景、颜色、模糊和显示缩放。",
                 style = MaterialTheme.typography.bodyMedium
             )
         }
@@ -661,11 +746,12 @@ fun ThemeSettingsPage() {
     }
 
     colorDialogMode?.let { dialogMode ->
-        ThemeColorHexDialog(
+        ThemeColorSliderDialog(
             title = colorDialogTitle,
-            initialValue = colorDialogValue,
+            initialColor = colorDialogInitialColor,
             onDismiss = { colorDialogMode = null },
-            onConfirm = { hex ->
+            onConfirm = { color ->
+                val hex = themeColorToHex(color)
                 when (dialogMode) {
                     "theme" -> ui.updateThemeColorHex(hex)
                     "background" -> {
@@ -679,6 +765,9 @@ fun ThemeSettingsPage() {
                     "surface" -> ui.updateSurfaceColorHex(hex)
                     "chrome" -> ui.updateChromeColorHex(hex)
                     "muted" -> ui.updateMutedTextColorHex(hex)
+                    "terminal_icon" -> ui.updateTerminalIconColorHex(hex)
+                    "terminal_path" -> ui.updateTerminalPathColorHex(hex)
+                    "terminal_error" -> ui.updateTerminalErrorColorHex(hex)
                 }
                 colorDialogMode = null
             }
@@ -705,7 +794,21 @@ fun AboutPage() {
             context.packageManager.getPackageInfo(context.packageName, 0)
         }.getOrNull()
     }
-    val versionName = packageInfo?.versionName ?: "1.0.0"
+    val versionName = packageInfo?.versionName ?: "0.9.0-preview"
+    fun openSupportLink(primaryUrl: String, fallbackUrl: String? = null, errorMessage: String) {
+        val opened = runCatching {
+            uriHandler.openUri(primaryUrl)
+        }.isSuccess
+        if (opened) return
+        val fallbackOpened = fallbackUrl?.let { target ->
+            runCatching {
+                uriHandler.openUri(target)
+            }.isSuccess
+        } ?: false
+        if (!fallbackOpened) {
+            MurongTransientMessageBus.show(errorMessage)
+        }
+    }
 
     MurongSecondaryPageSurface(
         modifier = Modifier
@@ -722,11 +825,11 @@ fun AboutPage() {
         ) {
             MurongSecondaryPageFrame(
                 title = "关于",
-                subtitle = "慕容AI 是面向移动端的多模型 AI Agent，强调代码与项目协作、结构化工具输出和更完整的工作流。"
+                subtitle = "Murong Agent 是面向移动端的多模型 AI Agent，强调代码与项目协作、结构化工具输出和更完整的工作流。"
             ) {
                 MurongInfoCard(title = "", titleVisible = false) {
                     Text(
-                        text = "慕容AI",
+                        text = "Murong Agent",
                         style = MaterialTheme.typography.headlineMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = FontWeight.Bold
@@ -759,7 +862,7 @@ fun AboutPage() {
                 }
 
                 MurongSectionCard(title = "应用信息") {
-                    AboutInfoRow("应用", "慕容AI")
+                    AboutInfoRow("应用", "Murong Agent")
                     AboutInfoRow("版本", versionName)
                     AboutInfoRow("引擎", "Murong Agent Core")
                     AboutInfoRow("设计方向", "现代玻璃 / 桌面端式信息密度")
@@ -776,6 +879,74 @@ fun AboutPage() {
                         MurongOutlinedActionButton(
                             text = "README",
                             onClick = { uriHandler.openUri("https://github.com/murongruyan/MurongAgent/blob/main/README.md") },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
+                MurongSectionCard(title = "交流与支持") {
+                    Text(
+                        text = "开发者：慕容茹艳（酷安慕容雪绒）",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "需要获取动态、进群交流、看看流量卡或支持作者，都可以从这里直接打开。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        MurongOutlinedActionButton(
+                            text = "酷安",
+                            onClick = {
+                                openSupportLink(
+                                    primaryUrl = ABOUT_COOLAPK_URL,
+                                    fallbackUrl = ABOUT_COOLAPK_WEB_URL,
+                                    errorMessage = "无法打开酷安主页"
+                                )
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                        MurongOutlinedActionButton(
+                            text = "QQ 群",
+                            onClick = {
+                                openSupportLink(
+                                    primaryUrl = ABOUT_QQ_GROUP_URL,
+                                    errorMessage = "请加入 QQ 群：974835379"
+                                )
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        MurongOutlinedActionButton(
+                            text = "流量卡",
+                            onClick = {
+                                openSupportLink(
+                                    primaryUrl = ABOUT_TRAFFIC_CARD_URL,
+                                    errorMessage = "无法打开流量卡页面"
+                                )
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                        MurongOutlinedActionButton(
+                            text = "打赏作者",
+                            onClick = {
+                                openSupportLink(
+                                    primaryUrl = ABOUT_ALIPAY_URL,
+                                    errorMessage = "无法打开打赏页面"
+                                )
+                            },
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -920,21 +1091,25 @@ private fun SettingsPopupDialog(
 }
 
 @Composable
-private fun ThemeColorHexDialog(
+private fun ThemeColorSliderDialog(
     title: String,
-    initialValue: String,
+    initialColor: Color,
     onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit
+    onConfirm: (Color) -> Unit
 ) {
-    var value by remember(initialValue) { mutableStateOf(initialValue) }
-    val normalizedValue = value.trim().let { raw ->
-        when {
-            raw.isBlank() -> ""
-            raw.startsWith("#") -> raw
-            else -> "#$raw"
-        }
+    var alpha by remember(initialColor) { mutableFloatStateOf(initialColor.alpha) }
+    var red by remember(initialColor) { mutableFloatStateOf(initialColor.red) }
+    var green by remember(initialColor) { mutableFloatStateOf(initialColor.green) }
+    var blue by remember(initialColor) { mutableFloatStateOf(initialColor.blue) }
+    val currentColor = remember(alpha, red, green, blue) {
+        Color(
+            red = red.coerceIn(0f, 1f),
+            green = green.coerceIn(0f, 1f),
+            blue = blue.coerceIn(0f, 1f),
+            alpha = alpha.coerceIn(0f, 1f)
+        )
     }
-    val isValid = normalizedValue.length == 7 || normalizedValue.length == 9
+    val previewTextColor = if (murongIsDarkColor(currentColor)) Color.White else Color.Black
     SettingsPopupDialog(
         title = title,
         onDismissRequest = onDismiss,
@@ -942,29 +1117,93 @@ private fun ThemeColorHexDialog(
             TextButton(onClick = onDismiss) {
                 Text("取消")
             }
-            TextButton(
-                onClick = { onConfirm(normalizedValue) },
-                enabled = isValid
-            ) {
+            TextButton(onClick = { onConfirm(currentColor) }) {
                 Text("应用")
             }
         }
     ) {
-        OutlinedTextField(
-            value = value,
-            onValueChange = { value = it.uppercase() },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("颜色值") },
-            placeholder = { Text("#F663A6 或 #FFF663A6") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+                .clip(MaterialTheme.shapes.medium)
+                .background(currentColor),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = themeColorToHex(currentColor),
+                color = previewTextColor,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        ThemeColorSliderChannel(
+            label = "A",
+            title = "透明度",
+            value = alpha,
+            onValueChange = { alpha = it }
+        )
+        ThemeColorSliderChannel(
+            label = "R",
+            title = "红色",
+            value = red,
+            onValueChange = { red = it }
+        )
+        ThemeColorSliderChannel(
+            label = "G",
+            title = "绿色",
+            value = green,
+            onValueChange = { green = it }
+        )
+        ThemeColorSliderChannel(
+            label = "B",
+            title = "蓝色",
+            value = blue,
+            onValueChange = { blue = it }
         )
         Text(
-            text = "支持 `#RRGGBB` 和 `#AARRGGBB`。",
+            text = "拖动滑块直接选色，应用后会自动保存为带透明度的颜色值。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
+}
+
+@Composable
+private fun ThemeColorSliderChannel(
+    label: String,
+    title: String,
+    value: Float,
+    onValueChange: (Float) -> Unit
+) {
+    val normalized = value.coerceIn(0f, 1f)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "$label ($title)",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = (normalized * 255).toInt().toString(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Slider(
+            value = normalized,
+            onValueChange = onValueChange,
+            valueRange = 0f..1f
+        )
+    }
+}
+
+private fun themeColorToHex(color: Color): String {
+    return String.format("#%08X", color.toArgb())
 }
 
 @Composable
@@ -1027,3 +1266,10 @@ private fun AboutInfoRow(label: String, value: String) {
     }
     Spacer(modifier = Modifier.height(6.dp))
 }
+
+private const val ABOUT_QQ_GROUP_URL =
+    "mqqapi://card/show_pslcard?src_type=internal&version=1&uin=974835379&card_type=group&source=qrcode"
+private const val ABOUT_COOLAPK_URL = "coolmarket://u/5037694"
+private const val ABOUT_COOLAPK_WEB_URL = "https://www.coolapk.com/u/5037694"
+private const val ABOUT_TRAFFIC_CARD_URL = "https://h5.lot-ml.com/ProductEn/Index/beb66e222fcdb4b6"
+private const val ABOUT_ALIPAY_URL = "https://qr.alipay.com/fkx19856muvtznqt6onipea"

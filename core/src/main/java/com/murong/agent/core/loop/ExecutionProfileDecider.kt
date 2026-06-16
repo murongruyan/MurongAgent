@@ -26,18 +26,20 @@ internal object ExecutionProfileDecider {
         mentionedFileCount: Int = 0,
         matchedSkillPreferredModel: String? = null
     ): ProviderConfig {
-        val complexTask = baseConfig.autoUpgradeExecutionProfile && isComplexTask(goal, mentionedFileCount)
+        val complexTask = isComplexTask(goal, mentionedFileCount)
+        val shouldAutoModel = complexTask && baseConfig.isModelAutoSelectionEnabled()
+        val shouldAutoReasoning = complexTask && baseConfig.isReasoningAutoSelectionEnabled()
         val discoveryRequest = isAutoDiscoveryRequest(goal)
         val requestedModel = matchedSkillPreferredModel?.trim().orEmpty().ifBlank {
             when (baseConfig.activeProviderId) {
-                "deepseek" -> if (complexTask) "deepseek-v4-pro" else ""
-                "claude" -> if (complexTask) "claude-opus-4-8" else ""
-                "openai-compatible" -> if (complexTask && shouldPreferLatestOpenAiProfile(baseConfig)) "gpt-5.5" else ""
+                "deepseek" -> if (shouldAutoModel) "deepseek-v4-pro" else ""
+                "claude" -> if (shouldAutoModel) "claude-opus-4-8" else ""
+                "openai-compatible" -> if (shouldAutoModel && shouldPreferLatestOpenAiProfile(baseConfig)) "gpt-5.5" else ""
                 else -> ""
             }
         }
         val requestedReasoning = when {
-            !complexTask -> null
+            !shouldAutoReasoning -> null
             baseConfig.activeProviderId == "deepseek" -> "max"
             baseConfig.activeProviderId == "claude" -> "xhigh"
             baseConfig.activeProviderId == "openai-compatible" -> "xhigh"

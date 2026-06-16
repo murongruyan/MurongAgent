@@ -23,6 +23,11 @@ Thumbs.db
 
 # Kotlin
 *.class
+.kotlin/errors/
+
+# Debug artifacts
+.dbg/
+debug-workflow-*.md
 
 # Generated
 out/

@@ -2,6 +2,7 @@ package com.murong.agent.common.shell
 
 import android.os.Handler
 import android.os.Looper
+import com.murong.agent.common.toolchain.ToolchainManager
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
@@ -35,13 +36,16 @@ class KeepShellAsync {
     private fun init() {
         if (process != null && process!!.isAlive) return
         try {
-            val pb = ProcessBuilder("su")
+            ToolchainManager.ensureInstalled()
+            val pb = ProcessBuilder(RootShellStrategy.buildRootCommand())
             pb.redirectErrorStream(false)
+            ToolchainManager.applyProcessEnvironment(pb.environment())
             process = pb.start()
-            writer = OutputStreamWriter(process!!.outputStream)
-            reader = BufferedReader(InputStreamReader(process!!.inputStream))
-            stderrReader = BufferedReader(InputStreamReader(process!!.errorStream))
+            writer = OutputStreamWriter(process!!.outputStream, Charsets.UTF_8)
+            reader = BufferedReader(InputStreamReader(process!!.inputStream, Charsets.UTF_8))
+            stderrReader = BufferedReader(InputStreamReader(process!!.errorStream, Charsets.UTF_8))
             isRunning = true
+            bootstrapEnvironment()
 
             // 丢弃 stderr 的线程
             Thread {
@@ -64,6 +68,18 @@ class KeepShellAsync {
             writer = null
             reader = null
             isRunning = false
+        }
+    }
+
+    private fun bootstrapEnvironment() {
+        val currentWriter = writer ?: return
+        try {
+            val bootstrap = ToolchainManager.buildShellBootstrapCommands()
+            if (bootstrap.isNotBlank()) {
+                currentWriter.write("$bootstrap\n")
+                currentWriter.flush()
+            }
+        } catch (_: IOException) {
         }
     }
 

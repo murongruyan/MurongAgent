@@ -6,8 +6,7 @@ Mobile multi-model AI Agent by Murong Xuerong. Inspired by deepseek-reasonix, ex
 
 ## 项目定位
 
-- 应用中文名：慕容AI
-- 英文名：Murong Agent
+- 应用名：Murong Agent
 - 仓库名：MurongAgent
 - 包名 / applicationId：`com.murong.agent`
 - 产品方向：面向移动端的代码、项目与多模型协作型 AI Agent

@@ -22,8 +22,22 @@ data class UsageSummarySnapshot(
     val totalTokens: Int = 0,
     val promptCacheHitTokens: Int = 0,
     val promptCacheMissTokens: Int = 0,
+    val estimatedCostAmount: Double = 0.0,
+    val estimatedCostCurrency: String = "USD",
     val estimatedCostUsd: Double = 0.0
-)
+) {
+    fun resolvedEstimatedCostAmount(): Double {
+        return if (estimatedCostAmount != 0.0 || estimatedCostCurrency.uppercase() != "USD") {
+            estimatedCostAmount
+        } else {
+            estimatedCostUsd
+        }
+    }
+
+    fun resolvedEstimatedCostCurrency(): String {
+        return estimatedCostCurrency.ifBlank { "USD" }.uppercase()
+    }
+}
 
 @Serializable
 data class PersistedMessage(
@@ -206,7 +220,8 @@ data class PersistedWorkflowPlan(
 @Serializable
 data class PersistedFileMention(
     val path: String,
-    val displayPath: String
+    val displayPath: String,
+    val inlineContent: String? = null
 )
 
 @Serializable
@@ -271,7 +286,12 @@ data class PersistedSession(
     val updatedAt: Long,
     val providerId: String,
     val modelName: String,
+    val sessionGoal: String? = null,
     val projectPath: String? = null,
+    val remoteTaskRepositoryOwner: String? = null,
+    val remoteTaskRepositoryName: String? = null,
+    val remoteTaskRepositoryLabel: String? = null,
+    val remoteTaskRepositoryEditable: Boolean = false,
     val activeProjectScopePath: String? = null,
     val projectRules: List<GlobalRule> = emptyList(),
     val projectMemories: List<GlobalMemory> = emptyList(),
@@ -883,6 +903,8 @@ class ConversationStore(private val context: Context) {
             partialBatchCount = sortedBatches.count { it.status == "completed_with_failures" },
             failedBatchCount = sortedBatches.count { it.status in setOf("failed", "rejected") },
             totalTokens = session.subagentRuns.sumOf { it.usageSummary.totalTokens },
+            totalCostAmount = session.subagentRuns.sumOf { it.usageSummary.resolvedEstimatedCostAmount() },
+            totalCostCurrency = session.subagentRuns.firstOrNull()?.usageSummary?.resolvedEstimatedCostCurrency() ?: "USD",
             totalCostUsd = session.subagentRuns.sumOf { it.usageSummary.estimatedCostUsd },
             averageSlotUtilizationPercent = slotUtilizationPercents
                 .takeIf { it.isNotEmpty() }
@@ -982,6 +1004,8 @@ data class SessionSubagentSummary(
     val partialBatchCount: Int = 0,
     val failedBatchCount: Int = 0,
     val totalTokens: Int = 0,
+    val totalCostAmount: Double = 0.0,
+    val totalCostCurrency: String = "USD",
     val totalCostUsd: Double = 0.0,
     val averageSlotUtilizationPercent: Int = 0,
     val peakSlotUtilizationPercent: Int = 0,
@@ -992,6 +1016,14 @@ data class SessionSubagentSummary(
     val latestBatchUpdatedAt: Long? = null,
     val recentBatches: List<SessionSubagentBatchSnapshot> = emptyList()
 )
+
+fun formatCurrencyAmount(amount: Double, currency: String): String {
+    return when (currency.uppercase()) {
+        "USD" -> "$${"%.6f".format(amount)}"
+        "CNY", "RMB", "CNH" -> "￥${"%.6f".format(amount)}"
+        else -> "${"%.6f".format(amount)} ${currency.uppercase()}"
+    }
+}
 
 @Serializable
 data class SessionSubagentBatchSnapshot(

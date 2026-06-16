@@ -1,7 +1,5 @@
 package com.murong.agent.ui
 
-import java.net.HttpURLConnection
-import java.net.URL
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -22,13 +20,10 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import org.json.JSONObject
 
 private const val REASONIX_NESTED_BACK_PREVIEW_THRESHOLD = 0.001f
 private const val REASONIX_NESTED_SETTLE_DURATION = 320
 private const val REASONIX_NESTED_SETTLE_OFFSET_FRACTION = 1f
-private const val ENABLE_REASONIX_BACK_DEBUG_REPORTS = false
-
 private data class MurongNestedLayerSpec(
     val showDetail: Boolean,
     val translationX: Float,
@@ -136,57 +131,6 @@ fun MurongNestedPredictiveBackHost(
         ) {
             suppressNextPopSettle = false
         }
-    }
-
-    LaunchedEffect(
-        predictivePreviewBucket,
-        detailVisible,
-        settledDetailVisible,
-        transitionIsPush
-    ) {
-        if (predictivePreviewBucket < 0) return@LaunchedEffect
-        // #region debug-point E:nested-back-progress
-        reportChatEntryBackAnimationUiDebug(
-            hypothesisId = "E",
-            location = "MurongNestedPredictiveBackHost.kt:predictivePreviewProgress",
-            msg = "[DEBUG] nested predictive back progress bucket",
-            data = JSONObject()
-                .put("bucket", predictivePreviewBucket)
-                .put("backProgress", predictivePreviewProgress)
-                .put("detailVisible", detailVisible)
-                .put("settledDetailVisible", settledDetailVisible)
-                .put("transitionIsPush", transitionIsPush)
-                .put("wrapDetailInSecondarySurface", wrapDetailInSecondarySurface)
-        )
-        // #endregion
-    }
-
-    LaunchedEffect(
-        detailVisible,
-        settledDetailVisible,
-        transitionFromDetailVisible,
-        transitionToDetailVisible,
-        transitionIsPush,
-        suppressNextPopSettle
-    ) {
-        // #region debug-point U:nested-host-state
-        reportChatEntryBackAnimationUiDebug(
-            hypothesisId = "U3",
-            location = "MurongNestedPredictiveBackHost.kt:hostState",
-            msg = "[DEBUG] nested host state snapshot",
-            data = JSONObject()
-                .put("detailVisible", detailVisible)
-                .put("settledDetailVisible", settledDetailVisible)
-                .put("transitionFromDetailVisible", transitionFromDetailVisible ?: JSONObject.NULL)
-                .put("transitionToDetailVisible", transitionToDetailVisible ?: JSONObject.NULL)
-                .put("transitionIsPush", transitionIsPush)
-                .put("suppressNextPopSettle", suppressNextPopSettle)
-                .put("backProgress", predictivePreviewProgress)
-                .put("wrapDetailInSecondarySurface", wrapDetailInSecondarySurface)
-                .put("wrapListInSecondarySurface", wrapListInSecondarySurface)
-                .put("wrapLayersInSharedSecondarySurface", wrapLayersInSharedSecondarySurface)
-        )
-        // #endregion
     }
 
     @Composable
@@ -329,37 +273,3 @@ private fun RenderMurongNestedLayerContent(
         content()
     }
 }
-
-// #region debug-point E:ui-debug-reporter
-private fun reportChatEntryBackAnimationUiDebug(
-    hypothesisId: String,
-    location: String,
-    msg: String,
-    data: JSONObject
-) {
-    if (!ENABLE_REASONIX_BACK_DEBUG_REPORTS) return
-    Thread {
-        runCatching {
-            val connection = (URL("http://192.168.2.3:7777/event").openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 1200
-                readTimeout = 1200
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json")
-            }
-            val payload = JSONObject()
-                .put("sessionId", "ui-nav-regressions")
-                .put("runId", "pre-fix")
-                .put("hypothesisId", hypothesisId)
-                .put("location", location)
-                .put("msg", msg)
-                .put("data", data)
-                .put("ts", System.currentTimeMillis())
-                .toString()
-            connection.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-            runCatching { connection.inputStream.use { input -> while (input.read() != -1) {} } }
-            connection.disconnect()
-        }
-    }.start()
-}
-// #endregion

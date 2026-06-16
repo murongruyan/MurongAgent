@@ -174,7 +174,24 @@ internal fun loadProjectGitStatus(projectPath: String): ProjectGitStatusUi {
             errorMessage = null
         )
     }.getOrElse { error ->
-        loadProjectGitMetadataFallback(repoRoot)?.copy(
+        val metadataFallback = loadProjectGitMetadataFallback(repoRoot)
+        val rootWorkingTreeFallback = loadRootEmbeddedWorkingTreeSnapshotFallback(repoRoot)
+        if (rootWorkingTreeFallback != null) {
+            return (metadataFallback ?: ProjectGitStatusUi.empty(projectPath).copy(
+                repoRoot = repoRoot,
+                hasGitCommand = true
+            )).copy(
+                projectPath = projectPath,
+                repoRoot = repoRoot,
+                hasGitCommand = true,
+                conflictedFiles = rootWorkingTreeFallback.conflictedFiles.map { change -> change.toProjectGitFileChange() },
+                stagedFiles = rootWorkingTreeFallback.stagedFiles.map { change -> change.toProjectGitFileChange() },
+                modifiedFiles = rootWorkingTreeFallback.modifiedFiles.map { change -> change.toProjectGitFileChange() },
+                untrackedFiles = rootWorkingTreeFallback.untrackedFiles.map { change -> change.toProjectGitFileChange() },
+                errorMessage = "已通过 root 回退读取工作区状态。"
+            )
+        }
+        metadataFallback?.copy(
             projectPath = projectPath,
             errorMessage = error.message ?: "当前目录的 Git 元数据已识别，但完整状态读取失败"
         ) ?: ProjectGitStatusUi.empty(projectPath).copy(
@@ -213,7 +230,7 @@ private fun loadProjectGitMetadataFallback(repoRoot: String): ProjectGitStatusUi
         remoteUrl = remoteUrl,
         upstreamBranch = upstreamBranch,
         localBranches = localBranches,
-        errorMessage = "已识别 Git 元数据，但当前目录暂未启用完整 Git 操作。"
+        errorMessage = "已识别 Git 元数据，但当前目录暂时只能显示只读状态。"
     )
 }
 

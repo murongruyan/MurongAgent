@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
-import android.util.Log
 import android.util.Base64
 import com.murong.agent.common.utils.RootFile
 import com.murong.agent.core.config.ConfigRepository
@@ -36,7 +35,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -189,7 +190,8 @@ data class ConversationCheckpointUi(
 
 data class FileMentionUi(
     val path: String,
-    val displayPath: String
+    val displayPath: String,
+    val inlineContent: String? = null
 )
 
 data class ProjectKnowledgeSnapshotUi(
@@ -257,6 +259,31 @@ data class ClarificationAnswerUi(
     val question: String,
     val answer: String,
     val answeredAt: Long = System.currentTimeMillis()
+)
+
+data class AskOptionUi(
+    val label: String,
+    val description: String? = null
+)
+
+data class AskQuestionUi(
+    val id: String,
+    val header: String = "",
+    val question: String,
+    val options: List<AskOptionUi>,
+    val multiSelect: Boolean = false
+)
+
+data class AskAnswerUi(
+    val questionId: String,
+    val selectedOptions: List<String> = emptyList()
+)
+
+data class PendingAskRequestUi(
+    val id: String = UUID.randomUUID().toString(),
+    val title: String = "需要确认",
+    val questions: List<AskQuestionUi>,
+    val createdAt: Long = System.currentTimeMillis()
 )
 
 enum class AutoRouteAction {
@@ -428,7 +455,12 @@ data class SessionState(
     val error: String? = null,
     val sessionId: String = "",
     val sessionTitle: String = "新对话",
+    val sessionGoal: String? = null,
     val projectPath: String? = null,
+    val remoteTaskRepositoryOwner: String? = null,
+    val remoteTaskRepositoryName: String? = null,
+    val remoteTaskRepositoryLabel: String? = null,
+    val remoteTaskRepositoryEditable: Boolean = false,
     val activeProjectScopePath: String? = null,
     val projectRules: List<GlobalRule> = emptyList(),
     val projectMemories: List<GlobalMemory> = emptyList(),
@@ -450,6 +482,7 @@ data class SessionState(
     val projectApprovalHistory: ProjectApprovalHistoryUi? = null,
     val projectInheritedApprovalScopes: List<InheritedApprovalScopeUi> = emptyList(),
     val pendingApproval: PendingApprovalUi? = null,
+    val pendingAskRequest: PendingAskRequestUi? = null,
     val pendingWorkflowPlan: WorkflowPlanUi? = null,
     val workflowPlanningInProgress: Boolean = false,
     val pendingClarificationRequest: ClarificationRequestUi? = null,
@@ -530,15 +563,10 @@ class ChatSessionManager(
     private companion object {
         val SUBAGENT_TERMINAL_STATUSES = setOf("completed", "failed", "cancelled", "rejected")
         val SUBAGENT_ACTIVE_STATUSES = setOf("pending_approval", "queued", "running", "summarizing", "cancelling")
-        val draftCompatJson = Json { ignoreUnknownKeys = true }
         val AUTO_COMPLEXITY_KEYWORDS = listOf(
             "自动", "下载", "接入", "集成", "重构", "架构", "规划", "计划", "迁移",
             "批量", "排查", "调试", "分析", "审查", "搜索", "联网", "修复", "实现",
             "mcp", "skill", "workflow", "subagent", "review", "debug", "refactor"
-        )
-        val AUTO_SKILL_HINT_KEYWORDS = listOf(
-            "搜索", "检索", "分析", "审查", "review", "debug", "调试", "排查",
-            "总结", "重构", "修复", "下载", "接入", "集成", "规划", "研究"
         )
         val AUTO_DISCOVERY_ACTION_KEYWORDS = listOf(
             "安装", "接入", "添加", "导入", "配置", "启用", "连接", "加载",
@@ -548,10 +576,6 @@ class ChatSessionManager(
         val AUTO_DISCOVERY_TARGET_KEYWORDS = listOf(
             "mcp", "skill", "server", "工具", "插件", "tool", "prompt"
         )
-        val EXPLICIT_DRAFT_FENCE_REGEX = Regex(
-            """```(murong-skill-draft|murong-skill|skill-draft|murong-mcp-draft|murong-mcp|mcp-draft)\s*([\s\S]*?)```""",
-            setOf(RegexOption.IGNORE_CASE)
-        )
     }
 
     private data class PendingSubagentExecution(
@@ -559,20 +583,10 @@ class ChatSessionManager(
         val execute: suspend () -> Unit
     )
 
-    private data class AutoMatchedSkill(
-        val skill: GlobalSkill,
-        val score: Int
+    private data class ToolHistoryPruningPlan(
+        val keptIndices: Set<Int>,
+        val removedMessages: List<ChatMessageUi>
     )
-
-    private data class DraftAutoAttachOutcome(
-        val importedSkillCount: Int = 0,
-        val importedMcpCount: Int = 0,
-        val connectedMcpCount: Int = 0,
-        val summary: String = ""
-    ) {
-        val importedAnything: Boolean
-            get() = importedSkillCount > 0 || importedMcpCount > 0
-    }
 
     private val _state = MutableStateFlow(SessionState())
     val state: StateFlow<SessionState> = _state.asStateFlow()
@@ -584,14 +598,28 @@ class ChatSessionManager(
     private var currentSessionId: String = ""
     private var lastSessionConfig: ProviderConfig = ProviderConfig()
     private var pendingApprovalDecision: CompletableDeferred<Boolean>? = null
+    private var pendingAskDecision: CompletableDeferred<List<AskAnswerUi>?>? = null
     private var processingCancelledByUser: Boolean = false
     private val approvedApprovalScopes = mutableListOf<PersistedApprovedApprovalScope>()
     private val cancelledSubagentRunIds = mutableSetOf<String>()
     private val subagentExecutionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val sessionPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val streamingAggregationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val subagentExecutionLock = Any()
     private val runningSubagentExecutionSlots = mutableMapOf<Int, String>()
     private val pendingSubagentExecutions = mutableListOf<PendingSubagentExecution>()
     private val maxConcurrentSubagentExecutions = 2
+    private val pendingStreamingLock = Any()
+    private val pendingStreamingContent = StringBuilder()
+    private val pendingStreamingReasoning = StringBuilder()
+    @Volatile
+    private var latestPersistJob: Job? = null
+    @Volatile
+    private var cachedCurrentPersistedSession: PersistedSession? = null
+    @Volatile
+    private var pendingStreamingMessageId: Long? = null
+    @Volatile
+    private var streamingFlushJob: Job? = null
 
     private fun recordError(message: String) {
         val record = ErrorRecordUi(message = message)
@@ -1356,7 +1384,9 @@ class ChatSessionManager(
         val currentCompressionSnapshot = restoredCompressionSnapshots
             .lastOrNull { it.active }
             ?: restoredCompressionSnapshots.lastOrNull()
+        resetPendingStreamingUpdates()
         currentSessionId = session.id
+        cachedCurrentPersistedSession = session
         restoreApprovedApprovalScopes(
             conversationStore.restoreApprovedApprovalScopes(
                 session.approvedApprovalScopeEntries,
@@ -1370,7 +1400,12 @@ class ChatSessionManager(
             subagentBatches = conversationStore.restoreSubagentBatches(session.subagentBatches),
             sessionId = session.id,
             sessionTitle = session.title,
+            sessionGoal = session.sessionGoal,
             projectPath = session.projectPath,
+            remoteTaskRepositoryOwner = session.remoteTaskRepositoryOwner,
+            remoteTaskRepositoryName = session.remoteTaskRepositoryName,
+            remoteTaskRepositoryLabel = session.remoteTaskRepositoryLabel,
+            remoteTaskRepositoryEditable = session.remoteTaskRepositoryEditable,
             activeProjectScopePath = resolvedScopePath,
             projectRules = activeRepoConfig.projectRules,
             projectMemories = activeRepoConfig.projectMemories,
@@ -1417,7 +1452,8 @@ class ChatSessionManager(
                         mentionedFiles = persisted.mentionedFiles.map { mention ->
                             FileMentionUi(
                                 path = mention.path,
-                                displayPath = mention.displayPath
+                                displayPath = mention.displayPath,
+                                inlineContent = mention.inlineContent
                             )
                         },
                         rawPlan = persisted.rawPlan,
@@ -1433,7 +1469,8 @@ class ChatSessionManager(
                     mentionedFiles = persisted.mentionedFiles.map { mention ->
                         FileMentionUi(
                             path = mention.path,
-                            displayPath = mention.displayPath
+                            displayPath = mention.displayPath,
+                            inlineContent = mention.inlineContent
                         )
                     },
                     previousAnswers = persisted.previousAnswers.map { answer ->
@@ -1477,7 +1514,9 @@ class ChatSessionManager(
     fun newSession() {
         // 先保存当前会话
         saveCurrentSession()
+        resetPendingStreamingUpdates()
         currentSessionId = UUID.randomUUID().toString().take(8)
+        cachedCurrentPersistedSession = null
         clearApprovedApprovalScopes()
         messageCounter = 0
         _state.value = SessionState(sessionId = currentSessionId)
@@ -1502,6 +1541,7 @@ class ChatSessionManager(
         )
         saveCurrentSession()
         currentSessionId = UUID.randomUUID().toString().take(8)
+        cachedCurrentPersistedSession = null
         clearApprovedApprovalScopes()
         messageCounter = 0
         _state.value = SessionState(
@@ -1527,6 +1567,100 @@ class ChatSessionManager(
             repoScopedConfigs = inheritedRepoScopedConfigs
         )
         syncApprovedApprovalScopesState()
+    }
+
+    fun updateCurrentTask(projectPath: String) {
+        val normalizedPath = projectPath.trim().removeSuffix("/")
+        if (normalizedPath.isBlank()) return
+        val inheritedProjectSession = findLatestProjectSession(normalizedPath)
+        val inheritedRepoScopedConfigs = inheritedProjectSession?.let(::restoreRepoScopedConfigs).orEmpty()
+        val resolvedScopePath = activeProjectScopePath(
+            activeScopePath = inheritedProjectSession?.activeProjectScopePath,
+            projectPath = normalizedPath
+        )
+        val activeRepoConfig = resolveRepoScopedProjectConfig(
+            scopePath = resolvedScopePath,
+            repoScopedConfigs = inheritedRepoScopedConfigs,
+            fallbackRules = inheritedProjectSession?.projectRules.orEmpty(),
+            fallbackMemories = inheritedProjectSession?.projectMemories.orEmpty(),
+            fallbackSkills = inheritedProjectSession?.projectSkills.orEmpty(),
+            fallbackPreferences = inheritedProjectSession?.projectToolPreferences
+        )
+        val current = _state.value
+        val previousAutoTitle = current.projectPath?.let(::buildTaskTitle)
+        val shouldUpdateTitle = current.sessionTitle.isBlank() ||
+            current.sessionTitle == "新对话" ||
+            current.sessionTitle == previousAutoTitle
+        clearApprovedApprovalScopes()
+        _state.value = _state.value.copy(
+            sessionTitle = if (shouldUpdateTitle) buildTaskTitle(normalizedPath) else current.sessionTitle,
+            projectPath = normalizedPath,
+            activeProjectScopePath = resolvedScopePath,
+            projectRules = activeRepoConfig.projectRules,
+            projectMemories = activeRepoConfig.projectMemories,
+            projectSkills = activeRepoConfig.projectSkills,
+            projectKnowledgePaths = inheritedProjectSession?.projectKnowledgePaths.orEmpty(),
+            projectKnowledgeSnapshots = inheritedProjectSession?.projectKnowledgeSnapshots.orEmpty().map { snapshot ->
+                ProjectKnowledgeSnapshotUi(
+                    id = snapshot.id,
+                    name = snapshot.name,
+                    paths = snapshot.paths,
+                    createdAt = snapshot.createdAt,
+                    updatedAt = snapshot.updatedAt,
+                    lastAppliedAt = snapshot.lastAppliedAt
+                )
+            },
+            projectToolPreferences = activeRepoConfig.projectToolPreferences,
+            repoScopedConfigs = inheritedRepoScopedConfigs
+        )
+        saveCurrentSession()
+        syncApprovedApprovalScopesState()
+    }
+
+    fun updateRemoteTaskRepositoryContext(
+        repositoryOwner: String?,
+        repositoryName: String?,
+        repositoryLabel: String?,
+        editable: Boolean
+    ) {
+        val normalizedOwner = repositoryOwner?.trim()?.takeIf { it.isNotBlank() }
+        val normalizedName = repositoryName?.trim()?.takeIf { it.isNotBlank() }
+        val normalizedLabel = repositoryLabel?.trim()?.takeIf { it.isNotBlank() }
+            ?: if (normalizedOwner != null && normalizedName != null) {
+                "$normalizedOwner/$normalizedName"
+            } else {
+                null
+            }
+        val current = _state.value
+        val normalizedEditable = normalizedLabel != null && editable
+        if (
+            current.remoteTaskRepositoryOwner == normalizedOwner &&
+            current.remoteTaskRepositoryName == normalizedName &&
+            current.remoteTaskRepositoryLabel == normalizedLabel &&
+            current.remoteTaskRepositoryEditable == normalizedEditable
+        ) {
+            return
+        }
+        _state.value = current.copy(
+            remoteTaskRepositoryOwner = normalizedOwner,
+            remoteTaskRepositoryName = normalizedName,
+            remoteTaskRepositoryLabel = normalizedLabel,
+            remoteTaskRepositoryEditable = normalizedEditable
+        )
+        saveCurrentSession()
+    }
+
+    fun setCurrentSessionGoal(goal: String) {
+        val normalizedGoal = goal.trim()
+        if (normalizedGoal.isBlank()) return
+        _state.value = _state.value.copy(sessionGoal = normalizedGoal)
+        saveCurrentSession()
+    }
+
+    fun clearCurrentSessionGoal() {
+        if (_state.value.sessionGoal.isNullOrBlank()) return
+        _state.value = _state.value.copy(sessionGoal = null)
+        saveCurrentSession()
     }
 
     fun switchProjectScope(scopePath: String?) {
@@ -2014,31 +2148,91 @@ class ChatSessionManager(
         return true
     }
 
+    private suspend fun maybeAutoCompressContext(
+        config: ProviderConfig,
+        allowCreateSnapshot: Boolean = true
+    ): String? {
+        val state = _state.value
+        val preview = estimateContextCompressionPreview(state) ?: return null
+        if (!shouldAutoCompressContext(state, preview)) return null
+        lastSessionConfig = config
+
+        val existingSnapshot = state.compressionSnapshot
+        if (
+            existingSnapshot != null &&
+            !existingSnapshot.active &&
+            countNewMessagesSinceSnapshot(state, existingSnapshot) <= AUTO_COMPRESSION_ENABLE_EXISTING_MAX_NEW_MESSAGES &&
+            enableContextCompression()
+        ) {
+            return "已自动启用上下文摘要 V${existingSnapshot.version}"
+        }
+        if (!allowCreateSnapshot) return null
+
+        val snapshot = compressCurrentContext().getOrNull() ?: return null
+        return "已自动压缩 ${snapshot.sourceMessageCount} 条历史消息，生成摘要 V${snapshot.version}"
+    }
+
+    private fun shouldAutoCompressContext(
+        state: SessionState,
+        preview: ContextCompressionPreviewUi
+    ): Boolean {
+        val largeEnough = preview.compressibleMessageCount >= AUTO_COMPRESSION_MIN_COMPRESSIBLE_MESSAGES ||
+            preview.estimatedCurrentContextTokens >= AUTO_COMPRESSION_TRIGGER_TOKENS
+        if (!largeEnough) return false
+
+        val savingsWorthwhile = preview.estimatedTokensSaved >= AUTO_COMPRESSION_MIN_SAVED_TOKENS ||
+            preview.estimatedReductionPercent >= AUTO_COMPRESSION_MIN_REDUCTION_PERCENT
+        if (!savingsWorthwhile) return false
+
+        val currentSnapshot = state.compressionSnapshot
+        if (currentSnapshot?.active == true) {
+            val newMessages = countNewMessagesSinceSnapshot(state, currentSnapshot)
+            if (newMessages < AUTO_COMPRESSION_NEW_MESSAGES_THRESHOLD) return false
+        }
+        return true
+    }
+
+    private fun countNewMessagesSinceSnapshot(
+        state: SessionState,
+        snapshot: ContextCompressionUi
+    ): Int {
+        return compressionEligibleMessages(state).count { it.id > snapshot.sourceEndMessageId }
+    }
+
+    private fun mergeToastMessages(primary: String?, secondary: String?): String? {
+        return listOfNotNull(
+            primary?.trim()?.takeIf { it.isNotBlank() },
+            secondary?.trim()?.takeIf { it.isNotBlank() }
+        ).takeIf { it.isNotEmpty() }?.joinToString("\n")
+    }
+
     /**
      * 发送消息
      */
     suspend fun sendMessage(
         text: String,
         mentionedFiles: List<FileMentionUi> = emptyList(),
-        pendingImages: List<PendingImageAttachmentUi> = emptyList()
+        pendingImages: List<PendingImageAttachmentUi> = emptyList(),
+        selectedSkills: List<GlobalSkill> = emptyList()
     ): String? {
         val normalizedText = text.trim()
         if ((normalizedText.isBlank() && pendingImages.isEmpty()) || _state.value.isProcessing) return null
         val globalConfig = configRepository.getConfig()
         val config = globalConfig.applyProjectToolPreferences(_state.value.projectToolPreferences)
-        val matchedSkill = if (pendingImages.isEmpty()) {
-            matchAutoSkill(normalizedText, config)
-        } else {
-            null
-        }
-        if (matchedSkill != null) {
-            return executeAutoMatchedSkill(
-                goal = normalizedText,
-                mentionedFiles = mentionedFiles,
-                skill = matchedSkill,
-                baseConfig = config
+        if (normalizedText.isBlank() && pendingImages.isNotEmpty() && !config.isMultimodalEnabled()) {
+            appendMessage(
+                ChatMessageUi(
+                    id = nextId(),
+                    role = "system",
+                    content = "⚠️ 当前已关闭多模态，图片消息未发送。请到设置里开启多模态后再试。"
+                )
             )
+            return null
         }
+        val autoCompressionToast = maybeAutoCompressContext(
+            config = config,
+            allowCreateSnapshot = false
+        )
         val executionConfig = resolveExecutionConfig(
             baseConfig = config,
             goal = normalizedText,
@@ -2054,13 +2248,16 @@ class ChatSessionManager(
             mentionedFiles = mentionedFiles,
             pendingImages = pendingImages,
             configOverride = executionConfig,
-            extraSystemContext = buildExecutionProfileContext(
-                goal = normalizedText,
-                baseConfig = config,
-                executionConfig = executionConfig
-            )
+            extraUserContext = listOfNotNull(
+                buildSkillSelectionUserContext(selectedSkills),
+                buildExecutionProfileUserContext(
+                    goal = normalizedText,
+                    baseConfig = config,
+                    executionConfig = executionConfig
+                )
+            ).joinToString("\n\n").takeIf { it.isNotBlank() }
         )
-        return executionToast
+        return mergeToastMessages(autoCompressionToast, executionToast)
     }
 
     suspend fun autoRouteMessage(
@@ -2072,22 +2269,14 @@ class ChatSessionManager(
 
         val globalConfig = configRepository.getConfig()
         val config = globalConfig.applyProjectToolPreferences(_state.value.projectToolPreferences)
-        val matchedSkill = matchAutoSkill(normalizedText, config)
-        if (matchedSkill != null) {
-            return executeAutoMatchedSkill(
-                goal = normalizedText,
-                mentionedFiles = mentionedFiles,
-                skill = matchedSkill,
-                baseConfig = config
-            )
-        }
+        val plannerConfig = config.getPlannerResolvedConfig()
         val executionConfig = resolveExecutionConfig(
             baseConfig = config,
             goal = normalizedText,
             mentionedFiles = mentionedFiles
         )
-        lastSessionConfig = executionConfig
-        val apiKey = executionConfig.getActiveApiKey().trim()
+        lastSessionConfig = plannerConfig
+        val apiKey = plannerConfig.getActiveApiKey().trim()
         if (apiKey.isBlank()) {
             _state.value = _state.value.copy(
                 error = "⚠️ 未配置 API Key。请先到设置页完成模型配置。"
@@ -2095,7 +2284,7 @@ class ChatSessionManager(
             return null
         }
 
-        val provider = ProviderRegistry.getActiveProvider(executionConfig.activeProviderId)
+        val provider = ProviderRegistry.getActiveProvider(plannerConfig.activeProviderId)
         val history = buildHistory()
         val compressionContext = buildCompressionContext()
         _state.value = _state.value.copy(
@@ -2105,7 +2294,9 @@ class ChatSessionManager(
             lastWorkflowFallback = null
         )
         val decision: AutoRouteDecisionUi = try {
-            val rawText = provider.chat(
+            val rawText = callProviderWithConfiguredStreaming(
+                provider = provider,
+                config = plannerConfig,
                 request = ChatRequest(
                     messages = buildAutoRoutePrompt(
                         goal = normalizedText,
@@ -2113,16 +2304,14 @@ class ChatSessionManager(
                         compressionContext = compressionContext,
                         mentionedFiles = mentionedFiles
                     ),
-                    model = executionConfig.getActiveModel(),
+                    model = plannerConfig.getActiveModel(),
                     temperature = 0.1,
-                    maxTokens = minOf(executionConfig.maxTokens, 400),
-                    stream = false,
-                    reasoningEffort = executionConfig.getActiveReasoningEffort(),
-                    thinkingMode = executionConfig.getActiveThinkingMode(),
+                    maxTokens = minOf(plannerConfig.maxTokens, 400),
+                    stream = plannerConfig.isStreamingResponsesEnabled(),
+                    reasoningEffort = plannerConfig.getActiveReasoningEffort(),
+                    thinkingMode = plannerConfig.getActiveThinkingMode(),
                     tools = null
-                ),
-                apiKey = apiKey,
-                baseUrl = executionConfig.getActiveBaseUrl()
+                )
             ).content?.trim().orEmpty()
             parseAutoRouteDecision(rawText)
         } catch (e: Exception) {
@@ -2133,7 +2322,7 @@ class ChatSessionManager(
             )
             when (
                 resolveWorkflowFailureFallbackMode(
-                    config = executionConfig,
+                    config = plannerConfig,
                     failureType = WorkflowFailureType.AUTO_ROUTE_FAILURE,
                     hasMentionedFiles = mentionedFiles.isNotEmpty(),
                     source = WorkflowFailureFallbackSource.AUTO_ROUTE,
@@ -2143,6 +2332,7 @@ class ChatSessionManager(
                 )
             ) {
                 WorkflowFailureFallbackMode.DIRECT_EXECUTION -> {
+                    val autoCompressionToast = maybeAutoCompressContext(plannerConfig)
                     val executionToast = buildExecutionProfileToast(
                         baseConfig = config,
                         executionConfig = executionConfig
@@ -2153,7 +2343,7 @@ class ChatSessionManager(
                         mentionedFiles = mentionedFiles,
                         executionGoal = normalizedText,
                         configOverride = executionConfig,
-                        extraSystemContext = buildExecutionProfileContext(
+                        extraUserContext = buildExecutionProfileUserContext(
                             goal = normalizedText,
                             baseConfig = config,
                             executionConfig = executionConfig
@@ -2161,9 +2351,9 @@ class ChatSessionManager(
                     )
                     applyWorkflowFallback(
                         message = "发送前自动分流失败，已按配置回退为直接执行。",
-                        config = executionConfig
+                        config = plannerConfig
                     )
-                    return executionToast
+                    return mergeToastMessages(autoCompressionToast, executionToast)
                 }
                 WorkflowFailureFallbackMode.LOCAL_CLARIFICATION -> {
                     _state.value = _state.value.copy(
@@ -2179,7 +2369,7 @@ class ChatSessionManager(
                     )
                     applyWorkflowFallback(
                         message = "发送前自动分流失败，已按配置回退为本地通用澄清问题。",
-                        config = executionConfig
+                        config = plannerConfig
                     )
                     return null
                 }
@@ -2191,7 +2381,7 @@ class ChatSessionManager(
             autoRoutingInProgress = false,
             lastAutoRouteDecision = decision
         )
-        saveCurrentSession(executionConfig)
+        saveCurrentSession(plannerConfig)
         when (decision.action) {
             AutoRouteAction.DIRECT -> return sendMessage(normalizedText, mentionedFiles)
             AutoRouteAction.PLAN -> generateWorkflowPlan(normalizedText, mentionedFiles)
@@ -2210,8 +2400,10 @@ class ChatSessionManager(
 
         val globalConfig = configRepository.getConfig()
         val config = globalConfig.applyProjectToolPreferences(_state.value.projectToolPreferences)
-        lastSessionConfig = config
-        val apiKey = config.getActiveApiKey().trim()
+        val plannerConfig = config.getPlannerResolvedConfig()
+        maybeAutoCompressContext(plannerConfig)
+        lastSessionConfig = plannerConfig
+        val apiKey = plannerConfig.getActiveApiKey().trim()
         if (apiKey.isBlank()) {
             _state.value = _state.value.copy(
                 error = "⚠️ 未配置 API Key。请先到设置页完成模型配置。"
@@ -2219,7 +2411,7 @@ class ChatSessionManager(
             return
         }
 
-        val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
+        val provider = ProviderRegistry.getActiveProvider(plannerConfig.activeProviderId)
         val history = buildHistory()
         val compressionContext = buildCompressionContext()
         _state.value = _state.value.copy(
@@ -2230,7 +2422,9 @@ class ChatSessionManager(
             lastWorkflowFallback = null
         )
         try {
-            val response = provider.chat(
+            val response = callProviderWithConfiguredStreaming(
+                provider = provider,
+                config = plannerConfig,
                 request = ChatRequest(
                     messages = buildWorkflowPlanPrompt(
                         goal = normalizedGoal,
@@ -2238,16 +2432,14 @@ class ChatSessionManager(
                         compressionContext = compressionContext,
                         mentionedFiles = mentionedFiles
                     ),
-                    model = config.getActiveModel(),
+                    model = plannerConfig.getActiveModel(),
                     temperature = 0.2,
-                    maxTokens = minOf(config.maxTokens, 1200),
-                    stream = false,
-                    reasoningEffort = config.getActiveReasoningEffort(),
-                    thinkingMode = config.getActiveThinkingMode(),
+                    maxTokens = minOf(plannerConfig.maxTokens, 1200),
+                    stream = plannerConfig.isStreamingResponsesEnabled(),
+                    reasoningEffort = plannerConfig.getActiveReasoningEffort(),
+                    thinkingMode = plannerConfig.getActiveThinkingMode(),
                     tools = null
-                ),
-                apiKey = apiKey,
-                baseUrl = config.getActiveBaseUrl()
+                )
             )
             val rawPlan = response.content?.trim().orEmpty()
             _state.value = _state.value.copy(
@@ -2258,7 +2450,7 @@ class ChatSessionManager(
                 ),
                 workflowPlanningInProgress = false
             )
-            saveCurrentSession(config)
+            saveCurrentSession(plannerConfig)
         } catch (e: Exception) {
             _state.value = _state.value.copy(
                 error = "⚠️ ${e.message ?: "生成执行计划失败"}",
@@ -2340,8 +2532,9 @@ class ChatSessionManager(
 
         val globalConfig = configRepository.getConfig()
         val config = globalConfig.applyProjectToolPreferences(_state.value.projectToolPreferences)
-        lastSessionConfig = config
-        val apiKey = config.getActiveApiKey().trim()
+        val plannerConfig = config.getPlannerResolvedConfig()
+        lastSessionConfig = plannerConfig
+        val apiKey = plannerConfig.getActiveApiKey().trim()
         if (apiKey.isBlank()) {
             _state.value = _state.value.copy(
                 error = "⚠️ 未配置 API Key。请先到设置页完成模型配置。"
@@ -2349,7 +2542,7 @@ class ChatSessionManager(
             return
         }
 
-        val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
+        val provider = ProviderRegistry.getActiveProvider(plannerConfig.activeProviderId)
         val history = buildHistory()
         val compressionContext = buildCompressionContext()
         _state.value = _state.value.copy(
@@ -2360,7 +2553,9 @@ class ChatSessionManager(
             lastWorkflowFallback = null
         )
         try {
-            val response = provider.chat(
+            val response = callProviderWithConfiguredStreaming(
+                provider = provider,
+                config = plannerConfig,
                 request = ChatRequest(
                     messages = buildClarificationPrompt(
                         goal = normalizedGoal,
@@ -2371,16 +2566,14 @@ class ChatSessionManager(
                         turnIndex = turnIndex,
                         maxTurns = maxTurns
                     ),
-                    model = config.getActiveModel(),
+                    model = plannerConfig.getActiveModel(),
                     temperature = 0.2,
-                    maxTokens = minOf(config.maxTokens, 600),
-                    stream = false,
-                    reasoningEffort = config.getActiveReasoningEffort(),
-                    thinkingMode = config.getActiveThinkingMode(),
+                    maxTokens = minOf(plannerConfig.maxTokens, 600),
+                    stream = plannerConfig.isStreamingResponsesEnabled(),
+                    reasoningEffort = plannerConfig.getActiveReasoningEffort(),
+                    thinkingMode = plannerConfig.getActiveThinkingMode(),
                     tools = null
-                ),
-                apiKey = apiKey,
-                baseUrl = config.getActiveBaseUrl()
+                )
             )
             _state.value = _state.value.copy(
                 pendingClarificationRequest = parseClarificationQuestion(
@@ -2394,17 +2587,17 @@ class ChatSessionManager(
                 ),
                 clarificationInProgress = false
             )
-            saveCurrentSession(config)
+            saveCurrentSession(plannerConfig)
         } catch (e: Exception) {
             when (
                 resolveWorkflowFailureFallbackMode(
-                    config = config,
+                    config = plannerConfig,
                     failureType = WorkflowFailureType.CLARIFICATION_GENERATION_FAILURE,
                     hasMentionedFiles = mentionedFiles.isNotEmpty(),
                     source = source.toWorkflowFailureFallbackSource(),
                     clarificationTurnIndex = turnIndex,
                     projectType = currentProjectWorkflowType(),
-                    providerId = config.activeProviderId,
+                    providerId = plannerConfig.activeProviderId,
                     projectRiskLevel = currentProjectWorkflowRiskLevel()
                 )
             ) {
@@ -2436,7 +2629,7 @@ class ChatSessionManager(
                     )
                     applyWorkflowFallback(
                         message = "澄清问题生成失败，已按配置回退为直接执行。",
-                        config = config
+                        config = plannerConfig
                     )
                 }
                 WorkflowFailureFallbackMode.LOCAL_CLARIFICATION -> {
@@ -2454,7 +2647,7 @@ class ChatSessionManager(
                     )
                     applyWorkflowFallback(
                         message = "澄清问题生成失败，已按配置回退为本地通用澄清问题。",
-                        config = config
+                        config = plannerConfig
                     )
                 }
                 WorkflowFailureFallbackMode.FOLLOW_SCENARIO_DEFAULT -> Unit
@@ -2499,8 +2692,9 @@ class ChatSessionManager(
 
         val globalConfig = configRepository.getConfig()
         val config = globalConfig.applyProjectToolPreferences(_state.value.projectToolPreferences)
-        lastSessionConfig = config
-        val apiKey = config.getActiveApiKey().trim()
+        val plannerConfig = config.getPlannerResolvedConfig()
+        lastSessionConfig = plannerConfig
+        val apiKey = plannerConfig.getActiveApiKey().trim()
         if (apiKey.isBlank()) {
             _state.value = _state.value.copy(
                 isProcessing = false,
@@ -2510,11 +2704,13 @@ class ChatSessionManager(
             return
         }
 
-        val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
+        val provider = ProviderRegistry.getActiveProvider(plannerConfig.activeProviderId)
         val history = buildHistory()
         val compressionContext = buildCompressionContext()
         val followUpDecision = try {
-            val rawText = provider.chat(
+            val rawText = callProviderWithConfiguredStreaming(
+                provider = provider,
+                config = plannerConfig,
                 request = ChatRequest(
                     messages = buildClarificationFollowUpPrompt(
                         goal = request.goal,
@@ -2525,16 +2721,14 @@ class ChatSessionManager(
                         nextTurnIndex = request.turnIndex + 1,
                         maxTurns = request.maxTurns
                     ),
-                    model = config.getActiveModel(),
+                    model = plannerConfig.getActiveModel(),
                     temperature = 0.1,
-                    maxTokens = minOf(config.maxTokens, 500),
-                    stream = false,
-                    reasoningEffort = config.getActiveReasoningEffort(),
-                    thinkingMode = config.getActiveThinkingMode(),
+                    maxTokens = minOf(plannerConfig.maxTokens, 500),
+                    stream = plannerConfig.isStreamingResponsesEnabled(),
+                    reasoningEffort = plannerConfig.getActiveReasoningEffort(),
+                    thinkingMode = plannerConfig.getActiveThinkingMode(),
                     tools = null
-                ),
-                apiKey = apiKey,
-                baseUrl = config.getActiveBaseUrl()
+                )
             ).content?.trim().orEmpty()
             parseClarificationFollowUpDecision(rawText)
         } catch (e: Exception) {
@@ -2546,7 +2740,7 @@ class ChatSessionManager(
                     source = request.source.toWorkflowFailureFallbackSource(),
                     clarificationTurnIndex = request.turnIndex + 1,
                     projectType = currentProjectWorkflowType(),
-                    providerId = config.activeProviderId,
+                    providerId = plannerConfig.activeProviderId,
                     projectRiskLevel = currentProjectWorkflowRiskLevel()
                 )
             ) {
@@ -2612,7 +2806,7 @@ class ChatSessionManager(
                         source = request.source
                     )
                 )
-                saveCurrentSession(config)
+                saveCurrentSession(plannerConfig)
             }
 
             else -> {
@@ -2643,11 +2837,12 @@ class ChatSessionManager(
         executionGoal: String = userVisibleText,
         existingClarificationAnswers: List<ClarificationAnswerUi> = emptyList(),
         configOverride: ProviderConfig? = null,
-        extraSystemContext: String? = null
+        extraUserContext: String? = null
     ) {
-        if ((modelInput.isBlank() && pendingImages.isEmpty()) || _state.value.isProcessing) return
+        val stateBeforeSend = _state.value
+        if ((modelInput.isBlank() && pendingImages.isEmpty()) || stateBeforeSend.isProcessing) return
         val config = configOverride ?: configRepository.getConfig()
-            .applyProjectToolPreferences(_state.value.projectToolPreferences)
+            .applyProjectToolPreferences(stateBeforeSend.projectToolPreferences)
         lastSessionConfig = config
         val apiKey = config.getActiveApiKey()
         if (apiKey.isBlank()) {
@@ -2673,15 +2868,28 @@ class ChatSessionManager(
         }
 
         agentLoop = AgentLoop(provider, toolRegistry, config)
-        val history = buildHistory()
-        val compressionContext = buildCompressionContext()
+        val compressionContext = buildCompressionContext(stateBeforeSend)
         val projectContext = buildCurrentProjectContext()
+        val sessionGoalContext = buildSessionGoalContext()
         val projectSkillsContext = buildProjectSkillsContext()
         val mcpToolsContext = buildEnabledMcpToolsContext()
         val fileMentionContext = buildMentionedFilesContext(mentionedFiles)
         val executionInterruptContext = buildExecutionInterruptionContext(existingClarificationAnswers)
-        val importedImages = importPendingImageAttachments(pendingImages)
-        if (pendingImages.isNotEmpty() && importedImages.isEmpty()) {
+        if (pendingImages.isNotEmpty() && !config.isMultimodalEnabled()) {
+            appendMessage(
+                ChatMessageUi(
+                    id = nextId(),
+                    role = "system",
+                    content = "⚠️ 已忽略 ${pendingImages.size} 张图片，因为设置中已关闭多模态。"
+                )
+            )
+        }
+        val importedImages = if (config.isMultimodalEnabled()) {
+            importPendingImageAttachments(pendingImages)
+        } else {
+            emptyList()
+        }
+        if (config.isMultimodalEnabled() && pendingImages.isNotEmpty() && importedImages.isEmpty()) {
             appendMessage(
                 ChatMessageUi(
                     id = nextId(),
@@ -2699,42 +2907,41 @@ class ChatSessionManager(
         val stableSystemContext = listOfNotNull(
             compressionContext,
             projectContext,
+            sessionGoalContext,
             projectSkillsContext,
             mcpToolsContext
         )
             .takeIf { it.isNotEmpty() }
             ?.joinToString("\n\n")
-        val turnScopedSystemContext = listOfNotNull(
-            fileMentionContext,
-            executionInterruptContext,
-            multimodalContext,
-            extraSystemContext?.trim()?.takeIf { it.isNotBlank() }
+        val turnScopedUserContext = buildTurnScopedUserContext(
+            fileMentionContext = fileMentionContext,
+            executionInterruptContext = executionInterruptContext,
+            multimodalContext = multimodalContext,
+            extraUserContext = extraUserContext
         )
-            .takeIf { it.isNotEmpty() }
-            ?.joinToString("\n\n")
-        val resolvedModelInput = modelInput.ifBlank {
+        val resolvedBaseModelInput = modelInput.ifBlank {
             if (importedImages.isNotEmpty()) {
                 "请分析这${if (importedImages.size > 1) "${importedImages.size}张" else "张"}图片，并提取其中的关键信息。"
             } else {
                 ""
             }
         }
+        val resolvedModelInput = listOfNotNull(
+            turnScopedUserContext,
+            resolvedBaseModelInput.takeIf { it.isNotBlank() }
+        ).joinToString("\n\n")
 
-        // 添加用户消息
         val userMsg = ChatMessageUi(
             id = nextId(),
             role = "user",
             content = userVisibleText,
             imageAttachments = importedImages
         )
-        appendMessage(userMsg)
-
-        // 创建空的助手消息
         val assistantMsg = ChatMessageUi(
             id = nextId(), role = "assistant", content = "",
             isStreaming = true
         )
-        appendMessage(assistantMsg)
+        appendMessages(userMsg, assistantMsg)
         currentStreamingId = assistantMsg.id
         _state.value = _state.value.copy(
             isProcessing = true,
@@ -2742,24 +2949,28 @@ class ChatSessionManager(
             lastWorkflowFallback = null
         )
         processingCancelledByUser = false
+        val history = buildHistory(stateBeforeSend)
 
         try {
             val userModelMessage = ChatMessage(
                 role = "user",
                 content = resolvedModelInput.ifBlank { null },
-                images = importedImages.mapNotNull(::buildChatImageAttachment)
+                images = if (config.isMultimodalEnabled()) {
+                    importedImages.mapNotNull(::buildChatImageAttachment)
+                } else {
+                    emptyList()
+                }
             )
             agentLoop?.processMessage(
                 userMessage = userModelMessage,
                 history = history,
                 stableSystemContext = stableSystemContext,
-                turnScopedSystemContext = turnScopedSystemContext,
                 onEvent = { event ->
                     when (event) {
                         is AgentEvent.ContentDelta -> appendToStreaming(event.text)
                         is AgentEvent.ReasoningDelta -> appendToStreamingReasoning(event.text)
                         is AgentEvent.ToolExecution -> {
-                            if (event.isPartial && !config.showDebugToolDetails) {
+                            if (event.isPartial) {
                                 return@processMessage
                             }
                             finalizeStreaming()
@@ -2767,9 +2978,7 @@ class ChatSessionManager(
                                 id = nextId(), role = "tool_exec",
                                 content = buildToolExecutionMessage(
                                     toolName = event.toolName,
-                                    args = event.args,
-                                    callId = event.callId,
-                                    showDebugDetails = config.showDebugToolDetails
+                                    args = event.args
                                 )
                             )
                             appendMessage(toolMsg)
@@ -2789,6 +2998,7 @@ class ChatSessionManager(
                                 id = nextId(), role = "tool_exec",
                                 content = buildToolResultMessage(
                                     toolName = event.toolName,
+                                    args = event.args,
                                     result = event.result,
                                     fileChanges = fileChanges
                                 )
@@ -2867,6 +3077,7 @@ class ChatSessionManager(
      * 清空当前对话
      */
     fun clear() {
+        resetPendingStreamingUpdates()
         _state.value = SessionState(sessionId = currentSessionId)
         messageCounter = 0
         currentStreamingId = null
@@ -3065,14 +3276,33 @@ class ChatSessionManager(
     }
 
     fun saveCurrentSession(config: ProviderConfig? = null) {
-        val state = _state.value
-        if (!shouldPersistSession(state)) return
-        conversationStore.saveSession(buildPersistedSession(config))
+        val stateSnapshot = _state.value
+        if (!shouldPersistSession(stateSnapshot)) return
+        val sessionIdSnapshot = currentSessionId
+        val approvedScopesSnapshot = approvedApprovalScopes.toList()
+        val cachedSessionSnapshot = cachedCurrentPersistedSession
+            ?.takeIf { it.id == sessionIdSnapshot }
+        latestPersistJob = sessionPersistenceScope.launch {
+            val persistedSession = buildPersistedSession(
+                config = config,
+                state = stateSnapshot,
+                sessionId = sessionIdSnapshot,
+                approvedScopes = approvedScopesSnapshot,
+                cachedSession = cachedSessionSnapshot
+            )
+            conversationStore.saveSession(persistedSession)
+            if (currentSessionId == sessionIdSnapshot) {
+                cachedCurrentPersistedSession = persistedSession
+            }
+        }
     }
 
     private fun shouldPersistSession(state: SessionState): Boolean {
         return state.messages.isNotEmpty() ||
+            !state.sessionGoal.isNullOrBlank() ||
             !state.projectPath.isNullOrBlank() ||
+            !state.remoteTaskRepositoryOwner.isNullOrBlank() ||
+            !state.remoteTaskRepositoryName.isNullOrBlank() ||
             state.projectRules.isNotEmpty() ||
             state.projectMemories.isNotEmpty() ||
             state.projectSkills.isNotEmpty() ||
@@ -3094,30 +3324,11 @@ class ChatSessionManager(
     }
 
     fun approvePendingTool(): Boolean {
-        // region debug-point approval-confirm-crash-approve-start
-        val debugStartAt = System.currentTimeMillis()
-        Log.i(
-            "MurongDebug",
-            "approvePendingTool:start pending=${_state.value.pendingApproval?.toolName} thread=${Thread.currentThread().name}"
-        )
-        // endregion debug-point approval-confirm-crash-approve-start
         val deferred = pendingApprovalDecision ?: return false
         if (!deferred.isCompleted) {
-            // region debug-point approval-confirm-crash-approve-complete
-            Log.i(
-                "MurongDebug",
-                "approvePendingTool:complete pending=${_state.value.pendingApproval?.toolName} thread=${Thread.currentThread().name}"
-            )
-            // endregion debug-point approval-confirm-crash-approve-complete
             deferred.complete(true)
         }
         clearPendingApproval()
-        // region debug-point approval-confirm-crash-approve-finish
-        Log.i(
-            "MurongDebug",
-            "approvePendingTool:finish pendingCleared=true costMs=${System.currentTimeMillis() - debugStartAt} thread=${Thread.currentThread().name}"
-        )
-        // endregion debug-point approval-confirm-crash-approve-finish
         return true
     }
 
@@ -3130,16 +3341,41 @@ class ChatSessionManager(
         return true
     }
 
+    fun submitPendingAskAnswers(answers: List<AskAnswerUi>): Boolean {
+        val deferred = pendingAskDecision ?: return false
+        if (!deferred.isCompleted) {
+            deferred.complete(answers)
+        }
+        clearPendingAsk()
+        return true
+    }
+
+    fun dismissPendingAsk(): Boolean {
+        val deferred = pendingAskDecision ?: return false
+        if (!deferred.isCompleted) {
+            deferred.complete(null)
+        }
+        clearPendingAsk()
+        return true
+    }
+
     fun cancelCurrentProcessing(): Boolean {
-        val hasActiveProcessing = _state.value.isProcessing || pendingApprovalDecision != null
+        val hasActiveProcessing = _state.value.isProcessing || pendingApprovalDecision != null || pendingAskDecision != null
         if (!hasActiveProcessing) return false
         processingCancelledByUser = true
         agentLoop = null
-        val deferred = pendingApprovalDecision
-        if (deferred != null && !deferred.isCompleted) {
-            deferred.complete(false)
+        pendingApprovalDecision?.let { deferred ->
+            if (!deferred.isCompleted) {
+                deferred.complete(false)
+            }
+        }
+        pendingAskDecision?.let { deferred ->
+            if (!deferred.isCompleted) {
+                deferred.complete(null)
+            }
         }
         clearPendingApproval()
+        clearPendingAsk()
         finalizeStreaming()
         trimDanglingStreamingAssistant()
         _state.value = _state.value.copy(
@@ -3163,45 +3399,139 @@ class ChatSessionManager(
     private fun nextId() = ++messageCounter
 
     private fun appendMessage(msg: ChatMessageUi) {
-        _state.value = _state.value.copy(
-            messages = _state.value.messages + msg
-        )
+        appendMessages(msg)
+    }
+
+    private fun appendMessages(vararg msgs: ChatMessageUi) {
+        if (msgs.isEmpty()) return
+        val current = _state.value
+        val updatedMessages = ArrayList<ChatMessageUi>(current.messages.size + msgs.size)
+        updatedMessages.addAll(current.messages)
+        updatedMessages.addAll(msgs)
+        _state.value = current.copy(messages = updatedMessages)
+    }
+
+    private fun updateMessageById(
+        messageId: Long,
+        transform: (ChatMessageUi) -> ChatMessageUi
+    ) {
+        val current = _state.value
+        val index = current.messages.indexOfLast { it.id == messageId }
+        if (index < 0) return
+        val original = current.messages[index]
+        val updated = transform(original)
+        if (updated == original) return
+        val updatedMessages = current.messages.toMutableList()
+        updatedMessages[index] = updated
+        _state.value = current.copy(messages = updatedMessages)
     }
 
     private fun updateMessage(messageId: Long, transform: (ChatMessageUi) -> ChatMessageUi) {
-        _state.value = _state.value.copy(
-            messages = _state.value.messages.map { msg ->
-                if (msg.id == messageId) transform(msg) else msg
-            }
-        )
+        updateMessageById(messageId, transform)
     }
 
     private fun appendToStreaming(text: String) {
-        val id = currentStreamingId ?: return
-        _state.value = _state.value.copy(
-            messages = _state.value.messages.map { msg ->
-                if (msg.id == id) msg.copy(content = msg.content + text) else msg
-            }
-        )
+        enqueueStreamingUpdate(contentDelta = text)
     }
 
     private fun appendToStreamingReasoning(text: String) {
-        val id = currentStreamingId ?: return
-        _state.value = _state.value.copy(
-            messages = _state.value.messages.map { msg ->
-                if (msg.id == id) msg.copy(reasoning = (msg.reasoning ?: "") + text) else msg
-            }
+        enqueueStreamingUpdate(reasoningDelta = text)
+    }
+
+    private fun ensureStreamingAssistantMessage(): Long {
+        currentStreamingId?.let { return it }
+        val assistantMsg = ChatMessageUi(
+            id = nextId(),
+            role = "assistant",
+            content = "",
+            isStreaming = true
         )
+        appendMessage(assistantMsg)
+        currentStreamingId = assistantMsg.id
+        return assistantMsg.id
     }
 
     private fun finalizeStreaming() {
         val id = currentStreamingId ?: return
-        _state.value = _state.value.copy(
-            messages = _state.value.messages.map { msg ->
-                if (msg.id == id) msg.copy(isStreaming = false) else msg
-            }
-        )
+        flushPendingStreamingUpdates(messageId = id)
+        updateMessageById(id) { msg ->
+            if (msg.isStreaming) msg.copy(isStreaming = false) else msg
+        }
         currentStreamingId = null
+    }
+
+    private fun enqueueStreamingUpdate(
+        contentDelta: String = "",
+        reasoningDelta: String = ""
+    ) {
+        if (contentDelta.isEmpty() && reasoningDelta.isEmpty()) return
+        val messageId = ensureStreamingAssistantMessage()
+        var shouldScheduleFlush = false
+        synchronized(pendingStreamingLock) {
+            if (pendingStreamingMessageId != messageId) {
+                pendingStreamingMessageId = messageId
+                pendingStreamingContent.setLength(0)
+                pendingStreamingReasoning.setLength(0)
+            }
+            if (contentDelta.isNotEmpty()) {
+                pendingStreamingContent.append(contentDelta)
+            }
+            if (reasoningDelta.isNotEmpty()) {
+                pendingStreamingReasoning.append(reasoningDelta)
+            }
+            if (streamingFlushJob?.isActive != true) {
+                shouldScheduleFlush = true
+            }
+        }
+        if (shouldScheduleFlush) {
+            streamingFlushJob = streamingAggregationScope.launch {
+                delay(STREAMING_FLUSH_INTERVAL_MS)
+                flushPendingStreamingUpdates()
+            }
+        }
+    }
+
+    private fun flushPendingStreamingUpdates(messageId: Long? = null) {
+        val pendingId: Long
+        val contentDelta: String
+        val reasoningDelta: String
+        val jobToCancel: Job?
+        synchronized(pendingStreamingLock) {
+            val resolvedPendingId = pendingStreamingMessageId ?: return
+            if (messageId != null && resolvedPendingId != messageId) return
+            pendingId = resolvedPendingId
+            contentDelta = pendingStreamingContent.toString()
+            reasoningDelta = pendingStreamingReasoning.toString()
+            if (contentDelta.isEmpty() && reasoningDelta.isEmpty()) return
+            pendingStreamingContent.setLength(0)
+            pendingStreamingReasoning.setLength(0)
+            pendingStreamingMessageId = null
+            jobToCancel = streamingFlushJob
+            streamingFlushJob = null
+        }
+        jobToCancel?.cancel()
+        updateMessageById(pendingId) { msg ->
+            msg.copy(
+                content = msg.content + contentDelta,
+                reasoning = if (reasoningDelta.isEmpty()) {
+                    msg.reasoning
+                } else {
+                    (msg.reasoning ?: "") + reasoningDelta
+                }
+            )
+        }
+    }
+
+    private fun resetPendingStreamingUpdates() {
+        val jobToCancel: Job?
+        synchronized(pendingStreamingLock) {
+            pendingStreamingContent.setLength(0)
+            pendingStreamingReasoning.setLength(0)
+            pendingStreamingMessageId = null
+            jobToCancel = streamingFlushJob
+            streamingFlushJob = null
+        }
+        jobToCancel?.cancel()
     }
 
     private fun trimDanglingStreamingAssistant() {
@@ -3212,28 +3542,202 @@ class ChatSessionManager(
         _state.value = _state.value.copy(messages = messages.dropLast(1))
     }
 
-    private fun buildHistory(): List<ChatMessage> {
-        val state = _state.value
+    private fun buildHistory(state: SessionState = _state.value): List<ChatMessage> {
         val compression = state.compressionSnapshot?.takeIf { it.active }
         val baseMessages = if (compression != null) {
             state.messages.filter { it.id > compression.sourceEndMessageId }
         } else {
             state.messages
         }
+        val pruningPlan = planToolResultHistoryPruning(baseMessages)
+        val foldedSummary = buildFoldedToolHistorySummary(pruningPlan.removedMessages)
+        val history = mutableListOf<ChatMessage>()
+        val toolSummaryBuffer = mutableListOf<String>()
+        var summaryInserted = false
 
-        return baseMessages
-            .filter { it.role == "user" || it.role == "assistant" || isToolResultHistoryMessage(it) }
-            .map { uiMsg ->
-                ChatMessage(
-                    role = if (uiMsg.role == "tool_exec") "assistant" else uiMsg.role,
-                    content = when (uiMsg.role) {
-                        "tool_exec" -> summarizeToolResultForHistory(uiMsg.content)
-                        else -> uiMsg.content.ifBlank { null }
-                    },
-                    images = uiMsg.imageAttachments.mapNotNull(::buildChatImageAttachment)
-                )
+        fun flushToolSummaryBuffer() {
+            val combined = buildCombinedToolHistorySummary(toolSummaryBuffer) ?: return
+            history += combined
+            toolSummaryBuffer.clear()
+        }
+
+        baseMessages.forEachIndexed { index, uiMsg ->
+            if (isToolResultHistoryMessage(uiMsg) && index !in pruningPlan.keptIndices) {
+                if (!summaryInserted && foldedSummary != null) {
+                    flushToolSummaryBuffer()
+                    history += foldedSummary
+                    summaryInserted = true
+                }
+                return@forEachIndexed
             }
-            .filter { it.content != null || it.images.isNotEmpty() }
+            if (uiMsg.role != "user" && uiMsg.role != "assistant" && !isToolResultHistoryMessage(uiMsg)) {
+                return@forEachIndexed
+            }
+            if (uiMsg.role == "tool_exec") {
+                summarizeToolResultForHistory(uiMsg.content)
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { toolSummaryBuffer += it }
+                return@forEachIndexed
+            }
+            flushToolSummaryBuffer()
+            history += ChatMessage(
+                role = uiMsg.role,
+                content = uiMsg.content.ifBlank { null },
+                images = uiMsg.imageAttachments.mapNotNull(::buildChatImageAttachment)
+            )
+        }
+        flushToolSummaryBuffer()
+        return history.filter { it.content != null || it.images.isNotEmpty() }
+    }
+
+    private fun planToolResultHistoryPruning(
+        messages: List<ChatMessageUi>
+    ): ToolHistoryPruningPlan {
+        val toolIndices = messages.mapIndexedNotNull { index, message ->
+            index.takeIf { isToolResultHistoryMessage(message) }
+        }
+        if (toolIndices.size <= MAX_TOOL_RESULTS_IN_HISTORY) {
+            return ToolHistoryPruningPlan(
+                keptIndices = toolIndices.toSet(),
+                removedMessages = emptyList()
+            )
+        }
+
+        val recentBoundary = (messages.size - TOOL_RESULT_RECENT_MESSAGE_WINDOW).coerceAtLeast(0)
+        val lastUserIndex = messages.indexOfLast { it.role == "user" }
+        val keepIndices = buildSet {
+            toolIndices.takeLast(MAX_TOOL_RESULTS_IN_HISTORY).forEach(::add)
+            toolIndices.filterTo(this) { index ->
+                index >= recentBoundary ||
+                    (lastUserIndex >= 0 && index > lastUserIndex) ||
+                    shouldKeepToolResultInHistory(messages[index])
+            }
+        }
+        val removedMessages = toolIndices
+            .filterNot { it in keepIndices }
+            .map { messages[it] }
+        return ToolHistoryPruningPlan(
+            keptIndices = keepIndices,
+            removedMessages = removedMessages
+        )
+    }
+
+    private fun shouldKeepToolResultInHistory(message: ChatMessageUi): Boolean {
+        if (message.content.contains("\n\n本次文件变更:\n")) return true
+        val payload = extractToolResultPayload(message.content)
+        val firstMeaningfulLine = payload.lineSequence()
+            .map { it.trim() }
+            .firstOrNull { it.isNotEmpty() }
+            ?: return false
+        return firstMeaningfulLine.startsWith("Error", ignoreCase = true) ||
+            firstMeaningfulLine.startsWith("Rejected by user", ignoreCase = true) ||
+            firstMeaningfulLine.contains("Unknown tool", ignoreCase = true)
+    }
+
+    private fun buildFoldedToolHistorySummary(
+        removedMessages: List<ChatMessageUi>
+    ): ChatMessage? {
+        if (removedMessages.isEmpty()) return null
+        val toolSummary = removedMessages
+            .mapNotNull(::extractToolNameFromResultMessage)
+            .groupingBy { it }
+            .eachCount()
+            .entries
+            .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+            .take(4)
+            .joinToString("、") { (tool, count) ->
+                if (count > 1) "$tool x$count" else tool
+            }
+        val content = buildString {
+            append("历史工具结果已折叠，以保持上下文缓存稳定。")
+            append(" 已省略 ")
+            append(removedMessages.size)
+            append(" 条较早的成功工具结果")
+            if (toolSummary.isNotBlank()) {
+                append("，涉及 ")
+                append(toolSummary)
+            }
+            append("。需要时可继续参考后续保留的最近结果与文件变更摘要。")
+        }
+        return ChatMessage(role = "assistant", content = content)
+    }
+
+    private fun buildCombinedToolHistorySummary(
+        summaries: List<String>
+    ): ChatMessage? {
+        if (summaries.isEmpty()) return null
+        val recentSummaries = summaries.takeLast(MAX_COMBINED_TOOL_SUMMARY_ITEMS)
+        val omittedCount = (summaries.size - recentSummaries.size).coerceAtLeast(0)
+        val content = if (recentSummaries.size == 1 && omittedCount == 0) {
+            recentSummaries.first()
+        } else {
+            buildString {
+                append("最近工具结果汇总:\n")
+                if (omittedCount > 0) {
+                    append("- 已省略更早的 ")
+                    append(omittedCount)
+                    append(" 条最近工具结果摘要，以保持上下文紧凑。\n")
+                }
+                recentSummaries.forEach { summary ->
+                    append("- ")
+                    append(summary)
+                    append('\n')
+                }
+            }.trimEnd()
+        }
+        return ChatMessage(role = "assistant", content = content)
+    }
+
+    private fun buildTurnScopedUserContext(
+        fileMentionContext: String?,
+        executionInterruptContext: String,
+        multimodalContext: String?,
+        extraUserContext: String? = null
+    ): String {
+        return listOfNotNull(
+            multimodalContext?.trim()?.takeIf { it.isNotBlank() },
+            fileMentionContext?.trim()?.takeIf { it.isNotBlank() },
+            executionInterruptContext.trim().takeIf { it.isNotBlank() },
+            extraUserContext?.trim()?.takeIf { it.isNotBlank() }
+        ).joinToString("\n\n")
+    }
+
+    private fun buildSkillSelectionUserContext(selectedSkills: List<GlobalSkill>): String? {
+        val activeSkills = selectedSkills
+            .mapNotNull { skill ->
+                val content = skill.content.trim()
+                if (content.isBlank()) return@mapNotNull null
+                skill to content
+            }
+        if (activeSkills.isEmpty()) return null
+        return buildString {
+            appendLine("本轮由用户手动选择以下 Skills，请显式遵守：")
+            activeSkills.forEach { (skill, content) ->
+                appendLine()
+                appendLine("Skill: ${skill.title.ifBlank { "未命名 Skill" }}")
+                skill.description.trim().takeIf { it.isNotBlank() }?.let {
+                    appendLine("Description: $it")
+                }
+                appendLine("Run As: ${skill.runAs.name.lowercase()}")
+                if (skill.allowedTools.isNotEmpty()) {
+                    appendLine("Allowed Tools: ${skill.allowedTools.joinToString(", ")}")
+                }
+                skill.preferredModel.trim().takeIf { it.isNotBlank() }?.let {
+                    appendLine("Preferred Model: $it")
+                }
+                appendLine("Instruction:")
+                appendLine(content)
+            }
+        }.trim()
+    }
+
+    private fun extractToolNameFromResultMessage(message: ChatMessageUi): String? {
+        return Regex("""^📦 \*\*(.+?)\*\* 执行结果:""")
+            .find(message.content)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
     }
 
     private fun buildMultimodalSystemContext(imageCount: Int): String {
@@ -3344,6 +3848,141 @@ class ChatSessionManager(
 
     private fun createToolRegistry(provider: com.murong.agent.core.provider.ModelProvider, config: ProviderConfig): ToolRegistry {
         val registry = ToolRegistry()
+        registry.register(
+            AskUserTool(
+                requestAnswer = ::requestAskUser
+            )
+        )
+        registry.register(
+            CreateGlobalRuleTool(
+                configProvider = { configRepository.getConfig() },
+                saveConfig = { configRepository.saveConfig(it) }
+            )
+        )
+        registry.register(
+            CreateGlobalMemoryTool(
+                configProvider = { configRepository.getConfig() },
+                saveConfig = { configRepository.saveConfig(it) }
+            )
+        )
+        registry.register(
+            CreateGlobalSkillTool(
+                configProvider = { configRepository.getConfig() },
+                saveConfig = { configRepository.saveConfig(it) }
+            )
+        )
+        if (mcpRegistry != null) {
+            registry.register(
+                CreateMcpServerTool(
+                    configsProvider = { mcpRegistry.loadConfigs() },
+                    saveConfigs = { mcpRegistry.saveConfigs(it) },
+                    connectAll = { configs -> mcpRegistry.connectAll(configs) }
+                )
+            )
+        }
+        registry.register(
+            CreateProjectRuleTool(
+                scopePathProvider = {
+                    activeProjectScopePath(
+                        activeScopePath = _state.value.activeProjectScopePath,
+                        projectPath = _state.value.projectPath
+                    )
+                },
+                scopeLabelProvider = ::currentProjectScopeLabel,
+                rulesProvider = { _state.value.projectRules },
+                updateRules = { updateProjectConfig(rules = it) }
+            )
+        )
+        registry.register(
+            CreateProjectMemoryTool(
+                scopePathProvider = {
+                    activeProjectScopePath(
+                        activeScopePath = _state.value.activeProjectScopePath,
+                        projectPath = _state.value.projectPath
+                    )
+                },
+                scopeLabelProvider = ::currentProjectScopeLabel,
+                memoriesProvider = { _state.value.projectMemories },
+                updateMemories = { updateProjectConfig(memories = it) }
+            )
+        )
+        registry.register(
+            TaskRepoSearchCodeTool(
+                repositoryProvider = ::currentRemoteTaskRepositoryTarget,
+                githubTokenProvider = { config.githubToken },
+                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+            )
+        )
+        registry.register(
+            TaskRepoListDirTool(
+                repositoryProvider = ::currentRemoteTaskRepositoryTarget,
+                githubTokenProvider = { config.githubToken },
+                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+            )
+        )
+        registry.register(
+            TaskRepoListBranchesTool(
+                repositoryProvider = ::currentRemoteTaskRepositoryTarget,
+                githubTokenProvider = { config.githubToken },
+                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+            )
+        )
+        registry.register(
+            TaskRepoCreateBranchTool(
+                repositoryProvider = ::currentRemoteTaskRepositoryTarget,
+                githubTokenProvider = { config.githubToken },
+                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+            )
+        )
+        registry.register(
+            TaskRepoCreatePrTool(
+                repositoryProvider = ::currentRemoteTaskRepositoryTarget,
+                githubTokenProvider = { config.githubToken },
+                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+            )
+        )
+        registry.register(
+            TaskRepoClosePrTool(
+                repositoryProvider = ::currentRemoteTaskRepositoryTarget,
+                githubTokenProvider = { config.githubToken },
+                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+            )
+        )
+        registry.register(
+            TaskRepoDeleteBranchTool(
+                repositoryProvider = ::currentRemoteTaskRepositoryTarget,
+                githubTokenProvider = { config.githubToken },
+                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+            )
+        )
+        registry.register(
+            TaskRepoReadFileTool(
+                repositoryProvider = ::currentRemoteTaskRepositoryTarget,
+                githubTokenProvider = { config.githubToken },
+                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+            )
+        )
+        registry.register(
+            TaskRepoUpdateFileTool(
+                repositoryProvider = ::currentRemoteTaskRepositoryTarget,
+                githubTokenProvider = { config.githubToken },
+                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+            )
+        )
+        registry.register(
+            TaskRepoDeleteFileTool(
+                repositoryProvider = ::currentRemoteTaskRepositoryTarget,
+                githubTokenProvider = { config.githubToken },
+                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+            )
+        )
+        registry.register(
+            TaskRepoCommitFilesTool(
+                repositoryProvider = ::currentRemoteTaskRepositoryTarget,
+                githubTokenProvider = { config.githubToken },
+                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+            )
+        )
         if (config.isBuiltinToolEnabled("shell")) {
             registry.register(ShellTool())
         }
@@ -3353,16 +3992,21 @@ class ChatSessionManager(
         if (config.isBuiltinToolEnabled("code_edit")) {
             registry.register(CodeEditTool())
         }
+        if (config.isBuiltinToolEnabled("code_search")) {
+            registry.register(CodeSearchTool())
+        }
         if (config.isBuiltinToolEnabled("web_search")) {
-            registry.register(WebSearchTool())
+            registry.register(WebSearchTool(config))
         }
         if (config.isBuiltinToolEnabled("web_fetch")) {
             registry.register(WebFetchTool())
         }
         if (config.isBuiltinToolEnabled("subagent")) {
-            registry.register(
-                createSubagentTool(provider, config)
-            )
+            val subagentTool = createSubagentTool(provider, config)
+            registry.register(subagentTool)
+            createSubagentPresetTools(subagentTool)
+                .filter { preset -> config.isBuiltinToolEnabled(preset.name) }
+                .forEach { registry.register(it) }
         }
         return registry
     }
@@ -3512,6 +4156,22 @@ class ChatSessionManager(
         _state.value = _state.value.copy(pendingApproval = null)
     }
 
+    private fun clearPendingAsk() {
+        pendingAskDecision = null
+        _state.value = _state.value.copy(pendingAskRequest = null)
+    }
+
+    private suspend fun requestAskUser(request: PendingAskRequestUi): List<AskAnswerUi>? {
+        val deferred = CompletableDeferred<List<AskAnswerUi>?>()
+        pendingAskDecision = deferred
+        _state.value = _state.value.copy(pendingAskRequest = request)
+        return try {
+            deferred.await()
+        } finally {
+            clearPendingAsk()
+        }
+    }
+
     private fun appendUsage(usage: Usage, config: ProviderConfig) {
         val current = _state.value.usageSummary
         val updatedPromptTokens = current.promptTokens + usage.promptTokens
@@ -3519,7 +4179,12 @@ class ChatSessionManager(
         val updatedTotalTokens = current.totalTokens + usage.totalTokens
         val updatedCacheHit = current.promptCacheHitTokens + (usage.promptCacheHitTokens ?: 0)
         val updatedCacheMiss = current.promptCacheMissTokens + (usage.promptCacheMissTokens ?: 0)
-        val updatedEstimatedCost = current.estimatedCostUsd + config.estimateCostUsd(
+        val estimatedCostCurrency = config.estimateCostCurrency()
+        val updatedEstimatedCostAmount = current.resolvedEstimatedCostAmount() + config.estimateCostAmount(
+            promptTokens = usage.promptTokens,
+            completionTokens = usage.completionTokens
+        )
+        val updatedEstimatedCostUsd = current.estimatedCostUsd + config.estimateCostUsd(
             promptTokens = usage.promptTokens,
             completionTokens = usage.completionTokens
         )
@@ -3531,7 +4196,9 @@ class ChatSessionManager(
                 totalTokens = updatedTotalTokens,
                 promptCacheHitTokens = updatedCacheHit,
                 promptCacheMissTokens = updatedCacheMiss,
-                estimatedCostUsd = updatedEstimatedCost
+                estimatedCostAmount = updatedEstimatedCostAmount,
+                estimatedCostCurrency = estimatedCostCurrency,
+                estimatedCostUsd = updatedEstimatedCostUsd
             )
         )
     }
@@ -4824,154 +5491,16 @@ class ChatSessionManager(
         return true
     }
 
-    private suspend fun executeAutoMatchedSkill(
-        goal: String,
-        mentionedFiles: List<FileMentionUi>,
-        skill: GlobalSkill,
-        baseConfig: ProviderConfig
-    ): String? {
-        val executionConfig = resolveExecutionConfig(
-            baseConfig = baseConfig,
-            goal = goal,
-            mentionedFiles = mentionedFiles,
-            matchedSkill = skill
-        )
-        val executionToast = buildExecutionProfileToast(
-            baseConfig = baseConfig,
-            executionConfig = executionConfig
-        )
-        val skillLabel = skill.title.ifBlank { "未命名 Skill" }
-        appendMessage(
-            ChatMessageUi(
-                id = nextId(),
-                role = "system",
-                content = buildString {
-                    append("已自动匹配 Skill「")
-                    append(skillLabel)
-                    append("」，")
-                    append(if (skill.runAs == SkillRunAs.SUBAGENT) "按子代理模式执行。" else "按行内模式执行。")
-                }
-            )
-        )
-        if (_state.value.sessionTitle == "新对话") {
-            _state.value = _state.value.copy(
-                sessionTitle = conversationStore.generateTitle(_state.value.messages)
-            )
-        }
-        if (skill.runAs == SkillRunAs.SUBAGENT) {
-            val apiKey = executionConfig.getActiveApiKey().trim()
-            if (apiKey.isBlank()) {
-                _state.value = _state.value.copy(error = "⚠️ 未配置 API Key。请先到设置页完成模型配置。")
-                return null
-            }
-            lastSessionConfig = executionConfig
-            val provider = ProviderRegistry.getActiveProvider(executionConfig.activeProviderId)
-            val tool = createSubagentTool(provider, executionConfig)
-            val allowedTools = skill.allowedTools.distinct()
-            val args = buildJsonObject {
-                put("goal", goal)
-                put("model", executionConfig.getActiveModel())
-                executionConfig.getActiveReasoningEffort()
-                    ?.takeIf { it.isNotBlank() }
-                    ?.let { put("reasoningEffort", it) }
-                if (allowedTools.isNotEmpty()) {
-                    putJsonArray("allowedTools") {
-                        allowedTools.forEach { token ->
-                            add(JsonPrimitive(token))
-                        }
-                    }
-                }
-                put("enableWebSearch", allowedTools.isEmpty() || allowedTools.any { it == "web_search" || it == "web_fetch" })
-                put("allowWriteAccess", allowedTools.any { it.startsWith("file(") && "write" in it })
-                put("allowCodeEdits", allowedTools.any { it == "code_edit" })
-                put("allowShell", allowedTools.any { it == "shell" })
-                put("background", true)
-            }.toString()
-            _state.value = _state.value.copy(error = null)
-            tool.execute(args)
-            saveCurrentSession(executionConfig)
-            return executionToast
-        }
-        sendMessageInternal(
-            userVisibleText = goal,
-            modelInput = goal,
-            mentionedFiles = mentionedFiles,
-            executionGoal = goal,
-            configOverride = executionConfig,
-            extraSystemContext = buildString {
-                appendLine("Auto Matched Skill:")
-                appendLine("Title: $skillLabel")
-                skill.description.trim().takeIf { it.isNotBlank() }?.let {
-                    appendLine("Description: $it")
-                }
-                if (skill.allowedTools.isNotEmpty()) {
-                    appendLine("Allowed Tools: ${skill.allowedTools.joinToString(", ")}")
-                }
-                appendLine()
-                appendLine("Apply the following skill instruction to this request:")
-                append(skill.content.trim())
-                buildExecutionProfileContext(
-                    goal = goal,
-                    baseConfig = baseConfig,
-                    executionConfig = executionConfig,
-                    matchedSkill = skill
-                )?.takeIf { it.isNotBlank() }?.let {
-                    appendLine()
-                    appendLine()
-                    append(it)
-                }
-            }
-        )
-        return executionToast
-    }
-
-    private fun matchAutoSkill(goal: String, config: ProviderConfig): GlobalSkill? {
-        val normalizedGoal = normalizeAutoMatchingText(goal)
-        if (normalizedGoal.isBlank()) return null
-        return (config.globalSkills + _state.value.projectSkills)
-            .asSequence()
-            .filter { it.enabled }
-            .mapNotNull { skill ->
-                val score = computeAutoSkillScore(skill, normalizedGoal)
-                if (score <= 0) null else AutoMatchedSkill(skill, score)
-            }
-            .sortedWith(compareByDescending<AutoMatchedSkill> { it.score }.thenBy { it.skill.title.length })
-            .firstOrNull()
-            ?.takeIf { it.score >= 12 }
-            ?.skill
-    }
-
-    private fun computeAutoSkillScore(skill: GlobalSkill, normalizedGoal: String): Int {
-        val title = skill.title.trim()
-        val normalizedTitle = normalizeAutoMatchingText(title)
-        val titleTokens = extractAutoMatchTokens(title)
-        val descriptionTokens = extractAutoMatchTokens(skill.description)
-        val directTitleHit = normalizedTitle.isNotBlank() && normalizedGoal.contains(normalizedTitle)
-        val titleHits = titleTokens.count { token -> normalizedGoal.contains(token) }
-        val descriptionHits = descriptionTokens.count { token -> normalizedGoal.contains(token) }
-        val hintHit = AUTO_SKILL_HINT_KEYWORDS.any { hint ->
-            hint in normalizedGoal && hint in normalizeAutoMatchingText("${skill.title} ${skill.description} ${skill.content.take(160)}")
-        }
-        return buildList {
-            if (directTitleHit) add(20)
-            if (titleHits > 0) add(titleHits * 6)
-            if (descriptionHits > 0) add(descriptionHits * 3)
-            if (hintHit) add(4)
-            if (skill.runAs == SkillRunAs.SUBAGENT && (titleHits > 0 || descriptionHits > 0)) add(2)
-        }.sum()
-    }
-
     private fun resolveExecutionConfig(
         baseConfig: ProviderConfig,
         goal: String,
-        mentionedFiles: List<FileMentionUi> = emptyList(),
-        matchedSkill: GlobalSkill? = null
+        mentionedFiles: List<FileMentionUi> = emptyList()
     ): ProviderConfig {
         return ExecutionProfileDecider.resolveExecutionConfig(
             baseConfig = baseConfig,
             goal = goal,
             mentionedFileCount = mentionedFiles.size,
-            matchedSkillPreferredModel = matchedSkill?.preferredModel
+            matchedSkillPreferredModel = null
         )
     }
 
@@ -4979,30 +5508,26 @@ class ChatSessionManager(
         return ExecutionProfileDecider.shouldPreferLatestOpenAiProfile(config)
     }
 
-    private fun buildExecutionProfileContext(
+    private fun buildExecutionProfileUserContext(
         goal: String,
         baseConfig: ProviderConfig,
-        executionConfig: ProviderConfig,
-        matchedSkill: GlobalSkill? = null
+        executionConfig: ProviderConfig
     ): String? {
         val discoveryRequest = isAutoDiscoveryRequest(goal)
         val modelChanged = executionConfig.getActiveModel() != baseConfig.getActiveModel()
         val reasoningChanged = executionConfig.getActiveReasoningEffort() != baseConfig.getActiveReasoningEffort()
         val webEnabledForThisRun = setOf("web_search", "web_fetch")
             .all { executionConfig.isBuiltinToolEnabled(it) && !baseConfig.isBuiltinToolEnabled(it) }
-        if (!modelChanged && !reasoningChanged && matchedSkill == null && !discoveryRequest && !webEnabledForThisRun) {
+        if (!modelChanged && !reasoningChanged && !discoveryRequest && !webEnabledForThisRun) {
             return null
         }
         return buildString {
-            appendLine("Execution Profile:")
-            if (matchedSkill != null) {
-                appendLine("Matched skill: ${matchedSkill.title.ifBlank { "未命名 Skill" }}")
-            }
+            appendLine("本轮执行设置：")
             if (isComplexTask(goal)) {
-                appendLine("Reason: complex task detected, prefer stronger execution profile.")
+                appendLine("Reason: complex task detected, prefer a stronger execution profile.")
             }
             if (webEnabledForThisRun) {
-                appendLine("Web tools: temporarily enabled for this request.")
+                appendLine("Web Tools: temporarily enabled for this request.")
             }
             appendLine("Model: ${executionConfig.getActiveModel()}")
             executionConfig.getActiveReasoningEffort()
@@ -5043,490 +5568,6 @@ class ChatSessionManager(
 
     private fun isComplexTask(goal: String, mentionedFiles: List<FileMentionUi> = emptyList()): Boolean {
         return ExecutionProfileDecider.isComplexTask(goal, mentionedFiles.size)
-    }
-
-    private fun normalizeAutoMatchingText(value: String): String {
-        return value.lowercase()
-            .replace(Regex("""[`"'“”‘’]"""), " ")
-            .replace(Regex("""[^\p{L}\p{N}]+"""), " ")
-            .trim()
-    }
-
-    private fun extractAutoMatchTokens(value: String): List<String> {
-        val normalized = normalizeAutoMatchingText(value)
-        if (normalized.isBlank()) return emptyList()
-        return normalized
-            .split(Regex("""\s+"""))
-            .map { it.trim() }
-            .filter { token -> token.length >= 2 }
-            .distinct()
-            .take(12)
-    }
-
-    private suspend fun autoAttachDraftsFromAssistantMessage(
-        assistantMessageId: Long,
-        config: ProviderConfig
-    ): DraftAutoAttachOutcome {
-        return DraftAutoAttachOutcome()
-    }
-
-    private fun buildSkillIdentity(skill: GlobalSkill): String {
-        return listOf(
-            skill.title.trim(),
-            skill.description.trim(),
-            skill.content.trim(),
-            skill.runAs.name,
-            skill.preferredModel.trim(),
-            skill.allowedTools.joinToString(",")
-        ).joinToString("|")
-    }
-
-    private fun parseSkillDraftsCompat(raw: String): List<GlobalSkill> {
-        extractExplicitDraftCandidates(raw, "murong-skill-draft", "murong-skill", "skill-draft").forEach { candidate ->
-            parseDesktopSkillMarkdownCompat(candidate)?.let { return listOf(it) }
-            parseLooseSkillDraftCompat(candidate)?.let { return listOf(it) }
-            parseJsonDraftRootCompat(candidate)?.let { root ->
-                return unwrapDraftEntriesCompat(root, "skills", "items", "drafts")
-                    .mapNotNull(::parseSkillDraftCompat)
-                    .distinctBy(::buildSkillIdentity)
-            }
-        }
-        return emptyList()
-    }
-
-    private fun parseMcpServerDraftsCompat(raw: String): List<McpServerConfig> {
-        extractExplicitDraftCandidates(raw, "murong-mcp-draft", "murong-mcp", "mcp-draft").forEach { candidate ->
-            val specItems = parseMcpSpecLinesCompat(candidate)
-            if (specItems.isNotEmpty()) {
-                return specItems.distinctBy { it.name }
-            }
-            parseJsonDraftRootCompat(candidate)?.let { root ->
-                return unwrapDraftEntriesCompat(root, "servers", "mcpServers", "items", "drafts")
-                    .mapNotNull(::parseMcpServerDraftCompat)
-                    .distinctBy { it.name }
-            }
-        }
-        return emptyList()
-    }
-
-    private fun extractExplicitDraftCandidates(raw: String, vararg acceptedTags: String): List<String> {
-        val trimmed = raw.trim()
-        if (trimmed.isBlank()) return emptyList()
-        val accepted = acceptedTags.map { it.lowercase() }.toSet()
-        return EXPLICIT_DRAFT_FENCE_REGEX.findAll(trimmed)
-            .mapNotNull { match ->
-                val tag = match.groupValues.getOrNull(1)?.trim()?.lowercase().orEmpty()
-                val body = match.groupValues.getOrNull(2)?.trim()
-                body?.takeIf { tag in accepted && it.isNotBlank() }
-            }
-            .toList()
-    }
-
-    private fun parseJsonDraftRootCompat(raw: String): JsonElement? {
-        val candidate = raw.trim()
-        if (candidate.isBlank()) return null
-        return runCatching { draftCompatJson.parseToJsonElement(candidate) }.getOrNull()
-    }
-
-    private fun unwrapDraftEntriesCompat(root: JsonElement, vararg collectionKeys: String): List<JsonElement> {
-        return when (root) {
-            is JsonArray -> root
-            is JsonObject -> {
-                collectionKeys.asSequence()
-                    .mapNotNull { key -> root[key] }
-                    .firstNotNullOfOrNull { node ->
-                        when (node) {
-                            is JsonArray -> node.toList()
-                            is JsonObject -> listOf(node)
-                            else -> null
-                        }
-                    } ?: listOf(root)
-            }
-
-            else -> emptyList()
-        }
-    }
-
-    private fun parseSkillDraftCompat(element: JsonElement): GlobalSkill? {
-        val obj = runCatching { element.jsonObject }.getOrNull() ?: return null
-        val title = obj.stringValue("title").orEmpty()
-        val description = obj.stringValue("description").orEmpty()
-        val content = obj.stringValue("content")
-            ?: obj.stringValue("prompt")
-            ?: obj.stringValue("template")
-            ?: return null
-        return GlobalSkill(
-            id = obj.stringValue("id").orEmpty().ifBlank { UUID.randomUUID().toString().take(8) },
-            title = title.ifBlank { "导入 Skill" },
-            description = description,
-            content = content,
-            runAs = if (obj.stringValue("runAs")?.equals("subagent", ignoreCase = true) == true) {
-                SkillRunAs.SUBAGENT
-            } else {
-                SkillRunAs.INLINE
-            },
-            allowedTools = parseAllowedToolsCompat(obj.stringListValue("allowedTools"), obj.stringValue("allowed-tools")),
-            preferredModel = obj.stringValue("preferredModel") ?: obj.stringValue("model").orEmpty(),
-            enabled = obj.booleanValue("enabled") ?: true
-        )
-    }
-
-    private fun parseDesktopSkillMarkdownCompat(raw: String): GlobalSkill? {
-        val trimmed = raw.trimStart('\uFEFF').trim()
-        if (trimmed.isBlank()) return null
-        if (trimmed.startsWith("{") || trimmed.startsWith("[")) return null
-        if (!trimmed.startsWith("---")) return null
-        val frontmatter = parseFrontmatterCompat(trimmed)
-        val title = frontmatter.first["title"]
-            ?.takeIf { it.isNotBlank() }
-            ?: frontmatter.first["name"]?.takeIf { it.isNotBlank() }
-        val body = frontmatter.second.trim()
-        if (title == null && body.isBlank()) return null
-        return GlobalSkill(
-            id = UUID.randomUUID().toString().take(8),
-            title = title ?: "导入 Skill",
-            description = frontmatter.first["description"].orEmpty(),
-            content = body,
-            runAs = if (parseRunAsCompat(frontmatter.first).equals("subagent", ignoreCase = true)) {
-                SkillRunAs.SUBAGENT
-            } else {
-                SkillRunAs.INLINE
-            },
-            allowedTools = parseAllowedToolsCompat(
-                emptyList(),
-                frontmatter.first["allowed-tools"] ?: frontmatter.first["allowedTools"]
-            ),
-            preferredModel = frontmatter.first["model"].orEmpty(),
-            enabled = true
-        )
-    }
-
-    private fun parseLooseSkillDraftCompat(raw: String): GlobalSkill? {
-        val trimmed = raw.trimStart('\uFEFF').trim()
-        if (trimmed.isBlank()) return null
-        if (trimmed.startsWith("{") || trimmed.startsWith("[") || trimmed.startsWith("---")) return null
-
-        val lines = trimmed.lines()
-        val fields = linkedMapOf<String, String>()
-        val bodyLines = mutableListOf<String>()
-        var bodyStarted = false
-        var fieldCount = 0
-        var currentMultilineKey: String? = null
-        val fieldRegex = Regex(
-            """^(title|name|description|model|runAs|context|agent|allowed-tools|allowedTools|allowed_tools|prompt|content|instruction|body|标题|名称|描述|模型|运行方式|模式|允许工具|工具|提示词|内容|正文|指令)\s*[:：]\s*(.*)$""",
-            RegexOption.IGNORE_CASE
-        )
-
-        lines.forEachIndexed { index, rawLine ->
-            val line = rawLine.trimEnd()
-            if (!bodyStarted) {
-                val headingTitle = if (index == 0) {
-                    Regex("""^(?:#+\s*)?Skill\s*[:：-]\s*(.+)$""", RegexOption.IGNORE_CASE)
-                        .find(line)
-                        ?.groupValues
-                        ?.getOrNull(1)
-                        ?.trim()
-                        ?.takeIf { it.isNotBlank() }
-                        ?: if (line.startsWith("# ")) line.removePrefix("# ").trim().takeIf { it.isNotBlank() } else null
-                } else null
-                if (headingTitle != null && fields["title"].isNullOrBlank()) {
-                    fields["title"] = headingTitle
-                    return@forEachIndexed
-                }
-
-                val fieldMatch = fieldRegex.find(line)
-                if (fieldMatch != null) {
-                    val key = normalizeLooseSkillFieldKey(fieldMatch.groupValues[1])
-                    val value = fieldMatch.groupValues[2].trim()
-                    fieldCount += 1
-                    currentMultilineKey = null
-                    when (key) {
-                        "content" -> {
-                            bodyStarted = true
-                            value.takeIf { it.isNotBlank() }?.let(bodyLines::add)
-                        }
-
-                        "description" -> {
-                            fields[key] = value
-                            currentMultilineKey = key.takeIf { value.isBlank() }
-                        }
-
-                        else -> {
-                            fields[key] = value
-                        }
-                    }
-                    return@forEachIndexed
-                }
-
-                val multilineKey = currentMultilineKey
-                if (multilineKey != null && line.isNotBlank()) {
-                    fields[multilineKey] = buildString {
-                        append(fields[multilineKey].orEmpty())
-                        if (isNotBlank()) append('\n')
-                        append(line.trim())
-                    }.trim()
-                    return@forEachIndexed
-                }
-
-                if (fieldCount > 0 && line.isNotBlank()) {
-                    bodyStarted = true
-                    bodyLines += rawLine
-                    return@forEachIndexed
-                }
-            } else {
-                bodyLines += rawLine
-            }
-        }
-
-        val body = bodyLines.joinToString("\n").trim().removeSurrounding("```").trim()
-        val title = fields["title"].orEmpty().ifBlank { fields["name"].orEmpty() }
-        val description = fields["description"].orEmpty()
-        if (fieldCount < 2 && title.isBlank() && body.isBlank()) return null
-        if (title.isBlank() && description.isBlank() && body.isBlank()) return null
-
-        return GlobalSkill(
-            id = UUID.randomUUID().toString().take(8),
-            title = title.ifBlank { "导入 Skill" },
-            description = description,
-            content = body.ifBlank {
-                fields["content"].orEmpty().takeIf { it.isNotBlank() }
-                    ?: return null
-            },
-            runAs = if (parseRunAsCompat(fields).equals("subagent", ignoreCase = true)) {
-                SkillRunAs.SUBAGENT
-            } else {
-                SkillRunAs.INLINE
-            },
-            allowedTools = parseAllowedToolsCompat(
-                emptyList(),
-                fields["allowed-tools"] ?: fields["allowedTools"]
-            ),
-            preferredModel = fields["model"].orEmpty(),
-            enabled = true
-        )
-    }
-
-    private fun parseFrontmatterCompat(raw: String): Pair<Map<String, String>, String> {
-        val lines = raw.split(Regex("\\r?\\n"))
-        if (lines.firstOrNull() != "---") return emptyMap<String, String>() to raw
-        val endIndex = lines.drop(1).indexOfFirst { it == "---" }
-        if (endIndex < 0) return emptyMap<String, String>() to raw
-        val data = linkedMapOf<String, String>()
-        val bodyStart = endIndex + 2
-        val keyRegex = Regex("^([a-zA-Z_][a-zA-Z0-9_-]*):\\s*(.*)$")
-        for (line in lines.subList(1, endIndex + 1)) {
-            val match = keyRegex.find(line) ?: continue
-            data[match.groupValues[1]] = match.groupValues[2].trim().trim('"', '\'')
-        }
-        return data to lines.drop(bodyStart).joinToString("\n")
-    }
-
-    private fun normalizeLooseSkillFieldKey(key: String): String {
-        return when (key.trim().lowercase()) {
-            "title", "标题" -> "title"
-            "name", "名称" -> "name"
-            "description", "描述" -> "description"
-            "model", "模型" -> "model"
-            "runas", "运行方式", "模式" -> "runAs"
-            "context" -> "context"
-            "agent" -> "agent"
-            "allowed-tools", "allowedtools", "allowed_tools", "允许工具", "工具" -> "allowed-tools"
-            "prompt", "content", "instruction", "body", "提示词", "内容", "正文", "指令" -> "content"
-            else -> key
-        }
-    }
-
-    private fun parseRunAsCompat(data: Map<String, String>): String? {
-        val runAs = data["runAs"]?.trim()?.lowercase()
-        if (runAs == "subagent") return "subagent"
-        if (data["context"]?.trim()?.equals("fork", ignoreCase = true) == true) return "subagent"
-        if (!data["agent"].isNullOrBlank()) return "subagent"
-        return null
-    }
-
-    private fun parseAllowedToolsCompat(listValue: List<String>, stringValue: String?): List<String> {
-        val raw = (listValue + stringValue.orEmpty()
-            .split(',', ';', '\n')
-            .map { it.trim() })
-            .map { it.trim().trim('"', '\'', '-', '*') }
-            .filter { it.isNotBlank() }
-        return raw.distinct()
-    }
-
-    private fun parseMcpServerDraftCompat(element: JsonElement): McpServerConfig? {
-        val obj = runCatching { element.jsonObject }.getOrNull() ?: return null
-        val name = obj.stringValue("name") ?: obj.stringValue("serverName") ?: return null
-        val transport = when (obj.stringValue("transport")?.lowercase()) {
-            null, "", "stdio" -> McpTransportType.STDIO
-            "sse" -> McpTransportType.SSE
-            "streamable-http", "http" -> McpTransportType.STREAMABLE_HTTP
-            else -> return null
-        }
-        val command = obj.stringValue("command").orEmpty()
-        val args = obj.stringListValue("args")
-        val url = obj.stringValue("url")
-            ?: obj.stringValue("sseUrl")
-            ?: obj.stringValue("endpoint")
-            ?: ""
-        if (transport == McpTransportType.STDIO && command.isBlank()) return null
-        if (transport != McpTransportType.STDIO && url.isBlank()) return null
-        return McpServerConfig(
-            name = name,
-            transport = transport,
-            command = command,
-            args = args,
-            cwd = obj.stringValue("cwd").orEmpty(),
-            env = obj.stringMapValue("env"),
-            url = url,
-            headers = obj.stringMapValue("headers"),
-            requestTimeoutMs = obj.stringValue("requestTimeoutMs")?.toLongOrNull(),
-            enabled = obj.booleanValue("enabled") ?: true
-        )
-    }
-
-    private fun parseMcpSpecLinesCompat(raw: String): List<McpServerConfig> {
-        val lines = raw
-            .split(Regex("\\r?\\n"))
-            .map(::normalizePotentialMcpSpecLine)
-            .filter { it.isNotBlank() }
-        if (lines.isEmpty()) return emptyList()
-        if (lines.any { it.startsWith("{") || it.startsWith("[") || it.startsWith("---") }) return emptyList()
-        return lines.mapNotNull(::parseDesktopMcpSpecCompat)
-    }
-
-    private fun parseDesktopMcpSpecCompat(input: String): McpServerConfig? {
-        val trimmed = normalizePotentialMcpSpecLine(input)
-        if (trimmed.isBlank()) return null
-        val nameMatch = Regex("^([a-zA-Z_][a-zA-Z0-9_-]*)=(.*)$").find(trimmed)
-        val name = nameMatch?.groupValues?.getOrNull(1)
-        val body = normalizePotentialMcpSpecLine(nameMatch?.groupValues?.getOrNull(2) ?: trimmed)
-        if (body.isBlank()) return null
-        val streamableMatch = Regex("^streamable\\+(https?://.+)$", RegexOption.IGNORE_CASE).find(body)
-        return when {
-            streamableMatch != null -> McpServerConfig(
-                name = name ?: inferMcpNameFromUrlCompat(streamableMatch.groupValues[1]) ?: "imported-mcp",
-                transport = McpTransportType.STREAMABLE_HTTP,
-                url = streamableMatch.groupValues[1]
-            )
-
-            Regex("^https?://", RegexOption.IGNORE_CASE).containsMatchIn(body) -> McpServerConfig(
-                name = name ?: inferMcpNameFromUrlCompat(body) ?: "imported-mcp",
-                transport = McpTransportType.SSE,
-                url = body
-            )
-
-            else -> {
-                val argv = splitCommandLineCompat(body)
-                if (argv.isEmpty()) return null
-                McpServerConfig(
-                    name = name ?: inferMcpNameFromCommandCompat(argv) ?: argv.first(),
-                    transport = McpTransportType.STDIO,
-                    command = argv.first(),
-                    args = argv.drop(1)
-                )
-            }
-        }
-    }
-
-    private fun normalizePotentialMcpSpecLine(line: String): String {
-        return line.trim()
-            .removePrefix("-")
-            .removePrefix("*")
-            .trim()
-            .removeSurrounding("`")
-            .replace(Regex("""^(命令|command|cmd|run|启动命令|stdio)\s*[:：]\s*""", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("""^(url|sse|streamable-http|streamable)\s*[:：]\s*""", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("""^(mcp\s*(server|配置|config)?|server)\s*[:：]\s*""", RegexOption.IGNORE_CASE), "")
-            .trim()
-    }
-
-    private fun inferMcpNameFromCommandCompat(argv: List<String>): String? {
-        if (argv.isEmpty()) return null
-        val normalized = argv.map { it.trim() }.filter { it.isNotBlank() }
-        if (normalized.isEmpty()) return null
-        val launcher = normalized.first().lowercase()
-        val packageToken = when (launcher) {
-            "npx", "bunx" -> normalized.drop(1).firstOrNull { token ->
-                !token.startsWith("-") && token != "--yes" && token != "-y"
-            }
-
-            "uvx" -> normalized.drop(1).firstOrNull { token -> !token.startsWith("-") }
-            "python", "python3" -> {
-                val moduleIndex = normalized.indexOf("-m")
-                if (moduleIndex >= 0) normalized.getOrNull(moduleIndex + 1) else null
-            }
-
-            "node" -> normalized.getOrNull(1)
-            else -> normalized.firstOrNull()
-        } ?: return null
-        return packageToken
-            .substringAfterLast('/')
-            .substringAfterLast('\\')
-            .substringAfterLast('@')
-            .substringAfterLast(':')
-            .trim()
-            .removeSuffix(".js")
-            .replace(Regex("""[^a-zA-Z0-9._-]+"""), "-")
-            .trim('-')
-            .takeIf { it.isNotBlank() }
-    }
-
-    private fun inferMcpNameFromUrlCompat(url: String): String? {
-        return url.substringAfter("://", "")
-            .substringBefore("/")
-            .substringBefore("?")
-            .substringBefore(":")
-            .trim()
-            .takeIf { it.isNotBlank() }
-    }
-
-    private fun splitCommandLineCompat(input: String): List<String> {
-        val result = mutableListOf<String>()
-        val current = StringBuilder()
-        var inSingleQuotes = false
-        var inDoubleQuotes = false
-        input.forEach { ch ->
-            when {
-                ch == '"' && !inSingleQuotes -> inDoubleQuotes = !inDoubleQuotes
-                ch == '\'' && !inDoubleQuotes -> inSingleQuotes = !inSingleQuotes
-                ch.isWhitespace() && !inSingleQuotes && !inDoubleQuotes -> {
-                    current.toString().trim().takeIf { it.isNotBlank() }?.let(result::add)
-                    current.clear()
-                }
-
-                else -> current.append(ch)
-            }
-        }
-        current.toString().trim().takeIf { it.isNotBlank() }?.let(result::add)
-        return result
-    }
-
-    private fun JsonObject.stringValue(key: String): String? {
-        return runCatching { get(key)?.jsonPrimitive?.contentOrNull?.trim() }
-            .getOrNull()
-            ?.takeIf { it.isNotBlank() }
-    }
-
-    private fun JsonObject.booleanValue(key: String): Boolean? {
-        return runCatching { get(key)?.jsonPrimitive?.booleanOrNull }.getOrNull()
-    }
-
-    private fun JsonObject.stringListValue(key: String): List<String> {
-        return runCatching {
-            get(key)?.jsonArray?.mapNotNull { item ->
-                item.jsonPrimitive.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
-            }
-        }.getOrNull().orEmpty()
-    }
-
-    private fun JsonObject.stringMapValue(key: String): Map<String, String> {
-        return runCatching {
-            get(key)?.jsonObject?.mapNotNull { (mapKey, value) ->
-                value.jsonPrimitive.contentOrNull?.trim()
-                    ?.takeIf { it.isNotBlank() }
-                    ?.let { mapKey to it }
-            }?.toMap()
-        }.getOrNull().orEmpty()
     }
 
     private fun isSubagentCancellationRequested(runId: String): Boolean {
@@ -5620,37 +5661,144 @@ class ChatSessionManager(
         return maxConcurrentSubagentExecutions
     }
 
-    private fun buildCompressionContext(): String? {
-        val state = _state.value
+    private fun buildCompressionContext(state: SessionState = _state.value): String? {
         val compression = state.compressionSnapshot?.takeIf { it.active } ?: return null
         return buildString {
-            append("Active Conversation Compression Snapshot:\n")
+            append("Compression Snapshot:\n")
             append(compression.summary.trim())
             append("\n\n")
-            append("Continue working from this summary together with the recent uncompressed messages. ")
-            append("If details are missing, ask the user or rely on the visible recent messages instead of fabricating history.")
+            append("Use this with the recent uncompressed messages. If details are missing, ask the user instead of inventing history.")
         }.trim()
     }
 
     private fun buildCurrentProjectContext(): String? {
         val state = _state.value
-        val projectPath = normalizeProjectPath(state.projectPath) ?: return null
+        val projectPath = normalizeProjectPath(state.projectPath)
+        val scopePath = activeProjectScopePath(
+            activeScopePath = state.activeProjectScopePath,
+            projectPath = state.projectPath
+        )
+        val remoteTaskRepositoryLabel = state.remoteTaskRepositoryLabel
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: if (
+                !state.remoteTaskRepositoryOwner.isNullOrBlank() &&
+                !state.remoteTaskRepositoryName.isNullOrBlank()
+            ) {
+                "${state.remoteTaskRepositoryOwner}/${state.remoteTaskRepositoryName}"
+            } else {
+                null
+            }
+        if (projectPath == null && remoteTaskRepositoryLabel == null) return null
         val mountedKnowledge = state.projectKnowledgePaths
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .distinct()
+        val activeProjectRules = state.projectRules
+            .filter { it.enabled }
+            .mapNotNull { rule ->
+                val content = rule.content.trim()
+                if (content.isBlank()) return@mapNotNull null
+                rule.title.trim().ifBlank { "unnamed" } to content
+            }
+        val activeProjectMemories = state.projectMemories
+            .filter { it.enabled }
+            .mapNotNull { memory ->
+                val content = memory.content.trim()
+                if (content.isBlank()) return@mapNotNull null
+                memory.title.trim().ifBlank { "unnamed" } to content
+            }
         return buildString {
-            appendLine("Current Project Context:")
-            appendLine("Project root: $projectPath")
-            appendLine("Treat this path as the current working directory for the current task unless the user explicitly changes it.")
-            appendLine("When you mention files under this project, prefer paths relative to this root.")
+            appendLine("Project Context:")
+            scopePath?.let {
+                appendLine("Active scope: $it")
+            }
+            if (remoteTaskRepositoryLabel != null) {
+                appendLine("Primary target: remote task repository $remoteTaskRepositoryLabel")
+                appendLine(
+                    if (state.remoteTaskRepositoryEditable) {
+                        "This repository is the current editable task repository in the Project page."
+                    } else {
+                        "This repository is visible in the Project page, but write actions may still need explicit confirmation."
+                    }
+                )
+                appendLine("When the user asks about this repository, prefer enabled GitHub/MCP remote tools instead of assuming local file access.")
+                appendLine("Do not substitute similarly named local directories for this remote repository unless the user explicitly switches back to a local project.")
+                appendLine("For the current task repository, prefer tool aliases task_repo_list_dir, task_repo_list_branches, task_repo_create_branch, task_repo_create_pr, task_repo_close_pr, task_repo_delete_branch, task_repo_search_code, task_repo_read_file, task_repo_update_file, task_repo_delete_file, and task_repo_commit_files before generic mcp_* tools.")
+                appendLine("If the exact remote path is still unclear, use task_repo_list_dir first to browse the repository structure before reading or editing files.")
+                appendLine("If branch names are unclear before writing or batch committing, use task_repo_list_branches first.")
+                appendLine("If the user wants to isolate changes before editing, use task_repo_create_branch first and then commit to that branch.")
+                appendLine("If the user wants to open a Pull Request after remote changes are committed, use task_repo_create_pr.")
+                appendLine("If a test PR or branch should be cleaned up after verification, use task_repo_close_pr and task_repo_delete_branch to restore the repository state.")
+                appendLine("If the user asks to delete a remote file, use task_repo_delete_file. Do not simulate deletion by writing an empty file.")
+                appendLine("If the user wants one commit containing multiple file edits, use task_repo_commit_files instead of multiple single-file submissions.")
+            }
+            if (projectPath != null) {
+                if (remoteTaskRepositoryLabel != null) {
+                    appendLine()
+                }
+                appendLine("Local root: $projectPath")
+                appendLine("Only use this as the working directory when the user is explicitly talking about the local project.")
+                appendLine("Prefer paths relative to this root for local-project work only.")
+            }
             if (mountedKnowledge.isNotEmpty()) {
                 appendLine()
-                appendLine("Mounted project knowledge files:")
+                appendLine("Mounted knowledge:")
                 mountedKnowledge.forEach { path ->
                     appendLine("- $path")
                 }
             }
+            if (activeProjectRules.isNotEmpty()) {
+                appendLine()
+                appendLine("Active Project Rules:")
+                activeProjectRules.forEach { (title, content) ->
+                    appendLine("- Rule: $title")
+                    appendLine("  $content")
+                }
+            }
+            if (activeProjectMemories.isNotEmpty()) {
+                appendLine()
+                appendLine("Active Project Memories:")
+                activeProjectMemories.forEach { (title, content) ->
+                    appendLine("- Memory: $title")
+                    appendLine("  $content")
+                }
+            }
+            if (scopePath != null) {
+                appendLine()
+                appendLine("Project rule/memory management:")
+                appendLine("- If the user explicitly asks to save a reusable project rule, use create_project_rule.")
+                appendLine("- If the user explicitly asks to save a reusable project memory, use create_project_memory.")
+                appendLine("- Do not auto-create or auto-extract project rules or memories from ordinary conversation.")
+            }
+        }.trim()
+    }
+
+    private fun currentProjectScopeLabel(): String {
+        return activeProjectScopePath(
+            activeScopePath = _state.value.activeProjectScopePath,
+            projectPath = _state.value.projectPath
+        ) ?: "当前项目作用域"
+    }
+
+    private fun currentRemoteTaskRepositoryTarget(): RemoteTaskRepositoryTarget? {
+        val state = _state.value
+        val owner = state.remoteTaskRepositoryOwner?.trim().orEmpty()
+        val repo = state.remoteTaskRepositoryName?.trim().orEmpty()
+        if (owner.isBlank() || repo.isBlank()) return null
+        return RemoteTaskRepositoryTarget(
+            owner = owner,
+            repo = repo,
+            label = state.remoteTaskRepositoryLabel?.trim().takeUnless { it.isNullOrBlank() } ?: "$owner/$repo"
+        )
+    }
+
+    private fun buildSessionGoalContext(): String? {
+        val sessionGoal = _state.value.sessionGoal?.trim().takeIf { !it.isNullOrBlank() } ?: return null
+        return buildString {
+            appendLine("Current Session Goal:")
+            appendLine(sessionGoal)
+            append("Keep replies and execution aligned with this goal unless the user clearly changes or clears it.")
         }.trim()
     }
 
@@ -5670,13 +5818,13 @@ class ChatSessionManager(
         val githubTools = availableTools.filter(::isGitHubMcpTool)
         return buildString {
             appendLine("Enabled MCP Tools:")
-            appendLine("These MCP tools are currently available to the main agent, and subagents can inherit matching tools when a Skill's Allowed Tools list references them.")
-            appendLine("Prefer exact tool names when delegating Skill-based subagent work.")
+            appendLine("Main agent can use these tools. Subagents may inherit tools referenced by a Skill's Allowed Tools list.")
+            appendLine("Use exact tool names when delegating.")
             if (githubTools.isNotEmpty()) {
                 appendLine()
-                appendLine("GitHub MCP Guidance:")
-                appendLine("- GitHub MCP tools are available in this session. Prefer them for repository, issue, pull request and remote file operations instead of falling back to shell git.")
-                appendLine("- GitHub write actions such as create/update/push/merge/comment require explicit user approval before execution.")
+                appendLine("GitHub MCP:")
+                appendLine("- Prefer GitHub MCP for repository, issue, pull request, and remote file operations.")
+                appendLine("- Write actions still require explicit user approval.")
             }
             appendLine()
             availableTools.forEach { tool ->
@@ -5765,18 +5913,14 @@ class ChatSessionManager(
         }
     }
 
-    private fun buildTurnScopedAuxiliarySystemMessages(
+    private fun buildTurnScopedAuxiliaryUserContext(
         mentionedFiles: List<FileMentionUi>,
         extraContext: String? = null
-    ): List<ChatMessage> {
-        return buildList {
-            buildMentionedFilesContext(mentionedFiles)?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-            extraContext?.takeIf { it.isNotBlank() }?.let {
-                add(ChatMessage(role = "system", content = it))
-            }
-        }
+    ): String? {
+        return listOfNotNull(
+            buildMentionedFilesContext(mentionedFiles)?.takeIf { it.isNotBlank() },
+            extraContext?.takeIf { it.isNotBlank() }
+        ).takeIf { it.isNotEmpty() }?.joinToString("\n\n")
     }
 
     private fun buildWorkflowPlanPrompt(
@@ -5804,11 +5948,16 @@ class ChatSessionManager(
         return buildList {
             addAll(buildStableAuxiliarySystemMessages(planInstruction, compressionContext))
             addAll(history.takeLast(12))
-            addAll(buildTurnScopedAuxiliarySystemMessages(mentionedFiles))
             add(
                 ChatMessage(
                     role = "user",
-                    content = "请先为这个任务生成一份简短执行计划：\n$goal"
+                    content = buildString {
+                        buildTurnScopedAuxiliaryUserContext(mentionedFiles)?.let {
+                            appendLine(it)
+                            appendLine()
+                        }
+                        append("请先为这个任务生成一份简短执行计划：\n$goal")
+                    }
                 )
             )
         }
@@ -5837,11 +5986,16 @@ class ChatSessionManager(
         return buildList {
             addAll(buildStableAuxiliarySystemMessages(routerInstruction, compressionContext))
             addAll(history.takeLast(10))
-            addAll(buildTurnScopedAuxiliarySystemMessages(mentionedFiles))
             add(
                 ChatMessage(
                     role = "user",
-                    content = "请判断这个输入最适合直接执行、先出计划，还是先提一个澄清问题：\n$goal"
+                    content = buildString {
+                        buildTurnScopedAuxiliaryUserContext(mentionedFiles)?.let {
+                            appendLine(it)
+                            appendLine()
+                        }
+                        append("请判断这个输入最适合直接执行、先出计划，还是先提一个澄清问题：\n$goal")
+                    }
                 )
             )
         }
@@ -6050,16 +6204,17 @@ class ChatSessionManager(
         return buildList {
             addAll(buildStableAuxiliarySystemMessages(clarifyInstruction, compressionContext))
             addAll(history.takeLast(12))
-            addAll(
-                buildTurnScopedAuxiliarySystemMessages(
-                    mentionedFiles = mentionedFiles,
-                    extraContext = buildClarificationAnswersContext(previousAnswers)
-                )
-            )
             add(
                 ChatMessage(
                     role = "user",
                     content = buildString {
+                        buildTurnScopedAuxiliaryUserContext(
+                            mentionedFiles = mentionedFiles,
+                            extraContext = buildClarificationAnswersContext(previousAnswers)
+                        )?.let {
+                            appendLine(it)
+                            appendLine()
+                        }
                         appendLine("请针对这个任务生成一个最需要先确认的澄清问题：")
                         appendLine(goal)
                         if (previousAnswers.isNotEmpty()) {
@@ -6129,11 +6284,14 @@ class ChatSessionManager(
         return buildList {
             addAll(buildStableAuxiliarySystemMessages(followUpInstruction, compressionContext))
             addAll(history.takeLast(12))
-            addAll(buildTurnScopedAuxiliarySystemMessages(mentionedFiles))
             add(
                 ChatMessage(
                     role = "user",
                     content = buildString {
+                        buildTurnScopedAuxiliaryUserContext(mentionedFiles)?.let {
+                            appendLine(it)
+                            appendLine()
+                        }
                         appendLine("请判断在当前澄清信息下，是否可以继续执行任务，或还需要再问一个新的关键问题。")
                         appendLine()
                         appendLine("原始任务:")
@@ -6458,7 +6616,7 @@ class ChatSessionManager(
             .distinctBy { it.path }
             .take(MAX_MENTIONED_FILES_PER_REQUEST)
             .forEach { mention ->
-                val content = readCurrentFileContent(mention.path)
+                val content = mention.inlineContent ?: readCurrentFileContent(mention.path)
                 val snippet = when {
                     content == null -> "(文件不存在或读取失败)"
                     content.length > MAX_MENTION_FILE_CHARS ->
@@ -6558,9 +6716,14 @@ class ChatSessionManager(
         }
     }
 
-    private fun buildPersistedSession(config: ProviderConfig? = null): PersistedSession {
-        val state = _state.value
-        val savedSession = conversationStore.loadSession(currentSessionId)
+    private fun buildPersistedSession(
+        config: ProviderConfig? = null,
+        state: SessionState = _state.value,
+        sessionId: String = currentSessionId,
+        approvedScopes: List<PersistedApprovedApprovalScope> = approvedApprovalScopes.toList(),
+        cachedSession: PersistedSession? = cachedCurrentPersistedSession?.takeIf { it.id == sessionId }
+    ): PersistedSession {
+        val savedSession = cachedSession
         val resolvedConfig = config ?: lastSessionConfig
         val normalizedProjectPath = normalizeProjectPath(state.projectPath)
         val normalizedActiveScopePath = activeProjectScopePath(
@@ -6588,7 +6751,7 @@ class ChatSessionManager(
         }
 
         return PersistedSession(
-            id = currentSessionId,
+            id = sessionId,
             title = state.sessionTitle.ifBlank { "新对话" },
             createdAt = savedSession?.createdAt
                 ?: state.messages.firstOrNull()?.timestamp
@@ -6596,7 +6759,12 @@ class ChatSessionManager(
             updatedAt = System.currentTimeMillis(),
             providerId = providerId,
             modelName = modelName,
+            sessionGoal = state.sessionGoal,
             projectPath = state.projectPath,
+            remoteTaskRepositoryOwner = state.remoteTaskRepositoryOwner,
+            remoteTaskRepositoryName = state.remoteTaskRepositoryName,
+            remoteTaskRepositoryLabel = state.remoteTaskRepositoryLabel,
+            remoteTaskRepositoryEditable = state.remoteTaskRepositoryEditable,
             activeProjectScopePath = normalizedActiveScopePath,
             projectRules = state.projectRules,
             projectMemories = state.projectMemories,
@@ -6634,8 +6802,8 @@ class ChatSessionManager(
             recentApprovalInvalidations = conversationStore.persistApprovalInvalidationRecords(
                 state.recentApprovalInvalidations
             ),
-            approvedApprovalScopes = approvedApprovalScopes.map { it.tokens },
-            approvedApprovalScopeEntries = conversationStore.persistApprovedApprovalScopes(approvedApprovalScopes),
+            approvedApprovalScopes = approvedScopes.map { it.tokens },
+            approvedApprovalScopeEntries = conversationStore.persistApprovedApprovalScopes(approvedScopes),
             pendingWorkflowPlan = state.pendingWorkflowPlan?.let { plan ->
                 PersistedWorkflowPlan(
                     id = plan.id,
@@ -6650,7 +6818,8 @@ class ChatSessionManager(
                     mentionedFiles = plan.mentionedFiles.map { mention ->
                         PersistedFileMention(
                             path = mention.path,
-                            displayPath = mention.displayPath
+                            displayPath = mention.displayPath,
+                            inlineContent = mention.inlineContent
                         )
                     },
                     rawPlan = plan.rawPlan,
@@ -6665,7 +6834,8 @@ class ChatSessionManager(
                     mentionedFiles = request.mentionedFiles.map { mention ->
                         PersistedFileMention(
                             path = mention.path,
-                            displayPath = mention.displayPath
+                            displayPath = mention.displayPath,
+                            inlineContent = mention.inlineContent
                         )
                     },
                     previousAnswers = request.previousAnswers.map { answer ->
@@ -6732,6 +6902,7 @@ class ChatSessionManager(
 
     private fun buildToolResultMessage(
         toolName: String,
+        args: String? = null,
         result: String,
         fileChanges: List<FileChangeRecordUi>
     ): String {
@@ -6756,31 +6927,39 @@ class ChatSessionManager(
             "shell" -> 8_000
             else -> 4_000
         }
-        return "📦 **$toolName** 执行结果:\n```\n${result.take(previewLimit)}${if (result.length > previewLimit) "\n...(截断)" else ""}\n```$changeSummary"
+        val shellCommandPreview = if (toolName == "shell") {
+            extractShellCommandPreview(args)
+        } else {
+            null
+        }
+        return buildString {
+            append("📦 **")
+            append(toolName)
+            append("** 执行结果:")
+            shellCommandPreview?.let {
+                append("\n命令: ")
+                append(it)
+            }
+            append("\n```\n")
+            append(result.take(previewLimit))
+            if (result.length > previewLimit) {
+                append("\n...(截断)")
+            }
+            append("\n```")
+            append(changeSummary)
+        }
     }
 
-    private fun buildToolExecutionMessage(
-        toolName: String,
-        args: String?,
-        callId: String?,
-        showDebugDetails: Boolean
-    ): String {
+    private fun buildToolExecutionMessage(toolName: String, args: String?): String {
         val trimmedArgs = args?.trim().orEmpty()
         return buildString {
             append("🔧 正在执行: **")
             append(toolName)
             append("**")
-            if (showDebugDetails && !callId.isNullOrBlank()) {
-                append("\n调用 ID: `")
-                append(callId)
-                append("`")
-            }
             if (trimmedArgs.isNotBlank()) {
                 append("\n```json\n")
                 append(trimmedArgs)
                 append("\n```")
-            } else if (showDebugDetails) {
-                append("\n等待工具参数返回…")
             }
         }
     }
@@ -6788,21 +6967,19 @@ class ChatSessionManager(
     private fun summarizeToolResultForHistory(message: String): String? {
         if (message.isBlank()) return null
         if (message.startsWith(WEB_FETCH_RESULT_PREFIX)) {
-            return "工具结果摘要: web_fetch 已抓取网页内容，原始正文已省略以保持上下文稳定。"
+            return summarizeWebFetchHistoryResult(message)
         }
         val toolName = Regex("""^📦 \*\*(.+?)\*\* 执行结果:""")
             .find(message)
             ?.groupValues
             ?.getOrNull(1)
             ?: return message.lineSequence().firstOrNull { it.isNotBlank() }?.take(240)
-        val payload = Regex("""```(?:\w+)?\n([\s\S]*?)\n```""")
-            .find(message)
-            ?.groupValues
-            ?.getOrNull(1)
-            .orEmpty()
+        val payload = extractToolResultPayload(message)
         val summary = when (toolName) {
             "file" -> summarizeFileToolPayload(payload)
-            "shell" -> summarizeShellToolPayload(payload)
+            "shell" -> summarizeShellToolPayload(message, payload)
+            "code_search" -> summarizeCodeSearchToolPayload(payload)
+            "web_search" -> summarizeWebSearchToolPayload(payload)
             else -> summarizeGenericToolPayload(payload)
         }
         val changeSummary = summarizeToolChangeBlock(message)
@@ -6816,18 +6993,40 @@ class ChatSessionManager(
         }
     }
 
+    private fun extractToolResultPayload(message: String): String {
+        return Regex("""```(?:\w+)?\n([\s\S]*?)\n```""")
+            .find(message)
+            ?.groupValues
+            ?.getOrNull(1)
+            .orEmpty()
+    }
+
     private fun summarizeFileToolPayload(payload: String): String {
         val lines = payload.lineSequence()
             .map { it.trim() }
             .filter { it.isNotEmpty() }
             .toList()
+        val firstMeaningfulLine = lines.firstOrNull()
+            ?: return "已执行文件工具，原始输出为空。"
+        if (firstMeaningfulLine.startsWith("Error", ignoreCase = true)) {
+            return firstMeaningfulLine.take(240)
+        }
         val filePath = lines.firstOrNull { it.startsWith("File: ") }?.removePrefix("File: ")?.trim()
         if (filePath != null) {
             val range = lines.firstOrNull { it.startsWith("Lines: ") }
                 ?.removePrefix("Lines: ")
                 ?.trim()
                 ?: "未知行范围"
-            return "已读取文件 $filePath，范围 $range；文件正文已从后续历史中省略。"
+            val contentPreview = buildHistoryContentPreview(
+                text = payload.substringAfter("\n\n", ""),
+                maxLines = 10,
+                maxChars = 560
+            )
+            return if (contentPreview != null) {
+                "已读取文件 $filePath，范围 $range；内容片段: $contentPreview"
+            } else {
+                "已读取文件 $filePath，范围 $range；文件内容为空。"
+            }
         }
         val directoryPath = lines.firstOrNull { it.startsWith("Directory: ") }
             ?.removePrefix("Directory: ")
@@ -6837,12 +7036,37 @@ class ChatSessionManager(
                 ?.removePrefix("Entries: ")
                 ?.trim()
                 ?: "未知条目范围"
-            return "已列出目录 $directoryPath，范围 $entries；目录详情已从后续历史中省略。"
+            val entryPreview = buildHistoryContentPreview(
+                text = payload.substringAfter("\n\n", ""),
+                maxLines = 8,
+                maxChars = 260
+            )
+            return if (entryPreview != null) {
+                "已列出目录 $directoryPath，范围 $entries；条目片段: $entryPreview"
+            } else {
+                "已列出目录 $directoryPath，范围 $entries。"
+            }
+        }
+        if (isFileStateLine(firstMeaningfulLine)) {
+            return firstMeaningfulLine.take(240)
         }
         return summarizeGenericToolPayload(payload)
     }
 
-    private fun summarizeShellToolPayload(payload: String): String {
+    private fun isFileStateLine(line: String): Boolean {
+        return listOf(
+            "File exists:",
+            "File does not exist:",
+            "Permission changed:",
+            "Deleted:",
+            "File written successfully:",
+            "(empty directory)"
+        ).any { prefix ->
+            line.startsWith(prefix, ignoreCase = true)
+        }
+    }
+
+    private fun summarizeShellToolPayload(message: String, payload: String): String {
         val firstMeaningfulLine = payload.lineSequence()
             .map { it.trim() }
             .firstOrNull { it.isNotEmpty() }
@@ -6850,8 +7074,362 @@ class ChatSessionManager(
         if (firstMeaningfulLine.startsWith("Error", ignoreCase = true)) {
             return firstMeaningfulLine.take(240)
         }
-        return "${firstMeaningfulLine.take(160)}${if (payload.length > firstMeaningfulLine.length) "（其余输出已省略）" else ""}"
+        val shellCommand = extractShellCommandFromResultMessage(message)
+        if (shellCommand != null &&
+            isShellInspectionCommand(shellCommand) &&
+            !isShellMutationCommand(shellCommand)
+        ) {
+            val preview = buildShellInspectionPreview(
+                command = shellCommand,
+                payload = payload
+            )
+            return if (preview != null) {
+                "shell读取结果(${shellCommand.take(80)}): $preview"
+            } else {
+                "已执行 shell 读取命令(${shellCommand.take(80)})，但输出为空。"
+            }
+        }
+        if (firstMeaningfulLine.contains("timeout", ignoreCase = true) || firstMeaningfulLine.contains("超时")) {
+            return "shell 命令执行超时，原始输出已省略。"
+        }
+        if (firstMeaningfulLine == "(command completed, no output)") {
+            return "shell 命令已执行完成，无输出。"
+        }
+        return "已执行 shell 命令并获得输出，原始输出已省略。"
     }
+
+    private fun summarizeCodeSearchToolPayload(payload: String): String {
+        val lines = payload.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toList()
+        val firstMeaningfulLine = lines.firstOrNull()
+            ?: return "已执行代码搜索，但结果为空。"
+        if (firstMeaningfulLine.startsWith("Error", ignoreCase = true)) {
+            return firstMeaningfulLine.take(240)
+        }
+        if (firstMeaningfulLine.startsWith("未找到匹配结果")) {
+            val pattern = lines.firstOrNull { it.startsWith("Pattern: ") }
+                ?.removePrefix("Pattern: ")
+                ?.trim()
+            val path = lines.firstOrNull { it.startsWith("Path: ") }
+                ?.removePrefix("Path: ")
+                ?.trim()
+            return buildString {
+                append("代码搜索未命中")
+                pattern?.takeIf { it.isNotBlank() }?.let { append("，Pattern: $it") }
+                path?.takeIf { it.isNotBlank() }?.let { append("，Path: $it") }
+                append("。")
+            }
+        }
+        val returnedCount = lines.firstOrNull { it.startsWith("Matches returned: ") }
+            ?.removePrefix("Matches returned: ")
+            ?.trim()
+            ?.toIntOrNull()
+        val pattern = lines.firstOrNull { it.startsWith("Pattern: ") }
+            ?.removePrefix("Pattern: ")
+            ?.trim()
+        val path = lines.firstOrNull { it.startsWith("Path: ") }
+            ?.removePrefix("Path: ")
+            ?.trim()
+        val topHits = payload.split(Regex("""\n(?=\d+\.\sFile:\s)"""))
+            .mapNotNull { block ->
+                val file = Regex("""(?m)^\d+\.\sFile:\s(.+)$""").find(block)?.groupValues?.getOrNull(1)?.trim()
+                val line = Regex("""(?m)^Line:\s(\d+)$""").find(block)?.groupValues?.getOrNull(1)?.trim()
+                val match = Regex("""(?m)^Match:\s(.+)$""").find(block)?.groupValues?.getOrNull(1)?.trim()
+                if (file.isNullOrBlank() || line.isNullOrBlank() || match.isNullOrBlank()) null
+                else "$file:$line -> ${match.take(140)}"
+            }
+            .take(3)
+        return buildString {
+            append("代码搜索已返回")
+            returnedCount?.let { append(" $it 条命中") } ?: append("若干命中")
+            pattern?.takeIf { it.isNotBlank() }?.let { append("，Pattern: $it") }
+            path?.takeIf { it.isNotBlank() }?.let { append("，Path: $it") }
+            if (topHits.isNotEmpty()) {
+                append("；前几条: ")
+                append(topHits.joinToString(" | "))
+            }
+            append("。")
+        }
+    }
+
+    private fun summarizeWebSearchToolPayload(payload: String): String {
+        val lines = payload.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toList()
+        val firstMeaningfulLine = lines.firstOrNull()
+            ?: return "已执行网页搜索，但结果为空。"
+        if (firstMeaningfulLine.startsWith("Error", ignoreCase = true) ||
+            firstMeaningfulLine.startsWith("网页搜索暂时不可用")
+        ) {
+            return firstMeaningfulLine.take(240)
+        }
+        val source = lines.firstOrNull { it.startsWith("搜索源: ") }
+            ?.removePrefix("搜索源: ")
+            ?.trim()
+        val entries = payload.split(Regex("""\n(?=\d+\.\s)"""))
+            .mapNotNull { block ->
+                val title = Regex("""(?m)^\d+\.\s(.+)$""").find(block)?.groupValues?.getOrNull(1)?.trim()
+                val snippet = Regex("""(?m)^URL:\s.+$\n\s*(.+)$""").find(block)?.groupValues?.getOrNull(1)?.trim()
+                title?.takeIf { it.isNotBlank() }?.let {
+                    if (snippet.isNullOrBlank()) it else "$it - ${snippet.take(120)}"
+                }
+            }
+            .take(3)
+        return buildString {
+            append("网页搜索已返回")
+            source?.takeIf { it.isNotBlank() }?.let { append("，来源: $it") }
+            if (entries.isNotEmpty()) {
+                append("；前几条: ")
+                append(entries.joinToString(" | "))
+            }
+            append("。")
+        }
+    }
+
+    private fun summarizeWebFetchHistoryResult(message: String): String {
+        val raw = message.removePrefix(WEB_FETCH_RESULT_PREFIX).trim()
+        if (raw.isBlank()) {
+            return "工具结果摘要: web_fetch 已抓取网页内容，但结果为空。"
+        }
+        return runCatching {
+            val root = Json.parseToJsonElement(raw).jsonObject
+            val title = root["title"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val url = root["url"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val excerpt = root["excerpt"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val content = root["content"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val truncated = root["truncated"]?.jsonPrimitive?.booleanOrNull == true
+            val preview = buildHistoryContentPreview(
+                text = excerpt.ifBlank { content },
+                maxLines = 6,
+                maxChars = 360
+            )
+            buildString {
+                append("网页抓取结果")
+                title.takeIf { it.isNotBlank() }?.let { append(": ").append(it) }
+                url.takeIf { it.isNotBlank() }?.let { append(" (").append(it).append(")") }
+                preview?.let { append("；摘要: ").append(it) }
+                if (truncated) {
+                    append("；正文已截断。")
+                } else {
+                    append("。")
+                }
+            }
+        }.getOrElse {
+            "工具结果摘要: web_fetch 已抓取网页内容，原始正文已省略以保持上下文稳定。"
+        }
+    }
+
+    private fun extractShellCommandPreview(args: String?): String? {
+        if (args.isNullOrBlank()) return null
+        return runCatching {
+            Json.parseToJsonElement(args)
+                .jsonObject["command"]
+                ?.jsonPrimitive
+                ?.contentOrNull
+        }.getOrNull()
+            ?.trim()
+            ?.replace(Regex("""\s+"""), " ")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { if (it.length > 180) it.take(180) + "..." else it }
+    }
+
+    private fun extractShellCommandFromResultMessage(message: String): String? {
+        return message.lineSequence()
+            .map { it.trim() }
+            .firstOrNull { it.startsWith("命令: ") }
+            ?.removePrefix("命令: ")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun isShellInspectionCommand(command: String): Boolean {
+        val inspectionPrefixes = listOf(
+            "cat ",
+            "sed -n",
+            "sed ",
+            "awk ",
+            "head ",
+            "tail ",
+            "more ",
+            "less ",
+            "nl ",
+            "cut ",
+            "grep ",
+            "rg ",
+            "find ",
+            "ls",
+            "pwd",
+            "stat ",
+            "wc ",
+            "du ",
+            "tree",
+            "readlink ",
+            "realpath ",
+            "git status",
+            "git diff",
+            "git log",
+            "git branch",
+            "git ls-files",
+            "git grep",
+            "git show",
+            "git rev-parse",
+            "git remote -v"
+        )
+        return splitShellCommandSegments(command).any { segment ->
+            val normalized = normalizeShellSegment(segment)
+            inspectionPrefixes.any { token ->
+                normalized == token || normalized.startsWith(token)
+            }
+        }
+    }
+
+    private fun isShellMutationCommand(command: String): Boolean {
+        val mutationPrefixes = listOf(
+            "rm ",
+            "mv ",
+            "cp ",
+            "chmod ",
+            "chown ",
+            "chgrp ",
+            "mkdir ",
+            "rmdir ",
+            "touch ",
+            "truncate ",
+            "echo ",
+            "printf ",
+            "tee ",
+            "dd ",
+            "install ",
+            "ln ",
+            "unlink ",
+            "make ",
+            "cmake ",
+            "gradle ",
+            "./gradlew",
+            "npm ",
+            "pnpm ",
+            "yarn ",
+            "pip ",
+            "poetry ",
+            "cargo ",
+            "go build",
+            "go test",
+            "javac ",
+            "kotlinc ",
+            "git apply",
+            "git am",
+            "git cherry-pick",
+            "git checkout ",
+            "git clean",
+            "git commit",
+            "git merge",
+            "git pull",
+            "git push",
+            "git rebase",
+            "git reset",
+            "git restore"
+        )
+        return splitShellCommandSegments(command).any { segment ->
+            val normalized = normalizeShellSegment(segment)
+            containsShellWriteRedirection(normalized) ||
+                mutationPrefixes.any { token ->
+                    normalized == token || normalized.startsWith(token)
+                }
+        }
+    }
+
+    private fun splitShellCommandSegments(command: String): List<String> {
+        return command
+            .lowercase()
+            .replace(Regex("""\s+"""), " ")
+            .split(Regex("""\s*(?:&&|\|\||;|\|)\s*"""))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+    }
+
+    private fun normalizeShellSegment(segment: String): String {
+        return segment
+            .removePrefix("sudo ")
+            .removePrefix("command ")
+            .trim()
+    }
+
+    private fun containsShellWriteRedirection(segment: String): Boolean {
+        return Regex("""(^|[^<])>>?($|\s)""").containsMatchIn(segment) ||
+            Regex("""\d>>?""").containsMatchIn(segment) ||
+            " | tee" in segment ||
+            segment.startsWith("tee ")
+    }
+
+    private fun buildShellInspectionPreview(
+        command: String,
+        payload: String
+    ): String? {
+        val normalizedSegments = splitShellCommandSegments(command)
+            .map(::normalizeShellSegment)
+        val profile = when {
+            normalizedSegments.any { segment ->
+                segment.startsWith("cat ") ||
+                    segment.startsWith("sed ") ||
+                    segment.startsWith("sed -n") ||
+                    segment.startsWith("awk ") ||
+                    segment.startsWith("grep ") ||
+                    segment.startsWith("rg ") ||
+                    segment.startsWith("git show")
+            } -> PreviewProfile(maxLines = 12, maxChars = 640)
+            normalizedSegments.any { segment ->
+                segment == "ls" ||
+                    segment.startsWith("ls ") ||
+                    segment.startsWith("find ") ||
+                    segment.startsWith("tree") ||
+                    segment.startsWith("du ") ||
+                    segment.startsWith("wc ")
+            } -> PreviewProfile(maxLines = 8, maxChars = 320)
+            normalizedSegments.any { segment ->
+                segment.startsWith("git status") ||
+                    segment.startsWith("git diff") ||
+                    segment.startsWith("git log") ||
+                    segment.startsWith("git branch") ||
+                    segment.startsWith("git ls-files") ||
+                    segment.startsWith("git grep") ||
+                    segment.startsWith("git rev-parse") ||
+                    segment.startsWith("git remote -v")
+            } -> PreviewProfile(maxLines = 8, maxChars = 360)
+            else -> PreviewProfile(maxLines = 10, maxChars = 520)
+        }
+        return buildHistoryContentPreview(
+            text = payload,
+            maxLines = profile.maxLines,
+            maxChars = profile.maxChars
+        )
+    }
+
+    private fun buildHistoryContentPreview(
+        text: String,
+        maxLines: Int,
+        maxChars: Int
+    ): String? {
+        val normalized = text.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .take(maxLines)
+            .joinToString(" | ")
+            .trim()
+        if (normalized.isBlank()) return null
+        return if (normalized.length > maxChars) {
+            normalized.take(maxChars) + "..."
+        } else {
+            normalized
+        }
+    }
+
+    private data class PreviewProfile(
+        val maxLines: Int,
+        val maxChars: Int
+    )
 
     private fun summarizeGenericToolPayload(payload: String): String {
         val firstMeaningfulLine = payload.lineSequence()
@@ -6926,7 +7504,14 @@ class ChatSessionManager(
             }
             if (session.usageSummary.totalTokens > 0) {
                 add("- Token: ${session.usageSummary.totalTokens}")
-                add("- 预估成本: \$${"%.6f".format(session.usageSummary.estimatedCostUsd)}")
+                add(
+                    "- 预估成本: ${
+                        formatCurrencyAmount(
+                            session.usageSummary.resolvedEstimatedCostAmount(),
+                            session.usageSummary.resolvedEstimatedCostCurrency()
+                        )
+                    }"
+                )
             }
             if (session.compressionSnapshots.isNotEmpty()) {
                 add("- 压缩摘要版本数: ${session.compressionSnapshots.size}")
@@ -6986,19 +7571,19 @@ class ChatSessionManager(
 
         val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
         val response = runCatching {
-            provider.chat(
+            callProviderWithConfiguredStreaming(
+                provider = provider,
+                config = config,
                 request = ChatRequest(
                     messages = buildCompressionSummaryPrompt(state, messages, localSummary),
                     model = config.getActiveModel(),
                     temperature = 0.2,
                     maxTokens = minOf(config.maxTokens, COMPRESSION_SUMMARY_MAX_TOKENS),
-                    stream = false,
+                    stream = config.isStreamingResponsesEnabled(),
                     reasoningEffort = config.getActiveReasoningEffort(),
                     thinkingMode = config.getActiveThinkingMode(),
                     tools = null
-                ),
-                apiKey = apiKey,
-                baseUrl = config.getActiveBaseUrl()
+                )
             )
         }.getOrNull()
 
@@ -7008,6 +7593,25 @@ class ChatSessionManager(
         } else {
             localSummary
         }
+    }
+
+    private suspend fun callProviderWithConfiguredStreaming(
+        provider: com.murong.agent.core.provider.ModelProvider,
+        config: ProviderConfig,
+        request: ChatRequest
+    ) = if (request.stream) {
+        provider.chatStream(
+            request = request,
+            apiKey = config.getActiveApiKey(),
+            baseUrl = config.getActiveBaseUrl(),
+            onDelta = {}
+        )
+    } else {
+        provider.chat(
+            request = request,
+            apiKey = config.getActiveApiKey(),
+            baseUrl = config.getActiveBaseUrl()
+        )
     }
 
     private fun buildCompressionSummary(
@@ -7036,7 +7640,7 @@ class ChatSessionManager(
             .take(6)
 
         val findings = resultMessages
-            .map { it.content.ifBlank { it.reasoning.orEmpty() }.normalizeForSummary() }
+            .mapNotNull(::summarizeMessageForCompression)
             .filter { it.isNotBlank() }
             .distinct()
             .take(8)
@@ -7153,11 +7757,12 @@ class ChatSessionManager(
         localSummary: String
     ): String {
         val transcript = messages.joinToString("\n\n") { message ->
+            val summarizedContent = summarizeMessageForCompressionSource(message)
             buildString {
                 append("[")
                 append(messageRoleLabel(message.role))
                 append("] ")
-                append(message.content.normalizeForSummary(MODEL_SUMMARY_MESSAGE_MAX_LENGTH))
+                append(summarizedContent)
                 if (!message.reasoning.isNullOrBlank()) {
                     append("\n思考补充: ")
                     append(message.reasoning.normalizeForSummary(MODEL_SUMMARY_REASONING_MAX_LENGTH))
@@ -7367,6 +7972,51 @@ class ChatSessionManager(
             .take(maxLength)
     }
 
+    private fun summarizeMessageForCompression(message: ChatMessageUi): String? {
+        return when (message.role) {
+            "tool_exec" -> summarizeToolResultForHistory(message.content)
+                ?.normalizeForSummary(220)
+            "subagent" -> summarizeSubagentMessageForCompression(message.content)
+            "assistant" -> message.content
+                .ifBlank { message.reasoning.orEmpty() }
+                .normalizeForSummary()
+                .takeIf { it.isNotBlank() }
+            else -> message.content.normalizeForSummary().takeIf { it.isNotBlank() }
+        }
+    }
+
+    private fun summarizeMessageForCompressionSource(message: ChatMessageUi): String {
+        return when (message.role) {
+            "tool_exec" -> summarizeToolResultForHistory(message.content)
+                ?.normalizeForSummary(MODEL_SUMMARY_MESSAGE_MAX_LENGTH)
+                ?: message.content.normalizeForSummary(MODEL_SUMMARY_MESSAGE_MAX_LENGTH)
+            "subagent" -> summarizeSubagentMessageForCompression(message.content)
+                ?.normalizeForSummary(MODEL_SUMMARY_MESSAGE_MAX_LENGTH)
+                ?: message.content.normalizeForSummary(MODEL_SUMMARY_MESSAGE_MAX_LENGTH)
+            "assistant" -> message.content
+                .ifBlank { message.reasoning.orEmpty() }
+                .normalizeForSummary(MODEL_SUMMARY_MESSAGE_MAX_LENGTH)
+            else -> message.content.normalizeForSummary(MODEL_SUMMARY_MESSAGE_MAX_LENGTH)
+        }
+    }
+
+    private fun summarizeSubagentMessageForCompression(content: String): String? {
+        if (content.isBlank()) return null
+        val summaryBlock = content.substringAfter("### 汇总结论", "")
+            .takeIf { it.isNotBlank() }
+            ?.lineSequence()
+            ?.map { it.trim() }
+            ?.firstOrNull { it.isNotBlank() }
+        if (!summaryBlock.isNullOrBlank()) {
+            return "子代理结论: ${summaryBlock.normalizeForSummary(220)}"
+        }
+        val firstMeaningfulLine = content.lineSequence()
+            .map { it.trim() }
+            .firstOrNull { it.isNotBlank() }
+            ?: return null
+        return firstMeaningfulLine.normalizeForSummary(220)
+    }
+
     private fun replaceCompressionSnapshot(
         snapshots: List<ContextCompressionUi>,
         updatedSnapshot: ContextCompressionUi
@@ -7447,6 +8097,16 @@ private const val MAX_MENTION_TOTAL_CHARS = 7000
 private const val MAX_MENTION_FILE_SCAN_DEPTH = 3
 private const val MAX_MENTION_DIRECTORY_ENTRIES = 80
 private const val MAX_CLARIFICATION_TURNS = 3
+private const val MAX_TOOL_RESULTS_IN_HISTORY = 4
+private const val TOOL_RESULT_RECENT_MESSAGE_WINDOW = 10
+private const val MAX_COMBINED_TOOL_SUMMARY_ITEMS = 6
+private const val AUTO_COMPRESSION_TRIGGER_TOKENS = 6000
+private const val AUTO_COMPRESSION_MIN_COMPRESSIBLE_MESSAGES = 14
+private const val AUTO_COMPRESSION_MIN_SAVED_TOKENS = 900
+private const val AUTO_COMPRESSION_MIN_REDUCTION_PERCENT = 22
+private const val AUTO_COMPRESSION_NEW_MESSAGES_THRESHOLD = 8
+private const val AUTO_COMPRESSION_ENABLE_EXISTING_MAX_NEW_MESSAGES = 4
+private const val STREAMING_FLUSH_INTERVAL_MS = 40L
 private val DEFAULT_COMPRESSION_CONTINUE_REQUIREMENTS = listOf(
     "继续遵守现有规则、记忆、Skills、审批限制。",
     "结合这个摘要和最近未压缩消息继续工作。",

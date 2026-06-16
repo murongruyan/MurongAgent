@@ -1,5 +1,6 @@
 package com.murong.agent.common.shell
 
+import com.murong.agent.common.toolchain.ToolchainManager
 import java.io.IOException
 
 /**
@@ -14,11 +15,12 @@ object ShellExecutor {
      * 获取 Root 进程
      */
     fun getSuperUserRuntime(): Process? {
+        val command = RootShellStrategy.buildRootCommand()
         return try {
-            Runtime.getRuntime().exec("su")
+            ProcessBuilder(command).start()
         } catch (e: IOException) {
             try {
-                Runtime.getRuntime().exec("su", null, null)
+                ProcessBuilder(ToolchainManager.resolveSystemCommandPath("su")).start()
             } catch (e2: IOException) {
                 null
             }

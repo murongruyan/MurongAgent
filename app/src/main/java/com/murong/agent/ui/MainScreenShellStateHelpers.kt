@@ -123,6 +123,7 @@ internal data class MainScreenOverlayVisibilityState(
 internal data class MainScreenDialogState(
     val showTaskDialog: Boolean = false,
     val taskProjectPath: String = "",
+    val taskDialogAppliesToCurrentSession: Boolean = false,
     val renameSessionTargetId: String? = null,
     val renameSessionDraft: String = "",
     val showExportDialog: Boolean = false,
@@ -162,7 +163,10 @@ internal enum class MainScreenOverlayVisibilityAction {
 }
 
 internal sealed interface MainScreenDialogAction {
-    data class ShowTaskDialog(val projectPath: String) : MainScreenDialogAction
+    data class ShowTaskDialog(
+        val projectPath: String,
+        val applyToCurrentSession: Boolean = false
+    ) : MainScreenDialogAction
     data object HideTaskDialog : MainScreenDialogAction
     data class UpdateTaskProjectPath(val projectPath: String) : MainScreenDialogAction
     data class OpenRenameDialog(val sessionId: String, val title: String) : MainScreenDialogAction
@@ -194,6 +198,7 @@ internal sealed interface MainScreenChatAction {
     ) : MainScreenChatAction
     data class OpenTaskDialog(
         val projectPath: String,
+        val applyToCurrentSession: Boolean = false,
         val dismissMenu: Boolean = false
     ) : MainScreenChatAction
     data class OpenRenameDialog(
@@ -519,10 +524,18 @@ internal fun reduceMainScreenDialogState(
 ): MainScreenDialogState {
     return when (action) {
         is MainScreenDialogAction.ShowTaskDialog -> {
-            state.copy(showTaskDialog = true, taskProjectPath = action.projectPath)
+            state.copy(
+                showTaskDialog = true,
+                taskProjectPath = action.projectPath,
+                taskDialogAppliesToCurrentSession = action.applyToCurrentSession
+            )
         }
         MainScreenDialogAction.HideTaskDialog -> {
-            state.copy(showTaskDialog = false, taskProjectPath = "")
+            state.copy(
+                showTaskDialog = false,
+                taskProjectPath = "",
+                taskDialogAppliesToCurrentSession = false
+            )
         }
         is MainScreenDialogAction.UpdateTaskProjectPath -> {
             state.copy(taskProjectPath = action.projectPath)

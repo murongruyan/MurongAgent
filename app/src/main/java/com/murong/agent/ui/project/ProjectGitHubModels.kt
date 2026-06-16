@@ -161,7 +161,11 @@ internal data class ProjectGitHubWorkflowLogEntryUi(
     val displayName: String,
     val preview: String,
     val totalLineCount: Int,
-    val truncated: Boolean
+    val truncated: Boolean,
+    val jobName: String? = null,
+    val stepName: String? = null,
+    val stepNumber: Int? = null,
+    val sourceEntryName: String? = null
 )
 
 internal data class ProjectGitHubWorkflowLogSearchHitUi(
@@ -533,148 +537,10 @@ internal data class ProjectGitHubGlobalSearchResultUi(
     val url: String?,
     val number: Long? = null,
     val filePath: String? = null,
-    val updatedAt: String? = null
+    val updatedAt: String? = null,
+    val matchLabel: String? = null,
+    val matchSnippet: String? = null
 )
-
-internal data class ProjectGitHubGlobalSearchStore(
-    val query: String = "",
-    val results: List<ProjectGitHubGlobalSearchResultUi> = emptyList(),
-    val isLoading: Boolean = false,
-    val errorMessage: String? = null,
-    val isVisible: Boolean = false
-)
-
-internal data class ProjectGitHubGlobalTaskCenterUi(
-    val criticalTasks: List<ProjectGitHubWorkspaceTaskUi> = emptyList(),
-    val attentionTasks: List<ProjectGitHubWorkspaceTaskUi> = emptyList(),
-    val isVisible: Boolean = false
-)
-
-internal enum class ProjectGitHubWorkspaceFilterType(val label: String) {
-    ALL("全部"),
-    ABNORMAL("异常优先"),
-    LOCAL_CHANGES("本地有改动"),
-    OPEN_ITEMS("有开放事项"),
-    GITHUB_ONLY("仅 GitHub")
-}
-
-internal enum class ProjectGitHubWorkspaceBatchAction(val label: String) {
-    FETCH("批量获取远端 (Fetch)"),
-    PULL("批量拉取 (Pull)"),
-    REFRESH_STATUS("批量刷新状态"),
-    REFRESH_REMOTE("批量刷新 GitHub 摘要")
-}
-
-internal enum class ProjectGitHubWorkspaceTaskKind(val label: String) {
-    GENERAL("概览"),
-    WORKFLOW("工作流"),
-    LOCAL_CONFLICT("冲突"),
-    SYNC("同步"),
-    COLLABORATION("协作"),
-    LOCAL_CHANGES("本地改动"),
-    REMOTE_BINDING("远端绑定"),
-    REMOTE_ERROR("远端摘要")
-}
-
-internal data class ProjectGitHubWorkspaceTaskUi(
-    val title: String,
-    val subtitle: String,
-    val repoRoot: String,
-    val repoTitle: String = "",
-    val isCritical: Boolean = false,
-    val kind: ProjectGitHubWorkspaceTaskKind = ProjectGitHubWorkspaceTaskKind.GENERAL,
-    val destinationLabel: String? = null,
-    val targetTab: ProjectGitHubWorkspaceRepoWorkbenchTab? = null,
-    val targetWorkflowRun: ProjectGitHubWorkflowRunUi? = null,
-    val targetIssue: ProjectGitHubIssueUi? = null,
-    val targetPullRequest: ProjectGitHubPullRequestUi? = null,
-    val actionLabel: String = "查看"
-)
-
-internal data class ProjectGitHubWorkspaceRepoCardUi(
-    val rootPath: String,
-    val title: String,
-    val subtitle: String,
-    val changeSummary: String,
-    val highlightChanges: Boolean,
-    val remoteSummary: String?,
-    val highlightRemoteSummary: Boolean,
-    val remoteErrorMessage: String?,
-    val latestWorkflowSummary: String?,
-    val latestWorkflowHasIssue: Boolean,
-    val isSelected: Boolean,
-    val hasGitMetadata: Boolean,
-    val hasGitHubRepo: Boolean,
-    val hasWorkingTreeChanges: Boolean,
-    val behindCount: Int,
-    val conflictCount: Int,
-    val latestRunHasIssue: Boolean,
-    val hasOpenWorkItems: Boolean,
-    val openIssueCount: Int,
-    val latestOpenIssue: ProjectGitHubIssueUi?,
-    val openPullRequestCount: Int,
-    val latestOpenPullRequest: ProjectGitHubPullRequestUi?,
-    val latestWorkflowTitle: String?,
-    val latestRun: ProjectGitHubWorkflowRunUi?,
-    val severityScore: Int,
-    val severityLabel: String,
-    val recommendedActions: List<ProjectGitHubWorkspaceQuickActionUi>
-)
-
-internal data class ProjectGitHubWorkspaceQuickActionUi(
-    val label: String,
-    val targetTab: ProjectGitHubWorkspaceRepoWorkbenchTab,
-    val targetWorkflowRun: ProjectGitHubWorkflowRunUi? = null,
-    val targetIssue: ProjectGitHubIssueUi? = null,
-    val targetPullRequest: ProjectGitHubPullRequestUi? = null
-)
-
-internal data class ProjectGitHubWorkspaceOverviewUi(
-    val repoCount: Int,
-    val gitRepoCount: Int,
-    val githubRepoCount: Int,
-    val remoteSummaryCount: Int,
-    val healthyRepoCount: Int,
-    val dirtyRepoCount: Int,
-    val behindRepoCount: Int,
-    val conflictRepoCount: Int,
-    val failingWorkflowRepoCount: Int,
-    val criticalTaskCount: Int,
-    val attentionTaskCount: Int,
-    val openWorkItemRepoCount: Int,
-    val lastUpdatedLabel: String
-)
-
-@Serializable
-internal data class ProjectGitHubWorkspaceRemoteSummaryCache(
-    val summaries: Map<String, ProjectGitHubWorkspaceRemoteSummaryUi> = emptyMap(),
-    val lastUpdatedMillis: Long = 0
-) {
-    val lastUpdatedLabel: String
-        get() = if (lastUpdatedMillis == 0L) "从未更新" else formatProjectDateTime(lastUpdatedMillis)
-}
-
-@Serializable
-internal data class ProjectGitHubWorkspaceRemoteSummaryUi(
-    val repo: ProjectGitHubRepoRef,
-    val defaultBranch: String?,
-    val repoHtmlUrl: String?,
-    val latestRun: ProjectGitHubWorkflowRunUi?,
-    val runningRunCount: Int,
-    val openIssueCount: Int,
-    val latestOpenIssue: ProjectGitHubIssueUi?,
-    val openPullRequestCount: Int,
-    val latestOpenPullRequest: ProjectGitHubPullRequestUi?,
-    val hasWorkItemPreview: Boolean,
-    val errorMessage: String?
-) {
-    val hasOpenWorkItems: Boolean get() = openIssueCount > 0 || openPullRequestCount > 0
-    val latestRunHasIssue: Boolean
-        get() = latestRun?.let { run ->
-            !run.status.equals("completed", ignoreCase = true) ||
-                (run.conclusion != null && !run.conclusion.equals("success", ignoreCase = true) && !run.conclusion.equals("neutral", ignoreCase = true))
-        } ?: false
-}
 
 internal data class ProjectDownloadEnqueueResult(
     val downloadId: Long,

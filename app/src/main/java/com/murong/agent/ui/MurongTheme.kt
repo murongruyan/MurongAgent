@@ -51,23 +51,25 @@ private fun buildDarkColorScheme(
     surfaceSeed: Color,
     mutedTextSeed: Color
 ): ColorScheme {
-    val background = lerp(backgroundSeed, Color(0xFF090B12), 0.78f)
-    val surface = lerp(surfaceSeed, Color(0xFF151A24), 0.32f)
+    val background = lerp(backgroundSeed, Color(0xFF0A111B), 0.58f)
+    val surface = lerp(surfaceSeed, Color(0xFF141D2A), 0.44f)
+    val surfaceVariant = lerp(surface, accent, 0.11f)
+    val primary = lerp(accent, Color(0xFFE4ECFF), 0.12f)
     return darkColorScheme(
-        primary = lerp(accent, Color.White, 0.08f),
-        onPrimary = Color(0xFF11141B),
-        primaryContainer = lerp(accent, Color.Black, 0.56f),
-        onPrimaryContainer = Color(0xFFF5F7FF),
-        secondary = lerp(accent, Color(0xFFAAB3CC), 0.62f),
-        tertiary = Color(0xFF62D5A0),
+        primary = primary,
+        onPrimary = Color(0xFF08111B),
+        primaryContainer = lerp(accent, Color(0xFF09131F), 0.68f),
+        onPrimaryContainer = Color(0xFFF2F6FF),
+        secondary = lerp(accent, Color(0xFFB7C0D9), 0.70f),
+        tertiary = Color(0xFF63D7A5),
         background = background,
-        surface = surface.copy(alpha = 0.96f),
-        surfaceVariant = lerp(surface, accent, 0.06f),
-        onBackground = Color(0xFFF3F6FF),
-        onSurface = Color(0xFFF3F6FF),
+        surface = surface.copy(alpha = 0.98f),
+        surfaceVariant = surfaceVariant,
+        onBackground = Color(0xFFF3F7FF),
+        onSurface = Color(0xFFF1F5FF),
         onSurfaceVariant = mutedTextSeed,
-        outline = lerp(accent, Color(0xFF394256), 0.76f),
-        error = Color(0xFFFF7B74)
+        outline = lerp(accent, Color(0xFF46516A), 0.78f),
+        error = Color(0xFFFF847A)
     )
 }
 

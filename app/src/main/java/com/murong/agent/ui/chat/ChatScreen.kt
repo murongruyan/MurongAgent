@@ -7,6 +7,11 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewGroup
+import android.widget.ScrollView
+import android.widget.TextView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -18,6 +23,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -38,8 +44,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -48,8 +59,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.murong.agent.core.mcp.McpServerConfig
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -57,6 +70,8 @@ import com.murong.agent.core.loop.ChatMessageUi
 import com.murong.agent.core.loop.SubagentTimelineEntryUi
 import com.murong.agent.core.loop.AutoRouteAction
 import com.murong.agent.core.loop.AutoRouteDecisionUi
+import com.murong.agent.core.loop.AskAnswerUi
+import com.murong.agent.core.loop.AskQuestionUi
 import com.murong.agent.core.loop.ClarificationRequestUi
 import com.murong.agent.core.loop.ClarificationSource
 import com.murong.agent.core.loop.ConversationCheckpointUi
@@ -66,6 +81,7 @@ import com.murong.agent.core.loop.ContextCompressionUi
 import com.murong.agent.core.loop.ContextCompressionPreviewUi
 import com.murong.agent.core.loop.MessageImageAttachmentUi
 import com.murong.agent.core.loop.PendingImageAttachmentUi
+import com.murong.agent.core.loop.PendingAskRequestUi
 import com.murong.agent.core.loop.ProjectKnowledgeSnapshotUi
 import com.murong.agent.core.loop.SessionState
 import com.murong.agent.core.loop.SessionSummary
@@ -74,16 +90,23 @@ import com.murong.agent.core.loop.SubagentRunUi
 import com.murong.agent.core.loop.WorkflowPlanStatusUi
 import com.murong.agent.core.loop.WorkflowPlanUi
 import com.murong.agent.core.loop.UsageSummarySnapshot
+import com.murong.agent.core.loop.formatCurrencyAmount
 import com.murong.agent.core.loop.estimateContextCompressionPreview
 import com.murong.agent.core.loop.MIN_MESSAGES_FOR_COMPRESSION
 import com.murong.agent.core.loop.MIN_MESSAGES_TO_COMPRESS
 import com.murong.agent.core.loop.RECENT_MESSAGES_TO_KEEP
 import com.murong.agent.core.loop.WEB_FETCH_RESULT_PREFIX
+import com.murong.agent.core.config.GlobalSkill
+import com.murong.agent.core.config.ProviderConfig
+import com.murong.agent.core.config.ProjectToolPreferences
+import com.murong.agent.core.config.ToolApprovalMode
 import com.murong.agent.core.config.WorkflowExecutionMode
+import com.murong.agent.core.provider.ProviderRegistry
 import com.murong.agent.ui.MurongDialog
 import com.murong.agent.ui.MurongGlassSurface
 import com.murong.agent.ui.MurongOutlinedActionButton
 import com.murong.agent.ui.MurongPopupSurface
+import com.murong.agent.ui.MurongReadOnlyCodeBlock
 import com.murong.agent.ui.MurongTagButton
 import com.murong.agent.ui.MarkdownText
 import com.murong.agent.ui.ProjectKnowledgeOutlineUi
@@ -92,22 +115,26 @@ import com.murong.agent.ui.rememberMurongAccentColor
 import com.murong.agent.ui.rememberMurongChromeColor
 import com.murong.agent.ui.rememberMurongMutedTextColor
 import com.murong.agent.ui.rememberMurongSurfaceColor
+import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.UUID
-import org.json.JSONObject
+import kotlin.math.max
 
 @Composable
 fun ChatScreen(
     state: SessionState,
     isScreenActive: Boolean = true,
+    bottomReservedPadding: Dp = 0.dp,
+    multimodalEnabled: Boolean = true,
+    executionProfileConfig: ProviderConfig = ProviderConfig(),
     projectKnowledgePaths: List<String> = emptyList(),
-    onSend: (String, List<FileMentionUi>, List<PendingImageAttachmentUi>) -> Unit,
+    onSend: (String, List<FileMentionUi>, List<PendingImageAttachmentUi>, List<GlobalSkill>) -> Unit,
+    onSetSessionGoal: (String) -> Unit = {},
+    onClearSessionGoal: () -> Unit = {},
     onStopSending: () -> Unit = {},
     onClear: () -> Unit,
     onNewSession: () -> Unit = {},
@@ -115,7 +142,9 @@ fun ChatScreen(
     hasApiKey: Boolean = false,
     workflowExecutionMode: WorkflowExecutionMode = WorkflowExecutionMode.SINGLE_PASS,
     autoRouteBeforeExecution: Boolean = true,
+    projectToolPreferences: ProjectToolPreferences? = null,
     onNavigateToSettings: () -> Unit = {},
+    onUpdateProjectToolPreferences: (ProjectToolPreferences?) -> Unit = {},
     onEditMessage: (Long) -> Boolean = { false },
     onCompressContext: () -> Unit = {},
     onRollbackFileCheckpoint: (String) -> Unit = {},
@@ -124,10 +153,11 @@ fun ChatScreen(
     onDismissPlan: () -> Unit = {},
     onSubmitClarificationAnswer: (String) -> Unit = {},
     onDismissClarification: () -> Unit = {},
-    onSearchFiles: (String) -> List<FileMentionUi> = { emptyList() },
+    onSubmitAskAnswers: (List<AskAnswerUi>) -> Unit = {},
+    onDismissAsk: () -> Unit = {},
+    onSearchFiles: suspend (String) -> List<FileMentionUi> = { emptyList() },
     onRetrySubagent: (String) -> Unit = {},
-    onCancelSubagent: (String) -> Unit = {},
-    onDismissProposal: (msgId: Long) -> Unit = {}
+    onCancelSubagent: (String) -> Unit = {}
 ) {
     var inputText by remember { mutableStateOf("") }
     val inputHistory = remember(state.sessionId) { mutableStateListOf<String>() }
@@ -144,12 +174,25 @@ fun ChatScreen(
     var selectedFileChange by remember(state.sessionId) { mutableStateOf<FileChangeRecordUi?>(null) }
     val selectedMentions = remember(state.sessionId) { mutableStateListOf<FileMentionUi>() }
     val selectedImages = remember(state.sessionId) { mutableStateListOf<PendingImageAttachmentUi>() }
+    val selectedSkills = remember(state.sessionId) { mutableStateListOf<GlobalSkill>() }
     val recentMentions = remember(state.sessionId) { mutableStateListOf<FileMentionUi>() }
     var showMentionPicker by remember(state.sessionId) { mutableStateOf(false) }
     var mentionQuery by remember(state.sessionId) { mutableStateOf("") }
     var previewImages by remember(state.sessionId) { mutableStateOf<List<ImagePreviewItemUi>>(emptyList()) }
     var previewImageIndex by remember(state.sessionId) { mutableIntStateOf(0) }
     var inputHasFocus by remember(state.sessionId) { mutableStateOf(false) }
+    var planModeEnabled by remember(state.sessionId) { mutableStateOf(false) }
+    var goalModeEnabled by remember(state.sessionId) { mutableStateOf(false) }
+    var showSubagentHint by remember(state.sessionId) { mutableStateOf(true) }
+    var showWorkflowPreferenceHint by remember(state.sessionId) { mutableStateOf(true) }
+    var showCompressionHint by remember(state.sessionId) { mutableStateOf(true) }
+    var showCurrentWorkspaceHint by remember(state.sessionId) { mutableStateOf(true) }
+    var showFileChangeHint by remember(state.sessionId) { mutableStateOf(true) }
+    var showApprovalModeDialog by remember(state.sessionId) { mutableStateOf(false) }
+    var showSkillPicker by remember(state.sessionId) { mutableStateOf(false) }
+    val effectiveApprovalMode = executionProfileConfig.approvalMode
+    val approvalModeOverride = projectToolPreferences?.approvalMode
+    var lastAutoScrolledSessionId by remember { mutableStateOf<String?>(null) }
     val projectKnowledgeMentions = remember(state.projectPath, projectKnowledgePaths) {
         buildProjectKnowledgeMentions(state.projectPath, projectKnowledgePaths)
     }
@@ -165,11 +208,34 @@ fun ChatScreen(
     val projectKnowledgePathSet = remember(projectKnowledgeMentions) {
         projectKnowledgeMentions.map { it.path }.toSet()
     }
+    val availableSkills = remember(executionProfileConfig.globalSkills, state.projectSkills) {
+        (executionProfileConfig.globalSkills + state.projectSkills)
+            .filter { it.enabled && (it.title.isNotBlank() || it.content.isNotBlank()) }
+            .distinctBy { listOf(it.title.trim(), it.description.trim(), it.content.trim(), it.runAs.name).joinToString("|") }
+    }
+    val messages = state.messages
+    val subagentRunsById = remember(state.subagentRuns) {
+        state.subagentRuns.associateBy { it.runId }
+    }
+    val subagentBatchesById = remember(state.subagentBatches) {
+        state.subagentBatches.associateBy { it.batchId }
+    }
+    val latestMessageId = remember(messages) {
+        messages.lastOrNull()?.id
+    }
+    val latestMessageImageCount = remember(messages) {
+        messages.lastOrNull()?.imageAttachments?.size ?: 0
+    }
     val activeInlineMentionQuery = remember(inputText, showMentionPicker) {
         if (showMentionPicker) null else extractActiveMentionQuery(inputText)
     }
-    val inlineMentionResults = remember(activeInlineMentionQuery, state.sessionId, projectKnowledgeMentions) {
-        when {
+    val inlineMentionResults by produceState(
+        initialValue = emptyList(),
+        key1 = activeInlineMentionQuery,
+        key2 = state.sessionId,
+        key3 = projectKnowledgeMentions
+    ) {
+        value = when {
             activeInlineMentionQuery == null -> emptyList()
             activeInlineMentionQuery.isBlank() -> emptyList()
             else -> mergeProjectKnowledgeMentions(
@@ -179,8 +245,13 @@ fun ChatScreen(
             )
         }
     }
-    val recentImageAttachments = remember(state.messages, state.sessionId) {
-        state.messages
+    val recentImageAttachments = remember(
+        state.sessionId,
+        messages.size,
+        latestMessageId,
+        latestMessageImageCount
+    ) {
+        messages
             .asReversed()
             .asSequence()
             .flatMap { it.imageAttachments.asSequence() }
@@ -192,7 +263,34 @@ fun ChatScreen(
     val listState = rememberSaveable(state.sessionId, saver = LazyListState.Saver) {
         LazyListState()
     }
+    val currentProjectLabel = state.projectPath?.takeIf { it.isNotBlank() }
+        ?: state.remoteTaskRepositoryLabel?.takeIf { it.isNotBlank() }
+    val currentWorkspaceTitle = if (state.projectPath.isNullOrBlank()) "当前远端任务仓库" else "当前项目"
+    val currentWorkspaceHelperText = when {
+        state.projectPath.isNullOrBlank() && state.remoteTaskRepositoryEditable ->
+            "已设为任务仓库，可在项目页直接搜索和编辑。让模型处理远端仓库时会优先参考 GitHub/MCP 远端能力。"
+        state.projectPath.isNullOrBlank() ->
+            "当前没有本地项目路径，模型处理这个仓库时会优先走 GitHub/MCP 远端能力。"
+        projectKnowledgeMentions.isNotEmpty() ->
+            "已接入知识文件 ${projectKnowledgeMentions.size} 个，可在 @文件 中直接选择。"
+        else -> null
+    }
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val canSubmitDraft = remember(
+        planModeEnabled,
+        goalModeEnabled,
+        inputText,
+        selectedImages.size,
+        multimodalEnabled
+    ) {
+        if (planModeEnabled || goalModeEnabled) {
+            inputText.isNotBlank() && selectedImages.isEmpty()
+        } else {
+            inputText.isNotBlank() || (multimodalEnabled && selectedImages.isNotEmpty())
+        }
+    }
     val compressionSuggestion = remember(
         state.messages.size,
         state.usageSummary.totalTokens,
@@ -200,6 +298,9 @@ fun ChatScreen(
         state.compressionSnapshot?.active
     ) {
         buildCompressionSuggestion(state)
+    }
+    val executionProfileHint = remember(executionProfileConfig) {
+        buildWorkflowExecutionProfileHint(executionProfileConfig)
     }
     var dismissedCompressionSuggestionAtCount by remember(state.sessionId) {
         mutableStateOf<Int?>(null)
@@ -231,6 +332,7 @@ fun ChatScreen(
         selectedSubagentRun = null
         selectedSubagentBatch = null
         showSubagentHistory = false
+        showSubagentHint = false
         showCompressionHistory = false
         showFileChangeHistory = false
         selectedCheckpoint = null
@@ -240,127 +342,81 @@ fun ChatScreen(
         showMentionPicker = false
     }
 
-    val itemCount = state.messages.size
+    val itemCount = messages.size
     suspend fun scrollMessagesToBottom() {
         if (itemCount > 0) {
             listState.scrollToItem(itemCount - 1)
         }
     }
 
-    // 新消息时自动滚动到底部
-    LaunchedEffect(itemCount) {
+    // 只在切会话或本来就接近底部时自动跟随，避免手动上滑时被强行拉回。
+    LaunchedEffect(state.sessionId, itemCount) {
         if (!isScreenActive) return@LaunchedEffect
-        // #region debug-point U:chat-auto-scroll
-        reportGitBackChatFlashChatDebug(
-            hypothesisId = "U1",
-            location = "ChatScreen.kt:autoScrollOnItemCount",
-            msg = "[DEBUG] chat auto scroll triggered by itemCount",
-            data = JSONObject()
-                .put("isScreenActive", isScreenActive)
-                .put("sessionId", state.sessionId)
-                .put("itemCount", itemCount)
-                .put("firstVisibleItemIndex", listState.firstVisibleItemIndex)
-                .put("firstVisibleItemScrollOffset", listState.firstVisibleItemScrollOffset)
-        )
-        // #endregion
-        scrollMessagesToBottom()
+        val sessionChanged = lastAutoScrolledSessionId != state.sessionId
+        if (sessionChanged || isMessageListNearBottom(listState)) {
+            scrollMessagesToBottom()
+        }
+        lastAutoScrolledSessionId = state.sessionId
+    }
+
+    LaunchedEffect(state.sessionId, workflowExecutionMode, autoRouteBeforeExecution) {
+        showWorkflowPreferenceHint = true
+        delay(2200)
+        showWorkflowPreferenceHint = false
     }
 
     LaunchedEffect(
-        inputHasFocus,
-        selectedImages.size,
-        selectedMentions.size
+        state.sessionId,
+        state.subagentRuns.size,
+        state.subagentRuns.maxOfOrNull { it.startedAt },
+        state.subagentRuns.maxOfOrNull { it.finishedAt ?: 0L }
     ) {
-        if (isScreenActive && inputHasFocus) {
-            // #region debug-point U:chat-focus-scroll
-            reportGitBackChatFlashChatDebug(
-                hypothesisId = "U1",
-                location = "ChatScreen.kt:autoScrollOnFocus",
-                msg = "[DEBUG] chat auto scroll triggered by focus",
-                data = JSONObject()
-                    .put("isScreenActive", isScreenActive)
-                    .put("sessionId", state.sessionId)
-                    .put("inputHasFocus", inputHasFocus)
-                    .put("selectedImages", selectedImages.size)
-                    .put("selectedMentions", selectedMentions.size)
-                    .put("firstVisibleItemIndex", listState.firstVisibleItemIndex)
-                    .put("firstVisibleItemScrollOffset", listState.firstVisibleItemScrollOffset)
-            )
-            // #endregion
-            scrollMessagesToBottom()
-        }
+        if (state.subagentRuns.isEmpty()) return@LaunchedEffect
+        showSubagentHint = true
+        delay(2600)
+        showSubagentHint = false
+    }
+
+    LaunchedEffect(
+        state.sessionId,
+        state.compressionSnapshot?.id,
+        state.compressionSnapshot?.active,
+        compressionSuggestion?.reason
+    ) {
+        if (state.compressionSnapshot == null && compressionSuggestion == null) return@LaunchedEffect
+        showCompressionHint = true
+        delay(2600)
+        showCompressionHint = false
+    }
+
+    LaunchedEffect(
+        state.sessionId,
+        currentProjectLabel,
+        currentWorkspaceTitle,
+        currentWorkspaceHelperText
+    ) {
+        if (currentProjectLabel == null) return@LaunchedEffect
+        showCurrentWorkspaceHint = true
+        delay(2600)
+        showCurrentWorkspaceHint = false
+    }
+
+    LaunchedEffect(
+        state.sessionId,
+        state.fileChanges.size,
+        state.checkpoints.size,
+        state.checkpoints.firstOrNull()?.createdAt
+    ) {
+        if (state.fileChanges.isEmpty()) return@LaunchedEffect
+        showFileChangeHint = true
+        delay(2600)
+        showFileChangeHint = false
     }
 
     LaunchedEffect(isScreenActive) {
-        // #region debug-point D:chat-screen-active
-        reportGitBackChatFlashChatDebug(
-            hypothesisId = "D",
-            location = "ChatScreen.kt:isScreenActive",
-            msg = "[DEBUG] chat screen active changed",
-            data = JSONObject()
-                .put("isScreenActive", isScreenActive)
-                .put("sessionId", state.sessionId)
-                .put("messageCount", state.messages.size)
-                .put("showMentionPicker", showMentionPicker)
-                .put("showSubagentHistory", showSubagentHistory)
-                .put("showCompressionHistory", showCompressionHistory)
-                .put("showFileChangeHistory", showFileChangeHistory)
-        )
-        // #endregion
         if (!isScreenActive) {
             dismissTransientOverlays()
         }
-    }
-
-    LaunchedEffect(
-        isScreenActive,
-        state.sessionId,
-        state.messages.size,
-        state.isProcessing,
-        state.sessionTitle,
-        state.projectPath
-    ) {
-        // #region debug-point D:chat-render-snapshot
-        reportGitBackChatFlashChatDebug(
-            hypothesisId = "D",
-            location = "ChatScreen.kt:renderSnapshot",
-            msg = "[DEBUG] chat render snapshot",
-            data = JSONObject()
-                .put("isScreenActive", isScreenActive)
-                .put("sessionId", state.sessionId)
-                .put("sessionTitle", state.sessionTitle)
-                .put("messageCount", state.messages.size)
-                .put("isProcessing", state.isProcessing)
-                .put("projectPath", state.projectPath ?: JSONObject.NULL)
-                .put("showMentionPicker", showMentionPicker)
-                .put("showSubagentHistory", showSubagentHistory)
-                .put("showCompressionHistory", showCompressionHistory)
-                .put("showFileChangeHistory", showFileChangeHistory)
-        )
-        // #endregion
-    }
-
-    LaunchedEffect(
-        isScreenActive,
-        state.sessionId,
-        listState.firstVisibleItemIndex,
-        listState.firstVisibleItemScrollOffset
-    ) {
-        // #region debug-point U:chat-list-position
-        reportGitBackChatFlashChatDebug(
-            hypothesisId = "U1",
-            location = "ChatScreen.kt:listPosition",
-            msg = "[DEBUG] chat list position snapshot",
-            data = JSONObject()
-                .put("isScreenActive", isScreenActive)
-                .put("sessionId", state.sessionId)
-                .put("itemCount", itemCount)
-                .put("firstVisibleItemIndex", listState.firstVisibleItemIndex)
-                .put("firstVisibleItemScrollOffset", listState.firstVisibleItemScrollOffset)
-                .put("showMentionPicker", showMentionPicker)
-                .put("showSubagentHistory", showSubagentHistory)
-        )
-        // #endregion
     }
 
     LaunchedEffect(state.sessionId, state.projectPath, projectKnowledgeMentions) {
@@ -387,342 +443,507 @@ fun ChatScreen(
         showMentionPicker = false
     }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .imePadding()
     ) {
-        state.projectPath?.takeIf { it.isNotBlank() }?.let { projectPath ->
-            CurrentProjectBar(
-                projectPath = projectPath,
-                knowledgeFileCount = projectKnowledgeMentions.size
-            )
-        }
-        if (workflowExecutionMode == WorkflowExecutionMode.SINGLE_PASS) {
-            WorkflowExecutionStatusBar(autoRouteBeforeExecution = autoRouteBeforeExecution)
-            if (autoRouteBeforeExecution && state.autoRoutingInProgress) {
-                AutoRoutingStatusBar()
-            } else if (autoRouteBeforeExecution) {
-                state.lastAutoRouteDecision?.let { decision ->
-                    AutoRouteDecisionStatusBar(decision = decision)
+        Column(modifier = Modifier.fillMaxSize()) {
+            if (workflowExecutionMode == WorkflowExecutionMode.SINGLE_PASS) {
+                if (autoRouteBeforeExecution && state.autoRoutingInProgress) {
+                    AutoRoutingStatusBar()
+                } else if (autoRouteBeforeExecution) {
+                    state.lastAutoRouteDecision?.let { decision ->
+                        AutoRouteDecisionStatusBar(decision = decision)
+                    }
                 }
             }
-        }
-        state.lastWorkflowFallback?.let { fallback ->
-            WorkflowFallbackStatusBar(message = fallback.message)
-        }
-        if (state.workflowPlanningInProgress) {
-            WorkflowPlanningStatusBar()
-        }
-        if (state.clarificationInProgress) {
-            ClarificationStatusBar()
-        }
-        state.pendingWorkflowPlan?.let { plan ->
-            WorkflowPlanCard(
-                plan = plan,
-                isProcessing = state.isProcessing,
-                onExecute = onExecutePlan,
-                onDismiss = onDismissPlan
-            )
-        }
-        state.pendingClarificationRequest?.let { request ->
-            ClarificationCard(
-                request = request,
-                isProcessing = state.isProcessing,
-                onSubmit = onSubmitClarificationAnswer,
-                onDismiss = onDismissClarification
-            )
-        }
-        state.compressionSnapshot?.let { snapshot ->
-            CompressionStatusBar(
-                version = snapshot.version,
-                totalVersions = state.compressionSnapshots.size,
-                summary = snapshot.summary,
-                sourceMessageCount = snapshot.sourceMessageCount,
-                active = snapshot.active,
-                createdAt = snapshot.createdAt,
-                onClick = { showCompressionHistory = true }
-            )
-        }
-        if (state.fileChanges.isNotEmpty()) {
-            FileChangeStatusBar(
-                latestCheckpoint = state.checkpoints.firstOrNull(),
-                totalCount = state.fileChanges.size,
-                batchCount = state.checkpoints.size,
-                onClick = { showFileChangeHistory = true }
-            )
-        }
-        if (
-            compressionSuggestion != null &&
-            !state.isProcessing &&
-            (dismissedCompressionSuggestionAtCount == null ||
-                state.messages.size > dismissedCompressionSuggestionAtCount!!)
-        ) {
-            CompressionSuggestionBar(
-                suggestion = compressionSuggestion,
-                onCompress = onCompressContext,
-                onDismiss = {
-                    dismissedCompressionSuggestionAtCount = state.messages.size
-                }
-            )
-        }
-        if (state.subagentRuns.isNotEmpty()) {
-            SubagentStatusBar(
-                runs = state.subagentRuns,
-                onClick = { showSubagentHistory = true }
-            )
-        }
-
-        // 消息列表
-        if (state.messages.isEmpty() && !state.isProcessing) {
-            // 空状态 — 显示欢迎/引导
-            WelcomeView(
-                hasApiKey = hasApiKey,
-                onNavigateToSettings = onNavigateToSettings,
-                modifier = Modifier.weight(1f)
-            )
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
-                state = listState,
-                contentPadding = PaddingValues(top = 6.dp, bottom = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                items(state.messages, key = { it.id }) { msg ->
-                    val subagentRun = msg.subagentRunId?.let { runId ->
-                        state.subagentRuns.firstOrNull { it.runId == runId }
-                    }
-                    val subagentBatch = msg.subagentBatchId?.let { batchId ->
-                        state.subagentBatches.firstOrNull { it.batchId == batchId }
-                    }
-                    MessageBubble(
-                        msg = msg,
-                        subagentRun = subagentRun,
-                        subagentBatch = subagentBatch,
-                        onLongPress = { messageActionTarget = msg },
-                        onApplyPrompt = { prompt ->
-                            inputText = listOf(inputText, prompt)
-                                .filter { it.isNotBlank() }
-                                .joinToString("\n")
-                        },
-                        onOpenImagePreview = { items, index ->
-                            previewImages = items
-                            previewImageIndex = index
-                        },
+            state.lastWorkflowFallback?.let { fallback ->
+                WorkflowFallbackStatusBar(message = fallback.message)
+            }
+            if (state.workflowPlanningInProgress) {
+                WorkflowPlanningStatusBar()
+            }
+            if (state.clarificationInProgress) {
+                ClarificationStatusBar()
+            }
+            state.pendingWorkflowPlan?.let { plan ->
+                WorkflowPlanCard(
+                    plan = plan,
+                    isProcessing = state.isProcessing,
+                    onExecute = onExecutePlan,
+                    onDismiss = onDismissPlan
+                )
+            }
+            state.pendingClarificationRequest?.let { request ->
+                ClarificationCard(
+                    request = request,
+                    isProcessing = state.isProcessing,
+                    onSubmit = onSubmitClarificationAnswer,
+                    onDismiss = onDismissClarification
+                )
+            }
+            state.pendingAskRequest?.let { request ->
+                AskUserCard(
+                    request = request,
+                    onSubmit = onSubmitAskAnswers,
+                    onDismiss = onDismissAsk
+                )
+            }
+            state.sessionGoal?.takeIf { it.isNotBlank() }?.let { sessionGoal ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    AssistChip(
                         onClick = {
-                            if (subagentRun != null) {
-                                selectedSubagentRun = subagentRun
-                            } else if (subagentBatch != null) {
-                                selectedSubagentBatch = subagentBatch
-                            }
+                            inputText = sessionGoal
+                            goalModeEnabled = true
+                            inputHistoryIndex = -1
+                            inputDraftBeforeHistory = sessionGoal
+                            selectedImages.clear()
+                            keyboardController?.show()
+                        },
+                        label = {
+                            Text("目标: ${sessionGoal.take(40)}${if (sessionGoal.length > 40) "..." else ""}")
                         }
                     )
+                    MurongTagButton(
+                        text = "清除目标",
+                        onClick = onClearSessionGoal
+                    )
                 }
+            }
+            // 消息列表
+            if (messages.isEmpty() && !state.isProcessing) {
+                WelcomeView(
+                    hasApiKey = hasApiKey,
+                    onNavigateToSettings = onNavigateToSettings,
+                    compactForInput = inputHasFocus,
+                    onSizeChanged = {},
+                    modifier = Modifier.weight(1f)
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp),
+                    state = listState,
+                    contentPadding = PaddingValues(top = 6.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    itemsIndexed(
+                        items = messages,
+                        key = { _, it -> it.id },
+                        contentType = { _, it -> it.role }
+                    ) { index, msg ->
+                        val subagentRun = msg.subagentRunId?.let(subagentRunsById::get)
+                        val subagentBatch = msg.subagentBatchId?.let(subagentBatchesById::get)
+                        val previousMessage = messages.getOrNull(index - 1)
+                        MessageBubble(
+                            msg = msg,
+                            isScreenActive = isScreenActive,
+                            previousMessage = previousMessage,
+                            subagentRun = subagentRun,
+                            subagentBatch = subagentBatch,
+                            onLongPress = { messageActionTarget = msg },
+                            onApplyPrompt = { prompt ->
+                                inputText = listOf(inputText, prompt)
+                                    .filter { it.isNotBlank() }
+                                    .joinToString("\n")
+                            },
+                            onOpenImagePreview = { items, index ->
+                                previewImages = items
+                                previewImageIndex = index
+                            },
+                            onClick = {
+                                if (subagentRun != null) {
+                                    selectedSubagentRun = subagentRun
+                                } else if (subagentBatch != null) {
+                                    selectedSubagentBatch = subagentBatch
+                                }
+                            }
+                        )
+                    }
 
-                if (state.isProcessing && !hasStreamingMessage(state.messages)) {
-                    item {
-                        LoadingIndicator()
+                    if (state.isProcessing && !hasStreamingMessage(messages)) {
+                        item {
+                            LoadingIndicator()
+                        }
                     }
                 }
             }
-        } // end else
+            // 错误提示
+            val err = state.error
+            if (err != null) {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f),
+                    shape = MaterialTheme.shapes.large,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = err,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                        fontSize = 13.sp
+                    )
+                }
+            }
 
-        // 错误提示
-        val err = state.error
-        if (err != null) {
-            Surface(
-                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f),
-                shape = MaterialTheme.shapes.large,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp)
-            ) {
-                Text(
-                    text = err,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                    fontSize = 13.sp
+            editingMessageId?.let {
+                EditHintBar(
+                    onCancel = {
+                        editingMessageId = null
+                        inputText = ""
+                    }
+                )
+            }
+            if (selectedMentions.isNotEmpty()) {
+                MentionedFilesBar(
+                    mentions = selectedMentions,
+                    knowledgePaths = projectKnowledgePathSet,
+                    snapshotNamesByPath = projectKnowledgeSnapshotNamesByPath,
+                    onRemove = { mention -> selectedMentions.removeAll { it.path == mention.path } }
+                )
+            }
+            if (selectedSkills.isNotEmpty()) {
+                SelectedSkillsBar(
+                    skills = selectedSkills.toList(),
+                    onRemove = { skill ->
+                        selectedSkills.removeAll {
+                            it.title == skill.title && it.content == skill.content
+                        }
+                    }
+                )
+            }
+            if (selectedImages.isNotEmpty()) {
+                PendingImageAttachmentsBar(
+                    attachments = selectedImages.toList(),
+                    onOpenPreview = { attachments, index ->
+                        previewImages = attachments.map { attachment ->
+                            ImagePreviewItemUi(
+                                title = attachment.fileName.ifBlank { "未命名图片" },
+                                uri = attachment.uri,
+                                mimeType = attachment.mimeType
+                            )
+                        }
+                        previewImageIndex = index
+                    },
+                    onRemove = { attachment ->
+                        selectedImages.removeAll { it.uri == attachment.uri }
+                    }
+                )
+            }
+            if (recentImageAttachments.isNotEmpty()) {
+                RecentImageAttachmentsBar(
+                    attachments = recentImageAttachments,
+                    selectedUris = selectedImages.map { it.uri }.toSet(),
+                    onReuse = { attachment ->
+                        val pending = PendingImageAttachmentUi(
+                            uri = Uri.fromFile(File(attachment.localCachePath)).toString(),
+                            fileName = attachment.fileName,
+                            mimeType = attachment.mimeType
+                        )
+                        if (selectedImages.none { it.uri == pending.uri }) {
+                            selectedImages.add(pending)
+                        }
+                    },
+                    onOpenPreview = { attachments, index ->
+                        previewImages = attachments.map { attachment ->
+                            ImagePreviewItemUi(
+                                title = attachment.fileName.ifBlank { "最近图片" },
+                                localCachePath = attachment.localCachePath,
+                                mimeType = attachment.mimeType
+                            )
+                        }
+                        previewImageIndex = index
+                    }
+                )
+            }
+            activeInlineMentionQuery?.let { query ->
+                MentionInputHintBar(
+                    query = query,
+                    matchCount = inlineMentionResults.size,
+                    onOpenPicker = {
+                        mentionQuery = query
+                        showMentionPicker = true
+                    }
+                )
+                InlineMentionSuggestionsCard(
+                    query = query,
+                    recentMentions = recentMentions.toList(),
+                    results = inlineMentionResults,
+                    knowledgePaths = projectKnowledgePathSet,
+                    knowledgeOutlines = projectKnowledgeOutlineMap,
+                    snapshotNamesByPath = projectKnowledgeSnapshotNamesByPath,
+                    onSelect = { mention -> handleMentionSelect(mention) }
+                )
+            }
+
+            // 输入栏
+            InputBar(
+                text = inputText,
+                planModeEnabled = planModeEnabled,
+                goalModeEnabled = goalModeEnabled,
+                hasSessionGoal = !state.sessionGoal.isNullOrBlank(),
+                onTextChange = { updatedText ->
+                    if (inputHistoryIndex >= 0) {
+                        val recalledText = inputHistory.getOrNull(inputHistoryIndex)
+                        if (updatedText != recalledText) {
+                            inputHistoryIndex = -1
+                            inputDraftBeforeHistory = updatedText
+                        }
+                    } else {
+                        inputDraftBeforeHistory = updatedText
+                    }
+                    inputText = updatedText
+                    val activeMentionQuery = extractActiveMentionQuery(updatedText)
+                    if (activeMentionQuery != null && !state.isProcessing) {
+                        mentionQuery = activeMentionQuery
+                    } else {
+                        mentionQuery = ""
+                    }
+                    if (showMentionPicker && updatedText.isBlank()) {
+                        showMentionPicker = false
+                    }
+                },
+                onInputFocusChanged = { focused ->
+                    inputHasFocus = focused
+                },
+                currentApprovalModeLabel = buildApprovalModeShortcutLabel(
+                    effectiveMode = effectiveApprovalMode,
+                    overrideMode = approvalModeOverride
+                ),
+                onPlanModeChange = { enabled ->
+                    planModeEnabled = enabled
+                },
+                onGoalModeChange = { enabled ->
+                    goalModeEnabled = enabled
+                },
+                onOpenApprovalMode = {
+                    showApprovalModeDialog = true
+                },
+                onSend = {
+                    if (canSubmitDraft && !state.isProcessing) {
+                        keyboardController?.hide()
+                        focusManager.clearFocus(force = true)
+                        inputHasFocus = false
+                        val sentText = inputText.trim()
+                        if (sentText.isNotBlank()) {
+                            inputHistory.removeAll { it == sentText }
+                            inputHistory.add(sentText)
+                            while (inputHistory.size > 50) {
+                                inputHistory.removeAt(0)
+                            }
+                        }
+                        when {
+                            planModeEnabled -> {
+                                if (goalModeEnabled && sentText.isNotBlank()) {
+                                    onSetSessionGoal(sentText)
+                                }
+                                onGeneratePlan(
+                                    if (goalModeEnabled) buildGoalPlanModeInput(sentText) else sentText,
+                                    selectedMentions.toList()
+                                )
+                            }
+                            goalModeEnabled -> {
+                                onSetSessionGoal(sentText)
+                                onSend(
+                                    buildGoalModeMessage(sentText),
+                                    selectedMentions.toList(),
+                                    emptyList(),
+                                    selectedSkills.toList()
+                                )
+                            }
+                            else -> onSend(
+                                sentText,
+                                selectedMentions.toList(),
+                                selectedImages.toList(),
+                                selectedSkills.toList()
+                            )
+                        }
+                        if (goalModeEnabled) {
+                            goalModeEnabled = false
+                        }
+                        inputText = ""
+                        inputHistoryIndex = -1
+                        inputDraftBeforeHistory = ""
+                        editingMessageId = null
+                        selectedMentions.clear()
+                        selectedImages.clear()
+                        selectedSkills.clear()
+                    }
+                },
+                onPreviousInput = {
+                    if (inputHistory.isEmpty()) return@InputBar
+                    if (inputHistoryIndex == -1) {
+                        inputDraftBeforeHistory = inputText
+                        inputHistoryIndex = inputHistory.lastIndex
+                    } else if (inputHistoryIndex > 0) {
+                        inputHistoryIndex -= 1
+                    }
+                    inputText = inputHistory[inputHistoryIndex]
+                },
+                onNextInput = {
+                    if (inputHistoryIndex == -1) return@InputBar
+                    if (inputHistoryIndex < inputHistory.lastIndex) {
+                        inputHistoryIndex += 1
+                        inputText = inputHistory[inputHistoryIndex]
+                    } else {
+                        inputHistoryIndex = -1
+                        inputText = inputDraftBeforeHistory
+                    }
+                },
+                onCaptureImage = {
+                    if (multimodalEnabled && !state.isProcessing) {
+                        cameraPreviewLauncher.launch(null)
+                    }
+                },
+                onPickImages = {
+                    if (multimodalEnabled && !state.isProcessing) {
+                        imagePickerLauncher.launch("image/*")
+                    }
+                },
+                onMention = {
+                    mentionQuery = extractActiveMentionQuery(inputText) ?: ""
+                    showMentionPicker = true
+                },
+                availableSkills = availableSkills,
+                selectedSkillCount = selectedSkills.size,
+                onOpenSkillPicker = {
+                    if (availableSkills.isNotEmpty()) {
+                        showSkillPicker = true
+                    }
+                },
+                canRecallPrevious = inputHistory.isNotEmpty(),
+                canRecallNext = inputHistoryIndex != -1,
+                canSend = canSubmitDraft,
+                allowStructuredActions = selectedImages.isEmpty(),
+                canUseMultimodal = multimodalEnabled,
+                hasPendingImages = selectedImages.isNotEmpty(),
+                enabled = true,
+                isSending = state.isProcessing,
+                bottomReservedPadding = bottomReservedPadding,
+                onStopSending = onStopSending
+            )
+
+            if (showSkillPicker) {
+                SkillPickerDialog(
+                    skills = availableSkills,
+                    selectedSkills = selectedSkills.toList(),
+                    onDismiss = { showSkillPicker = false },
+                    onToggleSkill = { skill ->
+                        val existingIndex = selectedSkills.indexOfFirst {
+                            it.title == skill.title && it.content == skill.content
+                        }
+                        if (existingIndex >= 0) {
+                            selectedSkills.removeAt(existingIndex)
+                        } else {
+                            selectedSkills.add(skill)
+                        }
+                    },
+                    onClear = { selectedSkills.clear() }
+                )
+            }
+
+            if (showApprovalModeDialog) {
+                ChatApprovalModeDialog(
+                    globalMode = executionProfileConfig.approvalMode,
+                    overrideMode = approvalModeOverride,
+                    onDismiss = { showApprovalModeDialog = false },
+                    onApply = { overrideMode ->
+                        showApprovalModeDialog = false
+                        onUpdateProjectToolPreferences(
+                            normalizeChatProjectToolPreferences(
+                                (projectToolPreferences ?: ProjectToolPreferences()).copy(
+                                    approvalMode = overrideMode
+                                )
+                            )
+                        )
+                    }
                 )
             }
         }
 
-        editingMessageId?.let {
-            EditHintBar(
-                onCancel = {
-                    editingMessageId = null
-                    inputText = ""
-                }
-            )
-        }
-        if (selectedMentions.isNotEmpty()) {
-            MentionedFilesBar(
-                mentions = selectedMentions,
-                knowledgePaths = projectKnowledgePathSet,
-                snapshotNamesByPath = projectKnowledgeSnapshotNamesByPath,
-                onRemove = { mention -> selectedMentions.removeAll { it.path == mention.path } }
-            )
-        }
-        if (selectedImages.isNotEmpty()) {
-            PendingImageAttachmentsBar(
-                attachments = selectedImages.toList(),
-                onOpenPreview = { attachments, index ->
-                    previewImages = attachments.map { attachment ->
-                        ImagePreviewItemUi(
-                            title = attachment.fileName.ifBlank { "未命名图片" },
-                            uri = attachment.uri,
-                            mimeType = attachment.mimeType
-                        )
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalAlignment = Alignment.End
+        ) {
+            if (currentProjectLabel != null) {
+                CurrentWorkspaceHint(
+                    title = currentWorkspaceTitle,
+                    workspaceLabel = currentProjectLabel,
+                    helperText = currentWorkspaceHelperText,
+                    expanded = showCurrentWorkspaceHint,
+                    onToggleExpanded = { showCurrentWorkspaceHint = !showCurrentWorkspaceHint }
+                )
+            }
+            if (state.fileChanges.isNotEmpty()) {
+                FileChangeStatusHint(
+                    latestCheckpoint = state.checkpoints.firstOrNull(),
+                    totalCount = state.fileChanges.size,
+                    batchCount = state.checkpoints.size,
+                    expanded = showFileChangeHint,
+                    onToggleExpanded = { showFileChangeHint = !showFileChangeHint },
+                    onClick = { showFileChangeHistory = true }
+                )
+            }
+            if (state.subagentRuns.isNotEmpty()) {
+                SubagentStatusHint(
+                    runs = state.subagentRuns,
+                    expanded = showSubagentHint,
+                    onToggleExpanded = { showSubagentHint = !showSubagentHint },
+                    onClick = { showSubagentHistory = true }
+                )
+            }
+            if (workflowExecutionMode == WorkflowExecutionMode.SINGLE_PASS) {
+                WorkflowExecutionPreferenceHint(
+                    title = executionProfileHint.title,
+                    message = executionProfileHint.message,
+                    expanded = showWorkflowPreferenceHint,
+                    onToggleExpanded = { showWorkflowPreferenceHint = !showWorkflowPreferenceHint }
+                )
+            }
+            state.compressionSnapshot?.let { snapshot ->
+                CompressionStatusHint(
+                    version = snapshot.version,
+                    totalVersions = state.compressionSnapshots.size,
+                    summary = snapshot.summary,
+                    sourceMessageCount = snapshot.sourceMessageCount,
+                    active = snapshot.active,
+                    createdAt = snapshot.createdAt,
+                    expanded = showCompressionHint,
+                    onToggleExpanded = { showCompressionHint = !showCompressionHint },
+                    onClick = { showCompressionHistory = true }
+                )
+            }
+            if (
+                compressionSuggestion != null &&
+                !state.isProcessing &&
+                (dismissedCompressionSuggestionAtCount == null ||
+                    state.messages.size > dismissedCompressionSuggestionAtCount!!)
+            ) {
+                CompressionSuggestionHint(
+                    suggestion = compressionSuggestion,
+                    expanded = showCompressionHint,
+                    onToggleExpanded = { showCompressionHint = !showCompressionHint },
+                    onCompress = onCompressContext,
+                    onDismiss = {
+                        dismissedCompressionSuggestionAtCount = state.messages.size
+                        showCompressionHint = false
                     }
-                    previewImageIndex = index
-                },
-                onRemove = { attachment ->
-                    selectedImages.removeAll { it.uri == attachment.uri }
-                }
-            )
+                )
+            }
         }
-        if (recentImageAttachments.isNotEmpty()) {
-            RecentImageAttachmentsBar(
-                attachments = recentImageAttachments,
-                selectedUris = selectedImages.map { it.uri }.toSet(),
-                onReuse = { attachment ->
-                    val pending = PendingImageAttachmentUi(
-                        uri = Uri.fromFile(File(attachment.localCachePath)).toString(),
-                        fileName = attachment.fileName,
-                        mimeType = attachment.mimeType
-                    )
-                    if (selectedImages.none { it.uri == pending.uri }) {
-                        selectedImages.add(pending)
-                    }
-                },
-                onOpenPreview = { attachments, index ->
-                    previewImages = attachments.map { attachment ->
-                        ImagePreviewItemUi(
-                            title = attachment.fileName.ifBlank { "最近图片" },
-                            localCachePath = attachment.localCachePath,
-                            mimeType = attachment.mimeType
-                        )
-                    }
-                    previewImageIndex = index
-                }
-            )
-        }
-        activeInlineMentionQuery?.let { query ->
-            MentionInputHintBar(
-                query = query,
-                matchCount = inlineMentionResults.size,
-                onOpenPicker = {
-                    mentionQuery = query
-                    showMentionPicker = true
-                }
-            )
-            InlineMentionSuggestionsCard(
-                query = query,
-                recentMentions = recentMentions.toList(),
-                results = inlineMentionResults,
-                knowledgePaths = projectKnowledgePathSet,
-                knowledgeOutlines = projectKnowledgeOutlineMap,
-                snapshotNamesByPath = projectKnowledgeSnapshotNamesByPath,
-                onSelect = { mention -> handleMentionSelect(mention) }
-            )
-        }
-
-        // 输入栏
-        InputBar(
-            text = inputText,
-            onTextChange = { updatedText ->
-                if (inputHistoryIndex >= 0) {
-                    val recalledText = inputHistory.getOrNull(inputHistoryIndex)
-                    if (updatedText != recalledText) {
-                        inputHistoryIndex = -1
-                        inputDraftBeforeHistory = updatedText
-                    }
-                } else {
-                    inputDraftBeforeHistory = updatedText
-                }
-                inputText = updatedText
-                val activeMentionQuery = extractActiveMentionQuery(updatedText)
-                if (activeMentionQuery != null && !state.isProcessing) {
-                    mentionQuery = activeMentionQuery
-                } else {
-                    mentionQuery = ""
-                }
-                if (showMentionPicker && updatedText.isBlank()) {
-                    showMentionPicker = false
-                }
-            },
-            onInputFocusChanged = { focused ->
-                inputHasFocus = focused
-            },
-            onSend = {
-                if ((inputText.isNotBlank() || selectedImages.isNotEmpty()) && !state.isProcessing) {
-                    val sentText = inputText.trim()
-                    if (sentText.isNotBlank()) {
-                        inputHistory.removeAll { it == sentText }
-                        inputHistory.add(sentText)
-                        while (inputHistory.size > 50) {
-                            inputHistory.removeAt(0)
-                        }
-                    }
-                    onSend(sentText, selectedMentions.toList(), selectedImages.toList())
-                    inputText = ""
-                    inputHistoryIndex = -1
-                    inputDraftBeforeHistory = ""
-                    editingMessageId = null
-                    selectedMentions.clear()
-                    selectedImages.clear()
-                }
-            },
-            onPreviousInput = {
-                if (inputHistory.isEmpty()) return@InputBar
-                if (inputHistoryIndex == -1) {
-                    inputDraftBeforeHistory = inputText
-                    inputHistoryIndex = inputHistory.lastIndex
-                } else if (inputHistoryIndex > 0) {
-                    inputHistoryIndex -= 1
-                }
-                inputText = inputHistory[inputHistoryIndex]
-            },
-            onNextInput = {
-                if (inputHistoryIndex == -1) return@InputBar
-                if (inputHistoryIndex < inputHistory.lastIndex) {
-                    inputHistoryIndex += 1
-                    inputText = inputHistory[inputHistoryIndex]
-                } else {
-                    inputHistoryIndex = -1
-                    inputText = inputDraftBeforeHistory
-                }
-            },
-            onPlan = {
-                if (inputText.isNotBlank() && selectedImages.isEmpty() && !state.isProcessing) {
-                    onGeneratePlan(inputText.trim(), selectedMentions.toList())
-                }
-            },
-            onCaptureImage = {
-                if (!state.isProcessing) {
-                    cameraPreviewLauncher.launch(null)
-                }
-            },
-            onPickImages = {
-                if (!state.isProcessing) {
-                    imagePickerLauncher.launch("image/*")
-                }
-            },
-            onMention = {
-                mentionQuery = extractActiveMentionQuery(inputText) ?: ""
-                showMentionPicker = true
-            },
-            canRecallPrevious = inputHistory.isNotEmpty(),
-            canRecallNext = inputHistoryIndex != -1,
-            canSend = inputText.isNotBlank() || selectedImages.isNotEmpty(),
-            allowStructuredActions = selectedImages.isEmpty(),
-            enabled = true,
-            isSending = state.isProcessing,
-            onStopSending = onStopSending
-        )
     }
 
     if (previewImages.isNotEmpty()) {
@@ -739,23 +960,13 @@ fun ChatScreen(
     if (showMentionPicker) {
         MentionFilePickerDialog(
             query = mentionQuery,
-            initialResults = mergeProjectKnowledgeMentions(
-                projectKnowledgeMentions = projectKnowledgeMentions,
-                searchResults = onSearchFiles(mentionQuery),
-                query = mentionQuery
-            ),
             recentMentions = recentMentions.toList(),
             knowledgePaths = projectKnowledgePathSet,
             knowledgeOutlines = projectKnowledgeOutlineMap,
             snapshotNamesByPath = projectKnowledgeSnapshotNamesByPath,
             onQueryChange = { mentionQuery = it },
-            onSearch = { query ->
-                mergeProjectKnowledgeMentions(
-                    projectKnowledgeMentions = projectKnowledgeMentions,
-                    searchResults = onSearchFiles(query),
-                    query = query
-                )
-            },
+            onSearch = onSearchFiles,
+            projectKnowledgeMentions = projectKnowledgeMentions,
             onDismiss = { showMentionPicker = false },
             onSelect = { mention -> handleMentionSelect(mention) }
         )
@@ -853,52 +1064,117 @@ fun ChatScreen(
     }
 }
 
-// #region debug-point D:chat-debug-reporter
-private const val ENABLE_REASONIX_BACK_DEBUG_REPORTS = true
-
-private fun reportGitBackChatFlashChatDebug(
-    hypothesisId: String,
-    location: String,
-    msg: String,
-    data: JSONObject
-) {
-    if (!ENABLE_REASONIX_BACK_DEBUG_REPORTS) return
-    Thread {
-        runCatching {
-            val connection = (URL("http://192.168.2.3:7777/event").openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 1200
-                readTimeout = 1200
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json")
-            }
-            val payload = JSONObject()
-                .put("sessionId", "app-launch-crash")
-                .put("runId", "pre-fix")
-                .put("hypothesisId", hypothesisId)
-                .put("location", location)
-                .put("msg", msg)
-                .put("data", data)
-                .put("ts", System.currentTimeMillis())
-                .toString()
-            connection.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-            runCatching { connection.inputStream.use { input -> while (input.read() != -1) {} } }
-            connection.disconnect()
-        }
-    }.start()
-}
-// #endregion
 
 @Composable
-private fun WorkflowExecutionStatusBar(autoRouteBeforeExecution: Boolean) {
-    WorkflowStatusStrip(
-        title = "执行偏好",
-        message = if (autoRouteBeforeExecution) {
-            "单次工作流优先，发送前会自动判断直执、计划或澄清，尽量减少上下文污染。"
-        } else {
-            "单次工作流优先，但已关闭发送前自动分流，发送后会直接执行。"
+private fun WorkflowExecutionPreferenceHint(
+    title: String,
+    message: String,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit
+) {
+    CompactTopHint(
+        badge = "档",
+        title = title,
+        message = message,
+        expanded = expanded,
+        onToggleExpanded = onToggleExpanded
+    )
+}
+
+private data class WorkflowExecutionProfileHintUi(
+    val title: String,
+    val message: String
+)
+
+private fun buildWorkflowExecutionProfileHint(
+    config: ProviderConfig
+): WorkflowExecutionProfileHintUi {
+    val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
+    val mainSummary = buildMainExecutionProfileHintSummary(config, provider)
+    val plannerSummary = buildOverrideExecutionProfileHintSummary(
+        provider = provider,
+        enabled = config.plannerProfileEnabled,
+        inheritedModel = config.getActiveModel(),
+        inheritedReasoningEffort = config.getActiveReasoningEffort(),
+        overrideModel = config.plannerModel,
+        overrideReasoningEffort = config.plannerReasoningEffort
+    )
+    val subagentSummary = buildOverrideExecutionProfileHintSummary(
+        provider = provider,
+        enabled = config.subagentDefaultProfileEnabled,
+        inheritedModel = config.getActiveModel(),
+        inheritedReasoningEffort = config.getActiveReasoningEffort(),
+        overrideModel = config.subagentDefaultModel,
+        overrideReasoningEffort = config.subagentDefaultReasoningEffort
+    )
+    return WorkflowExecutionProfileHintUi(
+        title = "执行 Profile · ${provider.name}",
+        message = buildString {
+            append(
+                if (config.autoRouteBeforeExecution) {
+                    "单次工作流开启，发送前会先做自动分流。"
+                } else {
+                    "单次工作流开启，发送后直接进入执行。"
+                }
+            )
+            append("\n主聊天: ").append(mainSummary)
+            append("\n计划 / 分流: ").append(plannerSummary)
+            append("\n子代理默认: ").append(subagentSummary)
         }
     )
+}
+
+private fun buildMainExecutionProfileHintSummary(
+    config: ProviderConfig,
+    provider: com.murong.agent.core.provider.ModelProvider
+): String {
+    val resolvedModel = config.getActiveModel()
+    val reasoningEffort = config.getActiveReasoningEffort()
+    val supportsAutoModelSelection = config.activeProviderId == "deepseek"
+    val modelPart = if (supportsAutoModelSelection && config.isModelAutoSelectionEnabled()) {
+        "模型自动（${provider.formatModelDisplayName(resolvedModel)}）"
+    } else {
+        "模型固定（${provider.formatModelDisplayName(resolvedModel)}）"
+    }
+    val reasoningPart = if (provider.supportsReasoning) {
+        val reasoningLabel = provider.formatReasoningDisplayName(reasoningEffort) ?: reasoningEffort.orEmpty()
+        if (config.isReasoningAutoSelectionEnabled()) {
+            "推理自动（$reasoningLabel）"
+        } else {
+            "推理固定（$reasoningLabel）"
+        }
+    } else {
+        "无独立推理档位"
+    }
+    return "$modelPart · $reasoningPart"
+}
+
+private fun buildOverrideExecutionProfileHintSummary(
+    provider: com.murong.agent.core.provider.ModelProvider,
+    enabled: Boolean,
+    inheritedModel: String,
+    inheritedReasoningEffort: String?,
+    overrideModel: String,
+    overrideReasoningEffort: String
+): String {
+    if (!enabled) return "继承主聊天"
+    val resolvedModel = overrideModel.trim().ifBlank { inheritedModel }
+    val resolvedReasoning = overrideReasoningEffort.trim().ifBlank {
+        inheritedReasoningEffort.orEmpty()
+    }
+    val profileLabel = provider.buildExecutionProfileLabel(
+        modelId = resolvedModel,
+        reasoningEffort = resolvedReasoning.ifBlank { null }
+    )
+    val overrideParts = buildList {
+        if (overrideModel.isNotBlank()) add("模型")
+        if (overrideReasoningEffort.isNotBlank()) add("推理")
+    }
+    return if (overrideParts.isEmpty()) {
+        "已开启，但当前仍继承主聊天 · $profileLabel"
+    } else {
+        "独立${overrideParts.joinToString("+")} · $profileLabel"
+    }
 }
 
 @Composable
@@ -968,6 +1244,73 @@ private fun WorkflowStatusStrip(
             style = MaterialTheme.typography.bodySmall,
             color = mutedTextColor
         )
+    }
+}
+
+@Composable
+private fun CompactTopHint(
+    badge: String,
+    title: String,
+    message: String,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
+    onBubbleClick: (() -> Unit)? = null,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+    secondaryActionLabel: String? = null,
+    onSecondaryAction: (() -> Unit)? = null
+) {
+    val chromeColor = rememberMurongChromeColor()
+    val mutedTextColor = rememberMurongMutedTextColor()
+    Row(
+        modifier = Modifier
+            .padding(end = 12.dp),
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.Top
+    ) {
+        AnimatedVisibility(visible = expanded) {
+            Surface(
+                color = chromeColor,
+                tonalElevation = 2.dp,
+                shape = MaterialTheme.shapes.large,
+                modifier = Modifier
+                    .widthIn(max = 280.dp)
+                    .then(if (onBubbleClick != null) Modifier.clickable(onClick = onBubbleClick) else Modifier)
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    Text(message, style = MaterialTheme.typography.bodySmall, color = mutedTextColor)
+                    if (actionLabel != null && onAction != null) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilledTonalButton(onClick = onAction) { Text(actionLabel) }
+                            if (secondaryActionLabel != null && onSecondaryAction != null) {
+                                TextButton(onClick = onSecondaryAction) { Text(secondaryActionLabel) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Surface(
+            shape = RoundedCornerShape(999.dp),
+            color = chromeColor,
+            tonalElevation = 2.dp,
+            modifier = Modifier
+                .size(28.dp)
+                .clickable(onClick = onToggleExpanded)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    text = badge,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
     }
 }
 
@@ -1139,14 +1482,13 @@ private fun WorkflowPlanCard(
                             contentPadding = PaddingValues(12.dp),
                             surfaceColorOverride = surfaceColor.copy(alpha = 0.68f)
                         ) {
-                            SelectionContainer {
-                                Text(
-                                    text = plan.rawPlan,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
+                            NativeSelectableScrollableText(
+                                text = plan.rawPlan,
+                                modifier = Modifier.fillMaxWidth(),
+                                monospace = true,
+                                fontSizeSp = 12f,
+                                maxHeight = 320.dp
+                            )
                         }
                     }
                 }
@@ -1407,6 +1749,196 @@ private fun ClarificationCard(
                     modifier = Modifier.weight(1f)
                 ) {
                     Text(if (request.turnIndex >= request.maxTurns) "继续执行" else "继续判断")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AskUserCard(
+    request: PendingAskRequestUi,
+    onSubmit: (List<AskAnswerUi>) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var activeIndex by remember(request.id) { mutableIntStateOf(0) }
+    val selectedAnswers = remember(request.id) { mutableStateMapOf<String, Set<String>>() }
+    val customAnswers = remember(request.id) { mutableStateMapOf<String, String>() }
+    val accent = rememberMurongAccentColor()
+    val surfaceColor = rememberMurongSurfaceColor()
+    val chromeColor = rememberMurongChromeColor()
+    val mutedTextColor = rememberMurongMutedTextColor()
+    val currentQuestion = request.questions.getOrNull(activeIndex) ?: return
+
+    fun resolvedAnswer(question: AskQuestionUi): List<String> {
+        val custom = customAnswers[question.id].orEmpty().trim()
+        if (custom.isNotBlank()) return listOf(custom)
+        return selectedAnswers[question.id].orEmpty().toList()
+    }
+
+    fun hasAnswer(question: AskQuestionUi): Boolean = resolvedAnswer(question).isNotEmpty()
+
+    fun buildAnswers(): List<AskAnswerUi> {
+        return request.questions.mapNotNull { question ->
+            resolvedAnswer(question)
+                .takeIf { it.isNotEmpty() }
+                ?.let { AskAnswerUi(questionId = question.id, selectedOptions = it) }
+        }
+    }
+
+    val allAnswered = request.questions.all(::hasAnswer)
+    val currentSelections = selectedAnswers[currentQuestion.id].orEmpty()
+    val currentCustomAnswer = customAnswers[currentQuestion.id].orEmpty()
+
+    MurongGlassSurface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        shape = MaterialTheme.shapes.large,
+        contentPadding = PaddingValues(14.dp),
+        surfaceColorOverride = chromeColor.copy(alpha = 0.70f)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                text = request.title,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = "问题 ${activeIndex + 1} / ${request.questions.size}",
+                style = MaterialTheme.typography.labelMedium,
+                color = accent
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                request.questions.forEachIndexed { index, question ->
+                    FilterChip(
+                        selected = index == activeIndex,
+                        onClick = { activeIndex = index },
+                        label = {
+                            Text(
+                                question.header.ifBlank { "问题 ${index + 1}" }
+                            )
+                        },
+                        leadingIcon = if (hasAnswer(question)) {
+                            {
+                                Text(
+                                    text = "✓",
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            }
+                        } else {
+                            null
+                        }
+                    )
+                }
+            }
+            MurongGlassSurface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                surfaceColorOverride = surfaceColor.copy(alpha = 0.70f)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = currentQuestion.header.ifBlank { "请确认这个选择" },
+                        style = MaterialTheme.typography.labelLarge,
+                        color = accent
+                    )
+                    Text(
+                        text = currentQuestion.question,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = if (currentQuestion.multiSelect) "可多选，也可直接输入自定义回答。" else "单选题，也可直接输入自定义回答。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                }
+            }
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                currentQuestion.options.forEach { option ->
+                    FilterChip(
+                        selected = option.label in currentSelections && currentCustomAnswer.isBlank(),
+                        onClick = {
+                            customAnswers[currentQuestion.id] = ""
+                            selectedAnswers[currentQuestion.id] = if (currentQuestion.multiSelect) {
+                                currentSelections.toMutableSet().apply {
+                                    if (!add(option.label)) {
+                                        remove(option.label)
+                                    }
+                                }
+                            } else {
+                                setOf(option.label)
+                            }
+                        },
+                        label = {
+                            Column {
+                                Text(option.label)
+                                option.description
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?.let { description ->
+                                        Text(
+                                            text = description,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = mutedTextColor
+                                        )
+                                    }
+                            }
+                        }
+                    )
+                }
+            }
+            OutlinedTextField(
+                value = currentCustomAnswer,
+                onValueChange = { value ->
+                    customAnswers[currentQuestion.id] = value
+                    if (value.isNotBlank()) {
+                        selectedAnswers.remove(currentQuestion.id)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("或输入自定义回答") },
+                maxLines = 3
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                MurongOutlinedActionButton(
+                    text = "关闭",
+                    onClick = onDismiss,
+                    modifier = Modifier.weight(1f)
+                )
+                if (activeIndex > 0) {
+                    MurongOutlinedActionButton(
+                        text = "上一题",
+                        onClick = { activeIndex -= 1 },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Button(
+                    onClick = {
+                        if (activeIndex < request.questions.lastIndex) {
+                            activeIndex += 1
+                        } else {
+                            onSubmit(buildAnswers())
+                        }
+                    },
+                    enabled = if (activeIndex < request.questions.lastIndex) {
+                        hasAnswer(currentQuestion)
+                    } else {
+                        allAnswered
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(if (activeIndex < request.questions.lastIndex) "下一题" else "提交回答")
                 }
             }
         }
@@ -1715,13 +2247,13 @@ private fun MentionInputHintBar(
 @Composable
 private fun MentionFilePickerDialog(
     query: String,
-    initialResults: List<FileMentionUi>,
     recentMentions: List<FileMentionUi>,
     knowledgePaths: Set<String>,
     knowledgeOutlines: Map<String, ProjectKnowledgeOutlineUi>,
     snapshotNamesByPath: Map<String, List<String>>,
+    projectKnowledgeMentions: List<FileMentionUi>,
     onQueryChange: (String) -> Unit,
-    onSearch: (String) -> List<FileMentionUi>,
+    onSearch: suspend (String) -> List<FileMentionUi>,
     onDismiss: () -> Unit,
     onSelect: (FileMentionUi) -> Unit
 ) {
@@ -1729,8 +2261,17 @@ private fun MentionFilePickerDialog(
     val surfaceColor = rememberMurongSurfaceColor()
     val chromeColor = rememberMurongChromeColor()
     val mutedTextColor = rememberMurongMutedTextColor()
-    val results = remember(localQuery, initialResults) {
-        if (localQuery == query) initialResults else onSearch(localQuery)
+    val results by produceState(
+        initialValue = emptyList(),
+        key1 = localQuery,
+        key2 = query,
+        key3 = projectKnowledgeMentions
+    ) {
+        value = mergeProjectKnowledgeMentions(
+            projectKnowledgeMentions = projectKnowledgeMentions,
+            searchResults = onSearch(localQuery),
+            query = localQuery
+        )
     }
     val knowledgeResults = remember(localQuery, results, knowledgePaths) {
         if (localQuery.isBlank()) emptyList() else results.filter { it.path in knowledgePaths }
@@ -1794,6 +2335,9 @@ private fun MentionFilePickerDialog(
                                                 if (mention.path in knowledgePaths) {
                                                     MentionKnowledgeBadge(compact = true)
                                                 }
+                                                if (mention.path.startsWith("github://")) {
+                                                    MentionRemoteBadge(compact = true)
+                                                }
                                                 snapshotNamesByPath[mention.path]
                                                     .orEmpty()
                                                     .take(1)
@@ -1814,7 +2358,7 @@ private fun MentionFilePickerDialog(
                     }
                     if (results.isEmpty()) {
                         Text(
-                            text = "当前没有匹配文件，先进入项目任务并确保项目目录已绑定。",
+                            text = "当前没有匹配文件；本地项目会搜工作区，远端任务仓库会按文件名搜索 GitHub 文件。",
                             style = MaterialTheme.typography.bodySmall,
                             color = mutedTextColor
                         )
@@ -1975,6 +2519,27 @@ private fun MentionSnapshotBadge(
 }
 
 @Composable
+private fun MentionRemoteBadge(
+    compact: Boolean = false
+) {
+    val chromeColor = rememberMurongChromeColor()
+    Surface(
+        shape = MaterialTheme.shapes.small,
+        color = chromeColor.copy(alpha = 0.68f)
+    ) {
+        Text(
+            text = "远端",
+            modifier = Modifier.padding(
+                horizontal = if (compact) 4.dp else 6.dp,
+                vertical = if (compact) 1.dp else 2.dp
+            ),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
+@Composable
 private fun MentionCandidateRow(
     mention: FileMentionUi,
     query: String,
@@ -1987,6 +2552,9 @@ private fun MentionCandidateRow(
     val matchReason = remember(mention, query) {
         mentionMatchReasonLabel(mention, query)
     }
+    val isRemoteMention = remember(mention.path) {
+        mention.path.startsWith("github://")
+    }
     Surface(
         shape = MaterialTheme.shapes.medium,
         color = containerColor,
@@ -1998,13 +2566,16 @@ private fun MentionCandidateRow(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            if (isKnowledge || matchReason != null) {
+            if (isKnowledge || matchReason != null || isRemoteMention) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     if (isKnowledge) {
                         MentionKnowledgeBadge()
+                    }
+                    if (isRemoteMention) {
+                        MentionRemoteBadge()
                     }
                     snapshotNames.take(2).forEach { snapshotName ->
                         MentionSnapshotBadge(label = snapshotName)
@@ -2074,9 +2645,13 @@ private fun buildProjectKnowledgeSnapshotNamesByPath(
 }
 
 @Composable
-private fun WebFetchResultCard(result: WebFetchResultUi) {
+private fun WebFetchResultCard(
+    result: WebFetchResultUi,
+    isScreenActive: Boolean,
+    stateKey: String
+) {
     val canExpand = result.excerpt.isNotBlank() || result.content.isNotBlank()
-    var expanded by remember(result.url, result.content, result.excerpt) { mutableStateOf(false) }
+    var expanded by rememberSaveable(stateKey) { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         ToolCardHeader(
             toolName = result.title.ifBlank { "网页抓取" },
@@ -2100,7 +2675,7 @@ private fun WebFetchResultCard(result: WebFetchResultUi) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        AnimatedVisibility(visible = expanded) {
+        AnimatedVisibility(visible = expanded && isScreenActive) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (result.excerpt.isNotBlank()) {
                     DetailBlock("摘要", result.excerpt)
@@ -2190,6 +2765,8 @@ private fun MessageImageAttachmentGallery(
 @Composable
 private fun MessageBubble(
     msg: ChatMessageUi,
+    isScreenActive: Boolean = true,
+    previousMessage: ChatMessageUi? = null,
     subagentRun: SubagentRunUi? = null,
     subagentBatch: SubagentBatchUi? = null,
     onLongPress: () -> Unit = {},
@@ -2248,21 +2825,38 @@ private fun MessageBubble(
                     }
                 }
                 if (msg.content.isNotBlank()) {
-                    SelectionContainer {
-                        Text(
+                    if (shouldUseNativeScrollableSelectableText(msg.content)) {
+                        NativeSelectableScrollableText(
                             text = msg.content,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontSize = 14.sp
+                            modifier = Modifier.fillMaxWidth(),
+                            fontSizeSp = 14f,
+                            maxHeight = 280.dp
                         )
+                    } else {
+                        SelectionContainer {
+                            Text(
+                                text = msg.content,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 14.sp
+                            )
+                        }
                     }
                 }
             }
         } else if (isToolExec) {
+            val previousToolExecution = remember(previousMessage?.content) {
+                previousMessage
+                    ?.takeIf { it.role == "tool_exec" }
+                    ?.let { parseToolExecutionMessage(it.content) }
+            }
             val toolExecution = remember(msg.content) {
                 parseToolExecutionMessage(msg.content)
             }
-            val toolResult = remember(msg.content) {
-                parseToolResultMessage(msg.content)
+            val toolResult = remember(msg.content, previousToolExecution) {
+                parseToolResultMessage(
+                    content = msg.content,
+                    previousExecution = previousToolExecution
+                )
             }
             val webFetchResult = remember(msg.content) {
                 parseWebFetchToolMessage(msg.content)
@@ -2270,13 +2864,22 @@ private fun MessageBubble(
             val quietToolCard = toolExecution?.isQuiet == true ||
                 toolResult?.isQuiet == true ||
                 webFetchResult != null
+            val messageStateKey = remember(msg.id, msg.content) {
+                msg.id.toString()
+            }
             MurongGlassSurface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .combinedClickable(
-                        onClick = {},
-                        onLongClick = onLongPress
-                    ),
+                    .let { baseModifier ->
+                        if (quietToolCard || toolResult?.renderResultAsCode == true) {
+                            baseModifier
+                        } else {
+                            baseModifier.combinedClickable(
+                                onClick = {},
+                                onLongClick = onLongPress
+                            )
+                        }
+                    },
                 shape = if (quietToolCard) RoundedCornerShape(16.dp) else MaterialTheme.shapes.large,
                 contentPadding = PaddingValues(
                     horizontal = 12.dp,
@@ -2291,19 +2894,29 @@ private fun MessageBubble(
                 )
                 Spacer(modifier = Modifier.height(6.dp))
                 if (toolExecution != null) {
-                    ToolExecutionCard(tool = toolExecution)
+                    ToolExecutionCard(
+                        tool = toolExecution,
+                        isScreenActive = isScreenActive,
+                        stateKey = "exec:$messageStateKey"
+                    )
                 } else if (toolResult != null) {
-                    ToolResultCard(tool = toolResult)
+                    ToolResultCard(
+                        tool = toolResult,
+                        isScreenActive = isScreenActive,
+                        stateKey = "result:$messageStateKey"
+                    )
                 } else if (webFetchResult != null) {
-                    WebFetchResultCard(result = webFetchResult)
+                    WebFetchResultCard(
+                        result = webFetchResult,
+                        isScreenActive = isScreenActive,
+                        stateKey = "web:$messageStateKey"
+                    )
                 } else {
-                    SelectionContainer {
-                        MarkdownText(
-                            text = msg.content,
-                            modifier = Modifier.fillMaxWidth(),
-                            fontSize = 12
-                        )
-                    }
+                    SelectableMarkdownContent(
+                        text = msg.content,
+                        fontSize = 12,
+                        maxHeight = 320.dp
+                    )
                 }
             }
         } else if (isSubagent) {
@@ -2337,13 +2950,11 @@ private fun MessageBubble(
                         color = accent
                     )
                     Spacer(modifier = Modifier.height(6.dp))
-                    SelectionContainer {
-                        MarkdownText(
-                            text = msg.content,
-                            modifier = Modifier.fillMaxWidth(),
-                            fontSize = 13
-                        )
-                    }
+                    SelectableMarkdownContent(
+                        text = msg.content,
+                        fontSize = 13,
+                        maxHeight = 320.dp
+                    )
                 }
             }
         } else if (isSystem) {
@@ -2358,18 +2969,28 @@ private fun MessageBubble(
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
                 surfaceColorOverride = chromeColor.copy(alpha = 0.70f)
             ) {
-                SelectionContainer {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
                         text = "系统状态",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.error
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = msg.content,
-                        color = MaterialTheme.colorScheme.error,
-                        fontSize = 12.sp
-                    )
+                    if (shouldUseNativeScrollableSelectableText(msg.content)) {
+                        NativeSelectableScrollableText(
+                            text = msg.content,
+                            modifier = Modifier.fillMaxWidth(),
+                            fontSizeSp = 12f,
+                            maxHeight = 240.dp
+                        )
+                    } else {
+                        SelectionContainer {
+                            Text(
+                                text = msg.content,
+                                color = MaterialTheme.colorScheme.error,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
                 }
             }
         } else {
@@ -2395,6 +3016,7 @@ private fun MessageBubble(
                     ReasoningCard(
                         content = reasoningContent,
                         expanded = expanded,
+                        isScreenActive = isScreenActive,
                         isStreaming = msg.isStreaming,
                         onToggle = { expanded = !expanded }
                     )
@@ -2443,18 +3065,7 @@ private fun MessageBubble(
                                 )
                             }
                         }
-                        if (!msg.isStreaming) {
-                            val proposals = remember(msg.content) {
-                                detectDraftProposals(msg.content)
-                            }
-                            proposals.forEach { proposal ->
-                                Spacer(modifier = Modifier.height(8.dp))
-                                DraftProposalCard(
-                                    proposal = proposal,
-                                    onDismiss = {}
-                                )
-                            }
-                        } else if (msg.isStreaming) {
+                        if (msg.isStreaming) {
                             Text(
                                 text = "思考中…",
                                 color = mutedTextColor,
@@ -2551,6 +3162,9 @@ private fun MultimodalSection(
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null
 ) {
+    val useNativeScrollableText = remember(body) {
+        shouldUseNativeScrollableSelectableText(body)
+    }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -2568,13 +3182,22 @@ private fun MultimodalSection(
                 }
             }
         }
-        SelectionContainer {
-            Text(
+        if (useNativeScrollableText) {
+            NativeSelectableScrollableText(
                 text = body.ifBlank { "-" },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                lineHeight = 20.sp
+                modifier = Modifier.fillMaxWidth(),
+                fontSizeSp = 12f,
+                maxHeight = 280.dp
             )
+        } else {
+            SelectionContainer {
+                Text(
+                    text = body.ifBlank { "-" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    lineHeight = 20.sp
+                )
+            }
         }
     }
 }
@@ -2724,7 +3347,12 @@ private fun SubagentCard(
             )
             if (run.usageSummary.totalTokens > 0) {
                 Text(
-                    text = "Token ${run.usageSummary.totalTokens} · 预估 \$${"%.6f".format(run.usageSummary.estimatedCostUsd)}",
+                    text = "Token ${run.usageSummary.totalTokens} · 预估 ${
+                        formatCurrencyAmount(
+                            run.usageSummary.resolvedEstimatedCostAmount(),
+                            run.usageSummary.resolvedEstimatedCostCurrency()
+                        )
+                    }",
                     style = MaterialTheme.typography.bodySmall,
                     color = mutedTextColor
                 )
@@ -2962,7 +3590,12 @@ private fun SubagentDetailSheet(
             // ── 消耗 ──
             DetailBlock(
                 "消耗",
-                "总 Token ${run.usageSummary.totalTokens}\n输入 ${run.usageSummary.promptTokens} · 输出 ${run.usageSummary.completionTokens}\n预估成本 \$${"%.6f".format(run.usageSummary.estimatedCostUsd)}"
+                "总 Token ${run.usageSummary.totalTokens}\n输入 ${run.usageSummary.promptTokens} · 输出 ${run.usageSummary.completionTokens}\n预估成本 ${
+                    formatCurrencyAmount(
+                        run.usageSummary.resolvedEstimatedCostAmount(),
+                        run.usageSummary.resolvedEstimatedCostCurrency()
+                    )
+                }"
             )
             Spacer(modifier = Modifier.height(16.dp))
         }
@@ -3155,176 +3788,439 @@ private fun SheetActionItem(
     }
 }
 
+private fun buildGoalModeMessage(goal: String): String {
+    val normalizedGoal = goal.trim()
+    return """
+        当前目标：
+        $normalizedGoal
+
+        请围绕这个目标继续推进；如果目标还不够清晰，请先提一个必要的澄清问题，不要偏离这个目标。
+    """.trimIndent()
+}
+
+private fun buildGoalPlanModeInput(goal: String): String {
+    val normalizedGoal = goal.trim()
+    return """
+        当前目标：
+        $normalizedGoal
+
+        请先围绕这个目标生成一份简短、可执行的计划。
+    """.trimIndent()
+}
+
+@Composable
+private fun SelectedSkillsBar(
+    skills: List<GlobalSkill>,
+    onRemove: (GlobalSkill) -> Unit
+) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        skills.forEach { skill ->
+            FilterChip(
+                selected = true,
+                onClick = { onRemove(skill) },
+                label = {
+                    Text(
+                        "Skill: ${skill.title.ifBlank { "未命名" }}",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
+                trailingIcon = {
+                    Text("移除", fontSize = 10.sp)
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun SkillPickerDialog(
+    skills: List<GlobalSkill>,
+    selectedSkills: List<GlobalSkill>,
+    onDismiss: () -> Unit,
+    onToggleSkill: (GlobalSkill) -> Unit,
+    onClear: () -> Unit
+) {
+    val selectedKeys = remember(selectedSkills) {
+        selectedSkills.map { it.title.trim() to it.content.trim() }.toSet()
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("完成")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onClear, enabled = selectedSkills.isNotEmpty()) {
+                Text("清空")
+            }
+        },
+        title = {
+            Text("选择 Skills")
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (skills.isEmpty()) {
+                    Text(
+                        text = "当前没有可选 Skills。",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    skills.forEach { skill ->
+                        val isSelected = (skill.title.trim() to skill.content.trim()) in selectedKeys
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isSelected) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onToggleSkill(skill) }
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = skill.title.ifBlank { "未命名 Skill" },
+                                        style = MaterialTheme.typography.titleSmall
+                                    )
+                                    Checkbox(
+                                        checked = isSelected,
+                                        onCheckedChange = { onToggleSkill(skill) }
+                                    )
+                                }
+                                skill.description.takeIf { it.isNotBlank() }?.let {
+                                    Text(
+                                        text = it,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Text(
+                                    text = if (skill.runAs.name == "SUBAGENT") "子代理执行" else "行内执行",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+}
+
 @Composable
 private fun InputBar(
     text: String,
+    planModeEnabled: Boolean,
+    goalModeEnabled: Boolean,
+    hasSessionGoal: Boolean,
     onTextChange: (String) -> Unit,
     onInputFocusChanged: (Boolean) -> Unit,
+    currentApprovalModeLabel: String,
+    onPlanModeChange: (Boolean) -> Unit,
+    onGoalModeChange: (Boolean) -> Unit,
+    onOpenApprovalMode: () -> Unit,
     onSend: () -> Unit,
     onPreviousInput: () -> Unit,
     onNextInput: () -> Unit,
-    onPlan: () -> Unit,
     onCaptureImage: () -> Unit,
     onPickImages: () -> Unit,
     onMention: () -> Unit,
+    availableSkills: List<GlobalSkill>,
+    selectedSkillCount: Int,
+    onOpenSkillPicker: () -> Unit,
     canRecallPrevious: Boolean,
     canRecallNext: Boolean,
     canSend: Boolean,
     allowStructuredActions: Boolean,
+    canUseMultimodal: Boolean,
+    hasPendingImages: Boolean,
     enabled: Boolean,
     isSending: Boolean,
+    bottomReservedPadding: Dp,
     onStopSending: () -> Unit
 ) {
     var showMoreActions by remember { mutableStateOf(false) }
+    var inputBarHeightPx by remember { mutableIntStateOf(0) }
+    var textFieldHeightPx by remember { mutableIntStateOf(0) }
+    var actionRowHeightPx by remember { mutableIntStateOf(0) }
+    var textFieldFocused by remember { mutableStateOf(false) }
     val actionsEnabled = enabled && !isSending
     val accent = rememberMurongAccentColor()
     val surfaceColor = rememberMurongSurfaceColor()
     val mutedTextColor = rememberMurongMutedTextColor()
+    val density = LocalDensity.current
+    val imeBottomInsetPx = WindowInsets.ime.getBottom(density)
+    val imeVisible = imeBottomInsetPx > 0
+    val baseBottomGapPx = with(density) { (10.dp + bottomReservedPadding).toPx() }
+    val appliedBottomGap = with(density) { max(imeBottomInsetPx.toFloat(), baseBottomGapPx).toDp() }
 
-    MurongGlassSurface(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .navigationBarsPadding()
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        shape = MaterialTheme.shapes.extraLarge,
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-        surfaceColorOverride = surfaceColor.copy(alpha = 0.78f)
+            .padding(
+                start = 12.dp,
+                top = if (imeVisible) 6.dp else 10.dp,
+                end = 12.dp,
+                bottom = appliedBottomGap
+            )
     ) {
-        Column(
+        MurongGlassSurface(
             modifier = Modifier
-                .fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .fillMaxWidth()
+                .onSizeChanged { inputBarHeightPx = it.height },
+            shape = MaterialTheme.shapes.extraLarge,
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+            surfaceColorOverride = surfaceColor.copy(alpha = 0.78f)
         ) {
-            OutlinedTextField(
-                value = text,
-                onValueChange = onTextChange,
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .onFocusChanged { focusState ->
-                        onInputFocusChanged(focusState.isFocused)
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = onTextChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onSizeChanged { textFieldHeightPx = it.height }
+                        .onFocusChanged { focusState ->
+                            textFieldFocused = focusState.isFocused
+                            onInputFocusChanged(focusState.isFocused)
+                        },
+                    placeholder = {
+                        Text(
+                            composerPlaceholder(
+                                planModeEnabled = planModeEnabled,
+                                goalModeEnabled = goalModeEnabled,
+                                hasSessionGoal = hasSessionGoal
+                            ),
+                            color = mutedTextColor
+                        )
                     },
-                placeholder = {
-                    Text(
-                        "输入你的问题…",
-                        color = mutedTextColor
-                    )
-                },
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                    cursorColor = MaterialTheme.colorScheme.primary,
-                    focusedContainerColor = surfaceColor.copy(alpha = 0.34f),
-                    unfocusedContainerColor = surfaceColor.copy(alpha = 0.22f),
-                    disabledContainerColor = surfaceColor.copy(alpha = 0.14f)
-                ),
-                shape = MaterialTheme.shapes.large,
-                keyboardOptions = KeyboardOptions(imeAction = if (isSending) ImeAction.Default else ImeAction.Send),
-                keyboardActions = KeyboardActions(
-                    onSend = {
-                        when {
-                            isSending -> onStopSending()
-                            enabled && canSend -> onSend()
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                        cursorColor = MaterialTheme.colorScheme.primary,
+                        focusedContainerColor = surfaceColor.copy(alpha = 0.34f),
+                        unfocusedContainerColor = surfaceColor.copy(alpha = 0.22f),
+                        disabledContainerColor = surfaceColor.copy(alpha = 0.14f)
+                    ),
+                    shape = MaterialTheme.shapes.large,
+                    keyboardOptions = KeyboardOptions(imeAction = if (isSending) ImeAction.Default else ImeAction.Send),
+                    keyboardActions = KeyboardActions(
+                        onSend = {
+                            when {
+                                isSending -> onStopSending()
+                                enabled && canSend -> onSend()
+                            }
+                        }
+                    ),
+                    maxLines = 4,
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    enabled = enabled
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onSizeChanged { actionRowHeightPx = it.height },
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box {
+                        MurongTagButton(
+                            text = if (text.isBlank()) "更多" else "操作",
+                            onClick = {
+                                if (actionsEnabled) {
+                                    showMoreActions = true
+                                }
+                            }
+                        )
+                        DropdownMenu(
+                            expanded = showMoreActions,
+                            onDismissRequest = { showMoreActions = false }
+                        ) {
+                            if (canUseMultimodal) {
+                                DropdownMenuItem(
+                                    text = { Text("拍照") },
+                                    onClick = {
+                                        showMoreActions = false
+                                        onCaptureImage()
+                                    },
+                                    enabled = actionsEnabled
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("选图") },
+                                    onClick = {
+                                        showMoreActions = false
+                                        onPickImages()
+                                    },
+                                    enabled = actionsEnabled
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = { Text("@文件") },
+                                onClick = {
+                                    showMoreActions = false
+                                    onMention()
+                                },
+                                enabled = actionsEnabled
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (selectedSkillCount > 0) {
+                                            "Skills ($selectedSkillCount)"
+                                        } else {
+                                            "选择 Skills"
+                                        }
+                                    )
+                                },
+                                onClick = {
+                                    showMoreActions = false
+                                    onOpenSkillPicker()
+                                },
+                                enabled = actionsEnabled && availableSkills.isNotEmpty()
+                            )
+                            DropdownMenuItem(
+                                text = { Text(currentApprovalModeLabel) },
+                                onClick = {
+                                    showMoreActions = false
+                                    onOpenApprovalMode()
+                                },
+                                enabled = enabled
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(if (planModeEnabled) "计划: 开" else "计划: 关")
+                                },
+                                onClick = {
+                                    onPlanModeChange(!planModeEnabled)
+                                },
+                                enabled = actionsEnabled && allowStructuredActions
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (goalModeEnabled) {
+                                            if (hasSessionGoal) "更新目标: 开" else "设置目标: 开"
+                                        } else {
+                                            if (hasSessionGoal) "更新目标: 关" else "设置目标: 关"
+                                        }
+                                    )
+                                },
+                                onClick = {
+                                    onGoalModeChange(!goalModeEnabled)
+                                },
+                                enabled = actionsEnabled && allowStructuredActions
+                            )
+                            if (hasPendingImages && (planModeEnabled || goalModeEnabled)) {
+                                DropdownMenuItem(
+                                    text = { Text("当前模式下图片不会发送") },
+                                    onClick = { showMoreActions = false },
+                                    enabled = false
+                                )
+                            }
                         }
                     }
-                ),
-                maxLines = 4,
-                textStyle = MaterialTheme.typography.bodyMedium,
-                enabled = enabled
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box {
                     MurongTagButton(
-                        text = if (text.isBlank()) "更多" else "操作",
+                        text = "上一条",
                         onClick = {
-                            if (actionsEnabled) {
-                                showMoreActions = true
+                            if (actionsEnabled && canRecallPrevious) {
+                                onPreviousInput()
                             }
                         }
                     )
-                    DropdownMenu(
-                        expanded = showMoreActions,
-                        onDismissRequest = { showMoreActions = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("拍照") },
-                            onClick = {
-                                showMoreActions = false
-                                onCaptureImage()
-                            },
-                            enabled = actionsEnabled
-                        )
-                        DropdownMenuItem(
-                            text = { Text("选图") },
-                            onClick = {
-                                showMoreActions = false
-                                onPickImages()
-                            },
-                            enabled = actionsEnabled
-                        )
-                        DropdownMenuItem(
-                            text = { Text("@文件") },
-                            onClick = {
-                                showMoreActions = false
-                                onMention()
-                            },
-                            enabled = actionsEnabled
-                        )
-                        DropdownMenuItem(
-                            text = { Text("计划") },
-                            onClick = {
-                                showMoreActions = false
-                                onPlan()
-                            },
-                            enabled = actionsEnabled && allowStructuredActions && text.isNotBlank()
-                        )
-                    }
-                }
-                MurongTagButton(
-                    text = "上一条",
-                    onClick = {
-                        if (actionsEnabled && canRecallPrevious) {
-                            onPreviousInput()
-                        }
-                    }
-                )
-                MurongTagButton(
-                    text = "下一条",
-                    onClick = {
-                        if (actionsEnabled && canRecallNext) {
-                            onNextInput()
-                        }
-                    }
-                )
-                Button(
-                    onClick = {
-                        if (isSending) {
-                            onStopSending()
-                        } else {
-                            onSend()
-                        }
-                    },
-                    enabled = if (isSending) true else enabled && canSend,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isSending) {
-                            MaterialTheme.colorScheme.errorContainer
-                        } else {
-                            accent
-                        },
-                        contentColor = if (isSending) {
-                            MaterialTheme.colorScheme.onErrorContainer
-                        } else {
-                            MaterialTheme.colorScheme.onPrimary
+                    MurongTagButton(
+                        text = "下一条",
+                        onClick = {
+                            if (actionsEnabled && canRecallNext) {
+                                onNextInput()
+                            }
                         }
                     )
-                ) {
-                    Text(text = if (isSending) "终止" else "发送")
+                    Button(
+                        onClick = {
+                            if (isSending) {
+                                onStopSending()
+                            } else {
+                                onSend()
+                            }
+                        },
+                        enabled = if (isSending) true else enabled && canSend,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isSending) {
+                                MaterialTheme.colorScheme.errorContainer
+                            } else {
+                                accent
+                            },
+                            contentColor = if (isSending) {
+                                MaterialTheme.colorScheme.onErrorContainer
+                            } else {
+                                MaterialTheme.colorScheme.onPrimary
+                            }
+                        )
+                    ) {
+                        Text(
+                            text = if (isSending) "终止" else composerSubmitLabel(
+                                planModeEnabled = planModeEnabled,
+                                goalModeEnabled = goalModeEnabled,
+                                hasSessionGoal = hasSessionGoal
+                            )
+                        )
+                    }
                 }
             }
         }
+    }
+}
+
+private fun composerPlaceholder(
+    planModeEnabled: Boolean,
+    goalModeEnabled: Boolean,
+    hasSessionGoal: Boolean
+): String {
+    return when {
+        planModeEnabled && goalModeEnabled -> "描述当前目标，先给计划并按目标推进…"
+        planModeEnabled -> "描述你要达成的目标，先生成计划…"
+        goalModeEnabled && hasSessionGoal -> "输入新的会话目标，发送后将覆盖当前目标…"
+        goalModeEnabled -> "描述当前目标，后续回复会围绕它推进…"
+        else -> "输入你的问题…"
+    }
+}
+
+private fun composerSubmitLabel(
+    planModeEnabled: Boolean,
+    goalModeEnabled: Boolean,
+    hasSessionGoal: Boolean
+): String {
+    return when {
+        planModeEnabled && goalModeEnabled -> "目标+计划"
+        planModeEnabled -> "计划"
+        goalModeEnabled && hasSessionGoal -> "更新目标"
+        goalModeEnabled -> "设置目标"
+        else -> "发送"
     }
 }
 
@@ -3680,6 +4576,8 @@ fun LoadingIndicator() {
 private fun WelcomeView(
     hasApiKey: Boolean,
     onNavigateToSettings: () -> Unit,
+    compactForInput: Boolean = false,
+    onSizeChanged: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val chromeColor = rememberMurongChromeColor()
@@ -3688,12 +4586,13 @@ private fun WelcomeView(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(24.dp),
+            .onSizeChanged { onSizeChanged(it.height) }
+            .padding(horizontal = 24.dp, vertical = if (compactForInput) 12.dp else 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        verticalArrangement = if (compactForInput) Arrangement.Top else Arrangement.Center
     ) {
         Text(
-            text = "🤖 慕容AI",
+            text = "🤖 Murong Agent",
             fontSize = 28.sp,
             color = MaterialTheme.colorScheme.onBackground,
             fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
@@ -3966,194 +4865,6 @@ private fun highlightMentionText(
     }
 }
 
-// ── MCP / Skills 提案检测 ──
-
-private data class DraftProposalUi(
-    val type: DraftProposalType,
-    val rawText: String,
-    val previewLabel: String
-)
-
-private enum class DraftProposalType { MCP_SERVER, SKILL }
-
-private fun detectDraftProposals(content: String): List<DraftProposalUi> {
-    if (content.isBlank()) return emptyList()
-    val results = mutableListOf<DraftProposalUi>()
-    extractProposalCandidates(content).forEach { candidate ->
-        detectSkillProposalLabel(candidate)?.let { label ->
-            if (results.none { it.type == DraftProposalType.SKILL }) {
-                results += DraftProposalUi(
-                    type = DraftProposalType.SKILL,
-                    rawText = candidate.take(800),
-                    previewLabel = label
-                )
-            }
-        }
-        detectMcpProposalLabel(candidate)?.let { label ->
-            if (results.none { it.type == DraftProposalType.MCP_SERVER }) {
-                results += DraftProposalUi(
-                    type = DraftProposalType.MCP_SERVER,
-                    rawText = candidate.take(800),
-                    previewLabel = label
-                )
-            }
-        }
-    }
-    return results
-}
-
-private fun extractProposalCandidates(content: String): List<String> {
-    val trimmed = content.trim()
-    if (trimmed.isBlank()) return emptyList()
-    val fenced = Regex(
-        """```(?:murong-skill-draft|murong-skill|skill-draft|murong-mcp-draft|murong-mcp|mcp-draft)\s*([\s\S]*?)```""",
-        RegexOption.IGNORE_CASE
-    )
-        .findAll(trimmed)
-        .mapNotNull { it.groupValues.getOrNull(1)?.trim()?.takeIf(String::isNotBlank) }
-        .toList()
-    return fenced.distinct()
-}
-
-private fun detectSkillProposalLabel(candidate: String): String? {
-    val trimmed = candidate.trimStart('\uFEFF').trim()
-    if (trimmed.isBlank()) return null
-    if (trimmed.startsWith("---")) {
-        val title = Regex("(?im)^\\s*(title|name)\\s*:\\s*(.+)$")
-            .find(trimmed)
-            ?.groupValues
-            ?.getOrNull(2)
-            ?.trim()
-            ?.trim('"', '\'')
-        return if (title.isNullOrBlank()) "Skill 配置" else "Skill: $title"
-    }
-    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-        val title = Regex(""""(?:title|name)"\s*:\s*"([^"]+)"""")
-            .find(trimmed)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-        val hasSkillShape = Regex(""""(?:content|prompt|template|allowedTools|runAs)"\s*:""")
-            .containsMatchIn(trimmed)
-        return if (hasSkillShape) {
-            if (title.isNullOrBlank()) "Skill 配置" else "Skill: $title"
-        } else {
-            null
-        }
-    }
-
-    val fieldRegex = Regex(
-        """(?im)^(title|name|description|model|runAs|context|agent|allowed-tools|allowedTools|allowed_tools|prompt|content|instruction|body|标题|名称|描述|模型|运行方式|模式|允许工具|工具|提示词|内容|正文|指令)\s*[:：]\s*(.+)?$"""
-    )
-    val matches = fieldRegex.findAll(trimmed).toList()
-    val contentLike = matches.any {
-        it.groupValues[1].lowercase() in setOf("prompt", "content", "instruction", "body", "提示词", "内容", "正文", "指令")
-    }
-    val title = matches.firstOrNull {
-        it.groupValues[1].lowercase() in setOf("title", "name", "标题", "名称")
-    }?.groupValues?.getOrNull(2)?.trim().orEmpty()
-    val heading = Regex("""^(?:#+\s*)?Skill\s*[:：-]\s*(.+)$""", RegexOption.IGNORE_CASE)
-        .find(trimmed.lineSequence().firstOrNull().orEmpty())
-        ?.groupValues
-        ?.getOrNull(1)
-        ?.trim()
-        .orEmpty()
-    return if (matches.size >= 2 && (contentLike || title.isNotBlank() || heading.isNotBlank())) {
-        "Skill: ${title.ifBlank { heading.ifBlank { "导入 Skill" } }}"
-    } else {
-        null
-    }
-}
-
-private fun detectMcpProposalLabel(candidate: String): String? {
-    val trimmed = candidate.trim()
-    if (trimmed.isBlank()) return null
-    if (Regex(""""mcpServers"\s*:\s*\{""").containsMatchIn(trimmed)) {
-        val name = Regex(""""([a-zA-Z0-9._-]+)"\s*:\s*\{""")
-            .find(trimmed.substringAfter("\"mcpServers\"", trimmed))
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-        return if (name.isNullOrBlank()) "MCP 服务器配置" else "MCP: $name"
-    }
-    val normalizedLine = trimmed
-        .lineSequence()
-        .map { line ->
-            line.trim()
-                .removePrefix("-")
-                .removePrefix("*")
-                .trim()
-                .removeSurrounding("`")
-        }
-        .firstOrNull { line ->
-            line.contains("streamable+", ignoreCase = true) ||
-                Regex("^https?://", RegexOption.IGNORE_CASE).containsMatchIn(line) ||
-                Regex("""(^|=)\s*(npx|bunx|uvx|python3?|node)\b""", RegexOption.IGNORE_CASE).containsMatchIn(line)
-        }
-        ?: return null
-    val name = when {
-        "=" in normalizedLine -> normalizedLine.substringBefore("=").trim()
-        "streamable+" in normalizedLine.lowercase() || normalizedLine.startsWith("http", ignoreCase = true) ->
-            normalizedLine.substringAfter("://", "")
-                .substringBefore("/")
-                .substringBefore("?")
-                .substringBefore(":")
-                .trim()
-        else -> Regex("""\b(@?[a-zA-Z0-9._/-]+)\b""")
-            .find(normalizedLine.substringAfter(' ', normalizedLine))
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.substringAfterLast('/')
-            ?.substringAfterLast('@')
-            ?.trim()
-    }
-    return if (name.isNullOrBlank()) "MCP 服务器配置" else "MCP: $name"
-}
-
-@Composable
-private fun DraftProposalCard(
-    proposal: DraftProposalUi,
-    onDismiss: () -> Unit
-) {
-    val chromeColor = rememberMurongChromeColor()
-    val mutedTextColor = rememberMurongMutedTextColor()
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = chromeColor.copy(alpha = 0.68f),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = if (proposal.type == DraftProposalType.MCP_SERVER) "🔌 MCP 配置提案" else "📋 Skill 提案",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(modifier = Modifier.weight(1f))
-                TextButton(onClick = onDismiss) {
-                    Text("忽略", style = MaterialTheme.typography.labelSmall)
-                }
-            }
-            Text(
-                text = proposal.previewLabel,
-                style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = "检测到兼容草案块，不会自动导入或接入，请在设置页或项目页手动处理。",
-                style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor
-            )
-        }
-    }
-}
-
 private data class WebFetchResultUi(
     val url: String,
     val title: String,
@@ -4177,7 +4888,7 @@ private data class ToolResultMessageUi(
     val summary: String?,
     val result: String,
     val resultLanguage: String,
-    val resultWasFenced: Boolean,
+    val renderResultAsCode: Boolean,
     val fileChanges: List<String>,
     val truncated: Boolean,
     val isQuiet: Boolean
@@ -4187,6 +4898,7 @@ private data class ToolResultMessageUi(
 private fun ReasoningCard(
     content: String,
     expanded: Boolean,
+    isScreenActive: Boolean,
     isStreaming: Boolean,
     onToggle: () -> Unit
 ) {
@@ -4238,7 +4950,7 @@ private fun ReasoningCard(
                     color = mutedTextColor
                 )
             }
-            AnimatedVisibility(visible = expanded) {
+            AnimatedVisibility(visible = expanded && isScreenActive) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = surfaceColor.copy(alpha = 0.82f),
@@ -4247,13 +4959,12 @@ private fun ReasoningCard(
                     val normalizedContent = remember(content) {
                         normalizeReasoningMarkdown(content)
                     }
-                    SelectionContainer {
-                        MarkdownText(
-                            text = normalizedContent,
-                            fontSize = 12,
-                            modifier = Modifier.padding(10.dp)
-                        )
-                    }
+                    SelectableMarkdownContent(
+                        text = normalizedContent,
+                        fontSize = 12,
+                        modifier = Modifier.padding(10.dp),
+                        maxHeight = 320.dp
+                    )
                 }
             }
         }
@@ -4261,10 +4972,15 @@ private fun ReasoningCard(
 }
 
 @Composable
-private fun ToolExecutionCard(tool: ToolExecutionMessageUi) {
+private fun ToolExecutionCard(
+    tool: ToolExecutionMessageUi,
+    isScreenActive: Boolean,
+    stateKey: String
+) {
     val mutedTextColor = rememberMurongMutedTextColor()
     val canExpand = tool.args.isNotBlank()
-    var showArgs by remember(tool) { mutableStateOf(canExpand && !tool.isQuiet) }
+    val expandableArgs = canExpand && !tool.isQuiet
+    var showArgs by rememberSaveable(stateKey) { mutableStateOf(canExpand) }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         ToolCardHeader(
             toolName = tool.toolName,
@@ -4272,9 +4988,13 @@ private fun ToolExecutionCard(tool: ToolExecutionMessageUi) {
             statusColor = MaterialTheme.colorScheme.primary,
             summary = tool.summary,
             expanded = showArgs,
-            expandable = canExpand,
+            expandable = expandableArgs,
             quiet = tool.isQuiet,
-            onToggle = { if (canExpand) showArgs = !showArgs }
+            onToggle = {
+                if (expandableArgs) {
+                    showArgs = !showArgs
+                }
+            }
         )
         tool.callId?.takeIf { it.isNotBlank() }?.let { callId ->
             DetailRow("调用 ID", callId)
@@ -4288,7 +5008,7 @@ private fun ToolExecutionCard(tool: ToolExecutionMessageUi) {
                 )
             }
             canExpand -> {
-                AnimatedVisibility(visible = showArgs) {
+                AnimatedVisibility(visible = showArgs && isScreenActive) {
                     DetailBlock("参数", tool.args)
                 }
             }
@@ -4297,9 +5017,16 @@ private fun ToolExecutionCard(tool: ToolExecutionMessageUi) {
 }
 
 @Composable
-private fun ToolResultCard(tool: ToolResultMessageUi) {
+private fun ToolResultCard(
+    tool: ToolResultMessageUi,
+    isScreenActive: Boolean,
+    stateKey: String
+) {
     val canExpand = tool.result.isNotBlank() || tool.fileChanges.isNotEmpty()
-    var showResult by remember(tool) { mutableStateOf(!tool.isQuiet && tool.fileChanges.isNotEmpty()) }
+    val expandableResult = canExpand && !tool.isQuiet
+    var showResult by rememberSaveable(stateKey) {
+        mutableStateOf(!tool.isQuiet && tool.fileChanges.isNotEmpty())
+    }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         ToolCardHeader(
             toolName = tool.toolName,
@@ -4307,17 +5034,21 @@ private fun ToolResultCard(tool: ToolResultMessageUi) {
             statusColor = MaterialTheme.colorScheme.tertiary,
             summary = tool.summary,
             expanded = showResult,
-            expandable = canExpand,
+            expandable = expandableResult,
             quiet = tool.isQuiet,
-            onToggle = { if (canExpand) showResult = !showResult }
+            onToggle = {
+                if (expandableResult) {
+                    showResult = !showResult
+                }
+            }
         )
-        AnimatedVisibility(visible = showResult) {
+        AnimatedVisibility(visible = showResult && isScreenActive) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (tool.result.isNotBlank()) {
                     DetailBlock(
                         label = if (tool.truncated) "输出（已截断）" else "输出",
                         value = tool.result,
-                        renderMarkdown = tool.resultWasFenced,
+                        renderMarkdown = tool.renderResultAsCode,
                         codeLanguage = tool.resultLanguage
                     )
                 }
@@ -4446,15 +5177,34 @@ private fun parseToolExecutionMessage(content: String): ToolExecutionMessageUi? 
     )
 }
 
-private fun parseToolResultMessage(content: String): ToolResultMessageUi? {
+private fun parseToolResultMessage(
+    content: String,
+    previousExecution: ToolExecutionMessageUi? = null
+): ToolResultMessageUi? {
     val headerMatch = Regex("""^📦 \*\*(.+?)\*\* 执行结果:""").find(content) ?: return null
     val toolName = headerMatch.groupValues.getOrNull(1).orEmpty()
+    val sourcePath = previousExecution
+        ?.takeIf { it.toolName.equals(toolName, ignoreCase = true) }
+        ?.args
+        ?.let(::extractToolPathFromArgs)
     val fencedMatch = Regex("""```([\w#+.-]+)?\n([\s\S]*?)\n```""")
         .find(content)
-    val resultLanguage = fencedMatch?.groupValues?.getOrNull(1).orEmpty()
-    val rawPayload = fencedMatch?.groupValues?.getOrNull(2).orEmpty()
+    val rawPayload = fencedMatch?.groupValues?.getOrNull(2)
+        ?: extractPlainToolResultPayload(content, headerMatch.value)
+    val codePayload = normalizeToolResultCodePayload(rawPayload)
     val truncated = rawPayload.endsWith("\n...(截断)") || rawPayload == "...(截断)"
-    val normalizedPayload = rawPayload.removeSuffix("\n...(截断)").removeSuffix("...(截断)")
+    val normalizedPayload = codePayload.removeSuffix("\n...(截断)").removeSuffix("...(截断)")
+    val renderResultAsCode = fencedMatch != null || shouldRenderToolResultAsCode(
+        toolName = toolName,
+        payload = normalizedPayload
+    )
+    val resultLanguage = fencedMatch?.groupValues?.getOrNull(1)
+        ?.takeIf { it.isNotBlank() }
+        ?: sourcePath?.let(::inferLanguageFromPath)
+        ?: inferToolResultLanguage(
+            toolName = toolName,
+            payload = normalizedPayload
+        ).orEmpty()
     val fileChanges = content.substringAfter("本次文件变更:\n", "")
         .lineSequence()
         .map { it.trim() }
@@ -4470,11 +5220,127 @@ private fun parseToolResultMessage(content: String): ToolResultMessageUi? {
         ),
         result = normalizedPayload,
         resultLanguage = resultLanguage,
-        resultWasFenced = fencedMatch != null,
+        renderResultAsCode = renderResultAsCode,
         fileChanges = fileChanges,
         truncated = truncated,
         isQuiet = isQuietTool(toolName)
     )
+}
+
+private fun extractPlainToolResultPayload(content: String, headerText: String): String {
+    return content
+        .substringAfter(headerText, "")
+        .substringBefore("\n本次文件变更:\n")
+        .trim('\r', '\n')
+}
+
+private fun normalizeToolResultCodePayload(payload: String): String {
+    val lines = payload.lines()
+    val lineNumberPrefix = Regex("""^\s*\d+→""")
+    val numberedLineCount = lines.count { lineNumberPrefix.containsMatchIn(it) }
+    if (numberedLineCount == 0) return payload
+    if (numberedLineCount < minOf(2, lines.size)) return payload
+    return lines.joinToString("\n") { line ->
+        line.replaceFirst(lineNumberPrefix, "")
+    }
+}
+
+private fun extractToolPathFromArgs(args: String): String? {
+    if (args.isBlank()) return null
+    val json = runCatching { WEB_FETCH_RESULT_JSON.parseToJsonElement(args).jsonObject }.getOrNull()
+    return listOf("file_path", "path", "uri")
+        .firstNotNullOfOrNull { key -> json?.let { jsonStringOrNull(it, key) } }
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+}
+
+private fun inferLanguageFromPath(path: String): String? {
+    val fileName = path.substringAfterLast('/').substringAfterLast('\\').lowercase()
+    if (fileName.isBlank()) return null
+    val ext = fileName.substringAfterLast('.', "")
+    return when {
+        fileName == "cmakelists.txt" -> "sh"
+        fileName.endsWith(".d.ts") -> "typescript"
+        ext in setOf("kt", "kts") -> "kotlin"
+        ext == "java" -> "java"
+        ext in setOf("js", "mjs", "cjs", "jsx") -> "javascript"
+        ext in setOf("ts", "mts", "cts", "tsx") -> "typescript"
+        ext == "go" -> "go"
+        ext == "rs" -> "rust"
+        ext == "c" -> "c"
+        ext in setOf("cc", "cpp", "cxx") -> "cpp"
+        ext == "h" -> "h"
+        ext in setOf("hh", "hpp", "hxx") -> "hpp"
+        ext in setOf("sh", "bash", "zsh") -> "sh"
+        ext in setOf("xml", "xaml", "svg") -> "xml"
+        ext in setOf("json", "jsonc", "geojson", "webmanifest") -> "json"
+        ext in setOf("yml", "yaml") -> "yaml"
+        ext in setOf("properties", "prop", "ini", "conf", "cfg", "pro", "toml") -> "properties"
+        ext in setOf("py", "pyw") -> "python"
+        ext in setOf("md", "mdown", "markdown") -> "markdown"
+        else -> null
+    }
+}
+
+private fun shouldRenderToolResultAsCode(toolName: String, payload: String): Boolean {
+    if (payload.isBlank()) return false
+    return when (toolName.lowercase()) {
+        "read" -> !payload.equals("The file has 0 lines.", ignoreCase = true)
+        else -> false
+    }
+}
+
+private fun inferToolResultLanguage(toolName: String, payload: String): String? {
+    if (!toolName.equals("read", ignoreCase = true)) return null
+    val trimmed = payload.trim()
+    if (trimmed.isBlank()) return null
+    val firstLine = trimmed.lineSequence().firstOrNull()?.trim().orEmpty()
+    val hasPreprocessor = Regex("""^\s*#\s*(include|define|if|ifdef|ifndef|endif|pragma)\b""", RegexOption.MULTILINE)
+        .containsMatchIn(trimmed)
+    val hasCppMarkers = Regex("""\b(std::|namespace\s+\w+|template\s*<|constexpr\b|nullptr\b)\b""", RegexOption.MULTILINE)
+        .containsMatchIn(trimmed)
+    val hasHeaderMarkers = Regex("""^\s*#\s*(pragma\s+once|ifndef\s+\w+|define\s+\w+)""", RegexOption.MULTILINE)
+        .containsMatchIn(trimmed)
+    val hasCMarkers = Regex("""\b(typedef\s+struct|#include\s*<stdio\.h>|#include\s*<stdlib\.h>|NULL\b)\b""", RegexOption.MULTILINE)
+        .containsMatchIn(trimmed)
+    val hasGoMarkers = Regex("""^\s*package\s+\w+""", RegexOption.MULTILINE).containsMatchIn(trimmed) &&
+        Regex("""^\s*(func|import|type|var|const)\b""", RegexOption.MULTILINE).containsMatchIn(trimmed)
+    val hasRustMarkers = Regex("""^\s*(fn|use|impl|trait|struct|enum)\b""", RegexOption.MULTILINE).containsMatchIn(trimmed) &&
+        Regex("""\b(let\s+mut|String::|Vec<|Option<|Result<)\b""", RegexOption.MULTILINE).containsMatchIn(trimmed)
+    val hasTypeScriptMarkers = Regex("""^\s*(interface|type)\s+\w+""", RegexOption.MULTILINE).containsMatchIn(trimmed) ||
+        Regex("""\b(const|let|function)\s+\w+\s*:\s*[\w<>{}\[\]|?]+""", RegexOption.MULTILINE).containsMatchIn(trimmed) ||
+        Regex("""\)\s*:\s*[\w<>{}\[\]|?]+\s*\{""", RegexOption.MULTILINE).containsMatchIn(trimmed)
+    val hasJavaScriptMarkers = Regex("""^\s*(const|let|var|function|export|import)\b""", RegexOption.MULTILINE)
+        .containsMatchIn(trimmed)
+    return when {
+        firstLine.startsWith("<?xml") ||
+            firstLine.startsWith("<resources") ||
+            firstLine.startsWith("<manifest") ||
+            firstLine.startsWith("<") && trimmed.contains("</") -> "xml"
+        firstLine.startsWith("{") || firstLine.startsWith("[") -> "json"
+        hasHeaderMarkers && hasCppMarkers -> "hpp"
+        hasHeaderMarkers && hasCMarkers -> "h"
+        hasCppMarkers -> "cpp"
+        hasPreprocessor && hasCMarkers -> "c"
+        hasPreprocessor -> "cpp"
+        hasGoMarkers -> "go"
+        hasRustMarkers -> "rust"
+        hasTypeScriptMarkers -> "typescript"
+        hasJavaScriptMarkers -> "javascript"
+        Regex("""^\s*plugins\s*\{""").containsMatchIn(trimmed) ||
+            Regex("""^\s*(package|import)\s+[\w.]+""", RegexOption.MULTILINE).containsMatchIn(trimmed) &&
+            Regex("""^\s*(fun|val|var|object|class|interface)\b""", RegexOption.MULTILINE).containsMatchIn(trimmed) -> "kotlin"
+        Regex("""^\s*package\s+[\w.]+;""", RegexOption.MULTILINE).containsMatchIn(trimmed) ||
+            Regex("""^\s*(public|private|protected)?\s*(class|interface|enum|record)\b""", RegexOption.MULTILINE).containsMatchIn(trimmed) -> "java"
+        Regex("""^\s*def\s+\w+\(""", RegexOption.MULTILINE).containsMatchIn(trimmed) ||
+            firstLine.startsWith("#!/usr/bin/env python") -> "python"
+        firstLine.startsWith("#!/bin/bash") ||
+            firstLine.startsWith("#!/usr/bin/env bash") ||
+            Regex("""^\s*(if|for|while|case|function)\b""", RegexOption.MULTILINE).containsMatchIn(trimmed) -> "sh"
+        Regex("""^\s*[\w.-]+\s*=\s*.+$""", RegexOption.MULTILINE).containsMatchIn(trimmed) -> "properties"
+        Regex("""^\s*[\w.-]+\s*:\s*.+$""", RegexOption.MULTILINE).containsMatchIn(trimmed) -> "yaml"
+        else -> null
+    }
 }
 
 private fun buildToolSummary(toolName: String, args: String): String? {
@@ -4585,6 +5451,11 @@ private fun displayToolName(toolName: String): String {
         "websearch", "web_search" -> "联网搜索"
         "code_edit" -> "代码编辑"
         "subagent" -> "子代理"
+        "explore" -> "探索代理"
+        "research" -> "研究代理"
+        "review" -> "审查代理"
+        "security_review" -> "安全审查代理"
+        "ask_user" -> "提问"
         else -> toolName
     }
 }
@@ -4693,6 +5564,9 @@ private fun DetailBlock(
 ) {
     val surfaceColor = rememberMurongSurfaceColor()
     val mutedTextColor = rememberMurongMutedTextColor()
+    val useNativeScrollableText = remember(value, renderMarkdown) {
+        !renderMarkdown && shouldUseNativeScrollableSelectableText(value)
+    }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
             text = label,
@@ -4704,20 +5578,33 @@ private fun DetailBlock(
             color = surfaceColor.copy(alpha = 0.60f),
             modifier = Modifier.fillMaxWidth()
         ) {
-            SelectionContainer {
-                if (renderMarkdown) {
-                    MarkdownText(
-                        text = buildString {
-                            append("```")
-                            append(codeLanguage)
-                            append('\n')
-                            append(value)
-                            append("\n```")
-                        },
-                        modifier = Modifier.padding(12.dp).fillMaxWidth(),
-                        fontSize = 12
+            if (useNativeScrollableText) {
+                NativeSelectableScrollableText(
+                    text = value,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    monospace = false,
+                    fontSizeSp = 12f,
+                    maxHeight = 320.dp
+                )
+            } else if (renderMarkdown) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp)
+                ) {
+                    MurongReadOnlyCodeBlock(
+                        code = value,
+                        language = codeLanguage.ifBlank { null },
+                        backgroundColor = surfaceColor.copy(alpha = 0.92f),
+                        modifier = Modifier.fillMaxWidth(),
+                        textSizeSp = 12f,
+                        maxVisibleLines = 16
                     )
-                } else {
+                }
+            } else {
+                SelectionContainer {
                     Text(
                         text = value,
                         style = MaterialTheme.typography.bodySmall,
@@ -5409,55 +6296,145 @@ private fun SessionDrawerItem(
 }
 
 @Composable
-private fun CurrentProjectBar(
-    projectPath: String,
-    knowledgeFileCount: Int
+private fun ChatApprovalModeDialog(
+    globalMode: ToolApprovalMode,
+    overrideMode: ToolApprovalMode?,
+    onDismiss: () -> Unit,
+    onApply: (ToolApprovalMode?) -> Unit
 ) {
-    val accent = rememberMurongAccentColor()
-    val surfaceColor = rememberMurongSurfaceColor()
-    Surface(
-        color = surfaceColor.copy(alpha = 0.74f),
-        tonalElevation = 2.dp,
-        shape = MaterialTheme.shapes.large,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = Icons.Outlined.Add,
-                contentDescription = null,
-                tint = accent
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "当前项目",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = accent
+    var selectedMode by remember(globalMode, overrideMode) { mutableStateOf(overrideMode) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = { onApply(selectedMode) }) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        },
+        title = { Text("审批模式") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                ApprovalModeOptionRow(
+                    title = "跟随全局",
+                    subtitle = "当前全局：${chatApprovalModeLabel(globalMode)}",
+                    selected = selectedMode == null,
+                    onClick = { selectedMode = null }
                 )
-                Text(
-                    text = projectPath,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (knowledgeFileCount > 0) {
-                    Text(
-                        text = "已接入知识文件 $knowledgeFileCount 个，可在 @文件 中直接选择",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = accent
+                ToolApprovalMode.entries.forEach { mode ->
+                    ApprovalModeOptionRow(
+                        title = chatApprovalModeLabel(mode),
+                        subtitle = chatApprovalModeDescription(mode),
+                        selected = selectedMode == mode,
+                        onClick = { selectedMode = mode }
                     )
                 }
             }
         }
+    )
+}
+
+@Composable
+private fun ApprovalModeOptionRow(
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Spacer(modifier = Modifier.width(8.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
+}
+
+private fun buildApprovalModeShortcutLabel(
+    effectiveMode: ToolApprovalMode,
+    overrideMode: ToolApprovalMode?
+): String {
+    return if (overrideMode == null) {
+        "审批: 跟随全局 (${chatApprovalModeLabel(effectiveMode)})"
+    } else {
+        "审批: ${chatApprovalModeLabel(overrideMode)}"
+    }
+}
+
+private fun chatApprovalModeLabel(mode: ToolApprovalMode): String = when (mode) {
+    ToolApprovalMode.READ_ONLY -> "只读模式"
+    ToolApprovalMode.ALL_APPROVAL -> "全部审批"
+    ToolApprovalMode.WHITELIST_AUTO -> "白名单自动通过"
+    ToolApprovalMode.ALL_AUTO -> "全部自动通过"
+}
+
+private fun chatApprovalModeDescription(mode: ToolApprovalMode): String = when (mode) {
+    ToolApprovalMode.READ_ONLY -> "仅允许只读类能力自动运行，写入和执行类操作会被明显收紧。"
+    ToolApprovalMode.ALL_APPROVAL -> "所有工具调用都需要你显式确认后才会继续。"
+    ToolApprovalMode.WHITELIST_AUTO -> "命中白名单的操作可自动通过，其余请求仍然审批。"
+    ToolApprovalMode.ALL_AUTO -> "默认不再弹审批，适合你完全信任当前任务时使用。"
+}
+
+private fun normalizeChatProjectToolPreferences(
+    preferences: ProjectToolPreferences
+): ProjectToolPreferences? {
+    return if (
+        preferences.workflowExecutionMode == null &&
+        preferences.autoRouteBeforeExecution == null &&
+        preferences.failureFallbackMode == null &&
+        preferences.approvalMode == null &&
+        preferences.enabledBuiltinTools == null &&
+        preferences.enabledFileToolOperations == null &&
+        preferences.allowAllMcpTools == null &&
+        preferences.allowedMcpTools == null &&
+        preferences.allowedShellCommandPrefixes == null &&
+        preferences.allowedPathPrefixes == null &&
+        preferences.subagentTemplates == null
+    ) {
+        null
+    } else {
+        preferences
+    }
+}
+
+@Composable
+private fun CurrentWorkspaceHint(
+    title: String,
+    workspaceLabel: String,
+    helperText: String? = null,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit
+) {
+    CompactTopHint(
+        badge = if (title.contains("仓库")) "仓" else "项",
+        title = title,
+        message = buildString {
+            append(workspaceLabel)
+            helperText?.takeIf { it.isNotBlank() }?.let {
+                append("\n")
+                append(it)
+            }
+        },
+        expanded = expanded,
+        onToggleExpanded = onToggleExpanded
+    )
 }
 
 @Composable
@@ -5500,7 +6477,12 @@ private fun SessionUsageBar(usageSummary: UsageSummarySnapshot) {
                 )
             }
             Text(
-                text = "预估成本 \$${"%.6f".format(usageSummary.estimatedCostUsd)}",
+                text = "预估成本 ${
+                    formatCurrencyAmount(
+                        usageSummary.resolvedEstimatedCostAmount(),
+                        usageSummary.resolvedEstimatedCostCurrency()
+                    )
+                }",
                 style = MaterialTheme.typography.bodySmall,
                 color = mutedTextColor
             )
@@ -5509,171 +6491,100 @@ private fun SessionUsageBar(usageSummary: UsageSummarySnapshot) {
 }
 
 @Composable
-private fun FileChangeStatusBar(
+private fun FileChangeStatusHint(
     latestCheckpoint: ConversationCheckpointUi?,
     totalCount: Int,
     batchCount: Int,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
     onClick: () -> Unit
 ) {
-    val chromeColor = rememberMurongChromeColor()
-    Surface(
-        color = chromeColor.copy(alpha = 0.62f),
-        tonalElevation = 2.dp,
-        shape = MaterialTheme.shapes.large,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .clickable(onClick = onClick)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
-            Text(
-                text = "最近文件修改 · $batchCount 批 / $totalCount 文件",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.secondary
-            )
-            Text(
-                text = latestCheckpoint?.let {
+    CompactTopHint(
+        badge = "改",
+        title = "最近文件修改 · $batchCount 批 / $totalCount 文件",
+        message = buildString {
+            append(
+                latestCheckpoint?.let {
                     "${it.summary} · ${formatTimestamp(it.createdAt)}"
-                } ?: "最近有文件发生修改",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface
+                } ?: "最近有文件发生修改"
             )
-            Text(
-                text = "点击查看本轮修改汇总，再进入单文件差异详情",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.secondary
-            )
-        }
-    }
+            append("\n点击查看本轮修改汇总，再进入单文件差异详情。")
+        },
+        expanded = expanded,
+        onToggleExpanded = onToggleExpanded,
+        onBubbleClick = onClick,
+        actionLabel = "查看",
+        onAction = onClick
+    )
 }
 
 @Composable
-private fun CompressionStatusBar(
+private fun CompressionStatusHint(
     version: Int,
     totalVersions: Int,
     summary: String,
     sourceMessageCount: Int,
     active: Boolean,
     createdAt: Long,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
     onClick: () -> Unit
 ) {
-    val chromeColor = rememberMurongChromeColor()
-    val mutedTextColor = rememberMurongMutedTextColor()
-    Surface(
-        color = chromeColor.copy(alpha = 0.58f),
-        tonalElevation = 2.dp,
-        shape = MaterialTheme.shapes.large,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .clickable(onClick = onClick)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
-            Text(
-                text = buildString {
-                    append(if (active) "上下文压缩已启用" else "上下文压缩已停用")
-                    append(" · V")
-                    append(version)
-                    if (totalVersions > 1) {
-                        append(" / 共 ")
-                        append(totalVersions)
-                        append(" 版")
-                    }
-                },
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.tertiary
-            )
-            Text(
-                text = "覆盖 $sourceMessageCount 条历史消息 · ${formatTimestamp(createdAt)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = summary.lineSequence().take(3).joinToString(" ").take(180),
-                style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis
-            )
+    CompactTopHint(
+        badge = "压",
+        title = buildString {
+            append(if (active) "压缩已启用" else "压缩已停用")
+            append(" · V")
+            append(version)
+            if (totalVersions > 1) append("/$totalVersions")
+        },
+        message = buildString {
+            append("覆盖 $sourceMessageCount 条历史消息 · ${formatTimestamp(createdAt)}")
+            append("\n")
+            append(summary.lineSequence().take(3).joinToString(" ").take(180))
             if (totalVersions > 1) {
-                Text(
-                    text = "点击查看历史摘要版本",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.tertiary
-                )
+                append("\n点击查看历史摘要版本")
             }
-        }
-    }
+        },
+        expanded = expanded,
+        onToggleExpanded = onToggleExpanded,
+        onBubbleClick = onClick
+    )
 }
 
 @Composable
-private fun SubagentStatusBar(
+private fun SubagentStatusHint(
     runs: List<SubagentRunUi>,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
     onClick: () -> Unit
 ) {
     val latestRun = runs.maxByOrNull { it.startedAt }
     val runningCount = runs.count { it.status in setOf("pending_approval", "queued", "running", "summarizing", "cancelling") }
     val failedCount = runs.count { it.status in setOf("failed", "rejected") }
     val completedCount = runs.count { it.status == "completed" }
-    val chromeColor = rememberMurongChromeColor()
-    val mutedTextColor = rememberMurongMutedTextColor()
-    Surface(
-        color = chromeColor.copy(alpha = 0.60f),
-        tonalElevation = 2.dp,
-        shape = MaterialTheme.shapes.large,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .clickable(onClick = onClick)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
-            Text(
-                text = "子代理总览 · ${runs.size} 次运行",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.secondary
-            )
-            Text(
-                text = buildString {
-                    append("运行中 $runningCount")
-                    append(" · 已完成 $completedCount")
-                    if (failedCount > 0) {
-                        append(" · 失败 $failedCount")
-                    }
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            latestRun?.let { run ->
-                Text(
-                    text = "最新任务: ${run.goal.take(36)} · ${subagentStatusLabel(run.status)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+    CompactTopHint(
+        badge = "子",
+        title = "子代理总览 · ${runs.size} 次运行",
+        message = buildString {
+            append("运行中 $runningCount · 已完成 $completedCount")
+            if (failedCount > 0) {
+                append(" · 失败 $failedCount")
             }
-            Text(
-                text = "点击查看全部子代理任务和状态",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.secondary
-            )
-        }
-    }
+            latestRun?.let { run ->
+                append("\n最新任务: ")
+                append(run.goal.take(36))
+                if (run.goal.length > 36) append("...")
+                append(" · ")
+                append(subagentStatusLabel(run.status))
+            }
+        },
+        expanded = expanded,
+        onToggleExpanded = onToggleExpanded,
+        onBubbleClick = onClick,
+        actionLabel = "查看全部",
+        onAction = onClick
+    )
 }
 
 @Composable
@@ -6069,8 +6980,15 @@ private fun SubagentRunHistorySheet(
                                     if (run.usageSummary.totalTokens > 0) {
                                         append(" · Token ${run.usageSummary.totalTokens}")
                                     }
-                                    if (run.usageSummary.estimatedCostUsd > 0) {
-                                        append(" · $${"%.6f".format(run.usageSummary.estimatedCostUsd)}")
+                                    if (run.usageSummary.resolvedEstimatedCostAmount() > 0) {
+                                        append(
+                                            " · ${
+                                                formatCurrencyAmount(
+                                                    run.usageSummary.resolvedEstimatedCostAmount(),
+                                                    run.usageSummary.resolvedEstimatedCostCurrency()
+                                                )
+                                            }"
+                                        )
                                     }
                                 },
                                 style = MaterialTheme.typography.labelSmall,
@@ -6128,7 +7046,7 @@ private fun sortSubagentRuns(
                 .thenByDescending { maxOf(it.finishedAt ?: 0L, it.startedAt) }
         )
         SubagentHistorySortMode.COST -> runs.sortedWith(
-            compareByDescending<SubagentRunUi> { it.usageSummary.estimatedCostUsd }
+            compareByDescending<SubagentRunUi> { it.usageSummary.resolvedEstimatedCostAmount() }
                 .thenByDescending { maxOf(it.finishedAt ?: 0L, it.startedAt) }
         )
     }
@@ -6225,16 +7143,102 @@ private fun FileChangeDetailSection(
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary
             )
-            SelectionContainer {
-                Text(
-                    text = content,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontFamily = FontFamily.Monospace
-                )
-            }
+            NativeSelectableScrollableText(
+                text = content,
+                modifier = Modifier.fillMaxWidth(),
+                monospace = true,
+                fontSizeSp = 12f,
+                maxHeight = 360.dp
+            )
         }
     }
+}
+
+@Composable
+private fun NativeSelectableScrollableText(
+    text: String,
+    modifier: Modifier = Modifier,
+    monospace: Boolean = false,
+    fontSizeSp: Float = 12f,
+    maxHeight: androidx.compose.ui.unit.Dp = 320.dp
+) {
+    val textColor = MaterialTheme.colorScheme.onSurface.toArgb()
+    AndroidView(
+        modifier = modifier.heightIn(max = maxHeight),
+        factory = { context ->
+            ScrollView(context).apply {
+                overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+                isVerticalScrollBarEnabled = true
+                clipToPadding = false
+                addView(
+                    TextView(context).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        )
+                        setTextIsSelectable(true)
+                        setPadding(0, 0, 0, 0)
+                        includeFontPadding = false
+                        setLineSpacing(0f, 1.15f)
+                        textSize = fontSizeSp
+                        if (monospace) {
+                            typeface = android.graphics.Typeface.MONOSPACE
+                        }
+                    }
+                )
+                setOnTouchListener { view, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN,
+                        MotionEvent.ACTION_MOVE -> view.parent?.requestDisallowInterceptTouchEvent(true)
+
+                        MotionEvent.ACTION_UP,
+                        MotionEvent.ACTION_CANCEL -> view.parent?.requestDisallowInterceptTouchEvent(false)
+                    }
+                    false
+                }
+            }
+        },
+        update = { scrollView ->
+            val textView = scrollView.getChildAt(0) as TextView
+            textView.text = text
+            textView.setTextColor(textColor)
+            textView.textSize = fontSizeSp
+            textView.typeface = if (monospace) {
+                android.graphics.Typeface.MONOSPACE
+            } else {
+                android.graphics.Typeface.DEFAULT
+            }
+        }
+    )
+}
+
+@Composable
+private fun SelectableMarkdownContent(
+    text: String,
+    fontSize: Int,
+    modifier: Modifier = Modifier,
+    maxHeight: androidx.compose.ui.unit.Dp = 320.dp
+) {
+    val scrollState = rememberScrollState()
+    SelectionContainer {
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .heightIn(max = maxHeight)
+                .verticalScroll(scrollState)
+        ) {
+            MarkdownText(
+                text = text,
+                modifier = Modifier.fillMaxWidth(),
+                fontSize = fontSize
+            )
+        }
+    }
+}
+
+private fun shouldUseNativeScrollableSelectableText(text: String): Boolean {
+    if (text.length >= 1200) return true
+    return text.lineSequence().take(20).count() >= 12
 }
 
 @Composable
@@ -6337,62 +7341,30 @@ private data class CompressionSuggestionState(
 )
 
 @Composable
-private fun CompressionSuggestionBar(
+private fun CompressionSuggestionHint(
     suggestion: CompressionSuggestionState,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
     onCompress: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val chromeColor = rememberMurongChromeColor()
-    val mutedTextColor = rememberMurongMutedTextColor()
-    Surface(
-        color = chromeColor.copy(alpha = 0.60f),
-        tonalElevation = 2.dp,
-        shape = MaterialTheme.shapes.large,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = "建议压缩上下文",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Text(
-                text = suggestion.reason,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = "预计可压缩 ${suggestion.preview.compressibleMessageCount} 条历史消息，保留最近 ${suggestion.preview.recentMessageCount} 条原文继续对话。",
-                style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor
-            )
-            Text(
-                text = "后续注入上下文预计从 ${formatTokenCount(suggestion.preview.estimatedCurrentContextTokens)} Token 降到 ${formatTokenCount(suggestion.preview.estimatedCompressedContextTokens)} Token，约减少 ${formatTokenCount(suggestion.preview.estimatedTokensSaved)} Token（-${suggestion.preview.estimatedReductionPercent}%）。",
-                style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor
-            )
-            Text(
-                text = "摘要本身预计占用 ${formatTokenCount(suggestion.preview.estimatedSummaryTokens)} Token，适合先压历史再继续当前问题。",
-                style = MaterialTheme.typography.bodySmall,
-                color = mutedTextColor
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(onClick = onCompress) {
-                    Text("立即压缩")
-                }
-                TextButton(onClick = onDismiss) {
-                    Text("稍后提醒")
-                }
-            }
-        }
-    }
+    CompactTopHint(
+        badge = "压",
+        title = "建议压缩上下文",
+        message = buildString {
+            append(suggestion.reason)
+            append("\n")
+            append("预计可压缩 ${suggestion.preview.compressibleMessageCount} 条历史消息，保留最近 ${suggestion.preview.recentMessageCount} 条原文继续对话。")
+            append("\n")
+            append("预计从 ${formatTokenCount(suggestion.preview.estimatedCurrentContextTokens)} Token 降到 ${formatTokenCount(suggestion.preview.estimatedCompressedContextTokens)} Token，约减少 ${formatTokenCount(suggestion.preview.estimatedTokensSaved)} Token（-${suggestion.preview.estimatedReductionPercent}%）。")
+        },
+        expanded = expanded,
+        onToggleExpanded = onToggleExpanded,
+        actionLabel = "立即压缩",
+        onAction = onCompress,
+        secondaryActionLabel = "稍后提醒",
+        onSecondaryAction = onDismiss
+    )
 }
 
 private fun buildCompressionSuggestion(state: SessionState): CompressionSuggestionState? {
@@ -6441,4 +7413,12 @@ private fun formatFileChangeOperation(operation: String): String {
         "write" -> "写入"
         else -> operation
     }
+}
+
+private fun isMessageListNearBottom(listState: LazyListState, threshold: Int = 2): Boolean {
+    val layoutInfo = listState.layoutInfo
+    val totalItems = layoutInfo.totalItemsCount
+    if (totalItems == 0) return true
+    val lastVisibleIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: return true
+    return lastVisibleIndex >= totalItems - threshold
 }

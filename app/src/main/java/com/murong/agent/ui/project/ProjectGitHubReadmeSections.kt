@@ -31,6 +31,7 @@ internal fun ProjectGitHubReadmeSection(
     readme: ProjectGitHubReadmeUi?,
     isLoading: Boolean,
     errorMessage: String?,
+    compactPreview: Boolean = false,
     onRefresh: (() -> Unit)? = null,
     onOpenRepoPage: (() -> Unit)? = null,
     onEditReadme: ((ProjectGitHubReadmeUi) -> Unit)? = null
@@ -134,7 +135,13 @@ internal fun ProjectGitHubReadmeSection(
                         style = MaterialTheme.typography.bodySmall,
                         color = mutedTextColor
                     )
-                    if (shouldCollapse) {
+                    if (compactPreview) {
+                        Text(
+                            text = "返回预览阶段暂时不渲染整段 Markdown，落回仓库页后再完整显示 README。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                    } else if (shouldCollapse) {
                         MurongOutlinedActionButton(
                             text = if (expandedReadme.value) "收起 README" else "展开 README",
                             onClick = { expandedReadme.value = !expandedReadme.value }
@@ -144,7 +151,20 @@ internal fun ProjectGitHubReadmeSection(
                         shape = RoundedCornerShape(12.dp),
                         surfaceColorOverride = chromeColor.copy(alpha = 0.22f)
                     ) {
-                        MarkdownText(text = markdownContent)
+                        if (compactPreview) {
+                            Text(
+                                text = readme.content
+                                    .lineSequence()
+                                    .filter { it.isNotBlank() }
+                                    .take(6)
+                                    .joinToString("\n")
+                                    .ifBlank { "README 将在返回结束后完整显示。" },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = mutedTextColor
+                            )
+                        } else {
+                            MarkdownText(text = markdownContent)
+                        }
                     }
                 }
             }

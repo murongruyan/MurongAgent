@@ -2,7 +2,6 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.android.library)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.serialization)
 }
 
@@ -28,13 +27,15 @@ kotlin {
 }
 
 dependencies {
-    implementation(project(":common"))
+    implementation(project(path = ":common"))
     
     implementation(libs.coroutines.android)
     implementation(libs.serialization.json)
     implementation(libs.okhttp)
     implementation(libs.okhttp.sse)
+    implementation(libs.jsoup)
     implementation(libs.datastore.preferences)
 
     testImplementation(kotlin("test"))
+    testImplementation(kotlin("test-junit"))
 }

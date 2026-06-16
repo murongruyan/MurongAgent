@@ -6,10 +6,10 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import com.murong.agent.core.config.ProviderConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.encodeToString
 
@@ -21,29 +21,36 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 class ConfigRepository(private val context: Context) {
 
     private val json = Json { ignoreUnknownKeys = true }
+    private val secureSecretStore = SecureConfigSecretStore(context)
 
     companion object {
         private val CONFIG_KEY = stringPreferencesKey("provider_config")
+        private const val SECRET_DEEPSEEK_API_KEY = "deepseek_api_key"
+        private const val SECRET_OPENAI_API_KEY = "openai_api_key"
+        private const val SECRET_CLAUDE_API_KEY = "claude_api_key"
+        private const val SECRET_GITHUB_TOKEN = "github_token"
+        private const val SECRET_GITHUB_CLIENT_SECRET = "github_client_secret"
+        private const val SECRET_GITHUB_BACKEND_SESSION_TOKEN = "github_backend_session_token"
+        private const val SECRET_WEB_SEARCH_BING_API_KEY = "web_search_bing_api_key"
+    }
+
+    init {
+        runBlocking {
+            migrateLegacyPlaintextSecretsIfNeeded()
+        }
     }
 
     val configFlow: Flow<ProviderConfig> = context.dataStore.data.map { prefs ->
-        val raw = prefs[CONFIG_KEY]
-        if (raw != null) {
-            try {
-                json.decodeFromString<ProviderConfig>(raw)
-            } catch (e: Exception) {
-                ProviderConfig()
-            }
-        } else {
-            ProviderConfig()
-        }
+        decodeConfig(prefs[CONFIG_KEY]).withSensitiveSecrets(readSensitiveSecrets())
     }
 
     suspend fun getConfig(): ProviderConfig = configFlow.first()
 
     suspend fun saveConfig(config: ProviderConfig) {
+        writeSensitiveSecrets(config)
+        val sanitizedConfig = config.withSensitiveSecretsCleared()
         context.dataStore.edit { prefs ->
-            prefs[CONFIG_KEY] = json.encodeToString(config)
+            prefs[CONFIG_KEY] = json.encodeToString(sanitizedConfig)
         }
     }
 
@@ -80,5 +87,90 @@ class ConfigRepository(private val context: Context) {
     suspend fun setActiveProvider(providerId: String) {
         val config = getConfig()
         saveConfig(config.copy(activeProviderId = providerId))
+    }
+
+    private suspend fun migrateLegacyPlaintextSecretsIfNeeded() {
+        val prefs = context.dataStore.data.first()
+        val config = decodeConfig(prefs[CONFIG_KEY])
+        if (!config.hasPlaintextSensitiveSecrets()) return
+        writeSensitiveSecrets(config)
+        context.dataStore.edit { mutablePrefs ->
+            mutablePrefs[CONFIG_KEY] = json.encodeToString(config.withSensitiveSecretsCleared())
+        }
+    }
+
+    private fun decodeConfig(raw: String?): ProviderConfig {
+        if (raw == null) return ProviderConfig()
+        return try {
+            json.decodeFromString<ProviderConfig>(raw)
+        } catch (_: Exception) {
+            ProviderConfig()
+        }
+    }
+
+    private fun readSensitiveSecrets(): SensitiveSecrets {
+        return SensitiveSecrets(
+            deepseekApiKey = secureSecretStore.read(SECRET_DEEPSEEK_API_KEY),
+            openaiApiKey = secureSecretStore.read(SECRET_OPENAI_API_KEY),
+            claudeApiKey = secureSecretStore.read(SECRET_CLAUDE_API_KEY),
+            githubToken = secureSecretStore.read(SECRET_GITHUB_TOKEN),
+            githubClientSecret = secureSecretStore.read(SECRET_GITHUB_CLIENT_SECRET),
+            githubBackendSessionToken = secureSecretStore.read(SECRET_GITHUB_BACKEND_SESSION_TOKEN),
+            webSearchBingApiKey = secureSecretStore.read(SECRET_WEB_SEARCH_BING_API_KEY)
+        )
+    }
+
+    private fun writeSensitiveSecrets(config: ProviderConfig) {
+        secureSecretStore.write(SECRET_DEEPSEEK_API_KEY, config.deepseekApiKey)
+        secureSecretStore.write(SECRET_OPENAI_API_KEY, config.openaiApiKey)
+        secureSecretStore.write(SECRET_CLAUDE_API_KEY, config.claudeApiKey)
+        secureSecretStore.write(SECRET_GITHUB_TOKEN, config.githubToken)
+        secureSecretStore.write(SECRET_GITHUB_CLIENT_SECRET, config.githubClientSecret)
+        secureSecretStore.write(SECRET_GITHUB_BACKEND_SESSION_TOKEN, config.githubBackendSessionToken)
+        secureSecretStore.write(SECRET_WEB_SEARCH_BING_API_KEY, config.webSearchBingApiKey)
+    }
+
+    private data class SensitiveSecrets(
+        val deepseekApiKey: String = "",
+        val openaiApiKey: String = "",
+        val claudeApiKey: String = "",
+        val githubToken: String = "",
+        val githubClientSecret: String = "",
+        val githubBackendSessionToken: String = "",
+        val webSearchBingApiKey: String = ""
+    )
+
+    private fun ProviderConfig.withSensitiveSecrets(secrets: SensitiveSecrets): ProviderConfig {
+        return copy(
+            deepseekApiKey = secrets.deepseekApiKey.ifBlank { deepseekApiKey },
+            openaiApiKey = secrets.openaiApiKey.ifBlank { openaiApiKey },
+            claudeApiKey = secrets.claudeApiKey.ifBlank { claudeApiKey },
+            githubToken = secrets.githubToken.ifBlank { githubToken },
+            githubClientSecret = secrets.githubClientSecret.ifBlank { githubClientSecret },
+            githubBackendSessionToken = secrets.githubBackendSessionToken.ifBlank { githubBackendSessionToken },
+            webSearchBingApiKey = secrets.webSearchBingApiKey.ifBlank { webSearchBingApiKey }
+        )
+    }
+
+    private fun ProviderConfig.withSensitiveSecretsCleared(): ProviderConfig {
+        return copy(
+            deepseekApiKey = "",
+            openaiApiKey = "",
+            claudeApiKey = "",
+            githubToken = "",
+            githubClientSecret = "",
+            githubBackendSessionToken = "",
+            webSearchBingApiKey = ""
+        )
+    }
+
+    private fun ProviderConfig.hasPlaintextSensitiveSecrets(): Boolean {
+        return deepseekApiKey.isNotBlank() ||
+            openaiApiKey.isNotBlank() ||
+            claudeApiKey.isNotBlank() ||
+            githubToken.isNotBlank() ||
+            githubClientSecret.isNotBlank() ||
+            githubBackendSessionToken.isNotBlank() ||
+            webSearchBingApiKey.isNotBlank()
     }
 }

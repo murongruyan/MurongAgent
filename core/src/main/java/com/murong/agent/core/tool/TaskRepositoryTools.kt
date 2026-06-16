@@ -1,0 +1,2079 @@
+package com.murong.agent.core.tool
+
+import android.net.Uri
+import android.util.Base64
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
+
+internal data class RemoteTaskRepositoryTarget(
+    val owner: String,
+    val repo: String,
+    val label: String
+)
+
+internal class TaskRepoSearchCodeTool(
+    private val repositoryProvider: () -> RemoteTaskRepositoryTarget?,
+    private val githubTokenProvider: () -> String,
+    private val githubApiBaseUrlProvider: () -> String
+) : Tool {
+    override val name: String = "task_repo_search_code"
+    override val description: String =
+        "在当前任务仓库里搜索文件名或代码片段。自动绑定当前远端任务仓库，不需要再手动填写 owner/repo。优先用它来定位远端文件路径。"
+    override val parameters: Map<String, Any> = mapOf(
+        "type" to "object",
+        "properties" to mapOf(
+            "query" to mapOf(
+                "type" to "string",
+                "description" to "搜索关键字，可填文件名、符号名或代码片段"
+            ),
+            "path" to mapOf(
+                "type" to "string",
+                "description" to "可选。限制搜索子目录，例如 app/src/main"
+            ),
+            "language" to mapOf(
+                "type" to "string",
+                "description" to "可选。GitHub 搜索语言过滤，例如 Kotlin、Java、Rust"
+            ),
+            "limit" to mapOf(
+                "type" to "integer",
+                "description" to "返回结果上限，默认 10，最大 20"
+            )
+        ),
+        "required" to listOf("query")
+    )
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override suspend fun execute(args: String): String {
+        val repo = repositoryProvider()
+            ?: return "Error: 当前会话没有绑定远端任务仓库。请先在项目页把 GitHub 仓库设为任务仓库。"
+        val token = githubTokenProvider().trim()
+        if (token.isBlank()) return "Error: 请先在设置页填写 GitHub Token。"
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val query = obj["query"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            if (query.isBlank()) return "Error: 'query' parameter required"
+            val path = obj["path"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().ifBlank { null }
+            val language = obj["language"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().ifBlank { null }
+            val limit = (obj["limit"]?.jsonPrimitive?.intOrNull ?: 10).coerceIn(1, 20)
+            val githubQuery = buildString {
+                append(query)
+                append(" repo:${repo.owner}/${repo.repo}")
+                path?.let {
+                    append(" path:")
+                    append(it)
+                }
+                language?.let {
+                    append(" language:")
+                    append(it)
+                }
+            }
+            val result = runRemoteTaskRepositoryApiRequest(
+                apiBaseUrl = githubApiBaseUrlProvider(),
+                token = token,
+                path = "/search/code?q=${Uri.encode(githubQuery)}&per_page=$limit&page=1"
+            )
+            if (!result.success) {
+                return result.error ?: "当前任务仓库代码搜索失败"
+            }
+            formatGitHubSearchResult(result.body, repo.label, githubQuery)
+        } catch (e: Exception) {
+            "Error: 搜索当前任务仓库失败: ${e.message}"
+        }
+    }
+}
+
+internal class TaskRepoListDirTool(
+    private val repositoryProvider: () -> RemoteTaskRepositoryTarget?,
+    private val githubTokenProvider: () -> String,
+    private val githubApiBaseUrlProvider: () -> String
+) : Tool {
+    override val name: String = "task_repo_list_dir"
+    override val description: String =
+        "列出当前任务仓库某个目录下的文件和子目录。适合在还不知道准确路径时先浏览远端仓库结构。"
+    override val parameters: Map<String, Any> = mapOf(
+        "type" to "object",
+        "properties" to mapOf(
+            "path" to mapOf(
+                "type" to "string",
+                "description" to "可选。仓库内目录路径；不填、填写空字符串或 / 时表示仓库根目录"
+            ),
+            "branch" to mapOf(
+                "type" to "string",
+                "description" to "可选。指定分支；不填时使用仓库默认分支"
+            ),
+            "limit" to mapOf(
+                "type" to "integer",
+                "description" to "可选。输出条目上限，默认 50，最大 200"
+            )
+        )
+    )
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override suspend fun execute(args: String): String {
+        val repo = repositoryProvider()
+            ?: return "Error: 当前会话没有绑定远端任务仓库。请先在项目页把 GitHub 仓库设为任务仓库。"
+        val token = githubTokenProvider().trim()
+        if (token.isBlank()) return "Error: 请先在设置页填写 GitHub Token。"
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val path = obj["path"]?.jsonPrimitive?.contentOrNull
+                ?.trim()
+                ?.removePrefix("/")
+                ?.removeSuffix("/")
+                .orEmpty()
+                .ifBlank { null }
+            val branch = obj["branch"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().ifBlank { null }
+            val limit = (obj["limit"]?.jsonPrimitive?.intOrNull ?: 50).coerceIn(1, 200)
+            val result = loadRemoteTaskRepositoryDirectory(
+                repo = repo,
+                path = path,
+                branch = branch,
+                token = token,
+                apiBaseUrl = githubApiBaseUrlProvider()
+            )
+            when {
+                result.entries != null -> formatRemoteTaskRepositoryDirectory(
+                    repoLabel = repo.label,
+                    requestedPath = path,
+                    requestedBranch = branch,
+                    entries = result.entries,
+                    limit = limit
+                )
+                result.rawResult != null -> result.rawResult
+                else -> "Error: 当前远端目录读取失败。"
+            }
+        } catch (e: Exception) {
+            "Error: 列出当前任务仓库目录失败: ${e.message}"
+        }
+    }
+}
+
+internal class TaskRepoListBranchesTool(
+    private val repositoryProvider: () -> RemoteTaskRepositoryTarget?,
+    private val githubTokenProvider: () -> String,
+    private val githubApiBaseUrlProvider: () -> String
+) : Tool {
+    override val name: String = "task_repo_list_branches"
+    override val description: String =
+        "列出当前任务仓库可用的远端分支，并标出默认分支。适合提交、创建分支或排查分支名时先确认仓库分支。"
+    override val parameters: Map<String, Any> = mapOf(
+        "type" to "object",
+        "properties" to mapOf(
+            "limit" to mapOf(
+                "type" to "integer",
+                "description" to "可选。返回分支上限，默认 50，最大 100"
+            )
+        )
+    )
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override suspend fun execute(args: String): String {
+        val repo = repositoryProvider()
+            ?: return "Error: 当前会话没有绑定远端任务仓库。请先在项目页把 GitHub 仓库设为任务仓库。"
+        val token = githubTokenProvider().trim()
+        if (token.isBlank()) return "Error: 请先在设置页填写 GitHub Token。"
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val limit = (obj["limit"]?.jsonPrimitive?.intOrNull ?: 50).coerceIn(1, 100)
+            val result = loadRemoteTaskRepositoryBranches(
+                repo = repo,
+                token = token,
+                apiBaseUrl = githubApiBaseUrlProvider(),
+                limit = limit
+            )
+            when {
+                result.branches != null -> formatRemoteTaskRepositoryBranches(
+                    repoLabel = repo.label,
+                    defaultBranch = result.defaultBranch,
+                    branches = result.branches
+                )
+                result.rawResult != null -> result.rawResult
+                else -> "Error: 当前远端分支列表读取失败。"
+            }
+        } catch (e: Exception) {
+            "Error: 列出当前任务仓库分支失败: ${e.message}"
+        }
+    }
+}
+
+internal class TaskRepoCreateBranchTool(
+    private val repositoryProvider: () -> RemoteTaskRepositoryTarget?,
+    private val githubTokenProvider: () -> String,
+    private val githubApiBaseUrlProvider: () -> String
+) : Tool {
+    override val name: String = "task_repo_create_branch"
+    override val description: String =
+        "在当前任务仓库中创建一个新的远端分支。可基于默认分支或指定源分支创建，适合后续在新分支上提交修改。"
+    override val parameters: Map<String, Any> = mapOf(
+        "type" to "object",
+        "properties" to mapOf(
+            "branch" to mapOf(
+                "type" to "string",
+                "description" to "要创建的新分支名，例如 feature/my-change"
+            ),
+            "source_branch" to mapOf(
+                "type" to "string",
+                "description" to "可选。作为基准的源分支；不填时使用仓库默认分支"
+            )
+        ),
+        "required" to listOf("branch")
+    )
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override fun buildApprovalRequest(args: String): ToolApprovalRequest? {
+        val repo = repositoryProvider() ?: return null
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val branch = normalizeRemoteTaskRepositoryBranchName(
+                obj["branch"]?.jsonPrimitive?.contentOrNull
+            )
+            if (branch.isNullOrBlank()) return null
+            ToolApprovalRequest(
+                toolName = name,
+                summary = "创建远端任务仓库分支",
+                detail = "${repo.label}: $branch",
+                riskLevel = ApprovalRiskLevel.HIGH,
+                rawArgs = args,
+                approvalScopeTokens = setOf("mcp:github:write")
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    override suspend fun execute(args: String): String {
+        val repo = repositoryProvider()
+            ?: return "Error: 当前会话没有绑定远端任务仓库。请先在项目页把 GitHub 仓库设为任务仓库。"
+        val token = githubTokenProvider().trim()
+        if (token.isBlank()) return "Error: 请先在设置页填写 GitHub Token。"
+        val apiBaseUrl = githubApiBaseUrlProvider()
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val targetBranch = normalizeRemoteTaskRepositoryBranchName(
+                obj["branch"]?.jsonPrimitive?.contentOrNull
+            )
+            if (targetBranch.isNullOrBlank()) return "Error: 'branch' parameter required"
+            val sourceBranch = normalizeRemoteTaskRepositoryBranchName(
+                obj["source_branch"]?.jsonPrimitive?.contentOrNull
+            ) ?: loadRemoteTaskRepositoryDefaultBranch(
+                repo = repo,
+                token = token,
+                apiBaseUrl = apiBaseUrl
+            ) ?: return "Error: 无法确定默认分支，请显式传入 'source_branch'"
+
+            val sourceHeadSha = loadRemoteTaskRepositoryBranchHeadSha(
+                repo = repo,
+                branch = sourceBranch,
+                token = token,
+                apiBaseUrl = apiBaseUrl
+            ) ?: return "Error: 无法读取源分支 `$sourceBranch` 的最新提交"
+
+            val result = runRemoteTaskRepositoryApiRequest(
+                apiBaseUrl = apiBaseUrl,
+                token = token,
+                path = buildRemoteTaskRepositoryGitRefsPath(repo),
+                method = "POST",
+                jsonBody = buildJsonObject {
+                    put("ref", "refs/heads/$targetBranch")
+                    put("sha", sourceHeadSha)
+                }.toString(),
+                allowedCodes = setOf(201)
+            )
+            if (!result.success) {
+                return buildString {
+                    append("Error: 创建远端任务仓库分支失败。")
+                    append("\n目标分支: ")
+                    append(targetBranch)
+                    append("\n源分支: ")
+                    append(sourceBranch)
+                    result.error?.takeIf { it.isNotBlank() }?.let {
+                        append("\n底层结果: ")
+                        append(it)
+                    }
+                }
+            }
+            buildString {
+                append("已创建当前任务仓库分支：")
+                append(repo.label)
+                append("\n新分支: ")
+                append(targetBranch)
+                append("\n源分支: ")
+                append(sourceBranch)
+                append("\n基准提交: ")
+                append(sourceHeadSha)
+            }
+        } catch (e: Exception) {
+            "Error: 创建当前任务仓库分支失败: ${e.message}"
+        }
+    }
+}
+
+internal class TaskRepoCreatePrTool(
+    private val repositoryProvider: () -> RemoteTaskRepositoryTarget?,
+    private val githubTokenProvider: () -> String,
+    private val githubApiBaseUrlProvider: () -> String
+) : Tool {
+    override val name: String = "task_repo_create_pr"
+    override val description: String =
+        "为当前任务仓库创建一个远端 Pull Request。适合在分支提交完成后发起 PR。"
+    override val parameters: Map<String, Any> = mapOf(
+        "type" to "object",
+        "properties" to mapOf(
+            "title" to mapOf(
+                "type" to "string",
+                "description" to "Pull Request 标题"
+            ),
+            "head" to mapOf(
+                "type" to "string",
+                "description" to "源分支名，例如 feature/my-change"
+            ),
+            "base" to mapOf(
+                "type" to "string",
+                "description" to "目标分支名；不填时使用仓库默认分支"
+            ),
+            "body" to mapOf(
+                "type" to "string",
+                "description" to "可选。Pull Request 描述正文"
+            ),
+            "draft" to mapOf(
+                "type" to "boolean",
+                "description" to "可选。是否创建为草稿 PR"
+            )
+        ),
+        "required" to listOf("title", "head")
+    )
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override fun buildApprovalRequest(args: String): ToolApprovalRequest? {
+        val repo = repositoryProvider() ?: return null
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val title = obj["title"]?.jsonPrimitive?.contentOrNull?.trim()
+            val head = normalizeRemoteTaskRepositoryBranchName(
+                obj["head"]?.jsonPrimitive?.contentOrNull
+            )
+            if (title.isNullOrBlank() || head.isNullOrBlank()) return null
+            ToolApprovalRequest(
+                toolName = name,
+                summary = "为远端任务仓库创建 Pull Request",
+                detail = "${repo.label}: $head -> PR",
+                riskLevel = ApprovalRiskLevel.HIGH,
+                rawArgs = args,
+                approvalScopeTokens = setOf("mcp:github:write")
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    override suspend fun execute(args: String): String {
+        val repo = repositoryProvider()
+            ?: return "Error: 当前会话没有绑定远端任务仓库。请先在项目页把 GitHub 仓库设为任务仓库。"
+        val token = githubTokenProvider().trim()
+        if (token.isBlank()) return "Error: 请先在设置页填写 GitHub Token。"
+        val apiBaseUrl = githubApiBaseUrlProvider()
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val title = obj["title"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            if (title.isBlank()) return "Error: 'title' parameter required"
+            val head = normalizeRemoteTaskRepositoryBranchName(
+                obj["head"]?.jsonPrimitive?.contentOrNull
+            )
+            if (head.isNullOrBlank()) return "Error: 'head' parameter required"
+            val base = normalizeRemoteTaskRepositoryBranchName(
+                obj["base"]?.jsonPrimitive?.contentOrNull
+            ) ?: loadRemoteTaskRepositoryDefaultBranch(
+                repo = repo,
+                token = token,
+                apiBaseUrl = apiBaseUrl
+            ) ?: return "Error: 无法确定默认目标分支，请显式传入 'base'"
+            val body = obj["body"]?.jsonPrimitive?.contentOrNull
+            val draft = obj["draft"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase()?.let {
+                when (it) {
+                    "true" -> true
+                    "false" -> false
+                    else -> null
+                }
+            } ?: false
+
+            val result = runRemoteTaskRepositoryApiRequest(
+                apiBaseUrl = apiBaseUrl,
+                token = token,
+                path = buildRemoteTaskRepositoryPullsPath(repo),
+                method = "POST",
+                jsonBody = buildJsonObject {
+                    put("title", title)
+                    put("head", head)
+                    put("base", base)
+                    body?.let { put("body", it) }
+                    put("draft", draft)
+                }.toString(),
+                allowedCodes = setOf(201)
+            )
+            if (!result.success) {
+                return buildString {
+                    append("Error: 创建远端任务仓库 PR 失败。")
+                    append("\n源分支: ")
+                    append(head)
+                    append("\n目标分支: ")
+                    append(base)
+                    result.error?.takeIf { it.isNotBlank() }?.let {
+                        append("\n底层结果: ")
+                        append(it)
+                    }
+                }
+            }
+            val createdPr = parseRemoteTaskRepositoryCreatedPr(result.body)
+            if (createdPr == null) {
+                return "已创建远端任务仓库 PR，但未能解析返回结果。\n原始响应:\n${result.body}"
+            }
+            buildString {
+                append("已创建当前任务仓库 Pull Request：")
+                append(repo.label)
+                append("\n#")
+                append(createdPr.number)
+                append(" ")
+                append(createdPr.title)
+                append("\n源分支: ")
+                append(createdPr.head)
+                append("\n目标分支: ")
+                append(createdPr.base)
+                createdPr.url?.takeIf { it.isNotBlank() }?.let {
+                    append("\n链接: ")
+                    append(it)
+                }
+            }
+        } catch (e: Exception) {
+            "Error: 创建当前任务仓库 PR 失败: ${e.message}"
+        }
+    }
+}
+
+internal class TaskRepoClosePrTool(
+    private val repositoryProvider: () -> RemoteTaskRepositoryTarget?,
+    private val githubTokenProvider: () -> String,
+    private val githubApiBaseUrlProvider: () -> String
+) : Tool {
+    override val name: String = "task_repo_close_pr"
+    override val description: String =
+        "关闭当前任务仓库里的一个 Pull Request。适合清理测试 PR 或结束不再需要的远端 PR。"
+    override val parameters: Map<String, Any> = mapOf(
+        "type" to "object",
+        "properties" to mapOf(
+            "number" to mapOf(
+                "type" to "integer",
+                "description" to "要关闭的 Pull Request 编号"
+            )
+        ),
+        "required" to listOf("number")
+    )
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override fun buildApprovalRequest(args: String): ToolApprovalRequest? {
+        val repo = repositoryProvider() ?: return null
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val number = obj["number"]?.jsonPrimitive?.intOrNull ?: return null
+            ToolApprovalRequest(
+                toolName = name,
+                summary = "关闭远端任务仓库 Pull Request",
+                detail = "${repo.label}: PR #$number",
+                riskLevel = ApprovalRiskLevel.HIGH,
+                rawArgs = args,
+                approvalScopeTokens = setOf("mcp:github:write")
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    override suspend fun execute(args: String): String {
+        val repo = repositoryProvider()
+            ?: return "Error: 当前会话没有绑定远端任务仓库。请先在项目页把 GitHub 仓库设为任务仓库。"
+        val token = githubTokenProvider().trim()
+        if (token.isBlank()) return "Error: 请先在设置页填写 GitHub Token。"
+        val apiBaseUrl = githubApiBaseUrlProvider()
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val number = obj["number"]?.jsonPrimitive?.intOrNull
+                ?: return "Error: 'number' parameter required"
+            val result = runRemoteTaskRepositoryApiRequest(
+                apiBaseUrl = apiBaseUrl,
+                token = token,
+                path = buildRemoteTaskRepositoryPullPath(repo, number),
+                method = "PATCH",
+                jsonBody = buildJsonObject {
+                    put("state", "closed")
+                }.toString(),
+                allowedCodes = setOf(200)
+            )
+            if (!result.success) {
+                return buildString {
+                    append("Error: 关闭远端任务仓库 PR 失败。")
+                    append("\nPR: #")
+                    append(number)
+                    result.error?.takeIf { it.isNotBlank() }?.let {
+                        append("\n底层结果: ")
+                        append(it)
+                    }
+                }
+            }
+            val updatedPr = parseRemoteTaskRepositoryCreatedPr(result.body)
+            return buildString {
+                append("已关闭当前任务仓库 Pull Request：")
+                append(repo.label)
+                append("\nPR: #")
+                append(updatedPr?.number ?: number)
+                updatedPr?.title?.takeIf { it.isNotBlank() }?.let {
+                    append(" ")
+                    append(it)
+                }
+                updatedPr?.url?.takeIf { it.isNotBlank() }?.let {
+                    append("\n链接: ")
+                    append(it)
+                }
+            }
+        } catch (e: Exception) {
+            "Error: 关闭当前任务仓库 PR 失败: ${e.message}"
+        }
+    }
+}
+
+internal class TaskRepoDeleteBranchTool(
+    private val repositoryProvider: () -> RemoteTaskRepositoryTarget?,
+    private val githubTokenProvider: () -> String,
+    private val githubApiBaseUrlProvider: () -> String
+) : Tool {
+    override val name: String = "task_repo_delete_branch"
+    override val description: String =
+        "删除当前任务仓库中的远端分支。适合清理测试分支；删除前建议先确认该分支不再需要。"
+    override val parameters: Map<String, Any> = mapOf(
+        "type" to "object",
+        "properties" to mapOf(
+            "branch" to mapOf(
+                "type" to "string",
+                "description" to "要删除的远端分支名，例如 feature/my-change"
+            )
+        ),
+        "required" to listOf("branch")
+    )
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override fun buildApprovalRequest(args: String): ToolApprovalRequest? {
+        val repo = repositoryProvider() ?: return null
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val branch = normalizeRemoteTaskRepositoryBranchName(
+                obj["branch"]?.jsonPrimitive?.contentOrNull
+            )
+            if (branch.isNullOrBlank()) return null
+            ToolApprovalRequest(
+                toolName = name,
+                summary = "删除远端任务仓库分支",
+                detail = "${repo.label}: $branch",
+                riskLevel = ApprovalRiskLevel.HIGH,
+                rawArgs = args,
+                approvalScopeTokens = setOf("mcp:github:write")
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    override suspend fun execute(args: String): String {
+        val repo = repositoryProvider()
+            ?: return "Error: 当前会话没有绑定远端任务仓库。请先在项目页把 GitHub 仓库设为任务仓库。"
+        val token = githubTokenProvider().trim()
+        if (token.isBlank()) return "Error: 请先在设置页填写 GitHub Token。"
+        val apiBaseUrl = githubApiBaseUrlProvider()
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val branch = normalizeRemoteTaskRepositoryBranchName(
+                obj["branch"]?.jsonPrimitive?.contentOrNull
+            ) ?: return "Error: 'branch' parameter required"
+            val defaultBranch = loadRemoteTaskRepositoryDefaultBranch(
+                repo = repo,
+                token = token,
+                apiBaseUrl = apiBaseUrl
+            )
+            if (!defaultBranch.isNullOrBlank() && branch == defaultBranch) {
+                return "Error: 不能删除默认分支 `$branch`。"
+            }
+            val result = runRemoteTaskRepositoryApiRequest(
+                apiBaseUrl = apiBaseUrl,
+                token = token,
+                path = buildRemoteTaskRepositoryGitBranchRefDeletePath(repo, branch),
+                method = "DELETE",
+                allowedCodes = setOf(204)
+            )
+            if (!result.success) {
+                return buildString {
+                    append("Error: 删除远端任务仓库分支失败。")
+                    append("\n分支: ")
+                    append(branch)
+                    result.error?.takeIf { it.isNotBlank() }?.let {
+                        append("\n底层结果: ")
+                        append(it)
+                    }
+                }
+            }
+            "已删除当前任务仓库远端分支：${repo.label}\n分支: $branch"
+        } catch (e: Exception) {
+            "Error: 删除当前任务仓库分支失败: ${e.message}"
+        }
+    }
+}
+
+internal class TaskRepoReadFileTool(
+    private val repositoryProvider: () -> RemoteTaskRepositoryTarget?,
+    private val githubTokenProvider: () -> String,
+    private val githubApiBaseUrlProvider: () -> String
+) : Tool {
+    override val name: String = "task_repo_read_file"
+    override val description: String =
+        "读取当前任务仓库里的单个文件内容。自动绑定当前远端任务仓库，不需要再手动填写 owner/repo。"
+    override val parameters: Map<String, Any> = mapOf(
+        "type" to "object",
+        "properties" to mapOf(
+            "path" to mapOf(
+                "type" to "string",
+                "description" to "仓库内文件路径，例如 app/src/main/AndroidManifest.xml"
+            ),
+            "branch" to mapOf(
+                "type" to "string",
+                "description" to "可选。指定分支；不填时使用仓库默认分支"
+            )
+        ),
+        "required" to listOf("path")
+    )
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override suspend fun execute(args: String): String {
+        val repo = repositoryProvider()
+            ?: return "Error: 当前会话没有绑定远端任务仓库。请先在项目页把 GitHub 仓库设为任务仓库。"
+        val token = githubTokenProvider().trim()
+        if (token.isBlank()) return "Error: 请先在设置页填写 GitHub Token。"
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val path = obj["path"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            if (path.isBlank()) return "Error: 'path' parameter required"
+            val branch = obj["branch"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().ifBlank { null }
+            val result = loadRemoteTaskRepositoryFile(
+                repo = repo,
+                path = path,
+                branch = branch,
+                token = token,
+                apiBaseUrl = githubApiBaseUrlProvider()
+            )
+            when {
+                result.file != null -> formatRemoteTaskRepositoryFile(result.file, repo.label)
+                result.rawResult != null -> result.rawResult
+                else -> "Error: 当前远端文件读取失败。"
+            }
+        } catch (e: Exception) {
+            "Error: 读取当前任务仓库文件失败: ${e.message}"
+        }
+    }
+}
+
+internal class TaskRepoUpdateFileTool(
+    private val repositoryProvider: () -> RemoteTaskRepositoryTarget?,
+    private val githubTokenProvider: () -> String,
+    private val githubApiBaseUrlProvider: () -> String
+) : Tool {
+    override val name: String = "task_repo_update_file"
+    override val description: String =
+        "更新当前任务仓库里的单个文件并直接提交到远端分支。自动绑定当前远端任务仓库，不需要再手动填写 owner/repo。"
+    override val parameters: Map<String, Any> = mapOf(
+        "type" to "object",
+        "properties" to mapOf(
+            "path" to mapOf(
+                "type" to "string",
+                "description" to "仓库内文件路径"
+            ),
+            "content" to mapOf(
+                "type" to "string",
+                "description" to "新的完整文件内容"
+            ),
+            "message" to mapOf(
+                "type" to "string",
+                "description" to "提交说明"
+            ),
+            "branch" to mapOf(
+                "type" to "string",
+                "description" to "目标分支。建议显式填写，例如 main、master 或 feature/xxx"
+            )
+        ),
+        "required" to listOf("path", "content", "message")
+    )
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override fun buildApprovalRequest(args: String): ToolApprovalRequest? {
+        val repo = repositoryProvider() ?: return null
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val path = obj["path"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            if (path.isBlank()) return null
+            ToolApprovalRequest(
+                toolName = name,
+                summary = "更新远端任务仓库文件",
+                detail = "${repo.label}/$path",
+                riskLevel = ApprovalRiskLevel.HIGH,
+                rawArgs = args,
+                approvalScopeTokens = setOf("mcp:github:write")
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    override suspend fun execute(args: String): String = executeWithResult(args).output
+
+    override suspend fun executeWithResult(args: String): ToolExecutionResult {
+        val repo = repositoryProvider()
+            ?: return ToolExecutionResult("Error: 当前会话没有绑定远端任务仓库。请先在项目页把 GitHub 仓库设为任务仓库。")
+        val token = githubTokenProvider().trim()
+        if (token.isBlank()) return ToolExecutionResult("Error: 请先在设置页填写 GitHub Token。")
+        val apiBaseUrl = githubApiBaseUrlProvider()
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val path = obj["path"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val content = obj["content"]?.jsonPrimitive?.contentOrNull
+                ?: return ToolExecutionResult("Error: 'content' parameter required")
+            val message = obj["message"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            if (path.isBlank()) return ToolExecutionResult("Error: 'path' parameter required")
+            if (message.isBlank()) return ToolExecutionResult("Error: 'message' parameter required")
+            val requestedBranch = obj["branch"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().ifBlank { null }
+            val existingFile = loadRemoteTaskRepositoryFile(
+                repo = repo,
+                path = path,
+                branch = requestedBranch,
+                token = token,
+                apiBaseUrl = apiBaseUrl
+            ).file
+            val resolvedDefaultBranch = requestedBranch ?: loadRemoteTaskRepositoryDefaultBranch(
+                repo = repo,
+                token = token,
+                apiBaseUrl = apiBaseUrl
+            )
+            val branchCandidates = listOfNotNull(
+                requestedBranch,
+                existingFile?.branch?.takeIf { it.isNotBlank() },
+                resolvedDefaultBranch,
+                "main",
+                "master"
+            ).distinct()
+            var lastResult: String? = null
+            var chosenBranch: String? = null
+            for (branch in branchCandidates) {
+                val result = runRemoteTaskRepositoryApiRequest(
+                    apiBaseUrl = apiBaseUrl,
+                    token = token,
+                    path = buildRemoteTaskRepositoryContentsPath(repo, path),
+                    method = "PUT",
+                    jsonBody = buildJsonObject {
+                        put("message", message)
+                        put("content", Base64.encodeToString(content.toByteArray(Charsets.UTF_8), Base64.NO_WRAP))
+                        put("branch", branch)
+                        existingFile?.sha?.takeIf { it.isNotBlank() }?.let { put("sha", it) }
+                    }.toString(),
+                    allowedCodes = setOf(200, 201)
+                )
+                if (result.success) {
+                    chosenBranch = branch
+                    lastResult = result.body.ifBlank { "OK" }
+                    break
+                }
+                lastResult = result.error ?: result.body
+            }
+            if (chosenBranch == null) {
+                return ToolExecutionResult(
+                    output = buildString {
+                        append("Error: 更新远端任务仓库文件失败。")
+                        if (!requestedBranch.isNullOrBlank()) {
+                            append(" 分支 `")
+                            append(requestedBranch)
+                            append("` 未成功写入。")
+                        } else {
+                            append(" 已尝试默认分支 main/master，但都失败。建议显式传入 branch。")
+                        }
+                        lastResult?.takeIf { it.isNotBlank() }?.let {
+                            append("\n底层结果: ")
+                            append(it)
+                        }
+                    }
+                )
+            }
+            ToolExecutionResult(
+                output = buildString {
+                    append("已更新当前任务仓库文件：")
+                    append(repo.label)
+                    append("/")
+                    append(path)
+                    append("\n分支: ")
+                    append(chosenBranch)
+                    append("\n提交说明: ")
+                    append(message)
+                    lastResult?.takeIf { it.isNotBlank() }?.let {
+                        append("\n底层结果: ")
+                        append(it)
+                    }
+                },
+                fileChanges = listOf(
+                    ToolFileChange(
+                        path = "github://${repo.label}/$path",
+                        operation = if (existingFile == null) "create" else "write",
+                        beforeContent = existingFile?.content,
+                        afterContent = content,
+                        diffPreview = buildDiffPreview(existingFile?.content, content)
+                    )
+                )
+            )
+        } catch (e: Exception) {
+            ToolExecutionResult("Error: 更新当前任务仓库文件失败: ${e.message}")
+        }
+    }
+}
+
+internal class TaskRepoDeleteFileTool(
+    private val repositoryProvider: () -> RemoteTaskRepositoryTarget?,
+    private val githubTokenProvider: () -> String,
+    private val githubApiBaseUrlProvider: () -> String
+) : Tool {
+    override val name: String = "task_repo_delete_file"
+    override val description: String =
+        "真正删除当前任务仓库里的单个文件，并提交到远端分支。不要用写空内容来模拟删除。"
+    override val parameters: Map<String, Any> = mapOf(
+        "type" to "object",
+        "properties" to mapOf(
+            "path" to mapOf(
+                "type" to "string",
+                "description" to "要删除的仓库内文件路径"
+            ),
+            "message" to mapOf(
+                "type" to "string",
+                "description" to "删除提交说明"
+            ),
+            "branch" to mapOf(
+                "type" to "string",
+                "description" to "目标分支。建议显式填写，例如 main、master 或 feature/xxx"
+            )
+        ),
+        "required" to listOf("path", "message")
+    )
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override fun buildApprovalRequest(args: String): ToolApprovalRequest? {
+        val repo = repositoryProvider() ?: return null
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val path = obj["path"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            if (path.isBlank()) return null
+            ToolApprovalRequest(
+                toolName = name,
+                summary = "删除远端任务仓库文件",
+                detail = "${repo.label}/$path",
+                riskLevel = ApprovalRiskLevel.HIGH,
+                rawArgs = args,
+                approvalScopeTokens = setOf("mcp:github:write")
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    override suspend fun execute(args: String): String = executeWithResult(args).output
+
+    override suspend fun executeWithResult(args: String): ToolExecutionResult {
+        val repo = repositoryProvider()
+            ?: return ToolExecutionResult("Error: 当前会话没有绑定远端任务仓库。请先在项目页把 GitHub 仓库设为任务仓库。")
+        val token = githubTokenProvider().trim()
+        if (token.isBlank()) return ToolExecutionResult("Error: 请先在设置页填写 GitHub Token。")
+        val apiBaseUrl = githubApiBaseUrlProvider()
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val path = obj["path"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val message = obj["message"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            if (path.isBlank()) return ToolExecutionResult("Error: 'path' parameter required")
+            if (message.isBlank()) return ToolExecutionResult("Error: 'message' parameter required")
+            val requestedBranch = obj["branch"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().ifBlank { null }
+            val existingFile = loadRemoteTaskRepositoryFile(
+                repo = repo,
+                path = path,
+                branch = requestedBranch,
+                token = token,
+                apiBaseUrl = apiBaseUrl
+            ).file ?: return ToolExecutionResult("Error: 远端文件不存在，无法删除：${repo.label}/$path")
+            val resolvedDefaultBranch = requestedBranch ?: loadRemoteTaskRepositoryDefaultBranch(
+                repo = repo,
+                token = token,
+                apiBaseUrl = apiBaseUrl
+            )
+            val branchCandidates = listOfNotNull(
+                requestedBranch,
+                existingFile.branch?.takeIf { it.isNotBlank() },
+                resolvedDefaultBranch,
+                "main",
+                "master"
+            ).distinct()
+            var lastResult: String? = null
+            var chosenBranch: String? = null
+            for (branch in branchCandidates) {
+                val result = runRemoteTaskRepositoryApiRequest(
+                    apiBaseUrl = apiBaseUrl,
+                    token = token,
+                    path = buildRemoteTaskRepositoryContentsPath(repo, path),
+                    method = "DELETE",
+                    jsonBody = buildJsonObject {
+                        put("message", message)
+                        put("sha", existingFile.sha.orEmpty())
+                        put("branch", branch)
+                    }.toString(),
+                    allowedCodes = setOf(200)
+                )
+                if (result.success) {
+                    chosenBranch = branch
+                    lastResult = result.body.ifBlank { "OK" }
+                    break
+                }
+                lastResult = result.error ?: result.body
+            }
+            if (chosenBranch == null) {
+                return ToolExecutionResult(
+                    output = buildString {
+                        append("Error: 删除远端任务仓库文件失败。")
+                        if (!requestedBranch.isNullOrBlank()) {
+                            append(" 分支 `")
+                            append(requestedBranch)
+                            append("` 删除未成功。")
+                        } else {
+                            append(" 已尝试默认分支 main/master，但都失败。建议显式传入 branch。")
+                        }
+                        lastResult?.takeIf { it.isNotBlank() }?.let {
+                            append("\n底层结果: ")
+                            append(it)
+                        }
+                    }
+                )
+            }
+            ToolExecutionResult(
+                output = buildString {
+                    append("已删除当前任务仓库文件：")
+                    append(repo.label)
+                    append("/")
+                    append(path)
+                    append("\n分支: ")
+                    append(chosenBranch)
+                    append("\n提交说明: ")
+                    append(message)
+                    lastResult?.takeIf { it.isNotBlank() }?.let {
+                        append("\n底层结果: ")
+                        append(it)
+                    }
+                },
+                fileChanges = listOf(
+                    ToolFileChange(
+                        path = "github://${repo.label}/$path",
+                        operation = "delete",
+                        beforeContent = existingFile.content,
+                        afterContent = null,
+                        diffPreview = buildDiffPreview(existingFile.content, null)
+                    )
+                )
+            )
+        } catch (e: Exception) {
+            ToolExecutionResult("Error: 删除远端任务仓库文件失败: ${e.message}")
+        }
+    }
+}
+
+internal class TaskRepoCommitFilesTool(
+    private val repositoryProvider: () -> RemoteTaskRepositoryTarget?,
+    private val githubTokenProvider: () -> String,
+    private val githubApiBaseUrlProvider: () -> String
+) : Tool {
+    override val name: String = "task_repo_commit_files"
+    override val description: String =
+        "在当前任务仓库中一次性提交多个文件变更。适合需要在同一次提交里同时新增、修改、删除多个文件的场景。"
+    override val parameters: Map<String, Any> = mapOf(
+        "type" to "object",
+        "properties" to mapOf(
+            "message" to mapOf(
+                "type" to "string",
+                "description" to "提交说明"
+            ),
+            "branch" to mapOf(
+                "type" to "string",
+                "description" to "目标分支。建议显式填写，例如 main、master 或 feature/xxx"
+            ),
+            "changes" to mapOf(
+                "type" to "array",
+                "description" to "本次提交包含的文件变更列表",
+                "items" to mapOf(
+                    "type" to "object",
+                    "properties" to mapOf(
+                        "path" to mapOf(
+                            "type" to "string",
+                            "description" to "仓库内文件路径"
+                        ),
+                        "operation" to mapOf(
+                            "type" to "string",
+                            "description" to "写入或删除。可填 write、create、update、delete"
+                        ),
+                        "content" to mapOf(
+                            "type" to "string",
+                            "description" to "当 operation 为 write/create/update 时，填写新的完整文件内容"
+                        )
+                    ),
+                    "required" to listOf("path", "operation")
+                )
+            )
+        ),
+        "required" to listOf("message", "changes")
+    )
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override fun buildApprovalRequest(args: String): ToolApprovalRequest? {
+        val repo = repositoryProvider() ?: return null
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val changes = obj["changes"]?.jsonArray.orEmpty()
+            ToolApprovalRequest(
+                toolName = name,
+                summary = "批量提交远端任务仓库文件",
+                detail = "${repo.label} (${changes.size} 项变更)",
+                riskLevel = ApprovalRiskLevel.HIGH,
+                rawArgs = args,
+                approvalScopeTokens = setOf("mcp:github:write")
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    override suspend fun execute(args: String): String = executeWithResult(args).output
+
+    override suspend fun executeWithResult(args: String): ToolExecutionResult {
+        val repo = repositoryProvider()
+            ?: return ToolExecutionResult("Error: 当前会话没有绑定远端任务仓库。请先在项目页把 GitHub 仓库设为任务仓库。")
+        val token = githubTokenProvider().trim()
+        if (token.isBlank()) return ToolExecutionResult("Error: 请先在设置页填写 GitHub Token。")
+        val apiBaseUrl = githubApiBaseUrlProvider()
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val message = obj["message"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            if (message.isBlank()) return ToolExecutionResult("Error: 'message' parameter required")
+            val requestedBranch = obj["branch"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().ifBlank { null }
+            val changes = parseRemoteTaskRepositoryBatchChanges(obj["changes"])
+            if (changes.isEmpty()) return ToolExecutionResult("Error: 'changes' must contain at least one file change")
+            val duplicatePaths = changes.groupBy { it.path }.filterValues { it.size > 1 }.keys.sorted()
+            if (duplicatePaths.isNotEmpty()) {
+                return ToolExecutionResult("Error: 同一次批量提交里存在重复路径: ${duplicatePaths.joinToString(", ")}")
+            }
+
+            val branchCandidates = if (requestedBranch != null) {
+                listOf(requestedBranch)
+            } else {
+                val resolvedDefaultBranch = loadRemoteTaskRepositoryDefaultBranch(
+                    repo = repo,
+                    token = token,
+                    apiBaseUrl = apiBaseUrl
+                )
+                listOfNotNull(
+                    resolvedDefaultBranch,
+                    "main",
+                    "master"
+                ).distinct()
+            }
+
+            var lastError: String? = null
+            var batchResult: RemoteTaskRepositoryBatchCommitResult? = null
+            for (branch in branchCandidates) {
+                val result = runRemoteTaskRepositoryBatchCommit(
+                    repo = repo,
+                    branch = branch,
+                    message = message,
+                    changes = changes,
+                    token = token,
+                    apiBaseUrl = apiBaseUrl
+                )
+                if (result.success) {
+                    batchResult = result
+                    break
+                }
+                lastError = result.error
+            }
+
+            val success = batchResult ?: return ToolExecutionResult(
+                buildString {
+                    append("Error: 批量提交远端任务仓库文件失败。")
+                    if (!requestedBranch.isNullOrBlank()) {
+                        append(" 分支 `")
+                        append(requestedBranch)
+                        append("` 提交未成功。")
+                    } else {
+                        append(" 已尝试默认分支和 main/master 回退，但都失败。建议显式传入 branch。")
+                    }
+                    lastError?.takeIf { it.isNotBlank() }?.let {
+                        append("\n底层结果: ")
+                        append(it)
+                    }
+                }
+            )
+
+            ToolExecutionResult(
+                output = buildString {
+                    append("已批量提交当前任务仓库文件：")
+                    append(repo.label)
+                    append("\n分支: ")
+                    append(success.branch)
+                    append("\n提交说明: ")
+                    append(message)
+                    success.commitSha?.takeIf { it.isNotBlank() }?.let {
+                        append("\n提交 SHA: ")
+                        append(it)
+                    }
+                    success.commitUrl?.takeIf { it.isNotBlank() }?.let {
+                        append("\n提交地址: ")
+                        append(it)
+                    }
+                    append("\n变更数: ")
+                    append(success.fileChanges.size)
+                },
+                fileChanges = success.fileChanges
+            )
+        } catch (e: Exception) {
+            ToolExecutionResult("Error: 批量提交远端任务仓库文件失败: ${e.message}")
+        }
+    }
+}
+
+private data class RemoteTaskRepositoryBatchChange(
+    val path: String,
+    val operation: String,
+    val content: String?
+)
+
+private data class RemoteTaskRepositoryBatchCommitResult(
+    val success: Boolean,
+    val branch: String,
+    val commitSha: String? = null,
+    val commitUrl: String? = null,
+    val fileChanges: List<ToolFileChange> = emptyList(),
+    val error: String? = null
+)
+
+private fun parseRemoteTaskRepositoryBatchChanges(element: JsonElement?): List<RemoteTaskRepositoryBatchChange> {
+    val items = element?.jsonArray ?: return emptyList()
+    return items.mapNotNull { item ->
+        val obj = item.jsonObjectOrNull() ?: return@mapNotNull null
+        val path = obj["path"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val operation = obj["operation"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().lowercase()
+        if (path.isBlank() || operation.isBlank()) return@mapNotNull null
+        val normalizedOperation = when (operation) {
+            "write", "create", "update" -> "write"
+            "delete", "remove" -> "delete"
+            else -> operation
+        }
+        RemoteTaskRepositoryBatchChange(
+            path = path,
+            operation = normalizedOperation,
+            content = obj["content"]?.jsonPrimitive?.contentOrNull
+        )
+    }
+}
+
+private data class RemoteTaskRepositoryFile(
+    val path: String,
+    val content: String,
+    val sha: String?,
+    val branch: String?
+)
+
+private data class RemoteTaskRepositoryDirectoryEntry(
+    val path: String,
+    val name: String,
+    val type: String,
+    val sizeBytes: Long?,
+    val sha: String?,
+    val htmlUrl: String?
+)
+
+private data class RemoteTaskRepositoryFileLoadResult(
+    val file: RemoteTaskRepositoryFile? = null,
+    val rawResult: String? = null
+)
+
+private data class RemoteTaskRepositoryDirectoryLoadResult(
+    val entries: List<RemoteTaskRepositoryDirectoryEntry>? = null,
+    val rawResult: String? = null
+)
+
+private data class RemoteTaskRepositoryBranchesLoadResult(
+    val defaultBranch: String? = null,
+    val branches: List<String>? = null,
+    val rawResult: String? = null
+)
+
+private data class RemoteTaskRepositoryCreatedPr(
+    val number: Int,
+    val title: String,
+    val head: String,
+    val base: String,
+    val url: String?
+)
+
+private suspend fun loadRemoteTaskRepositoryFile(
+    repo: RemoteTaskRepositoryTarget,
+    path: String,
+    branch: String?,
+    token: String,
+    apiBaseUrl: String
+): RemoteTaskRepositoryFileLoadResult {
+    val pathWithRef = buildString {
+        append(buildRemoteTaskRepositoryContentsPath(repo, path))
+        branch?.takeIf { it.isNotBlank() }?.let {
+            append("?ref=")
+            append(Uri.encode(it))
+        }
+    }
+    val result = runRemoteTaskRepositoryApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = pathWithRef
+    )
+    if (!result.success) {
+        return RemoteTaskRepositoryFileLoadResult(rawResult = result.error ?: result.body)
+    }
+    val element = runCatching { Json.parseToJsonElement(result.body) }.getOrNull()
+        ?: return RemoteTaskRepositoryFileLoadResult(rawResult = result.body)
+    val file = parseRemoteTaskRepositoryFile(
+        element = element,
+        requestedPath = path,
+        requestedBranch = branch
+    )
+    return if (file != null) {
+        RemoteTaskRepositoryFileLoadResult(file = file)
+    } else {
+        RemoteTaskRepositoryFileLoadResult(rawResult = result.body)
+    }
+}
+
+private suspend fun loadRemoteTaskRepositoryDirectory(
+    repo: RemoteTaskRepositoryTarget,
+    path: String?,
+    branch: String?,
+    token: String,
+    apiBaseUrl: String
+): RemoteTaskRepositoryDirectoryLoadResult {
+    val pathWithRef = buildString {
+        append(buildRemoteTaskRepositoryContentsPath(repo, path.orEmpty()))
+        branch?.takeIf { it.isNotBlank() }?.let {
+            append("?ref=")
+            append(Uri.encode(it))
+        }
+    }
+    val result = runRemoteTaskRepositoryApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = pathWithRef
+    )
+    if (!result.success) {
+        return RemoteTaskRepositoryDirectoryLoadResult(rawResult = result.error ?: result.body)
+    }
+    val element = runCatching { Json.parseToJsonElement(result.body) }.getOrNull()
+        ?: return RemoteTaskRepositoryDirectoryLoadResult(rawResult = result.body)
+    val entries = parseRemoteTaskRepositoryDirectoryEntries(element)
+    if (entries != null) {
+        return RemoteTaskRepositoryDirectoryLoadResult(entries = entries)
+    }
+    val file = parseRemoteTaskRepositoryFile(
+        element = element,
+        requestedPath = path.orEmpty().ifBlank { "/" },
+        requestedBranch = branch
+    )
+    return if (file != null) {
+        RemoteTaskRepositoryDirectoryLoadResult(
+            rawResult = "Error: `${file.path}` 是文件，不是目录。请改用 task_repo_read_file 读取内容。"
+        )
+    } else {
+        RemoteTaskRepositoryDirectoryLoadResult(rawResult = result.body)
+    }
+}
+
+private suspend fun loadRemoteTaskRepositoryBranches(
+    repo: RemoteTaskRepositoryTarget,
+    token: String,
+    apiBaseUrl: String,
+    limit: Int
+): RemoteTaskRepositoryBranchesLoadResult {
+    val defaultBranch = loadRemoteTaskRepositoryDefaultBranch(
+        repo = repo,
+        token = token,
+        apiBaseUrl = apiBaseUrl
+    )
+    val result = runRemoteTaskRepositoryApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = buildRemoteTaskRepositoryBranchesPath(repo, limit)
+    )
+    if (!result.success) {
+        return RemoteTaskRepositoryBranchesLoadResult(
+            defaultBranch = defaultBranch,
+            rawResult = result.error ?: result.body
+        )
+    }
+    val element = runCatching { Json.parseToJsonElement(result.body) }.getOrNull()
+        ?: return RemoteTaskRepositoryBranchesLoadResult(
+            defaultBranch = defaultBranch,
+            rawResult = result.body
+        )
+    val branches = parseRemoteTaskRepositoryBranches(element)
+        ?: return RemoteTaskRepositoryBranchesLoadResult(
+            defaultBranch = defaultBranch,
+            rawResult = result.body
+        )
+    return RemoteTaskRepositoryBranchesLoadResult(
+        defaultBranch = defaultBranch,
+        branches = branches
+    )
+}
+
+private fun parseRemoteTaskRepositoryFile(
+    element: JsonElement,
+    requestedPath: String,
+    requestedBranch: String?
+): RemoteTaskRepositoryFile? {
+    val obj = element as? JsonObject ?: return null
+    if (obj["type"]?.jsonPrimitive?.contentOrNull == "file" || obj.containsKey("content")) {
+        return buildRemoteTaskRepositoryFile(obj, requestedPath, requestedBranch)
+    }
+    obj["content"]?.jsonObjectOrNull()?.let { nested ->
+        buildRemoteTaskRepositoryFile(nested, requestedPath, requestedBranch)?.let { return it }
+    }
+    obj["data"]?.jsonObjectOrNull()?.let { nested ->
+        buildRemoteTaskRepositoryFile(nested, requestedPath, requestedBranch)?.let { return it }
+    }
+    obj["entries"]?.jsonArray?.firstOrNull()?.jsonObjectOrNull()?.let { nested ->
+        buildRemoteTaskRepositoryFile(nested, requestedPath, requestedBranch)?.let { return it }
+    }
+    return null
+}
+
+private fun parseRemoteTaskRepositoryDirectoryEntries(
+    element: JsonElement
+): List<RemoteTaskRepositoryDirectoryEntry>? {
+    (element as? kotlinx.serialization.json.JsonArray)?.let { entries ->
+        return entries.mapNotNull { parseRemoteTaskRepositoryDirectoryEntry(it.jsonObjectOrNull()) }
+    }
+    val obj = element as? JsonObject ?: return null
+    obj["entries"]?.jsonArray?.let { entries ->
+        return entries.mapNotNull { parseRemoteTaskRepositoryDirectoryEntry(it.jsonObjectOrNull()) }
+    }
+    obj["items"]?.jsonArray?.let { entries ->
+        return entries.mapNotNull { parseRemoteTaskRepositoryDirectoryEntry(it.jsonObjectOrNull()) }
+    }
+    obj["data"]?.jsonArray?.let { entries ->
+        return entries.mapNotNull { parseRemoteTaskRepositoryDirectoryEntry(it.jsonObjectOrNull()) }
+    }
+    return null
+}
+
+private fun parseRemoteTaskRepositoryDirectoryEntry(
+    obj: JsonObject?
+): RemoteTaskRepositoryDirectoryEntry? {
+    if (obj == null) return null
+    val type = obj["type"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+    val path = obj["path"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+    val name = obj["name"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+    if (type.isBlank() || path.isBlank()) return null
+    return RemoteTaskRepositoryDirectoryEntry(
+        path = path,
+        name = name.ifBlank { path.substringAfterLast('/') },
+        type = type,
+        sizeBytes = obj["size"]?.jsonPrimitive?.contentOrNull?.toLongOrNull(),
+        sha = obj["sha"]?.jsonPrimitive?.contentOrNull,
+        htmlUrl = obj["html_url"]?.jsonPrimitive?.contentOrNull
+    )
+}
+
+private fun parseRemoteTaskRepositoryBranches(
+    element: JsonElement
+): List<String>? {
+    val items = element as? kotlinx.serialization.json.JsonArray ?: return null
+    return items.mapNotNull { item ->
+        item.jsonObjectOrNull()
+            ?.get("name")
+            ?.jsonPrimitive
+            ?.contentOrNull
+            ?.trim()
+            ?.ifBlank { null }
+    }
+}
+
+private fun parseRemoteTaskRepositoryCreatedPr(body: String): RemoteTaskRepositoryCreatedPr? {
+    val obj = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return null
+    val number = obj["number"]?.jsonPrimitive?.intOrNull ?: return null
+    val title = obj["title"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+    val head = obj["head"]?.jsonObjectOrNull()
+        ?.get("ref")
+        ?.jsonPrimitive
+        ?.contentOrNull
+        ?.trim()
+        .orEmpty()
+    val base = obj["base"]?.jsonObjectOrNull()
+        ?.get("ref")
+        ?.jsonPrimitive
+        ?.contentOrNull
+        ?.trim()
+        .orEmpty()
+    if (title.isBlank() || head.isBlank() || base.isBlank()) return null
+    return RemoteTaskRepositoryCreatedPr(
+        number = number,
+        title = title,
+        head = head,
+        base = base,
+        url = obj["html_url"]?.jsonPrimitive?.contentOrNull?.trim()
+    )
+}
+
+private fun buildRemoteTaskRepositoryFile(
+    obj: JsonObject,
+    requestedPath: String,
+    requestedBranch: String?
+): RemoteTaskRepositoryFile? {
+    val hasContentField = obj.containsKey("content")
+    val rawContent = obj["content"]?.jsonPrimitive?.contentOrNull.orEmpty()
+    val encoding = obj["encoding"]?.jsonPrimitive?.contentOrNull.orEmpty()
+    val decodedContent = when {
+        !hasContentField -> null
+        rawContent.isEmpty() && encoding.equals("base64", ignoreCase = true) -> ""
+        rawContent.isEmpty() -> ""
+        encoding.equals("base64", ignoreCase = true) -> {
+            runCatching {
+                val normalized = rawContent.replace("\n", "").replace("\r", "")
+                String(Base64.decode(normalized, Base64.DEFAULT), Charsets.UTF_8)
+            }.getOrNull()
+        }
+        else -> rawContent
+    } ?: return null
+    return RemoteTaskRepositoryFile(
+        path = obj["path"]?.jsonPrimitive?.contentOrNull?.ifBlank { requestedPath } ?: requestedPath,
+        content = decodedContent,
+        sha = obj["sha"]?.jsonPrimitive?.contentOrNull,
+        branch = obj["branch"]?.jsonPrimitive?.contentOrNull ?: requestedBranch
+    )
+}
+
+private fun formatRemoteTaskRepositoryDirectory(
+    repoLabel: String,
+    requestedPath: String?,
+    requestedBranch: String?,
+    entries: List<RemoteTaskRepositoryDirectoryEntry>,
+    limit: Int
+): String {
+    val normalizedPath = requestedPath?.ifBlank { null } ?: "/"
+    val sortedEntries = entries.sortedWith(
+        compareBy<RemoteTaskRepositoryDirectoryEntry>(
+            { it.type != "dir" },
+            { it.path.lowercase() }
+        )
+    )
+    val visibleEntries = sortedEntries.take(limit)
+    return buildString {
+        append("Remote task repository directory: ")
+        append(repoLabel)
+        append(normalizedPath)
+        requestedBranch?.takeIf { it.isNotBlank() }?.let {
+            append("\nBranch: ")
+            append(it)
+        }
+        append("\nTotal: ")
+        append(entries.size)
+        if (entries.size > visibleEntries.size) {
+            append(" (showing first ")
+            append(visibleEntries.size)
+            append(")")
+        }
+        append("\n\n")
+        if (visibleEntries.isEmpty()) {
+            append("(empty directory)")
+        } else {
+            append(
+                visibleEntries.joinToString("\n") { entry ->
+                    buildString {
+                        append(
+                            when (entry.type) {
+                                "dir" -> "[DIR] "
+                                "file" -> "[FILE] "
+                                else -> "[${entry.type.uppercase()}] "
+                            }
+                        )
+                        append(entry.path)
+                        entry.sizeBytes?.takeIf { entry.type == "file" }?.let {
+                            append(" (")
+                            append(formatRemoteTaskRepositorySize(it))
+                            append(")")
+                        }
+                        entry.sha?.takeIf { it.isNotBlank() }?.let {
+                            append(" [sha=")
+                            append(it.take(12))
+                            append("]")
+                        }
+                    }
+                }
+            )
+        }
+    }
+}
+
+private fun formatRemoteTaskRepositoryBranches(
+    repoLabel: String,
+    defaultBranch: String?,
+    branches: List<String>
+): String {
+    val sortedBranches = branches.sortedBy { it.lowercase() }
+    return buildString {
+        append("Remote task repository branches: ")
+        append(repoLabel)
+        defaultBranch?.takeIf { it.isNotBlank() }?.let {
+            append("\nDefault branch: ")
+            append(it)
+        }
+        append("\nTotal: ")
+        append(sortedBranches.size)
+        append("\n\n")
+        if (sortedBranches.isEmpty()) {
+            append("(no branches)")
+        } else {
+            append(
+                sortedBranches.mapIndexed { index, branch ->
+                    buildString {
+                        append(index + 1)
+                        append(". ")
+                        append(branch)
+                        if (!defaultBranch.isNullOrBlank() && branch == defaultBranch) {
+                            append(" [default]")
+                        }
+                    }
+                }.joinToString("\n")
+            )
+        }
+    }
+}
+
+private fun formatRemoteTaskRepositorySize(sizeBytes: Long): String {
+    return when {
+        sizeBytes >= 1024L * 1024L -> String.format("%.1f MB", sizeBytes / (1024f * 1024f))
+        sizeBytes >= 1024L -> String.format("%.1f KB", sizeBytes / 1024f)
+        else -> "$sizeBytes B"
+    }
+}
+
+private fun formatRemoteTaskRepositoryFile(
+    file: RemoteTaskRepositoryFile,
+    repoLabel: String
+): String {
+    return buildString {
+        append("Remote task repository file: ")
+        append(repoLabel)
+        append("/")
+        append(file.path)
+        file.branch?.takeIf { it.isNotBlank() }?.let {
+            append("\nBranch: ")
+            append(it)
+        }
+        file.sha?.takeIf { it.isNotBlank() }?.let {
+            append("\nSHA: ")
+            append(it)
+        }
+        append("\n\n")
+        append(file.content.ifBlank { "(empty file)" })
+    }
+}
+
+private fun formatGitHubSearchResult(
+    rawResult: String,
+    repoLabel: String,
+    githubQuery: String
+): String {
+    val element = runCatching { Json.parseToJsonElement(rawResult) }.getOrNull()
+        ?: return rawResult
+    val obj = element as? JsonObject ?: return rawResult
+    val items = obj["items"]?.jsonArray
+    if (items.isNullOrEmpty()) {
+        return buildString {
+            append("Remote task repository search finished with no matches.")
+            append("\nRepository: ")
+            append(repoLabel)
+            append("\nQuery: ")
+            append(githubQuery)
+        }
+    }
+    val lines = items.take(20).mapIndexed { index, item ->
+        val itemObj = item.jsonObjectOrNull()
+        val path = itemObj?.get("path")?.jsonPrimitive?.contentOrNull.orEmpty()
+        val name = itemObj?.get("name")?.jsonPrimitive?.contentOrNull.orEmpty()
+        val sha = itemObj?.get("sha")?.jsonPrimitive?.contentOrNull.orEmpty()
+        val htmlUrl = itemObj?.get("html_url")?.jsonPrimitive?.contentOrNull.orEmpty()
+        buildString {
+            append(index + 1)
+            append(". ")
+            append(if (path.isNotBlank()) path else name.ifBlank { "(unknown path)" })
+            if (sha.isNotBlank()) {
+                append(" [sha=")
+                append(sha.take(12))
+                append("]")
+            }
+            if (htmlUrl.isNotBlank()) {
+                append(" ")
+                append(htmlUrl)
+            }
+        }
+    }
+    return buildString {
+        append("Remote task repository search results")
+        append("\nRepository: ")
+        append(repoLabel)
+        append("\nQuery: ")
+        append(githubQuery)
+        append("\nTotal: ")
+        append(obj["total_count"]?.jsonPrimitive?.contentOrNull ?: items.size.toString())
+        append("\n\n")
+        append(lines.joinToString("\n"))
+    }
+}
+
+private fun JsonElement.jsonObjectOrNull(): JsonObject? = this as? JsonObject
+
+private data class RemoteTaskRepositoryHttpResult(
+    val success: Boolean,
+    val code: Int,
+    val body: String,
+    val error: String?
+)
+
+private val REMOTE_TASK_REPOSITORY_JSON = Json { ignoreUnknownKeys = true; isLenient = true }
+private val REMOTE_TASK_REPOSITORY_HTTP = OkHttpClient.Builder()
+    .connectTimeout(15, TimeUnit.SECONDS)
+    .readTimeout(30, TimeUnit.SECONDS)
+    .writeTimeout(30, TimeUnit.SECONDS)
+    .build()
+
+private fun runRemoteTaskRepositoryApiRequest(
+    apiBaseUrl: String,
+    token: String,
+    path: String,
+    method: String = "GET",
+    jsonBody: String? = null,
+    allowedCodes: Set<Int> = setOf(200)
+): RemoteTaskRepositoryHttpResult {
+    return runCatching {
+        val requestBuilder = Request.Builder()
+            .url(buildRemoteTaskRepositoryApiUrl(apiBaseUrl, path))
+            .addHeader("Authorization", "Bearer $token")
+            .addHeader("Accept", "application/vnd.github+json")
+            .addHeader("X-GitHub-Api-Version", "2022-11-28")
+            .addHeader("User-Agent", "MurongAgent/1.0")
+        if (method.equals("GET", ignoreCase = true)) {
+            requestBuilder.get()
+        } else {
+            requestBuilder.method(
+                method,
+                (jsonBody ?: "{}").toRequestBody("application/json; charset=utf-8".toMediaType())
+            )
+        }
+        REMOTE_TASK_REPOSITORY_HTTP.newCall(requestBuilder.build()).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (response.code in allowedCodes) {
+                RemoteTaskRepositoryHttpResult(
+                    success = true,
+                    code = response.code,
+                    body = body,
+                    error = null
+                )
+            } else {
+                RemoteTaskRepositoryHttpResult(
+                    success = false,
+                    code = response.code,
+                    body = body,
+                    error = parseRemoteTaskRepositoryApiError(body, response.code)
+                )
+            }
+        }
+    }.getOrElse { error ->
+        RemoteTaskRepositoryHttpResult(
+            success = false,
+            code = -1,
+            body = "",
+            error = error.message ?: "GitHub API 请求失败"
+        )
+    }
+}
+
+private fun loadRemoteTaskRepositoryDefaultBranch(
+    repo: RemoteTaskRepositoryTarget,
+    token: String,
+    apiBaseUrl: String
+): String? {
+    val result = runRemoteTaskRepositoryApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}"
+    )
+    if (!result.success) return null
+    val obj = runCatching { REMOTE_TASK_REPOSITORY_JSON.parseToJsonElement(result.body).jsonObject }.getOrNull()
+        ?: return null
+    return obj["default_branch"]?.jsonPrimitive?.contentOrNull?.trim()?.ifBlank { null }
+}
+
+private fun buildRemoteTaskRepositoryApiUrl(apiBaseUrl: String, path: String): String {
+    val base = apiBaseUrl.trim().ifBlank { "https://api.github.com" }.trimEnd('/')
+    return "$base/${path.trimStart('/')}"
+}
+
+private fun buildRemoteTaskRepositoryContentsPath(
+    repo: RemoteTaskRepositoryTarget,
+    path: String
+): String {
+    val encodedPath = path.trim().removePrefix("/").removeSuffix("/")
+        .split('/')
+        .filter { it.isNotBlank() }
+        .joinToString("/") { Uri.encode(it) }
+    val prefix = "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}/contents"
+    return if (encodedPath.isBlank()) prefix else "$prefix/$encodedPath"
+}
+
+private fun buildRemoteTaskRepositoryBranchesPath(
+    repo: RemoteTaskRepositoryTarget,
+    limit: Int
+): String {
+    return "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}/branches?per_page=$limit&page=1"
+}
+
+private fun buildRemoteTaskRepositoryPullsPath(repo: RemoteTaskRepositoryTarget): String {
+    return "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}/pulls"
+}
+
+private fun buildRemoteTaskRepositoryPullPath(
+    repo: RemoteTaskRepositoryTarget,
+    number: Int
+): String {
+    return "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}/pulls/$number"
+}
+
+private fun buildRemoteTaskRepositoryGitRefsPath(repo: RemoteTaskRepositoryTarget): String {
+    return "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}/git/refs"
+}
+
+private fun buildRemoteTaskRepositoryGitBranchRefGetPath(
+    repo: RemoteTaskRepositoryTarget,
+    branch: String
+): String {
+    return "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}/git/ref/heads/${Uri.encode(branch)}"
+}
+
+private fun buildRemoteTaskRepositoryGitBranchRefUpdatePath(
+    repo: RemoteTaskRepositoryTarget,
+    branch: String
+): String {
+    return "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}/git/refs/heads/${Uri.encode(branch)}"
+}
+
+private fun buildRemoteTaskRepositoryGitBranchRefDeletePath(
+    repo: RemoteTaskRepositoryTarget,
+    branch: String
+): String {
+    return "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}/git/refs/heads/${Uri.encode(branch)}"
+}
+
+private fun buildRemoteTaskRepositoryGitCommitPath(
+    repo: RemoteTaskRepositoryTarget,
+    commitSha: String
+): String {
+    return "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}/git/commits/${Uri.encode(commitSha)}"
+}
+
+private fun buildRemoteTaskRepositoryGitTreesPath(repo: RemoteTaskRepositoryTarget): String {
+    return "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}/git/trees"
+}
+
+private fun buildRemoteTaskRepositoryGitCommitsPath(repo: RemoteTaskRepositoryTarget): String {
+    return "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}/git/commits"
+}
+
+private suspend fun runRemoteTaskRepositoryBatchCommit(
+    repo: RemoteTaskRepositoryTarget,
+    branch: String,
+    message: String,
+    changes: List<RemoteTaskRepositoryBatchChange>,
+    token: String,
+    apiBaseUrl: String
+): RemoteTaskRepositoryBatchCommitResult {
+    if (changes.isEmpty()) {
+        return RemoteTaskRepositoryBatchCommitResult(
+            success = false,
+            branch = branch,
+            error = "没有可提交的文件变更"
+        )
+    }
+
+    val headSha = loadRemoteTaskRepositoryBranchHeadSha(
+        repo = repo,
+        branch = branch,
+        token = token,
+        apiBaseUrl = apiBaseUrl
+    ) ?: return RemoteTaskRepositoryBatchCommitResult(
+        success = false,
+        branch = branch,
+        error = "无法读取分支 `$branch` 的最新提交"
+    )
+
+    val baseTreeSha = loadRemoteTaskRepositoryCommitTreeSha(
+        repo = repo,
+        commitSha = headSha,
+        token = token,
+        apiBaseUrl = apiBaseUrl
+    ) ?: return RemoteTaskRepositoryBatchCommitResult(
+        success = false,
+        branch = branch,
+        error = "无法读取分支 `$branch` 的基础 tree"
+    )
+
+    val fileChanges = mutableListOf<ToolFileChange>()
+    val treeItems = mutableListOf<JsonObject>()
+
+    for (change in changes) {
+        when (change.operation) {
+            "write" -> {
+                val existing = loadRemoteTaskRepositoryFile(
+                    repo = repo,
+                    path = change.path,
+                    branch = branch,
+                    token = token,
+                    apiBaseUrl = apiBaseUrl
+                ).file
+                val afterContent = change.content
+                    ?: return RemoteTaskRepositoryBatchCommitResult(
+                        success = false,
+                        branch = branch,
+                        error = "文件 `${change.path}` 缺少 content"
+                    )
+                treeItems += buildJsonObject {
+                    put("path", change.path)
+                    put("mode", "100644")
+                    put("type", "blob")
+                    put("content", afterContent)
+                }
+                fileChanges += ToolFileChange(
+                    path = "github://${repo.label}/${change.path}",
+                    operation = if (existing == null) "create" else "write",
+                    beforeContent = existing?.content,
+                    afterContent = afterContent,
+                    diffPreview = buildDiffPreview(existing?.content, afterContent)
+                )
+            }
+
+            "delete" -> {
+                val existing = loadRemoteTaskRepositoryFile(
+                    repo = repo,
+                    path = change.path,
+                    branch = branch,
+                    token = token,
+                    apiBaseUrl = apiBaseUrl
+                ).file ?: return RemoteTaskRepositoryBatchCommitResult(
+                    success = false,
+                    branch = branch,
+                    error = "远端文件不存在，无法删除：${repo.label}/${change.path}"
+                )
+                treeItems += buildJsonObject {
+                    put("path", change.path)
+                    put("mode", "100644")
+                    put("type", "blob")
+                    put("sha", JsonNull)
+                }
+                fileChanges += ToolFileChange(
+                    path = "github://${repo.label}/${change.path}",
+                    operation = "delete",
+                    beforeContent = existing.content,
+                    afterContent = null,
+                    diffPreview = buildDiffPreview(existing.content, null)
+                )
+            }
+
+            else -> {
+                return RemoteTaskRepositoryBatchCommitResult(
+                    success = false,
+                    branch = branch,
+                    error = "不支持的批量操作 `${change.operation}`，请使用 write 或 delete"
+                )
+            }
+        }
+    }
+
+    val treeResult = runRemoteTaskRepositoryApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = buildRemoteTaskRepositoryGitTreesPath(repo),
+        method = "POST",
+        jsonBody = buildJsonObject {
+            put("base_tree", baseTreeSha)
+            put("tree", buildJsonArray {
+                treeItems.forEach { add(it) }
+            })
+        }.toString(),
+        allowedCodes = setOf(201)
+    )
+    if (!treeResult.success) {
+        return RemoteTaskRepositoryBatchCommitResult(
+            success = false,
+            branch = branch,
+            error = treeResult.error ?: treeResult.body
+        )
+    }
+    val newTreeSha = parseRemoteTaskRepositorySha(treeResult.body)
+        ?: return RemoteTaskRepositoryBatchCommitResult(
+            success = false,
+            branch = branch,
+            error = "创建批量提交 tree 失败"
+        )
+
+    val commitResult = runRemoteTaskRepositoryApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = buildRemoteTaskRepositoryGitCommitsPath(repo),
+        method = "POST",
+        jsonBody = buildJsonObject {
+            put("message", message)
+            put("tree", newTreeSha)
+            put("parents", buildJsonArray { add(JsonPrimitive(headSha)) })
+        }.toString(),
+        allowedCodes = setOf(201)
+    )
+    if (!commitResult.success) {
+        return RemoteTaskRepositoryBatchCommitResult(
+            success = false,
+            branch = branch,
+            error = commitResult.error ?: commitResult.body
+        )
+    }
+    val newCommitSha = parseRemoteTaskRepositorySha(commitResult.body)
+        ?: return RemoteTaskRepositoryBatchCommitResult(
+            success = false,
+            branch = branch,
+            error = "创建批量提交 commit 失败"
+        )
+
+    val updateRefResult = runRemoteTaskRepositoryApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = buildRemoteTaskRepositoryGitBranchRefUpdatePath(repo, branch),
+        method = "PATCH",
+        jsonBody = buildJsonObject {
+            put("sha", newCommitSha)
+            put("force", false)
+        }.toString(),
+        allowedCodes = setOf(200)
+    )
+    if (!updateRefResult.success) {
+        return RemoteTaskRepositoryBatchCommitResult(
+            success = false,
+            branch = branch,
+            error = updateRefResult.error ?: updateRefResult.body
+        )
+    }
+
+    return RemoteTaskRepositoryBatchCommitResult(
+        success = true,
+        branch = branch,
+        commitSha = newCommitSha,
+        commitUrl = "https://github.com/${repo.owner}/${repo.repo}/commit/$newCommitSha",
+        fileChanges = fileChanges
+    )
+}
+
+private fun loadRemoteTaskRepositoryBranchHeadSha(
+    repo: RemoteTaskRepositoryTarget,
+    branch: String,
+    token: String,
+    apiBaseUrl: String
+): String? {
+    val result = runRemoteTaskRepositoryApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = buildRemoteTaskRepositoryGitBranchRefGetPath(repo, branch)
+    )
+    if (!result.success) return null
+    val obj = runCatching { REMOTE_TASK_REPOSITORY_JSON.parseToJsonElement(result.body).jsonObject }.getOrNull()
+        ?: return null
+    return obj["object"]?.jsonObjectOrNull()?.get("sha")?.jsonPrimitive?.contentOrNull
+}
+
+private fun loadRemoteTaskRepositoryCommitTreeSha(
+    repo: RemoteTaskRepositoryTarget,
+    commitSha: String,
+    token: String,
+    apiBaseUrl: String
+): String? {
+    val result = runRemoteTaskRepositoryApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = buildRemoteTaskRepositoryGitCommitPath(repo, commitSha)
+    )
+    if (!result.success) return null
+    val obj = runCatching { REMOTE_TASK_REPOSITORY_JSON.parseToJsonElement(result.body).jsonObject }.getOrNull()
+        ?: return null
+    return obj["tree"]?.jsonObjectOrNull()?.get("sha")?.jsonPrimitive?.contentOrNull
+}
+
+private fun parseRemoteTaskRepositorySha(body: String): String? {
+    val obj = runCatching { REMOTE_TASK_REPOSITORY_JSON.parseToJsonElement(body).jsonObject }.getOrNull()
+        ?: return null
+    return obj["sha"]?.jsonPrimitive?.contentOrNull
+}
+
+private fun parseRemoteTaskRepositoryApiError(body: String, code: Int): String {
+    val parsed = runCatching { REMOTE_TASK_REPOSITORY_JSON.parseToJsonElement(body).jsonObject }.getOrNull()
+    val message = parsed?.get("message")?.jsonPrimitive?.contentOrNull?.trim()
+    return when {
+        !message.isNullOrBlank() -> "GitHub API 错误($code): $message"
+        body.isNotBlank() -> "GitHub API 错误($code): $body"
+        else -> "GitHub API 请求失败($code)"
+    }
+}
+
+private fun normalizeRemoteTaskRepositoryBranchName(rawBranch: String?): String? {
+    return rawBranch
+        ?.trim()
+        ?.removePrefix("refs/heads/")
+        ?.removePrefix("heads/")
+        ?.removePrefix("/")
+        ?.ifBlank { null }
+}

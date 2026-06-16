@@ -74,7 +74,6 @@ class AgentLoop(
         userMessage: ChatMessage,
         history: List<ChatMessage>,
         stableSystemContext: String? = null,
-        turnScopedSystemContext: String? = null,
         onEvent: (AgentEvent) -> Unit,
         requestApproval: suspend (ToolApprovalRequest) -> Boolean = { true }
     ) {
@@ -83,11 +82,17 @@ class AgentLoop(
         val messages = buildMessages(
             userMessage = userMessage,
             history = history,
-            stableSystemContext = stableSystemContext,
-            turnScopedSystemContext = turnScopedSystemContext
+            stableSystemContext = stableSystemContext
         )
         val currentMessages = messages.toMutableList()
         var toolIteration = 0
+        var hasExecutedTools = false
+        var hasRetriedForPostToolSummary = false
+        val completedToolRuns = mutableListOf<CompletedToolRun>()
+        val preferredSummaryLanguage = inferPreferredSummaryLanguage(
+            userMessage = userMessage,
+            history = history
+        )
 
         while (toolIteration < maxToolIterations) {
             toolIteration++
@@ -101,7 +106,7 @@ class AgentLoop(
                     model = config.getActiveModel(),
                     temperature = config.temperature,
                     maxTokens = config.maxTokens,
-                    stream = true,
+                    stream = config.isStreamingResponsesEnabled(),
                     reasoningEffort = config.getActiveReasoningEffort(),
                     thinkingMode = config.getActiveThinkingMode(),
                     tools = toolRegistry.buildToolsJson()
@@ -138,25 +143,53 @@ class AgentLoop(
                 return
             }
 
-            // 添加模型回复到消息历史
-            currentMessages.add(
-                ChatMessage(
-                    role = "assistant",
-                    content = response.content,
-                    toolCalls = response.toolCalls
+            val toolCalls = response.toolCalls
+            val hasTextualResponse = !response.content.isNullOrBlank()
+            if (hasTextualResponse || !toolCalls.isNullOrEmpty()) {
+                currentMessages.add(
+                    ChatMessage(
+                        role = "assistant",
+                        content = response.content,
+                        toolCalls = toolCalls
+                    )
                 )
-            )
+            }
 
             response.usage?.let { usage ->
                 onEvent(AgentEvent.UsageUpdate(usage))
             }
 
             // ── 检查是否有 Tool Call ────────────────
-            val toolCalls = response.toolCalls
             if (toolCalls.isNullOrEmpty()) {
-                // 如果 response 有内容但流式事件没发出（例如 HTTP 错误），现在补发
+                // 工具执行后如果模型没给任何自然语言结论，强制再补一轮总结请求。
+                if (!hasTextualResponse && hasExecutedTools) {
+                    if (!hasRetriedForPostToolSummary) {
+                        hasRetriedForPostToolSummary = true
+                        currentMessages.add(
+                            ChatMessage(
+                                role = "system",
+                                content = buildPostToolSummaryReminder(
+                                    completedToolRuns = completedToolRuns,
+                                    language = preferredSummaryLanguage
+                                )
+                            )
+                        )
+                        state = AgentState.THINKING
+                        continue
+                    }
+
+                    val fallbackSummary = buildSyntheticToolSummary(
+                        completedToolRuns = completedToolRuns,
+                        language = preferredSummaryLanguage
+                    )
+                    if (fallbackSummary.isNotBlank()) {
+                        onEvent(AgentEvent.ContentDelta(fallbackSummary))
+                    }
+                }
+
+                // 如果 response 有内容但流式事件没发出（例如非流式回包），现在补发
                 val respContent = response.content
-                if (respContent != null && !streamedContentReceived && !streamedReasoningReceived) {
+                if (!respContent.isNullOrBlank() && !streamedContentReceived) {
                     onEvent(AgentEvent.ContentDelta(respContent))
                 }
                 onEvent(AgentEvent.Done)
@@ -167,6 +200,8 @@ class AgentLoop(
             // ── 执行 Tool Calls ─────────────────────
             state = AgentState.EXECUTING_TOOLS
             for (tc in toolCalls) {
+                hasExecutedTools = true
+                hasRetriedForPostToolSummary = false
                 onEvent(
                     AgentEvent.ToolExecution(
                         toolName = tc.function.name,
@@ -207,6 +242,11 @@ class AgentLoop(
                         fileChanges = result.fileChanges
                     )
                 )
+                completedToolRuns += CompletedToolRun(
+                    toolName = tc.function.name,
+                    arguments = tc.function.arguments,
+                    result = result.output
+                )
 
                 currentMessages.add(
                     ChatMessage(
@@ -242,12 +282,20 @@ class AgentLoop(
 
         for (attempt in 1..maxRetries) {
             try {
-                return provider.chatStream(
-                    request = request,
-                    apiKey = config.getActiveApiKey(),
-                    baseUrl = config.getActiveBaseUrl(),
-                    onDelta = onDelta
-                )
+                return if (request.stream) {
+                    provider.chatStream(
+                        request = request,
+                        apiKey = config.getActiveApiKey(),
+                        baseUrl = config.getActiveBaseUrl(),
+                        onDelta = onDelta
+                    )
+                } else {
+                    provider.chat(
+                        request = request,
+                        apiKey = config.getActiveApiKey(),
+                        baseUrl = config.getActiveBaseUrl()
+                    )
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: java.net.UnknownHostException) {
@@ -311,8 +359,7 @@ class AgentLoop(
     private fun buildMessages(
         userMessage: ChatMessage,
         history: List<ChatMessage>,
-        stableSystemContext: String?,
-        turnScopedSystemContext: String?
+        stableSystemContext: String?
     ): List<ChatMessage> {
         val messages = mutableListOf<ChatMessage>()
 
@@ -328,16 +375,12 @@ class AgentLoop(
             ChatMessage(
                 role = "system",
                 content = buildString {
-                    append("Runtime model info: provider=")
+                    append("Runtime model: provider=")
                     append(config.activeProviderId)
                     append(", model=")
                     append(config.getActiveModel())
-                    config.getActiveReasoningEffort()?.takeIf { it.isNotBlank() }?.let {
-                        append(", reasoning_effort=")
-                        append(it)
-                    }
-                    append(". When the user asks what model you are, answer using this runtime info.")
-                    append(" Do not claim you are Claude, GPT, or another model family unless the runtime model above actually matches it.")
+                    append(". If asked what model you are, answer with this runtime model.")
+                    append(" Do not claim another model family unless it matches the runtime model above.")
                 }
             )
         )
@@ -355,21 +398,122 @@ class AgentLoop(
         val recentHistory = history.takeLast(32)
         messages.addAll(recentHistory)
 
-        // 本轮动态上下文放在历史之后，避免每轮都打碎前缀缓存。
-        turnScopedSystemContext?.takeIf { it.isNotBlank() }?.let {
-            messages.add(
-                ChatMessage(
-                    role = "system",
-                    content = it
-                )
-            )
-        }
-
         // 当前用户输入
         messages.add(
             userMessage
         )
 
         return messages
+    }
+
+    private fun buildPostToolSummaryReminder(
+        completedToolRuns: List<CompletedToolRun>,
+        language: SummaryLanguage
+    ): String {
+        val intro = when (language) {
+            SummaryLanguage.CHINESE -> {
+                "你刚刚已经执行了工具。不要静默结束，请基于工具结果直接对用户给出自然语言总结，说明做了什么、结果是什么、下一步建议是什么。"
+            }
+            SummaryLanguage.ENGLISH -> {
+                "You just executed tools. Do not end silently. Reply to the user with a natural-language summary that explains what was done, what the results mean, and what should happen next."
+            }
+        }
+        val toolLines = completedToolRuns
+            .takeLast(6)
+            .joinToString("\n") { toolRun ->
+                when (language) {
+                    SummaryLanguage.CHINESE -> {
+                        "- ${toolRun.toolName}: ${toolRun.result.take(280)}"
+                    }
+                    SummaryLanguage.ENGLISH -> {
+                        "- ${toolRun.toolName}: ${toolRun.result.take(280)}"
+                    }
+                }
+            }
+        return buildString {
+            append(intro)
+            if (toolLines.isNotBlank()) {
+                append("\n\n")
+                append(
+                    when (language) {
+                        SummaryLanguage.CHINESE -> "最近的工具结果："
+                        SummaryLanguage.ENGLISH -> "Recent tool results:"
+                    }
+                )
+                append('\n')
+                append(toolLines)
+            }
+        }
+    }
+
+    private fun buildSyntheticToolSummary(
+        completedToolRuns: List<CompletedToolRun>,
+        language: SummaryLanguage
+    ): String {
+        if (completedToolRuns.isEmpty()) return ""
+        val recentRuns = completedToolRuns.takeLast(4)
+        return when (language) {
+            SummaryLanguage.CHINESE -> buildString {
+                append("工具已执行完成，结果如下：\n")
+                recentRuns.forEachIndexed { index, toolRun ->
+                    append(index + 1)
+                    append(". `")
+                    append(toolRun.toolName)
+                    append("`：")
+                    append(toolRun.result.take(220).ifBlank { "(无输出)" })
+                    if (index != recentRuns.lastIndex) append('\n')
+                }
+                append("\n\n如果你愿意，我可以继续基于这些结果往下分析或执行下一步。")
+            }
+            SummaryLanguage.ENGLISH -> buildString {
+                append("Tools finished running. Summary:\n")
+                recentRuns.forEachIndexed { index, toolRun ->
+                    append(index + 1)
+                    append(". `")
+                    append(toolRun.toolName)
+                    append("`: ")
+                    append(toolRun.result.take(220).ifBlank { "(no output)" })
+                    if (index != recentRuns.lastIndex) append('\n')
+                }
+                append("\n\nI can continue from these results if you want me to.")
+            }
+        }
+    }
+
+    private fun inferPreferredSummaryLanguage(
+        userMessage: ChatMessage,
+        history: List<ChatMessage>
+    ): SummaryLanguage {
+        val combinedText = buildString {
+            append(userMessage.content.orEmpty())
+            history.asReversed()
+                .asSequence()
+                .filter { it.role == "user" }
+                .take(4)
+                .forEach {
+                    append('\n')
+                    append(it.content.orEmpty())
+                }
+        }
+        return if (combinedText.any(::isChineseCharacter)) {
+            SummaryLanguage.CHINESE
+        } else {
+            SummaryLanguage.ENGLISH
+        }
+    }
+
+    private fun isChineseCharacter(char: Char): Boolean {
+        return Character.UnicodeScript.of(char.code) == Character.UnicodeScript.HAN
+    }
+
+    private data class CompletedToolRun(
+        val toolName: String,
+        val arguments: String,
+        val result: String
+    )
+
+    private enum class SummaryLanguage {
+        CHINESE,
+        ENGLISH
     }
 }

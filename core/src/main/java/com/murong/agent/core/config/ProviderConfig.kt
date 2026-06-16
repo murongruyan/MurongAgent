@@ -51,6 +51,7 @@ data class WorkflowFailureFallbackContext(
     val providerId: String? = null, val projectRiskLevel: ProjectWorkflowRiskLevel? = null
 )
 
+@Serializable
 data class ProjectToolPreferences(
     val workflowExecutionMode: WorkflowExecutionMode? = null,
     val autoRouteBeforeExecution: Boolean? = null,
@@ -72,7 +73,7 @@ data class ProviderConfig(
     val deepseekModelPreset: String = "custom", val deepseekModel: String = "deepseek-v4-flash",
     val deepseekReasoningEffort: String = "high",
     val deepseekPromptPricePer1M: Double = 0.0, val deepseekCompletionPricePer1M: Double = 0.0,
-    val deepseekBalanceUsd: Double = 0.0, val deepseekBalanceCurrency: String = "USD",
+    val deepseekBalanceUsd: Double = 0.0, val deepseekBalanceCurrency: String = "CNY",
     val deepseekBalanceSyncedAt: Long? = null,
     val openaiApiKey: String = "", val openaiBaseUrl: String = "",
     val openaiModel: String = "gpt-5.5", val openaiReasoningEffort: String = "medium",
@@ -98,6 +99,11 @@ data class ProviderConfig(
         Explain what you are doing, why you are doing it, what you found, and what the result means.
         For coding and debugging tasks, prefer a short conclusion first, then key findings, then concrete changes or next steps, and finally any important risks or follow-up notes.
         When using tools, briefly narrate important intent and summarize the outcome in natural language after the tool result arrives.
+        For large files, prefer file.read with line offsets or code_search instead of dumping whole files with shell cat.
+        For code lookup, first locate the real source file, then read only the local context you need.
+        When a class, symbol, or file name is known, prefer finding the exact file path first, then run code_search inside source trees or read that file directly.
+        Prefer source directories such as src/main, src/test, app/src, core/src, common/src, and avoid treating build, .gradle, out, target, intermediates, and mapping outputs as primary evidence unless the user explicitly asks for generated artifacts.
+        If an initial search only hits generated outputs, compiled artifacts, or unrelated noise, change strategy instead of stopping: narrow to source directories, try the exact class/file name, then read nearby lines for confirmation.
         If a result is complex, break it into clear sections and keep it easy to scan.
         Be proactive, specific, and helpful. Prefer slightly verbose explanations over terse replies.
         Never invent your own model identity. If the user asks what model you are, answer according to the actual runtime provider/model configuration supplied by the app, not by guessing from style.
@@ -117,8 +123,24 @@ data class ProviderConfig(
     val allowedShellCommandPrefixes: List<String> = emptyList(),
     val allowedPathPrefixes: List<String> = emptyList(),
     val autoUpgradeExecutionProfile: Boolean = true,
+    val executionProfileAutoControlsInitialized: Boolean = false,
+    val deepseekAutoModelSelection: Boolean = true,
+    val deepseekAutoReasoningEffort: Boolean = true,
+    val openaiAutoModelSelection: Boolean = true,
+    val openaiAutoReasoningEffort: Boolean = true,
+    val claudeAutoModelSelection: Boolean = true,
+    val claudeAutoReasoningEffort: Boolean = true,
+    val plannerProfileEnabled: Boolean = false,
+    val plannerModel: String = "",
+    val plannerReasoningEffort: String = "",
+    val subagentDefaultProfileEnabled: Boolean = false,
+    val subagentDefaultModel: String = "",
+    val subagentDefaultReasoningEffort: String = "",
+    val enableStreamingResponses: Boolean = true,
+    val enableMultimodalMessages: Boolean = true,
     val responseVerbosity: ResponseVerbosity = ResponseVerbosity.DETAILED,
-    val showDebugToolDetails: Boolean = false,
+    val webSearchSearxngBaseUrl: String = "",
+    val webSearchBingApiKey: String = "",
     val temperature: Double = 0.7,
     val maxTokens: Int = 8192
 ) {
@@ -151,6 +173,56 @@ data class ProviderConfig(
         "claude" -> claudeReasoningEffort
         else -> null
     }
+    fun getPlannerResolvedConfig(): ProviderConfig {
+        return if (!plannerProfileEnabled) this else applyActiveProviderProfileOverrides(
+            modelOverride = plannerModel,
+            reasoningOverride = plannerReasoningEffort
+        )
+    }
+    fun getSubagentDefaultResolvedConfig(): ProviderConfig {
+        return if (!subagentDefaultProfileEnabled) this else applyActiveProviderProfileOverrides(
+            modelOverride = subagentDefaultModel,
+            reasoningOverride = subagentDefaultReasoningEffort
+        )
+    }
+    fun isStreamingResponsesEnabled(): Boolean = enableStreamingResponses
+    fun isMultimodalEnabled(): Boolean = enableMultimodalMessages
+    fun isModelAutoSelectionEnabled(providerId: String = activeProviderId): Boolean {
+        if (!executionProfileAutoControlsInitialized) return autoUpgradeExecutionProfile
+        return when (providerId) {
+            "deepseek" -> deepseekAutoModelSelection
+            "openai-compatible" -> openaiAutoModelSelection
+            "claude" -> claudeAutoModelSelection
+            else -> false
+        }
+    }
+    fun isReasoningAutoSelectionEnabled(providerId: String = activeProviderId): Boolean {
+        if (!executionProfileAutoControlsInitialized) return autoUpgradeExecutionProfile
+        return when (providerId) {
+            "deepseek" -> deepseekAutoReasoningEffort
+            "openai-compatible" -> openaiAutoReasoningEffort
+            "claude" -> claudeAutoReasoningEffort
+            else -> false
+        }
+    }
+    fun withModelAutoSelection(providerId: String, enabled: Boolean): ProviderConfig {
+        val updated = when (providerId) {
+            "deepseek" -> copy(deepseekAutoModelSelection = enabled)
+            "openai-compatible" -> copy(openaiAutoModelSelection = enabled)
+            "claude" -> copy(claudeAutoModelSelection = enabled)
+            else -> this
+        }
+        return updated.copy(executionProfileAutoControlsInitialized = true)
+    }
+    fun withReasoningAutoSelection(providerId: String, enabled: Boolean): ProviderConfig {
+        val updated = when (providerId) {
+            "deepseek" -> copy(deepseekAutoReasoningEffort = enabled)
+            "openai-compatible" -> copy(openaiAutoReasoningEffort = enabled)
+            "claude" -> copy(claudeAutoReasoningEffort = enabled)
+            else -> this
+        }
+        return updated.copy(executionProfileAutoControlsInitialized = true)
+    }
     fun getActiveThinkingMode(): String? {
         val effort = getActiveReasoningEffort(); return if (effort.isNullOrBlank()) null else "reasoning/$effort"
     }
@@ -162,12 +234,22 @@ data class ProviderConfig(
         "deepseek" -> deepseekCompletionPricePer1M; "openai-compatible" -> openaiCompletionPricePer1M
         "claude" -> claudeCompletionPricePer1M; else -> 0.0
     }
+    fun getPriceCurrency(providerId: String = activeProviderId): String = when (providerId) {
+        "deepseek" -> "CNY"
+        "openai-compatible" -> openaiBalanceCurrency.ifBlank { "USD" }.uppercase()
+        "claude" -> claudeBalanceCurrency.ifBlank { "USD" }.uppercase()
+        else -> "USD"
+    }
     fun getBalanceUsd(providerId: String = activeProviderId): Double = when (providerId) {
         "deepseek" -> deepseekBalanceUsd; "openai-compatible" -> openaiBalanceUsd
         "claude" -> claudeBalanceUsd; else -> 0.0
     }
+    fun getBalanceAmount(providerId: String = activeProviderId): Double = getBalanceUsd(providerId)
     fun getBalanceCurrency(providerId: String = activeProviderId): String = when (providerId) {
-        "deepseek" -> deepseekBalanceCurrency; "openai-compatible" -> "USD"; "claude" -> "USD"; else -> "USD"
+        "deepseek" -> deepseekBalanceCurrency.ifBlank { "CNY" }.uppercase()
+        "openai-compatible" -> openaiBalanceCurrency.ifBlank { "USD" }.uppercase()
+        "claude" -> claudeBalanceCurrency.ifBlank { "USD" }.uppercase()
+        else -> "USD"
     }
     fun getBalanceSyncedAt(providerId: String = activeProviderId): Long? = when (providerId) {
         "deepseek" -> deepseekBalanceSyncedAt; "openai-compatible" -> openaiBalanceSyncedAt
@@ -182,9 +264,14 @@ data class ProviderConfig(
     fun getGitHubOAuthRedirectUri(): String = GITHUB_OAUTH_REDIRECT_URI
     fun getMurongBackendAuthApiUrl(): String = MURONG_BACKEND_AUTH_API_URL
     fun getMurongGitHubRedirectUri(): String = MURONG_APP_GITHUB_REDIRECT_URI
+    fun getNormalizedWebSearchBackendUrl(): String? = normalizeBaseUrl(webSearchSearxngBaseUrl)
+    fun getTrimmedWebSearchApiKey(): String = webSearchBingApiKey.trim()
     fun isGitHubSignedIn(): Boolean = githubBackendSessionToken.isNotBlank() && githubToken.isNotBlank()
     private fun normalizeBaseUrl(raw: String?): String? {
-        val trimmed = raw?.trim().orEmpty()
+        val trimmed = raw
+            ?.trim()
+            ?.trim('`', '"', '\'')
+            .orEmpty()
         if (trimmed.isBlank()) return null
         if (trimmed.startsWith("/")) return null
         if ("://" !in trimmed) {
@@ -195,18 +282,58 @@ data class ProviderConfig(
         }
         return trimmed
     }
-    fun withBalanceInfo(providerId: String, balanceUsd: Double, balanceCurrency: String, syncedAt: Long): ProviderConfig {
-        return when (providerId) {
-            "deepseek" -> copy(deepseekBalanceUsd = balanceUsd, deepseekBalanceCurrency = balanceCurrency, deepseekBalanceSyncedAt = syncedAt)
-            "openai-compatible" -> copy(openaiBalanceUsd = balanceUsd, openaiBalanceCurrency = balanceCurrency, openaiBalanceSyncedAt = syncedAt)
-            "claude" -> copy(claudeBalanceUsd = balanceUsd, claudeBalanceCurrency = balanceCurrency, claudeBalanceSyncedAt = syncedAt)
+    private fun applyActiveProviderProfileOverrides(
+        modelOverride: String?,
+        reasoningOverride: String?
+    ): ProviderConfig {
+        val normalizedModel = modelOverride?.trim().orEmpty().ifBlank { null }
+        val normalizedReasoning = reasoningOverride?.trim().orEmpty().ifBlank { null }
+        return when (activeProviderId) {
+            "deepseek" -> {
+                val targetModel = normalizedModel ?: deepseekModel
+                val targetPreset = when (targetModel) {
+                    "deepseek-v4-flash" -> "flash"
+                    "deepseek-v4-pro" -> "pro"
+                    else -> "custom"
+                }
+                copy(
+                    deepseekModelPreset = targetPreset,
+                    deepseekModel = targetModel,
+                    deepseekReasoningEffort = normalizedReasoning ?: deepseekReasoningEffort
+                )
+            }
+            "openai-compatible" -> copy(
+                openaiModel = normalizedModel ?: openaiModel,
+                openaiReasoningEffort = normalizedReasoning ?: openaiReasoningEffort
+            )
+            "claude" -> copy(
+                claudeModel = normalizedModel ?: claudeModel,
+                claudeReasoningEffort = normalizedReasoning ?: claudeReasoningEffort
+            )
             else -> this
         }
     }
-    fun estimateCostUsd(promptTokens: Int, completionTokens: Int, providerId: String = activeProviderId): Double {
+    fun withBalanceInfo(providerId: String, balanceUsd: Double, balanceCurrency: String, syncedAt: Long): ProviderConfig {
+        val normalizedCurrency = balanceCurrency.ifBlank { getBalanceCurrency(providerId) }.uppercase()
+        return when (providerId) {
+            "deepseek" -> copy(deepseekBalanceUsd = balanceUsd, deepseekBalanceCurrency = normalizedCurrency, deepseekBalanceSyncedAt = syncedAt)
+            "openai-compatible" -> copy(openaiBalanceUsd = balanceUsd, openaiBalanceCurrency = normalizedCurrency, openaiBalanceSyncedAt = syncedAt)
+            "claude" -> copy(claudeBalanceUsd = balanceUsd, claudeBalanceCurrency = normalizedCurrency, claudeBalanceSyncedAt = syncedAt)
+            else -> this
+        }
+    }
+    fun estimateCostAmount(promptTokens: Int, completionTokens: Int, providerId: String = activeProviderId): Double {
         val promptCost = (promptTokens / 1_000_000.0) * getPromptPricePer1M(providerId)
         val completionCost = (completionTokens / 1_000_000.0) * getCompletionPricePer1M(providerId)
         return promptCost + completionCost
+    }
+    fun estimateCostCurrency(providerId: String = activeProviderId): String = getPriceCurrency(providerId)
+    fun estimateCostUsd(promptTokens: Int, completionTokens: Int, providerId: String = activeProviderId): Double {
+        return if (getPriceCurrency(providerId) == "USD") {
+            estimateCostAmount(promptTokens, completionTokens, providerId)
+        } else {
+            0.0
+        }
     }
 
     fun buildEffectiveSystemPrompt(): String {
@@ -224,14 +351,25 @@ data class ProviderConfig(
             if (enabledRules.isNotEmpty()) append("\n\nActive Global Rules:\n$rulesText")
             if (enabledMemories.isNotEmpty()) append("\n\nActive Global Memories:\n$memoriesText")
             if (enabledSkills.isNotEmpty()) append("\n\n$enabledSkills")
+            append(
+                """
+
+Global configuration management:
+- If the user explicitly asks to save or add a reusable global rule, use `create_global_rule`.
+- If the user explicitly asks to save or add a reusable global memory, use `create_global_memory`.
+- If the user explicitly asks to import or save a reusable global skill, use `create_global_skill`.
+- If the user explicitly asks to import or add an MCP server, use `create_mcp_server`.
+- Never auto-create global rules, memories, skills, or MCP entries from ordinary conversation.
+                """.trimIndent()
+            )
         }
     }
     fun buildSkillsInstruction(skills: List<GlobalSkill>, heading: String): String {
         val enabled = skills.filter { it.enabled }; if (enabled.isEmpty()) return ""
         return buildString {
-            appendLine("\n$heading:")
+            appendLine("$heading:")
             enabled.forEach { appendLine(buildSkillInstruction(it)) }
-        }
+        }.trimEnd()
     }
     private fun buildSkillInstruction(skill: GlobalSkill): String {
         val tools = skill.allowedTools.joinToString(", ").ifBlank { "all (no restriction)" }
@@ -245,7 +383,9 @@ data class ProviderConfig(
         val normalizedToken = token.trim().lowercase(); val normalizedToolName = toolName.trim().lowercase()
         val aliases = when (normalizedToolName) {
             "shell" -> setOf("shell", "command", "bash", "sh"); "file" -> setOf("file", "files", "filesystem")
-            "code_edit" -> setOf("code_edit", "edit", "apply_diff"); "web_fetch" -> setOf("web_fetch", "fetch", "http")
+            "code_edit" -> setOf("code_edit", "edit", "apply_diff")
+            "code_search" -> setOf("code_search", "search_code", "grep", "rg", "ripgrep")
+            "web_fetch" -> setOf("web_fetch", "fetch", "http")
             "web_search" -> setOf("web_search", "search"); else -> setOf(normalizedToolName)
         }
         return normalizedToken in aliases
@@ -294,9 +434,16 @@ data class ProviderConfig(
 
     fun isBuiltinToolEnabled(toolName: String): Boolean {
         val normalized = toolName.trim()
+        val subagentPresetTools = setOf("explore", "research", "review", "security_review")
+        val hasPresetOverrides = enabledBuiltinTools.any { it in subagentPresetTools }
         return when (normalized) {
             "subagent" -> "subagent_launch" in enabledBuiltinTools || "subagent" in enabledBuiltinTools
             "subagent_launch" -> "subagent_launch" in enabledBuiltinTools || "subagent" in enabledBuiltinTools
+            in subagentPresetTools -> when {
+                normalized in enabledBuiltinTools -> true
+                hasPresetOverrides -> false
+                else -> "subagent_launch" in enabledBuiltinTools || "subagent" in enabledBuiltinTools
+            }
             else -> normalized in enabledBuiltinTools
         }
     }
@@ -319,70 +466,70 @@ data class ProviderConfig(
             ToolApprovalMode.READ_ONLY -> {
                 if (toolName in setOf("file", "web_fetch", "web_search", "subagent_launch")) {
                     ApprovalDecisionExplanation(requiresApproval = false,
-                        explanationLabel = "ֻ��ģʽ����",
-                        explanationDetail = "ֻ��ģʽ�½������ļ���ȡ����Ϣ��ȡ���ߡ�"
+                        explanationLabel = "只读模式放行",
+                        explanationDetail = "只读模式下仅允许文件读取、信息获取这类工具自动运行。"
                     )
                 } else ApprovalDecisionExplanation(requiresApproval = true,
-                    explanationLabel = "ֻ��ģʽ��ֹ",
-                    explanationDetail = "ֻ��ģʽ�²�����ִ���޸Ĳ�����"
+                    explanationLabel = "只读模式拦截",
+                    explanationDetail = "只读模式下不允许直接执行修改类操作。"
                 )
             }
             ToolApprovalMode.ALL_APPROVAL -> ApprovalDecisionExplanation(
-                requiresApproval = true, explanationLabel = "ȫ������",
-                explanationDetail = "��ǰ����ģʽΪȫ�����������й����������˹�ȷ�ϡ�"
+                requiresApproval = true, explanationLabel = "全部审批",
+                explanationDetail = "当前审批模式为全部审批，所有工具调用都需要人工确认。"
             )
             ToolApprovalMode.WHITELIST_AUTO -> {
                 if (approvalScopeTokens.isNotEmpty()) ApprovalDecisionExplanation(
-                    requiresApproval = true, explanationLabel = "�Ӵ�����Ȩ���˹�����",
-                    explanationDetail = "��ǰ�������������Ȩ��Χ�����˹�ȷ�ϡ�"
+                    requiresApproval = true, explanationLabel = "涉及额外授权范围",
+                    explanationDetail = "当前请求包含额外授权范围，仍需要人工确认。"
                 ) else {
                     val toolWhitelisted = isBuiltinToolEnabled(toolName) || isMcpToolEnabled(toolName)
                     if (!toolWhitelisted) ApprovalDecisionExplanation(
-                        requiresApproval = true, explanationLabel = "δ���а�����",
-                        explanationDetail = "���� `$toolName` ������Ŀ�������ڣ����˹�������"
+                        requiresApproval = true, explanationLabel = "未命中白名单",
+                        explanationDetail = "工具 `$toolName` 不在项目白名单内，需要人工审批。"
                     ) else when (toolName) {
                         "shell" -> {
                             val boundaries = getNormalizedShellCommandPrefixes()
                             if (boundaries.isEmpty()) ApprovalDecisionExplanation(requiresApproval = false,
-                                explanationLabel = "���� Shell ������",
-                                explanationDetail = "shell ���ڰ���������������߽����ƣ�ֱ�ӷ��С�"
+                                explanationLabel = "白名单 Shell 已放行",
+                                explanationDetail = "Shell 已在白名单工具范围内，且没有额外命令边界限制。"
                             ) else {
                                 val matched = findMatchedShellCommandPrefix(commandBoundaryValue)
                                 if (matched != null) ApprovalDecisionExplanation(requiresApproval = false,
-                                    explanationLabel = "��������߽�",
-                                    explanationDetail = "Shell ��������������ǰ׺ `$matched`��ֱ�ӷ��С�"
+                                    explanationLabel = "命中命令边界",
+                                    explanationDetail = "Shell 命令命中了允许前缀 `$matched`，可直接执行。"
                                 ) else ApprovalDecisionExplanation(requiresApproval = true,
-                                    explanationLabel = "δ��������߽�",
-                                    explanationDetail = "Shell ����δ��������ǰ׺�����˹�������"
+                                    explanationLabel = "未命中命令边界",
+                                    explanationDetail = "Shell 命令未命中允许前缀，需要人工审批。"
                                 )
                             }
                         }
                         "file", "code_edit" -> {
                             val boundaries = getNormalizedPathPrefixes()
                             if (boundaries.isEmpty()) ApprovalDecisionExplanation(requiresApproval = false,
-                                explanationLabel = "�����ļ�������",
-                                explanationDetail = "�������ڰ�����������·���߽����ƣ�ֱ�ӷ��С�"
+                                explanationLabel = "白名单文件操作已放行",
+                                explanationDetail = "当前请求在白名单工具范围内，且没有额外路径边界限制。"
                             ) else {
                                 val matched = findMatchedPathPrefix(pathBoundaryValue)
                                 if (matched != null) ApprovalDecisionExplanation(requiresApproval = false,
-                                    explanationLabel = "����·���߽�",
-                                    explanationDetail = "·������������ǰ׺ `$matched`��ֱ�ӷ��С�"
+                                    explanationLabel = "命中路径边界",
+                                    explanationDetail = "路径命中了允许前缀 `$matched`，可直接执行。"
                                 ) else ApprovalDecisionExplanation(requiresApproval = true,
-                                    explanationLabel = "δ����·���߽�",
-                                    explanationDetail = "·��δ��������ǰ׺�����˹�������"
+                                    explanationLabel = "未命中路径边界",
+                                    explanationDetail = "路径未命中允许前缀，需要人工审批。"
                                 )
                             }
                         }
                         else -> ApprovalDecisionExplanation(requiresApproval = false,
-                            explanationLabel = "���й��߰�����",
-                            explanationDetail = "�������ڰ������ڣ�ֱ�ӷ��С�"
+                            explanationLabel = "白名单工具已放行",
+                            explanationDetail = "当前工具已在白名单内，可直接执行。"
                         )
                     }
                 }
             }
             ToolApprovalMode.ALL_AUTO -> ApprovalDecisionExplanation(
-                requiresApproval = false, explanationLabel = "ȫ������",
-                explanationDetail = "����ģʽΪȫ�����У��������󲻽����˹�������"
+                requiresApproval = false, explanationLabel = "全部自动通过",
+                explanationDetail = "当前模式为全部自动通过，默认不再弹出人工审批。"
             )
         }
     }
@@ -436,7 +583,19 @@ fun ProjectToolPreferences?.isUsingGlobalToolPreferences(): Boolean {
         allowedPathPrefixes == null && subagentTemplates == null
 }
 
-val DEFAULT_ENABLED_BUILTIN_TOOLS = listOf("shell", "file", "code_edit", "web_fetch", "web_search", "subagent_launch")
+val DEFAULT_ENABLED_BUILTIN_TOOLS = listOf(
+    "shell",
+    "file",
+    "code_edit",
+    "code_search",
+    "web_fetch",
+    "web_search",
+    "subagent_launch",
+    "explore",
+    "research",
+    "review",
+    "security_review"
+)
 val DEFAULT_ENABLED_FILE_TOOL_OPERATIONS = listOf("read", "list", "exists", "write", "delete", "chmod")
 val DEFAULT_SUBAGENT_FILE_TOOL_OPERATIONS = listOf("read", "list", "exists", "write", "delete")
 const val GITHUB_OAUTH_REDIRECT_URI = "murongagent://github/callback"

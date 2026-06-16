@@ -2,6 +2,7 @@ package com.murong.agent.ui
 
 import android.content.Context
 import android.graphics.Typeface
+import android.view.MotionEvent
 import android.view.View
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
@@ -152,18 +153,19 @@ internal fun normalizeMurongHighlightLanguage(language: String?): String? {
         "gradle", "groovy", "gvy" -> "java"
         "mjs", "cjs" -> "javascript"
         "ts", "mts", "cts" -> "typescript"
-        "cc", "cxx", "c++" -> "cpp"
+        "cc", "cxx", "c++", "inc", "inl", "ipp", "ixx", "tcc", "mm", "cu", "cuh" -> "cpp"
         "hh", "hxx", "h" -> "hpp"
         "c" -> "c"
+        "go" -> "go"
         "rs" -> "rust"
-        "shell", "bash", "zsh" -> "sh"
+        "shell", "bash", "zsh", "fish", "csh", "bat", "cmd", "ps1", "rc", "mk", "makefile", "dockerfile", "cmakelists.txt", "ninja", "awk", "bazel", "bzl", "bashrc", "bash_completion" -> "sh"
         "cmake" -> "sh"
         "yml" -> "yaml"
-        "md", "mdown" -> "markdown"
-        "jsonc", "geojson", "webmanifest" -> "json"
+        "md", "mdown", "rst", "org", "txt", "log", "patch" -> "markdown"
+        "jsonc", "geojson", "webmanifest", "jsonl", "ndjson" -> "json"
         "luau" -> "lua"
-        "plist", "xaml", "svg" -> "xml"
-        "ini", "conf", "cfg", "properties", "prop", "pro", "toml" -> "properties"
+        "plist", "xaml", "svg", "iml", "classpath", "project" -> "xml"
+        "ini", "conf", "cfg", "cnf", "properties", "prop", "pro", "toml", "env", "gitignore", "gitattributes", "gitmodules", "editorconfig", "npmrc", "prettierrc", "prettierignore", "dockerignore" -> "properties"
         else -> normalized
     }
 }
@@ -267,8 +269,9 @@ internal fun MurongReadOnlyCodeBlock(
                 typefaceText = Typeface.MONOSPACE
                 typefaceLineNumber = Typeface.MONOSPACE
                 isWordwrap = false
-                props.overScrollEnabled = false
-                overScrollMode = View.OVER_SCROLL_NEVER
+                props.overScrollEnabled = true
+                overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+                isVerticalScrollBarEnabled = true
                 setHighlightCurrentLine(false)
                 setHighlightCurrentBlock(false)
                 setCursorAnimationEnabled(false)
@@ -277,6 +280,16 @@ internal fun MurongReadOnlyCodeBlock(
                 setDividerWidth(if (showLineNumbers) 1f else 0f)
                 setDividerMargin(12f)
                 setLineSpacing(2f, 1.1f)
+                setOnTouchListener { view, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN,
+                        MotionEvent.ACTION_MOVE -> view.parent?.requestDisallowInterceptTouchEvent(true)
+
+                        MotionEvent.ACTION_UP,
+                        MotionEvent.ACTION_CANCEL -> view.parent?.requestDisallowInterceptTouchEvent(false)
+                    }
+                    false
+                }
                 applyMurongEditorLanguage(
                     context = context.applicationContext,
                     language = language,

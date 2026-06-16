@@ -10,6 +10,9 @@ import com.murong.agent.core.config.GlobalMemory
 import com.murong.agent.core.config.GlobalRule
 import com.murong.agent.core.config.ProjectToolPreferences
 import com.murong.agent.core.loop.*
+import com.murong.agent.ui.project.ProjectGitHubRepoRef
+import com.murong.agent.ui.project.loadProjectGitHubRemoteFile
+import com.murong.agent.ui.project.searchProjectGitHubFileNames
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,6 +30,10 @@ class ChatViewModel @Inject constructor(
     private val sessionManager: ChatSessionManager,
     private val configRepository: ConfigRepository
 ) : ViewModel() {
+    private companion object {
+        private const val REMOTE_MENTION_LIMIT = 8
+        private const val REMOTE_MENTION_CONTENT_LIMIT = 6
+    }
 
     val state: StateFlow<SessionState> = sessionManager.state
 
@@ -41,6 +48,7 @@ class ChatViewModel @Inject constructor(
     val sessions: StateFlow<List<SessionSummary>> = _sessions.asStateFlow()
     private val _toastMessages = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val toastMessages = _toastMessages.asSharedFlow()
+    private var currentRemoteTaskRepository: ProjectGitHubRepoRef? = null
 
     init {
         refreshSessions()
@@ -57,12 +65,13 @@ class ChatViewModel @Inject constructor(
     fun sendMessage(
         text: String,
         mentionedFiles: List<FileMentionUi> = emptyList(),
-        pendingImages: List<PendingImageAttachmentUi> = emptyList()
+        pendingImages: List<PendingImageAttachmentUi> = emptyList(),
+        selectedSkills: List<GlobalSkill> = emptyList()
     ) {
         launchSendingOperation {
             sessionManager.clearLastAutoRouteDecision()
             val toastMessage = withContext(Dispatchers.IO) {
-                sessionManager.sendMessage(text, mentionedFiles, pendingImages)
+                sessionManager.sendMessage(text, mentionedFiles, pendingImages, selectedSkills)
             }
             toastMessage?.let { _toastMessages.tryEmit(it) }
             refreshSessions()
@@ -159,6 +168,26 @@ class ChatViewModel @Inject constructor(
         return sessionManager.searchProjectFiles(query, limit)
     }
 
+    suspend fun searchMentionFiles(query: String, limit: Int = 20): List<FileMentionUi> {
+        val localResults = withContext(Dispatchers.IO) {
+            sessionManager.searchProjectFiles(query, limit)
+        }
+        val remoteRepo = currentRemoteTaskRepository
+        if (remoteRepo == null) {
+            return localResults
+        }
+        val remoteResults = withContext(Dispatchers.IO) {
+            searchRemoteTaskRepositoryMentions(
+                query = query,
+                repo = remoteRepo,
+                limit = limit
+            )
+        }
+        return (localResults + remoteResults)
+            .distinctBy { it.path }
+            .take(limit)
+    }
+
     fun clear() {
         sessionManager.clear()
     }
@@ -171,6 +200,77 @@ class ChatViewModel @Inject constructor(
     fun startTask(projectPath: String) {
         if (projectPath.isBlank()) return
         sessionManager.startTask(projectPath)
+        refreshSessions()
+    }
+
+    fun updateCurrentTask(projectPath: String) {
+        if (projectPath.isBlank()) return
+        sessionManager.updateCurrentTask(projectPath)
+        refreshSessions()
+    }
+
+    internal fun updateRemoteTaskRepositorySelection(repo: ProjectGitHubRepoRef?) {
+        currentRemoteTaskRepository = repo
+        sessionManager.updateRemoteTaskRepositoryContext(
+            repositoryOwner = repo?.owner,
+            repositoryName = repo?.repo,
+            repositoryLabel = repo?.let { "${it.owner}/${it.repo}" },
+            editable = repo != null
+        )
+        refreshSessions()
+    }
+
+    private suspend fun searchRemoteTaskRepositoryMentions(
+        query: String,
+        repo: ProjectGitHubRepoRef,
+        limit: Int
+    ): List<FileMentionUi> {
+        val normalizedQuery = query.trim()
+        if (normalizedQuery.isBlank()) return emptyList()
+        val activeConfig = config.value
+        val token = activeConfig.githubToken.trim()
+        if (token.isBlank()) return emptyList()
+        val apiBaseUrl = activeConfig.githubApiBaseUrl
+        val fileMatches = searchProjectGitHubFileNames(
+            query = normalizedQuery,
+            repo = repo,
+            token = token,
+            apiBaseUrl = apiBaseUrl
+        )
+        return fileMatches
+            .asSequence()
+            .mapNotNull { it.filePath?.takeIf(String::isNotBlank) }
+            .distinct()
+            .take(limit.coerceAtMost(REMOTE_MENTION_LIMIT))
+            .mapIndexed { index, filePath ->
+                val inlineContent = if (index < REMOTE_MENTION_CONTENT_LIMIT) {
+                    loadProjectGitHubRemoteFile(
+                        repo = repo,
+                        path = filePath,
+                        ref = "",
+                        token = token,
+                        apiBaseUrl = apiBaseUrl
+                    ).file?.content
+                } else {
+                    null
+                }
+                FileMentionUi(
+                    path = "github://${repo.owner}/${repo.repo}/$filePath",
+                    displayPath = "${repo.owner}/${repo.repo}/$filePath",
+                    inlineContent = inlineContent
+                )
+            }
+            .toList()
+    }
+
+    fun setCurrentSessionGoal(goal: String) {
+        if (goal.isBlank()) return
+        sessionManager.setCurrentSessionGoal(goal)
+        refreshSessions()
+    }
+
+    fun clearCurrentSessionGoal() {
+        sessionManager.clearCurrentSessionGoal()
         refreshSessions()
     }
 
@@ -257,6 +357,22 @@ class ChatViewModel @Inject constructor(
     }
 
     fun rejectPendingTool(): Boolean = sessionManager.rejectPendingTool()
+
+    fun submitPendingAskAnswers(answers: List<AskAnswerUi>): Boolean {
+        val submitted = sessionManager.submitPendingAskAnswers(answers)
+        if (submitted) {
+            refreshSessions()
+        }
+        return submitted
+    }
+
+    fun dismissPendingAsk(): Boolean {
+        val dismissed = sessionManager.dismissPendingAsk()
+        if (dismissed) {
+            refreshSessions()
+        }
+        return dismissed
+    }
 
     fun deleteSession(sessionId: String) {
         sessionManager.deleteSession(sessionId)

@@ -157,7 +157,10 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                 filteredLogEntries
                     .filter { entry ->
                         !selectedIssueStepName.isNullOrBlank() &&
-                            projectGitHubLogMentionsStep(entry, selectedIssueStepName.orEmpty())
+                            projectGitHubLogMatchesStep(
+                                entry = entry,
+                                stepName = selectedIssueStepName.orEmpty()
+                            )
                     }
                     .map { it.entryName }
                     .toSet()
@@ -320,7 +323,10 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                     detail.logEntries
                         .filter { entry ->
                             projectGitHubLogMatchesJob(entry, jobName) &&
-                                projectGitHubLogMentionsStep(entry, stepName)
+                                projectGitHubLogMatchesStep(
+                                    entry = entry,
+                                    stepName = stepName
+                                )
                         }
                         .map { it.entryName }
                         .toSet()
@@ -567,9 +573,9 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                                                                                 projectGitHubLogMatchesJob(
                                                                                     entry,
                                                                                     job.name
-                                                                                ) && projectGitHubLogMentionsStep(
-                                                                                    entry,
-                                                                                    nextSelectedStep
+                                                                                ) && projectGitHubLogMatchesStep(
+                                                                                    entry = entry,
+                                                                                    stepName = nextSelectedStep
                                                                                 )
                                                                             }
                                                                             .map { it.entryName }

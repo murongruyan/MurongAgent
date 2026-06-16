@@ -1,9 +1,7 @@
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 package com.murong.agent.ui.project
 
-import android.app.DownloadManager
 import android.content.ClipData
-import android.content.Intent
 import android.net.Uri
 import android.os.Environment
 import androidx.activity.compose.BackHandler
@@ -25,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -68,6 +67,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -88,10 +88,10 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
@@ -136,6 +136,8 @@ import com.murong.agent.ui.MurongPopupSurface
 import com.murong.agent.ui.MurongSecondaryPageFrame
 import com.murong.agent.ui.MurongPrimaryPageSurface
 import com.murong.agent.ui.MurongTagButton
+import com.murong.agent.ui.MemoryDraftImportCard
+import com.murong.agent.ui.RuleDraftImportCard
 import com.murong.agent.ui.SkillDraftImportCard
 import com.murong.agent.ui.rememberMurongAccentColor
 import com.murong.agent.ui.rememberMurongBottomBarScrollPadding
@@ -149,18 +151,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.put
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.nio.charset.MalformedInputException
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
-private const val ENABLE_REASONIX_BACK_DEBUG_REPORTS = true
 
 private data class ProjectEditorDerivedState(
     val diagnostics: List<ProjectEditorDiagnostic> = emptyList(),
@@ -197,68 +195,68 @@ private fun ProjectScreenLargeDialog(
 ) {
     val tokens = rememberMurongSurfaceTokens()
     LaunchedEffect(title, subtitle, tokens.popupContainerColor, tokens.popupGlassColor, tokens.popupBlurRadius) {
-        // #region debug-point R1:project-dialog-appearance
-        reportGitBackChatFlashProjectDebugBootstrap(
-            hypothesisId = "R1",
-            location = "ProjectScreen.kt:ProjectScreenLargeDialog",
-            msg = "[DEBUG] project large dialog shown",
-            data = JSONObject()
-                .put("title", title)
-                .put("subtitle", subtitle ?: JSONObject.NULL)
-                .put("popupContainerArgb", tokens.popupContainerColor.toArgb())
-                .put("popupGlassArgb", tokens.popupGlassColor.toArgb())
-                .put("popupBlurRadius", tokens.popupBlurRadius)
-        )
-        // #endregion
     }
-    MurongLargeDialogScaffold(
-        onDismissRequest = onDismissRequest,
-        modifier = modifier
-    ) {
-        MurongGlassSurface(
+    MurongDialog(onDismissRequest = onDismissRequest) {
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            shape = RoundedCornerShape(24.dp),
-            contentPadding = PaddingValues(16.dp)
+                .fillMaxSize()
+                .imePadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            contentAlignment = Alignment.BottomCenter
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            MurongPopupSurface(
+                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp, bottomStart = 24.dp, bottomEnd = 24.dp),
+                forceOpaque = true,
+                modifier = modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.74f)
             ) {
                 Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    subtitle?.takeIf { it.isNotBlank() }?.let {
-                        Text(
-                            text = it,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = title,
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            subtitle?.takeIf { it.isNotBlank() }?.let {
+                                Text(
+                                    text = it,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            content = actions
                         )
                     }
+                    HorizontalDivider()
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        content = content
+                    )
                 }
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    content = actions
-                )
             }
         }
-
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            content = content
-        )
     }
 }
 
@@ -273,63 +271,68 @@ private fun ProjectScreenPopupDialog(
 ) {
     val tokens = rememberMurongSurfaceTokens()
     LaunchedEffect(title, subtitle, tokens.popupContainerColor, tokens.popupGlassColor, tokens.popupBlurRadius) {
-        // #region debug-point R1:project-dialog-appearance
-        reportGitBackChatFlashProjectDebugBootstrap(
-            hypothesisId = "R1",
-            location = "ProjectScreen.kt:ProjectScreenPopupDialog",
-            msg = "[DEBUG] project popup dialog shown",
-            data = JSONObject()
-                .put("title", title)
-                .put("subtitle", subtitle ?: JSONObject.NULL)
-                .put("popupContainerArgb", tokens.popupContainerColor.toArgb())
-                .put("popupGlassArgb", tokens.popupGlassColor.toArgb())
-                .put("popupBlurRadius", tokens.popupBlurRadius)
-        )
-        // #endregion
     }
     MurongDialog(onDismissRequest = onDismissRequest) {
-        MurongPopupSurface(
-            shape = RoundedCornerShape(24.dp),
-            forceOpaque = true,
-            modifier = modifier
-                .fillMaxWidth()
-                .padding(16.dp)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .imePadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            contentAlignment = Alignment.BottomCenter
         ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+            MurongPopupSurface(
+                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp, bottomStart = 24.dp, bottomEnd = 24.dp),
+                forceOpaque = true,
+                modifier = modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.56f)
+                    .heightIn(min = 220.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        subtitle?.takeIf { it.isNotBlank() }?.let {
-                            Text(
-                                text = it,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        content = actions
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = title,
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            subtitle?.takeIf { it.isNotBlank() }?.let {
+                                Text(
+                                    text = it,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            content = actions
+                        )
+                    }
+                    HorizontalDivider()
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f, fill = false)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        content = content
                     )
                 }
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    content = content
-                )
             }
         }
     }
@@ -347,6 +350,7 @@ internal fun ProjectScreen(
     projectSkills: List<GlobalSkill>,
     projectToolPreferences: ProjectToolPreferences?,
     repoScopedConfigs: Map<String, RepoScopedProjectConfigUi>,
+    selectedViewerTaskRepository: ProjectGitHubRepoRef?,
     mcpToolNames: List<String>,
     sessions: List<SessionSummary>,
     onNewTask: () -> Unit,
@@ -354,6 +358,7 @@ internal fun ProjectScreen(
     onProjectScopeChanged: (String?) -> Unit,
     onUpdateProjectConfig: (String?, List<GlobalRule>?, List<GlobalMemory>?, List<GlobalSkill>?) -> Unit,
     onUpdateProjectToolPreferences: (String?, ProjectToolPreferences?) -> Unit,
+    onUpdateSelectedViewerTaskRepository: (ProjectGitHubRepoRef?) -> Unit,
     onUpdateProjectKnowledgeDraftPaths: (List<String>) -> Unit,
     onSaveProjectKnowledgeSnapshot: (String, List<String>) -> Unit,
     onRenameProjectKnowledgeSnapshot: (String, String) -> Unit,
@@ -369,8 +374,13 @@ internal fun ProjectScreen(
             ?.takeIf { File(it).isDirectory || RootFile.dirExists(it) }
             ?.let(::File)
     }
-    val detectedRepos = remember(workspaceRoot?.absolutePath) {
-        workspaceRoot?.let(::detectProjectGitRepositories).orEmpty()
+    val detectedRepos by produceState(
+        initialValue = emptyList<ProjectDetectedRepoUi>(),
+        key1 = workspaceRoot?.absolutePath
+    ) {
+        value = workspaceRoot?.let { root ->
+            withContext(Dispatchers.IO) { detectProjectGitRepositories(root) }
+        }.orEmpty()
     }
     var selectedRepoRoot by rememberSaveable(currentProjectPath) { mutableStateOf<String?>(null) }
     fun selectRepoRoot(target: String?) {
@@ -519,20 +529,6 @@ internal fun ProjectScreen(
         secondaryHostState.isActive
     ) {
         if (secondaryHostBackProgressBucket < 0) return@LaunchedEffect
-        // #region debug-point E:project-secondary-progress-bucket
-        reportGitBackChatFlashProjectDebugBootstrap(
-            hypothesisId = "E",
-            location = "ProjectScreen.kt:secondaryHostBackProgressBucket",
-            msg = "[DEBUG] project secondary back progress bucket",
-            data = JSONObject()
-                .put("bucket", secondaryHostBackProgressBucket)
-                .put("progress", secondaryHostBackProgress)
-                .put("owner", secondaryHostState.owner.name)
-                .put("backProgressMode", secondaryHostState.backProgressMode.name)
-                .put("isActive", secondaryHostState.isActive)
-                .put("handlesHostBackGesture", secondaryHostRuntimeState.canHandleHostBackGesture)
-        )
-        // #endregion
     }
     BackHandler(enabled = secondaryHostRuntimeState.canHandleHostBackGesture) {
         dispatchSecondaryRegistryAction(
@@ -566,6 +562,7 @@ internal fun ProjectScreen(
             if (primaryNavigationHostState.showPrimaryChrome) {
                 ProjectPrimaryChrome(
                     currentProjectPath = currentProjectPath,
+                    selectedTaskRepository = selectedViewerTaskRepository,
                     detectedRepos = detectedRepos,
                     mutedTextColor = mutedTextColor,
                     chromeColor = chromeColor,
@@ -589,6 +586,7 @@ internal fun ProjectScreen(
                     ProjectPrimaryTab.EDITOR -> ProjectEditorSection(
                         config = config,
                         currentProjectPath = currentProjectPath,
+                        selectedTaskRepository = selectedViewerTaskRepository,
                         detectedRepos = detectedRepos,
                         selectedRepoRoot = selectedRepoRoot,
                         onSelectRepoRoot = ::selectRepoRoot,
@@ -609,6 +607,11 @@ internal fun ProjectScreen(
                         onSelectPrimaryTab = { tab ->
                             dispatchPrimaryNavigationAction(
                                 ProjectPrimaryNavigationAction.SelectTab(tab)
+                            )
+                        },
+                        onOpenSelectedTaskRepository = {
+                            dispatchPrimaryNavigationAction(
+                                ProjectPrimaryNavigationAction.SelectTab(ProjectPrimaryTab.GIT)
                             )
                         },
                         showOuterPrimaryChrome = primaryNavigationHostState.showPrimaryChrome,
@@ -640,12 +643,20 @@ internal fun ProjectScreen(
                         }
                     )
 
+                    ProjectPrimaryTab.TERMINAL -> ProjectTerminalSection(
+                        currentProjectPath = currentProjectPath,
+                        detectedRepos = detectedRepos,
+                        selectedRepoRoot = selectedRepoRoot,
+                        onSelectRepoRoot = ::selectRepoRoot
+                    )
+
                     ProjectPrimaryTab.GIT -> ProjectGitSection(
                         config = config,
                         currentProjectPath = currentProjectPath,
                         detectedRepos = detectedRepos,
                         selectedRepoRoot = selectedRepoRoot,
                         onSelectRepoRoot = ::selectRepoRoot,
+                        selectedViewerTaskRepository = selectedViewerTaskRepository,
                         draftPathCount = projectKnowledgeDraftPaths.size,
                         snapshotCount = projectKnowledgeSnapshots.size,
                         mcpToolCount = mcpToolNames.size,
@@ -665,6 +676,7 @@ internal fun ProjectScreen(
                                 ProjectPrimaryNavigationAction.SelectTab(tab)
                             )
                         },
+                        onUpdateSelectedViewerTaskRepository = onUpdateSelectedViewerTaskRepository,
                         primaryChromeColor = chromeColor,
                         primaryMutedTextColor = mutedTextColor,
                         projectSecondaryBackProgress = projectSecondaryHostBackProgress,
@@ -683,6 +695,7 @@ internal fun ProjectScreen(
 @Composable
 private fun ProjectPrimaryChrome(
     currentProjectPath: String?,
+    selectedTaskRepository: ProjectGitHubRepoRef? = null,
     detectedRepos: List<ProjectDetectedRepoUi>,
     mutedTextColor: Color,
     chromeColor: Color,
@@ -718,6 +731,17 @@ private fun ProjectPrimaryChrome(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (currentProjectPath.isNullOrBlank()) {
+                    selectedTaskRepository?.let { repo ->
+                        Text(
+                            text = "当前任务仓库: ${repo.owner}/${repo.repo}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
                 if (detectedRepos.isNotEmpty()) {
                     val gitRepoCount = detectedRepos.count { it.hasGitMetadata }
                     Text(
@@ -756,6 +780,7 @@ private fun ProjectPrimaryChrome(
 private fun ProjectEditorSection(
     config: ProviderConfig,
     currentProjectPath: String?,
+    selectedTaskRepository: ProjectGitHubRepoRef?,
     detectedRepos: List<ProjectDetectedRepoUi>,
     selectedRepoRoot: String?,
     onSelectRepoRoot: (String) -> Unit,
@@ -766,6 +791,7 @@ private fun ProjectEditorSection(
     onRegisterSecondaryCloseRequest: (((() -> Unit)?) -> Unit),
     selectedPrimaryTab: ProjectPrimaryTab,
     onSelectPrimaryTab: (ProjectPrimaryTab) -> Unit,
+    onOpenSelectedTaskRepository: () -> Unit,
     showOuterPrimaryChrome: Boolean,
     primaryChromeColor: Color,
     primaryMutedTextColor: Color,
@@ -804,9 +830,13 @@ private fun ProjectEditorSection(
     var isFileLoading by remember(currentProjectPath) { mutableStateOf(false) }
     var isSaving by remember(currentProjectPath) { mutableStateOf(false) }
     var editorError by remember(currentProjectPath) { mutableStateOf<String?>(null) }
+    var showUnsavedChangesDialog by remember(currentProjectPath) { mutableStateOf(false) }
     var reloadVersion by remember(currentProjectPath) { mutableStateOf(0) }
     var searchQuery by remember(currentProjectPath) { mutableStateOf("") }
     var searchResult by remember(currentProjectPath) { mutableStateOf<ProjectSearchResultUi?>(null) }
+    var remoteSearchResults by remember(currentProjectPath, selectedTaskRepository) {
+        mutableStateOf<List<ProjectGitHubGlobalSearchResultUi>>(emptyList())
+    }
     var isSearching by remember(currentProjectPath) { mutableStateOf(false) }
     var focusedSearchLine by remember(currentProjectPath) { mutableStateOf<Int?>(null) }
     var focusedSearchQuery by remember(currentProjectPath) { mutableStateOf<String?>(null) }
@@ -817,6 +847,7 @@ private fun ProjectEditorSection(
     var showLineReplaceDialog by remember(currentProjectPath) { mutableStateOf(false) }
     var lineReplaceDraft by remember(currentProjectPath) { mutableStateOf("") }
     var showLanguageDialog by remember(currentProjectPath) { mutableStateOf(false) }
+    var editorWordWrapEnabled by rememberSaveable(currentProjectPath) { mutableStateOf(true) }
     var editorTextFieldFocused by remember(currentProjectPath) { mutableStateOf(false) }
     var editorFocusClearPending by remember(currentProjectPath) { mutableStateOf(false) }
     var editorFocusClearSignal by remember(currentProjectPath) { mutableStateOf(0) }
@@ -833,7 +864,55 @@ private fun ProjectEditorSection(
     val undoStack = remember(currentProjectPath) { mutableStateListOf<TextFieldValue>() }
     val redoStack = remember(currentProjectPath) { mutableStateListOf<TextFieldValue>() }
     val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
     val focusManager = LocalFocusManager.current
+    val isRemoteTaskMode = projectRoot == null && selectedTaskRepository != null
+    val remoteEntriesByDir = remember(currentProjectPath, selectedTaskRepository) {
+        mutableStateMapOf<String, List<ProjectTreeEntry>>()
+    }
+    val remoteEntryInfoByPath = remember(currentProjectPath, selectedTaskRepository) {
+        mutableStateMapOf<String, ProjectGitHubRemoteEntryUi>()
+    }
+    var remoteExpandedDirs by rememberSaveable(
+        currentProjectPath,
+        selectedTaskRepository,
+        stateSaver = listSaver<Set<String>, String>(
+            save = { value -> value.toList() },
+            restore = { restored -> restored.toSet() }
+        )
+    ) {
+        mutableStateOf(setOf(""))
+    }
+    var remoteTaskRepoState by remember(currentProjectPath, selectedTaskRepository) {
+        mutableStateOf(ProjectGitHubRemoteBrowserState.empty(selectedTaskRepository))
+    }
+    var selectedRemoteTaskFile by remember(currentProjectPath, selectedTaskRepository) {
+        mutableStateOf<ProjectGitHubRemoteFileUi?>(null)
+    }
+    var remoteTaskRepoRefDraft by remember(currentProjectPath, selectedTaskRepository) {
+        mutableStateOf("")
+    }
+    var remoteTaskFileDialogState by remember(currentProjectPath, selectedTaskRepository) {
+        mutableStateOf<ProjectGitHubRemoteFileUi?>(null)
+    }
+    var remoteTaskFileContentDraft by remember(currentProjectPath, selectedTaskRepository) {
+        mutableStateOf("")
+    }
+    var remoteTaskFileCommitMessageDraft by remember(currentProjectPath, selectedTaskRepository) {
+        mutableStateOf("")
+    }
+    var isRemoteTaskRepoLoading by remember(currentProjectPath, selectedTaskRepository) {
+        mutableStateOf(false)
+    }
+    var isRemoteTaskRepoActionRunning by remember(currentProjectPath, selectedTaskRepository) {
+        mutableStateOf(false)
+    }
+    var remoteTaskFeedbackMessage by remember(currentProjectPath, selectedTaskRepository) {
+        mutableStateOf<String?>(null)
+    }
+    var remoteTaskFeedbackIsError by remember(currentProjectPath, selectedTaskRepository) {
+        mutableStateOf(false)
+    }
     val activeTreeRootPath = remember(projectRoot?.absolutePath, selectedRepoRoot, currentRepoViewOnly) {
         when {
             projectRoot == null -> null
@@ -852,6 +931,82 @@ private fun ProjectEditorSection(
     }
     val editorScrollOffsetsByFile = remember(currentProjectPath) { mutableStateMapOf<String, Int>() }
     var lastOpenedFilePath by rememberSaveable(currentProjectPath) { mutableStateOf<String?>(null) }
+
+    suspend fun applyOpenedEditorState(
+        path: String,
+        content: String,
+        focusLine: Int? = null,
+        focusQuery: String? = null
+    ) {
+        val initialValue = createInitialEditorValue(content, focusLine, focusQuery)
+        val resolvedLanguage = languageOverride ?: projectLanguageForPath(path)
+        val derivedSeedState = withContext(Dispatchers.Default) {
+            val diagnostics = buildProjectEditorDiagnostics(content, resolvedLanguage)
+            val conflictBlocks = detectGitConflictBlocks(content)
+            val foldRegions = detectProjectFoldRegions(content, resolvedLanguage)
+            ProjectEditorDerivedState(
+                diagnostics = diagnostics,
+                conflictBlocks = conflictBlocks,
+                foldRegions = foldRegions,
+                outlineEntries = buildProjectOutlineEntries(foldRegions, resolvedLanguage)
+            )
+        }
+        selectedFilePath = path
+        loadedContent = content
+        editorValue = initialValue
+        editorDerivedSeed = ProjectEditorDerivedSeed(
+            sourceText = content,
+            language = resolvedLanguage.orEmpty(),
+            derivedState = derivedSeedState
+        )
+        aiCompletionCandidate = null
+        showAiCompletionDialog = false
+        editorMode = ProjectEditorMode.EDIT
+        focusedSearchLine = focusLine ?: currentLineNumber(content, initialValue.selection.start)
+        focusedSearchQuery = focusQuery?.takeIf { it.isNotBlank() }
+        undoStack.clear()
+        redoStack.clear()
+    }
+
+    suspend fun ensureRemotePathExpanded(path: String) {
+        val normalizedPath = path.replace('\\', '/').trim('/')
+        if (normalizedPath.isBlank()) return
+        val segments = normalizedPath.split('/').dropLast(1)
+        if (segments.isEmpty()) return
+        var current = ""
+        val dirsToExpand = mutableListOf<String>()
+        segments.forEach { segment ->
+            current = if (current.isBlank()) segment else "$current/$segment"
+            dirsToExpand += current
+            if (!remoteEntriesByDir.containsKey(current)) {
+                val repository = selectedTaskRepository ?: return@forEach
+                val result = withContext(Dispatchers.IO) {
+                    refreshProjectGitHubRemoteBrowserState(
+                        currentRepo = repository,
+                        gitRemoteUrl = null,
+                        token = config.githubToken.trim(),
+                        currentBranch = null,
+                        defaultBranch = null,
+                        refDraft = remoteTaskRepoRefDraft,
+                        targetPath = current,
+                        resetRefIfBlank = false,
+                        apiBaseUrl = config.getGitHubApiBaseUrl()
+                    )
+                }
+                result.nextRefDraft?.let { remoteTaskRepoRefDraft = it }
+                remoteTaskRepoState = result.state
+                remoteEntriesByDir[current] = result.state.entries.map { entry ->
+                    remoteEntryInfoByPath[entry.path] = entry
+                    ProjectTreeEntry(
+                        absolutePath = entry.path,
+                        name = entry.name,
+                        isDirectory = entry.isDirectory
+                    )
+                }
+            }
+        }
+        remoteExpandedDirs = remoteExpandedDirs + dirsToExpand
+    }
 
     fun loadDir(path: String) {
         scope.launch {
@@ -897,122 +1052,19 @@ private fun ProjectEditorSection(
             selectedFilePath = path
             aiCompletionCandidate = null
             showAiCompletionDialog = false
+            selectedRemoteTaskFile = null
             ensurePathExpanded(path)
-            // #region debug-point F:project-open-file
-            reportGitBackChatFlashProjectDebugBootstrap(
-                hypothesisId = "F",
-                location = "ProjectScreen.kt:openFile:beforeRead",
-                msg = "[DEBUG] project open file requested",
-                data = JSONObject()
-                    .put("path", path)
-                    .put("focusLine", focusLine ?: JSONObject.NULL)
-                    .put("focusQuery", focusQuery ?: JSONObject.NULL)
-                    .put("languageOverride", languageOverride ?: JSONObject.NULL)
-                    .put("detectedLanguage", projectLanguageForPath(path) ?: JSONObject.NULL)
-            )
-            // #endregion
             try {
                 val content = withContext(Dispatchers.IO) {
                     readProjectFile(File(path))
                 }
-                // #region debug-point F:project-open-file
-                reportGitBackChatFlashProjectDebugBootstrap(
-                    hypothesisId = "F",
-                    location = "ProjectScreen.kt:openFile:afterRead",
-                    msg = "[DEBUG] project file read succeeded",
-                    data = JSONObject()
-                        .put("path", path)
-                        .put("contentLength", content.length)
-                        .put("focusLine", focusLine ?: JSONObject.NULL)
-                        .put("focusQuery", focusQuery ?: JSONObject.NULL)
+                applyOpenedEditorState(
+                    path = path,
+                    content = content,
+                    focusLine = focusLine,
+                    focusQuery = focusQuery
                 )
-                // #endregion
-                val initialValue = createInitialEditorValue(content, focusLine, focusQuery)
-                val resolvedLanguage = languageOverride ?: projectLanguageForPath(path)
-                // #region debug-point F:project-open-file
-                reportGitBackChatFlashProjectDebugBootstrap(
-                    hypothesisId = "F",
-                    location = "ProjectScreen.kt:openFile:beforeDerivedState",
-                    msg = "[DEBUG] project file derived state requested",
-                    data = JSONObject()
-                        .put("path", path)
-                        .put("resolvedLanguage", resolvedLanguage ?: JSONObject.NULL)
-                        .put("languageOverride", languageOverride ?: JSONObject.NULL)
-                        .put("detectedLanguage", projectLanguageForPath(path) ?: JSONObject.NULL)
-                        .put("contentLength", content.length)
-                )
-                // #endregion
-                val derivedSeedState =
-                    try {
-                        withContext(Dispatchers.Default) {
-                            val diagnostics = buildProjectEditorDiagnostics(content, resolvedLanguage)
-                            val conflictBlocks = detectGitConflictBlocks(content)
-                            val foldRegions = detectProjectFoldRegions(content, resolvedLanguage)
-                            ProjectEditorDerivedState(
-                                diagnostics = diagnostics,
-                                conflictBlocks = conflictBlocks,
-                                foldRegions = foldRegions,
-                                outlineEntries = buildProjectOutlineEntries(foldRegions, resolvedLanguage)
-                            )
-                        }
-                    } catch (throwable: Throwable) {
-                        reportGitBackChatFlashProjectDebugBootstrap(
-                            hypothesisId = "F",
-                            location = "ProjectScreen.kt:openFile:derivedStateFailed",
-                            msg = "[DEBUG] project file derived state failed",
-                            data = JSONObject()
-                                .put("path", path)
-                                .put("resolvedLanguage", resolvedLanguage ?: JSONObject.NULL)
-                                .put("exceptionType", throwable::class.java.name)
-                                .put("exceptionMessage", throwable.message ?: JSONObject.NULL)
-                        )
-                        throw throwable
-                    }
-                // #region debug-point F:project-open-file
-                reportGitBackChatFlashProjectDebugBootstrap(
-                    hypothesisId = "F",
-                    location = "ProjectScreen.kt:openFile:afterDerivedState",
-                    msg = "[DEBUG] project file derived state succeeded",
-                    data = JSONObject()
-                        .put("path", path)
-                        .put("resolvedLanguage", resolvedLanguage ?: JSONObject.NULL)
-                        .put("diagnosticCount", derivedSeedState.diagnostics.size)
-                        .put("conflictBlockCount", derivedSeedState.conflictBlocks.size)
-                        .put("foldRegionCount", derivedSeedState.foldRegions.size)
-                        .put("outlineEntryCount", derivedSeedState.outlineEntries.size)
-                )
-                // #endregion
-                selectedFilePath = path
-                loadedContent = content
-                editorValue = initialValue
-                editorDerivedSeed = ProjectEditorDerivedSeed(
-                    sourceText = content,
-                    language = resolvedLanguage.orEmpty(),
-                    derivedState = derivedSeedState
-                )
-                aiCompletionCandidate = null
-                showAiCompletionDialog = false
-                editorMode = if (isJsonLikeProjectFile(path)) {
-                    ProjectEditorMode.RAW_JSON
-                } else {
-                    ProjectEditorMode.EDIT
-                }
-                focusedSearchLine = focusLine ?: currentLineNumber(content, initialValue.selection.start)
-                focusedSearchQuery = focusQuery?.takeIf { it.isNotBlank() }
-                undoStack.clear()
-                redoStack.clear()
             } catch (error: Throwable) {
-                // #region debug-point F:project-open-file
-                reportGitBackChatFlashProjectDebugBootstrap(
-                    hypothesisId = "F",
-                    location = "ProjectScreen.kt:openFile:readFailed",
-                    msg = "[DEBUG] project file read failed",
-                    data = JSONObject()
-                        .put("path", path)
-                        .put("exceptionType", error::class.java.name)
-                        .put("exceptionMessage", error.message ?: JSONObject.NULL)
-                )
-                // #endregion
                 selectedFilePath = path
                 loadedContent = ""
                 editorValue = TextFieldValue("")
@@ -1333,35 +1385,73 @@ private fun ProjectEditorSection(
 
     fun runSearch() {
         val query = searchQuery.trim()
-        val root = activeTreeRoot ?: return
         if (query.isBlank()) {
             searchResult = null
+            remoteSearchResults = emptyList()
             return
         }
+        val root = activeTreeRoot
         scope.launch {
             isSearching = true
             editorError = null
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    searchProjectEntries(
-                        root = root,
-                        query = query,
-                        scope = ProjectSearchScope.FILE_NAME
-                    )
+            if (isRemoteTaskMode) {
+                val repository = selectedTaskRepository
+                val token = config.githubToken.trim()
+                if (token.isBlank()) {
+                    remoteSearchResults = emptyList()
+                    editorError = "请先在设置中配置 GitHub Token"
+                    isSearching = false
+                    return@launch
                 }
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val fileNameMatches = searchProjectGitHubFileNames(
+                            query = query,
+                            repo = repository,
+                            token = token,
+                            apiBaseUrl = config.getGitHubApiBaseUrl(),
+                            ref = remoteTaskRepoState.currentRef
+                        )
+                        val codeMatches = searchProjectGitHubCodeMatches(
+                            query = query,
+                            repo = repository,
+                            token = token,
+                            apiBaseUrl = config.getGitHubApiBaseUrl(),
+                            ref = remoteTaskRepoState.currentRef
+                        )
+                        (fileNameMatches + codeMatches)
+                    }
+                }
+                result
+                    .onSuccess { remoteSearchResults = it }
+                    .onFailure { error ->
+                        remoteSearchResults = emptyList()
+                        editorError = error.message ?: "远端搜索失败"
+                    }
+            } else {
+                val safeRoot = root ?: return@launch
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        searchProjectEntries(
+                            root = safeRoot,
+                            query = query,
+                            scope = ProjectSearchScope.FILE_NAME
+                        )
+                    }
+                }
+                result
+                    .onSuccess { searchResult = it }
+                    .onFailure { error ->
+                        searchResult = ProjectSearchResultUi(
+                            query = query,
+                            scope = ProjectSearchScope.FILE_NAME,
+                            hits = emptyList(),
+                            totalCount = 0,
+                            truncated = false
+                        )
+                        editorError = error.message ?: "搜索失败"
+                    }
             }
-            result
-                .onSuccess { searchResult = it }
-                .onFailure { error ->
-                    searchResult = ProjectSearchResultUi(
-                        query = query,
-                        scope = ProjectSearchScope.FILE_NAME,
-                        hits = emptyList(),
-                        totalCount = 0,
-                        truncated = false
-                    )
-                    editorError = error.message ?: "搜索失败"
-                }
             isSearching = false
         }
     }
@@ -1468,30 +1558,238 @@ private fun ProjectEditorSection(
             .forEach(collapsedFoldRegions::remove)
     }
 
-    if (projectRoot == null) {
+    fun refreshRemoteTaskRepository(
+        targetPath: String = remoteTaskRepoState.currentPath,
+        resetRefIfBlank: Boolean = false
+    ) {
+        val repository = selectedTaskRepository ?: return
+        scope.launch {
+            isRemoteTaskRepoLoading = true
+            val result = withContext(Dispatchers.IO) {
+                refreshProjectGitHubRemoteBrowserState(
+                    currentRepo = repository,
+                    gitRemoteUrl = null,
+                    token = config.githubToken.trim(),
+                    currentBranch = null,
+                    defaultBranch = null,
+                    refDraft = remoteTaskRepoRefDraft,
+                    targetPath = targetPath,
+                    resetRefIfBlank = resetRefIfBlank,
+                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                )
+            }
+            isRemoteTaskRepoLoading = false
+            result.nextRefDraft?.let { remoteTaskRepoRefDraft = it }
+            remoteTaskRepoState = result.state
+            val normalizedPath = targetPath.replace('\\', '/').trim('/')
+            remoteEntriesByDir[normalizedPath] = result.state.entries.map { entry ->
+                remoteEntryInfoByPath[entry.path] = entry
+                ProjectTreeEntry(
+                    absolutePath = entry.path,
+                    name = entry.name,
+                    isDirectory = entry.isDirectory
+                )
+            }
+            result.feedbackMessage?.let {
+                remoteTaskFeedbackMessage = it
+                remoteTaskFeedbackIsError = true
+            }
+        }
+    }
+
+    fun openRemoteTaskRepositoryEntry(entry: ProjectGitHubRemoteEntryUi) {
+        if (entry.isDirectory) {
+            refreshRemoteTaskRepository(targetPath = entry.path)
+            return
+        }
+        val repository = selectedTaskRepository ?: return
+        scope.launch {
+            isRemoteTaskRepoActionRunning = true
+            val result = withContext(Dispatchers.IO) {
+                openProjectGitHubRemoteFileEditor(
+                    currentRepo = repository,
+                    gitRemoteUrl = null,
+                    token = config.githubToken.trim(),
+                    currentRemoteRef = remoteTaskRepoState.currentRef,
+                    refDraft = remoteTaskRepoRefDraft,
+                    currentBranch = null,
+                    defaultBranch = null,
+                    entry = entry,
+                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                )
+            }
+            isRemoteTaskRepoActionRunning = false
+            if (result.file != null) {
+                selectedRemoteTaskFile = result.file
+                remoteTaskFileCommitMessageDraft = result.commitMessageDraft
+                lastOpenedFilePath = result.file.path
+                editorSearchRequest = ProjectEditorSearchRequest()
+                editorError = null
+                isFileLoading = true
+                try {
+                    ensureRemotePathExpanded(result.file.path)
+                    applyOpenedEditorState(
+                        path = result.file.path,
+                        content = result.contentDraft
+                    )
+                } catch (error: Throwable) {
+                    editorError = error.message ?: "读取远端文件失败"
+                } finally {
+                    isFileLoading = false
+                }
+                remoteTaskFeedbackMessage = null
+            } else {
+                remoteTaskFeedbackMessage = result.feedbackMessage ?: "读取远端文件失败"
+                remoteTaskFeedbackIsError = true
+            }
+        }
+    }
+
+    fun submitRemoteTaskRepositoryFileSave(file: ProjectGitHubRemoteFileUi) {
+        val repository = selectedTaskRepository ?: return
+        scope.launch {
+            isSaving = true
+            isRemoteTaskRepoActionRunning = true
+            val commitMessage = remoteTaskFileCommitMessageDraft
+                .trim()
+                .ifBlank { "Update ${file.path} from project editor" }
+            val result = withContext(Dispatchers.IO) {
+                saveProjectGitHubRemoteFileEditorAction(
+                    currentRepo = repository,
+                    gitRemoteUrl = null,
+                    token = config.githubToken.trim(),
+                    currentRemoteRef = remoteTaskRepoState.currentRef,
+                    defaultBranch = null,
+                    file = file,
+                    contentDraft = editedContent,
+                    commitMessageDraft = commitMessage,
+                    apiBaseUrl = config.getGitHubApiBaseUrl(),
+                    refreshTargetPath = remoteTaskRepoState.currentPath
+                )
+            }
+            isRemoteTaskRepoActionRunning = false
+            remoteTaskFeedbackMessage = result.feedbackMessage
+            remoteTaskFeedbackIsError = !result.success
+            if (result.shouldRefreshBrowser) {
+                refreshRemoteTaskRepository(targetPath = result.refreshTargetPath)
+            }
+            if (result.success) {
+                loadedContent = editedContent
+                val reopenEntry = ProjectGitHubRemoteEntryUi(
+                    name = file.name,
+                    path = file.path,
+                    type = "file",
+                    sha = file.sha,
+                    size = editedContent.length.toLong(),
+                    htmlUrl = file.htmlUrl,
+                    downloadUrl = file.downloadUrl
+                )
+                val reopenResult = withContext(Dispatchers.IO) {
+                    openProjectGitHubRemoteFileEditor(
+                        currentRepo = repository,
+                        gitRemoteUrl = null,
+                        token = config.githubToken.trim(),
+                        currentRemoteRef = remoteTaskRepoState.currentRef,
+                        refDraft = remoteTaskRepoRefDraft,
+                        currentBranch = null,
+                        defaultBranch = null,
+                        entry = reopenEntry,
+                        apiBaseUrl = config.getGitHubApiBaseUrl()
+                    )
+                }
+                reopenResult.file?.let { refreshedFile ->
+                    selectedRemoteTaskFile = refreshedFile
+                    remoteTaskFileCommitMessageDraft = "Update ${refreshedFile.path} from project editor"
+                }
+            }
+            isSaving = false
+        }
+    }
+
+    fun requestSaveCurrentEditorFile() {
+        val remoteFile = selectedRemoteTaskFile
+        if (remoteFile != null) {
+            editorError = null
+            submitRemoteTaskRepositoryFileSave(remoteFile)
+            return
+        }
+        val path = selectedFilePath ?: return
+        scope.launch {
+            isSaving = true
+            editorError = null
+            val result = withContext(Dispatchers.IO) {
+                runCatching { saveProjectFile(File(path), editedContent) }
+            }
+            result
+                .onSuccess { loadedContent = editedContent }
+                .onFailure { error -> editorError = error.message ?: "保存失败" }
+            isSaving = false
+        }
+    }
+
+    LaunchedEffect(selectedTaskRepository, projectRoot, config.githubToken, config.githubApiBaseUrl, reloadVersion) {
+        if (isRemoteTaskMode) {
+            remoteEntriesByDir.clear()
+            remoteEntryInfoByPath.clear()
+            remoteExpandedDirs = setOf("")
+            refreshRemoteTaskRepository(resetRefIfBlank = true)
+        }
+    }
+
+    if (projectRoot == null && !isRemoteTaskMode) {
+        val taskRepositoryLabel = selectedTaskRepository?.let { "${it.owner}/${it.repo}" }
         EmptyEditorState(
-            title = "未选择可编辑项目",
+            title = if (taskRepositoryLabel != null) "未选择本地项目" else "未选择可编辑项目",
             message = currentProjectPath?.let {
                 "当前项目路径不是可访问的文件夹：$it"
-            } ?: "先选择一个项目文件夹，项目页才会显示文件树和编辑器。",
-            actionLabel = "选择项目文件夹",
-            onAction = onNewTask
+            } ?: if (taskRepositoryLabel != null) {
+                "当前任务仓库是 $taskRepositoryLabel。未选择本地项目时，这里不会显示本地文件树；可以先进入任务仓库继续远端编辑，或改为选择一个本地项目文件夹。"
+            } else {
+                "先选择一个项目文件夹，项目页才会显示文件树和编辑器。"
+            },
+            actionLabel = if (taskRepositoryLabel != null) "进入任务仓库" else "选择项目文件夹",
+            onAction = if (taskRepositoryLabel != null) onOpenSelectedTaskRepository else onNewTask,
+            secondaryActionLabel = if (taskRepositoryLabel != null) "选择项目文件夹" else null,
+            onSecondaryAction = if (taskRepositoryLabel != null) onNewTask else null
         )
         return
     }
 
-    val treeRootPath = activeTreeRootPath ?: projectRoot.absolutePath
+    val treeRootPath = if (isRemoteTaskMode) {
+        buildString {
+            append(selectedTaskRepository.owner)
+            append('/')
+            append(selectedTaskRepository.repo)
+        }
+    } else {
+        activeTreeRootPath ?: projectRoot!!.absolutePath
+    }
     val treeRoot = activeTreeRoot ?: projectRoot
-    val visibleEntries = flattenVisibleEntries(
-        rootPath = treeRootPath,
-        entriesByDir = entriesByDir,
-        expandedDirs = expandedDirs
-    )
-    val currentFileName = selectedFilePath?.substringAfterLast(File.separatorChar).orEmpty()
-    val currentRelativePath = selectedFilePath
-        ?.removePrefix(projectRoot.absolutePath)
-        ?.removePrefix(File.separator)
+    val visibleEntries = if (isRemoteTaskMode) {
+        flattenVisibleEntries(
+            rootPath = "",
+            entriesByDir = remoteEntriesByDir,
+            expandedDirs = remoteExpandedDirs
+        )
+    } else {
+        flattenVisibleEntries(
+            rootPath = treeRootPath,
+            entriesByDir = entriesByDir,
+            expandedDirs = expandedDirs
+        )
+    }
+    val currentFileName = selectedFilePath
+        ?.replace('\\', '/')
+        ?.substringAfterLast('/')
         .orEmpty()
+    val currentRelativePath = if (isRemoteTaskMode) {
+        selectedFilePath.orEmpty()
+    } else {
+        selectedFilePath
+            ?.removePrefix(projectRoot!!.absolutePath)
+            ?.removePrefix(File.separator)
+            .orEmpty()
+    }
 
     SideEffect {
         onProjectSecondaryPageChanged(
@@ -1500,7 +1798,8 @@ private fun ProjectEditorSection(
                     active = true,
                     title = currentFileName,
                     subtitle = currentRelativePath,
-                    supportsEditorMenu = true
+                    supportsEditorMenu = true,
+                    wordWrapEnabled = editorWordWrapEnabled
                 )
             } else {
                 ProjectSecondaryChromeState()
@@ -1520,37 +1819,6 @@ private fun ProjectEditorSection(
     }
 
     fun handleEditorCloseRequest() {
-        // #region debug-point R2:editor-back-chain
-        reportGitBackChatFlashProjectDebugBootstrap(
-            hypothesisId = "R2",
-            location = "ProjectScreen.kt:handleEditorCloseRequest",
-            msg = "[DEBUG] editor close request consumed",
-            data = JSONObject()
-                .put(
-                    "closeTarget",
-                    when {
-                        showAiCompletionDialog -> "aiCompletion"
-                        showConflictResolverDialog -> "conflictResolver"
-                        showDiagnosticsDialog -> "diagnostics"
-                        showOutlineDialog -> "outline"
-                        showLanguageDialog -> "languageDialog"
-                        showLineReplaceDialog -> "lineReplaceDialog"
-                        showSearchReplaceDialog -> "searchReplaceDialog"
-                        editorTextFieldFocused || editorFocusClearPending -> "clearFocus"
-                        selectedFilePath != null -> "exitEditorPage"
-                        else -> "none"
-                    }
-                )
-                .put("showAiCompletionDialog", showAiCompletionDialog)
-                .put("showConflictResolverDialog", showConflictResolverDialog)
-                .put("showDiagnosticsDialog", showDiagnosticsDialog)
-                .put("showOutlineDialog", showOutlineDialog)
-                .put("showLanguageDialog", showLanguageDialog)
-                .put("showLineReplaceDialog", showLineReplaceDialog)
-                .put("showSearchReplaceDialog", showSearchReplaceDialog)
-                .put("selectedFilePath", selectedFilePath ?: JSONObject.NULL)
-        )
-        // #endregion
         when {
             showAiCompletionDialog -> {
                 showAiCompletionDialog = false
@@ -1579,6 +1847,10 @@ private fun ProjectEditorSection(
 
             showSearchReplaceDialog -> {
                 showSearchReplaceDialog = false
+            }
+
+            selectedFilePath != null && dirty -> {
+                showUnsavedChangesDialog = true
             }
 
             editorTextFieldFocused || editorFocusClearPending -> {
@@ -1614,17 +1886,6 @@ private fun ProjectEditorSection(
     }
 
     LaunchedEffect(selectedFilePath, projectSecondaryBackProgress) {
-        // #region debug-point U:project-editor-secondary
-        reportGitBackChatFlashProjectDebugBootstrap(
-            hypothesisId = "U3",
-            location = "ProjectScreen.kt:editorSecondarySnapshot",
-            msg = "[DEBUG] project editor secondary snapshot",
-            data = JSONObject()
-                .put("selectedFilePath", selectedFilePath ?: JSONObject.NULL)
-                .put("detailVisible", selectedFilePath != null)
-                .put("projectSecondaryBackProgress", projectSecondaryBackProgress)
-        )
-        // #endregion
     }
 
     ProjectNestedPredictiveBackHost(
@@ -1640,6 +1901,7 @@ private fun ProjectEditorSection(
                 if (!showOuterPrimaryChrome && (selectedFilePath != null || projectSecondaryBackProgress > 0f)) {
                     ProjectPrimaryChrome(
                         currentProjectPath = currentProjectPath,
+                        selectedTaskRepository = selectedTaskRepository,
                         detectedRepos = detectedRepos,
                         mutedTextColor = primaryMutedTextColor,
                         chromeColor = primaryChromeColor,
@@ -1665,7 +1927,7 @@ private fun ProjectEditorSection(
                         )
                         BasicTextField(
                             value = searchQuery,
-                            onValueChange = { searchQuery = it },
+                            onValueChange = { query -> searchQuery = query },
                             modifier = Modifier.weight(1f),
                             singleLine = true,
                             textStyle = MaterialTheme.typography.bodyMedium.copy(
@@ -1676,7 +1938,11 @@ private fun ProjectEditorSection(
                                 Box(modifier = Modifier.fillMaxWidth()) {
                                     if (searchQuery.isBlank()) {
                                         Text(
-                                            text = if (currentRepoViewOnly) "搜索当前仓库文件名" else "搜索工作区文件名",
+                                            text = when {
+                                                isRemoteTaskMode -> "搜索远端任务仓库文件名或代码"
+                                                currentRepoViewOnly -> "搜索当前仓库文件名"
+                                                else -> "搜索工作区文件名"
+                                            },
                                             style = MaterialTheme.typography.bodyMedium,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -1704,7 +1970,7 @@ private fun ProjectEditorSection(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (detectedRepos.isNotEmpty()) {
+                    if (!isRemoteTaskMode && detectedRepos.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(6.dp))
                         Row(
                             modifier = Modifier
@@ -1764,6 +2030,16 @@ private fun ProjectEditorSection(
                     ) {
                         item(key = "status") {
                             when {
+                                isRemoteTaskMode && isRemoteTaskRepoActionRunning -> Text(
+                                    "远端文件处理中...",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                isRemoteTaskMode && isRemoteTaskRepoLoading -> Text(
+                                    "正在读取远端目录...",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
                                 isSearching -> Text(
                                     "搜索中...",
                                     style = MaterialTheme.typography.bodySmall,
@@ -1776,7 +2052,99 @@ private fun ProjectEditorSection(
                                 )
                             }
                         }
-                        if (searchQuery.isNotBlank()) {
+                        if (isRemoteTaskMode && searchQuery.isNotBlank()) {
+                            when {
+                                isSearching -> {
+                                    item(key = "remote-search-loading") {
+                                        Text(
+                                            "正在搜索远端仓库文件",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                remoteSearchResults.isEmpty() -> {
+                                    item(key = "remote-search-empty") {
+                                        Text(
+                                            "没有匹配的远端文件",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                else -> {
+                                    item(key = "remote-search-count") {
+                                        Text(
+                                            "命中 ${remoteSearchResults.size} 条远端结果",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    items(
+                                        remoteSearchResults,
+                                        key = { "${it.repoOwner}/${it.repoName}/${it.filePath}/${it.matchLabel}" }
+                                    ) { result ->
+                                        val matchedPath = result.filePath.orEmpty()
+                                        ProjectInsetCard(
+                                            shape = RoundedCornerShape(12.dp),
+                                            surfaceColorOverride = editorChromeColor.copy(alpha = 0.22f),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable(
+                                                    enabled = matchedPath.isNotBlank() && !isRemoteTaskRepoActionRunning
+                                                ) {
+                                                    if (matchedPath.isNotBlank()) {
+                                                        openRemoteTaskRepositoryEntry(
+                                                            ProjectGitHubRemoteEntryUi(
+                                                                name = result.title,
+                                                                path = matchedPath,
+                                                                type = "file",
+                                                                sha = null,
+                                                                size = 0,
+                                                                htmlUrl = result.url
+                                                            )
+                                                        )
+                                                    }
+                                                }
+                                        ) {
+                                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Text(
+                                                    text = result.title,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = result.filePath.orEmpty(),
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 2,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                result.matchLabel?.let { matchLabel ->
+                                                    Text(
+                                                        text = matchLabel,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.primary
+                                                    )
+                                                }
+                                                result.matchSnippet
+                                                    ?.takeIf { it.isNotBlank() }
+                                                    ?.let { snippet ->
+                                                        Text(
+                                                            text = snippet,
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                            maxLines = 2,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                    }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else if (!isRemoteTaskMode && searchQuery.isNotBlank()) {
                             val result = searchResult
                             when {
                                 result == null -> {
@@ -1827,22 +2195,41 @@ private fun ProjectEditorSection(
                             item(key = "tree-root") {
                                 ProjectTreeRow(
                                     entry = ProjectTreeEntry(
-                                        absolutePath = treeRoot.absolutePath,
-                                        name = treeRoot.name.ifBlank { treeRoot.absolutePath },
+                                        absolutePath = if (isRemoteTaskMode) treeRootPath else treeRoot!!.absolutePath,
+                                        name = if (isRemoteTaskMode) {
+                                            "${selectedTaskRepository.owner}/${selectedTaskRepository.repo}"
+                                        } else {
+                                            treeRoot!!.name.ifBlank { treeRoot.absolutePath }
+                                        },
                                         isDirectory = true
                                     ),
                                     rootPath = treeRootPath,
                                     depth = 0,
                                     isExpanded = true,
                                     isSelected = false,
-                                    repoBadge = if (treeRoot.absolutePath in detectedRepoRoots) {
+                                    repoBadge = if (isRemoteTaskMode) {
+                                        if (remoteTaskRepoState.currentRef.isBlank()) "远端任务仓库" else "远端任务仓库 · ${remoteTaskRepoState.currentRef}"
+                                    } else if (treeRoot!!.absolutePath in detectedRepoRoots) {
                                         if (treeRoot.absolutePath == selectedRepoRoot) "Git 仓库 · 当前" else "Git 仓库"
                                     } else null,
-                                    onToggleDir = {},
+                                    onToggleDir = {
+                                        if (isRemoteTaskMode) {
+                                            refreshRemoteTaskRepository(targetPath = "")
+                                        }
+                                    },
                                     onSelectFile = {}
                                 )
                             }
-                            if (visibleEntries.isEmpty() && !isTreeLoading) {
+                            if (isRemoteTaskMode && visibleEntries.isEmpty() && !isRemoteTaskRepoLoading) {
+                                item(key = "tree-empty-remote") {
+                                    Text(
+                                        "当前远端目录没有可显示的文件或文件夹。",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            if (!isRemoteTaskMode && visibleEntries.isEmpty() && !isTreeLoading) {
                                 item(key = "tree-empty") {
                                     Text(
                                         "当前目录没有可显示的文件或文件夹。",
@@ -1851,25 +2238,55 @@ private fun ProjectEditorSection(
                                     )
                                 }
                             }
-                            items(visibleEntries, key = { it.entry.absolutePath }) { item ->
+                            items(
+                                visibleEntries,
+                                key = { it.entry.absolutePath }
+                            ) { item ->
                                 ProjectTreeRow(
                                     entry = item.entry,
                                     rootPath = treeRootPath,
                                     depth = item.depth,
-                                    isExpanded = item.entry.isDirectory && expandedDirs.contains(item.entry.absolutePath),
-                                    isSelected = false,
-                                    repoBadge = if (item.entry.absolutePath in detectedRepoRoots) {
+                                    isExpanded = if (isRemoteTaskMode) {
+                                        item.entry.isDirectory && remoteExpandedDirs.contains(item.entry.absolutePath)
+                                    } else {
+                                        item.entry.isDirectory && expandedDirs.contains(item.entry.absolutePath)
+                                    },
+                                    isSelected = selectedFilePath == item.entry.absolutePath,
+                                    repoBadge = if (isRemoteTaskMode) {
+                                        remoteEntryInfoByPath[item.entry.absolutePath]
+                                            ?.let { entry ->
+                                                if (entry.isDirectory) "目录" else entry.typeLabel
+                                            }
+                                    } else if (item.entry.absolutePath in detectedRepoRoots) {
                                         if (item.entry.absolutePath == selectedRepoRoot) "Git 仓库 · 当前" else "Git 仓库"
                                     } else null,
                                     onToggleDir = { path ->
-                                        expandedDirs = if (expandedDirs.contains(path)) {
-                                            expandedDirs - path
+                                        if (isRemoteTaskMode) {
+                                            if (remoteExpandedDirs.contains(path)) {
+                                                remoteExpandedDirs = remoteExpandedDirs - path
+                                            } else {
+                                                remoteExpandedDirs = remoteExpandedDirs + path
+                                                if (!remoteEntriesByDir.containsKey(path)) {
+                                                    refreshRemoteTaskRepository(targetPath = path)
+                                                }
+                                            }
                                         } else {
-                                            if (!entriesByDir.containsKey(path)) loadDir(path)
-                                            expandedDirs + path
+                                            expandedDirs = if (expandedDirs.contains(path)) {
+                                                expandedDirs - path
+                                            } else {
+                                                if (!entriesByDir.containsKey(path)) loadDir(path)
+                                                expandedDirs + path
+                                            }
                                         }
                                     },
-                                    onSelectFile = { path -> openFile(path) }
+                                    onSelectFile = { path ->
+                                        if (isRemoteTaskMode) {
+                                            remoteEntryInfoByPath[path]
+                                                ?.let(::openRemoteTaskRepositoryEntry)
+                                        } else {
+                                            openFile(path)
+                                        }
+                                    }
                                 )
                             }
                         }
@@ -1909,21 +2326,9 @@ private fun ProjectEditorSection(
         }
 
         fun handleEditorMenuAction(action: ProjectEditorMenuAction) {
-            // #region debug-point R2:editor-menu-action
-            reportGitBackChatFlashProjectDebugBootstrap(
-                hypothesisId = "R2",
-                location = "ProjectScreen.kt:handleEditorMenuAction",
-                msg = "[DEBUG] editor menu action requested",
-                data = JSONObject()
-                    .put("action", action.name)
-                    .put("selectedFilePath", selectedFilePath ?: JSONObject.NULL)
-                    .put("showLanguageDialog", showLanguageDialog)
-                    .put("showSearchReplaceDialog", showSearchReplaceDialog)
-                    .put("showAiCompletionDialog", showAiCompletionDialog)
-            )
-            // #endregion
             when (action) {
                 ProjectEditorMenuAction.SEARCH_REPLACE -> showSearchReplaceDialog = true
+                ProjectEditorMenuAction.TOGGLE_WORD_WRAP -> editorWordWrapEnabled = !editorWordWrapEnabled
                 ProjectEditorMenuAction.LANGUAGE -> showLanguageDialog = true
                 ProjectEditorMenuAction.DIAGNOSTICS -> showDiagnosticsDialog = true
                 ProjectEditorMenuAction.CONFLICTS -> {
@@ -1946,17 +2351,6 @@ private fun ProjectEditorSection(
                 editorMenuActionSignal != lastHandledEditorMenuSignal
             ) {
                 lastHandledEditorMenuSignal = editorMenuActionSignal
-                // #region debug-point R2:editor-menu-signal
-                reportGitBackChatFlashProjectDebugBootstrap(
-                    hypothesisId = "R2",
-                    location = "ProjectScreen.kt:editorMenuActionSignal",
-                    msg = "[DEBUG] editor menu action signal observed",
-                    data = JSONObject()
-                        .put("signal", editorMenuActionSignal)
-                        .put("action", editorMenuAction?.name ?: JSONObject.NULL)
-                        .put("selectedFilePath", selectedFilePath ?: JSONObject.NULL)
-                )
-                // #endregion
                 editorMenuAction?.let(::handleEditorMenuAction)
             }
         }
@@ -2000,19 +2394,7 @@ private fun ProjectEditorSection(
                         )
                     }
                     Button(
-                        onClick = {
-                            scope.launch {
-                                isSaving = true
-                                editorError = null
-                                val result = withContext(Dispatchers.IO) {
-                                    runCatching { saveProjectFile(File(selectedFilePath!!), editedContent) }
-                                }
-                                result
-                                    .onSuccess { loadedContent = editedContent }
-                                    .onFailure { error -> editorError = error.message ?: "保存失败" }
-                                isSaving = false
-                            }
-                        },
+                        onClick = ::requestSaveCurrentEditorFile,
                         enabled = dirty && !isSaving
                     ) {
                         Text(if (isSaving) "保存中" else "保存")
@@ -2055,17 +2437,6 @@ private fun ProjectEditorSection(
                 ) {
                     if (isFileLoading) {
                         EmptyEditorState("正在读取文件", "请稍候，正在加载当前文件内容。")
-                    } else if (editorMode == ProjectEditorMode.RAW_JSON && isRawJsonFile) {
-                        OutlinedTextField(
-                            value = editorValue,
-                            onValueChange = { updateEditorValue(it) },
-                            modifier = Modifier.fillMaxSize(),
-                            textStyle = MaterialTheme.typography.bodySmall.copy(
-                                fontFamily = FontFamily.Monospace,
-                                lineHeight = 18.sp
-                            ),
-                            shape = RoundedCornerShape(18.dp)
-                        )
                     } else {
                         Box(
                             modifier = Modifier
@@ -2076,6 +2447,7 @@ private fun ProjectEditorSection(
                                 editorValue = editorValue,
                                 onValueChange = { updateEditorValue(it) },
                                 language = language,
+                                wordWrapEnabled = editorWordWrapEnabled,
                                 searchQuery = editorSearchQuery,
                                 searchRequest = editorSearchRequest,
                                 replaceQuery = editorReplaceQuery,
@@ -2152,6 +2524,40 @@ private fun ProjectEditorSection(
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 label = { Text("替换为") }
+            )
+        }
+    }
+
+    if (showUnsavedChangesDialog) {
+        ProjectScreenPopupDialog(
+            title = "文件已修改",
+            onDismissRequest = { showUnsavedChangesDialog = false },
+            actions = {
+                TextButton(onClick = { showUnsavedChangesDialog = false }) {
+                    Text("取消")
+                }
+                TextButton(
+                    onClick = {
+                        showUnsavedChangesDialog = false
+                        exitEditorPage()
+                    }
+                ) {
+                    Text("不保存")
+                }
+                Button(
+                    onClick = {
+                        showUnsavedChangesDialog = false
+                        requestSaveCurrentEditorFile()
+                    },
+                    enabled = !isSaving
+                ) {
+                    Text(if (isSaving) "保存中" else "保存")
+                }
+            }
+        ) {
+            Text(
+                text = "当前文件还有未保存改动，返回前要先保存吗？",
+                style = MaterialTheme.typography.bodySmall
             )
         }
     }
@@ -2557,9 +2963,10 @@ private fun ProjectConfigSection(
     onUpdateProjectConfig: (List<GlobalRule>?, List<GlobalMemory>?, List<GlobalSkill>?) -> Unit,
     onUpdateProjectToolPreferences: (ProjectToolPreferences?) -> Unit
 ) {
-    var approvalMode by remember(projectToolPreferences) {
-        mutableStateOf(projectToolPreferences?.approvalMode ?: config.approvalMode)
+    var approvalModeOverride by remember(projectToolPreferences) {
+        mutableStateOf(projectToolPreferences?.approvalMode)
     }
+    val effectiveApprovalMode = approvalModeOverride ?: config.approvalMode
 
     Column(
         modifier = Modifier
@@ -2588,30 +2995,86 @@ private fun ProjectConfigSection(
         ProjectSectionCard {
             Text("审批模式", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = if (approvalModeOverride == null) {
+                    "当前跟随全局，实际生效：${approvalModeLabel(config.approvalMode)}"
+                } else {
+                    "当前使用项目覆盖：${approvalModeLabel(effectiveApprovalMode)}"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        approvalModeOverride = null
+                        onUpdateProjectToolPreferences(
+                            normalizeProjectToolPreferences(
+                                (projectToolPreferences ?: ProjectToolPreferences()).copy(approvalMode = null)
+                            )
+                        )
+                    }
+                    .padding(vertical = 4.dp)
+            ) {
+                RadioButton(
+                    selected = approvalModeOverride == null,
+                    onClick = {
+                        approvalModeOverride = null
+                        onUpdateProjectToolPreferences(
+                            normalizeProjectToolPreferences(
+                                (projectToolPreferences ?: ProjectToolPreferences()).copy(approvalMode = null)
+                            )
+                        )
+                    }
+                )
+                Spacer(Modifier.width(8.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("跟随全局", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "全局当前为 ${approvalModeLabel(config.approvalMode)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
             ToolApprovalMode.entries.forEach { mode ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            approvalMode = mode
+                            approvalModeOverride = mode
                             onUpdateProjectToolPreferences(
-                                (projectToolPreferences ?: ProjectToolPreferences()).copy(approvalMode = mode)
+                                normalizeProjectToolPreferences(
+                                    (projectToolPreferences ?: ProjectToolPreferences()).copy(approvalMode = mode)
+                                )
                             )
                         }
                         .padding(vertical = 4.dp)
                 ) {
                     RadioButton(
-                        selected = approvalMode == mode,
+                        selected = approvalModeOverride == mode,
                         onClick = {
-                            approvalMode = mode
+                            approvalModeOverride = mode
                             onUpdateProjectToolPreferences(
-                                (projectToolPreferences ?: ProjectToolPreferences()).copy(approvalMode = mode)
+                                normalizeProjectToolPreferences(
+                                    (projectToolPreferences ?: ProjectToolPreferences()).copy(approvalMode = mode)
+                                )
                             )
                         }
                     )
                     Spacer(Modifier.width(8.dp))
-                    Text(approvalModeLabel(mode), style = MaterialTheme.typography.bodyMedium)
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(approvalModeLabel(mode), style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            approvalModeDescription(mode),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
         }
@@ -2639,28 +3102,48 @@ private fun SectionTitle(text: String) {
 
 @Composable
 private fun ProjectRuleEditorInline(rules: List<GlobalRule>, onRulesChanged: (List<GlobalRule>) -> Unit) {
-    val items = remember(rules) { rules.toMutableList() }
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        items.forEach { rule ->
-            ProjectInsetCard {
-                Column(Modifier.padding(8.dp)) {
-                    Text(
-                        rule.title.ifBlank { "未命名规则" },
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
-                        rule.content.take(80),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        ProjectInsetCard {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("启用且内容非空的项目规则会注入当前项目对话上下文。", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "如果你在聊天里明确要求“保存为项目规则”，模型会手动创建；不会自动识别普通对话。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
+        if (rules.isEmpty()) {
+            ProjectInsetCard {
+                Text(
+                    "暂无项目规则，可添加例如“先看 logcat 再改代码”“这个仓库一律用中文总结”等项目级约束。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            rules.forEach { rule ->
+                ProjectRuleCard(
+                    rule = rule,
+                    onChanged = { updatedRule ->
+                        onRulesChanged(rules.map { if (it.id == updatedRule.id) updatedRule else it })
+                    },
+                    onDelete = {
+                        onRulesChanged(rules.filterNot { it.id == rule.id })
+                    }
+                )
+            }
+        }
+        RuleDraftImportCard(
+            onImportDrafts = { imported ->
+                if (imported.isNotEmpty()) {
+                    onRulesChanged(rules + imported)
+                }
+            },
+            buttonLabel = "手动导入规则"
+        )
         TextButton(onClick = {
-            val updated = items + GlobalRule(
+            val updated = rules + GlobalRule(
                 id = UUID.randomUUID().toString().take(8),
                 title = "新规则",
                 content = ""
@@ -2672,34 +3155,164 @@ private fun ProjectRuleEditorInline(rules: List<GlobalRule>, onRulesChanged: (Li
 
 @Composable
 private fun ProjectMemoryEditorInline(memories: List<GlobalMemory>, onMemoriesChanged: (List<GlobalMemory>) -> Unit) {
-    val items = remember(memories) { memories.toMutableList() }
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        items.forEach { memory ->
-            ProjectInsetCard {
-                Column(Modifier.padding(8.dp)) {
-                    Text(
-                        memory.title.ifBlank { "未命名记忆" },
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
-                        memory.content.take(80),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        ProjectInsetCard {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("项目记忆适合保存仓库长期事实、约定和背景。", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "启用且内容非空时会进入当前项目上下文；只有你明确要求保存时，模型才会手动创建。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
+        if (memories.isEmpty()) {
+            ProjectInsetCard {
+                Text(
+                    "暂无项目记忆，可添加例如“发布分支命名规则”“这个目录是设备端实际挂载点”等长期背景。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            memories.forEach { memory ->
+                ProjectMemoryCard(
+                    memory = memory,
+                    onChanged = { updatedMemory ->
+                        onMemoriesChanged(memories.map { if (it.id == updatedMemory.id) updatedMemory else it })
+                    },
+                    onDelete = {
+                        onMemoriesChanged(memories.filterNot { it.id == memory.id })
+                    }
+                )
+            }
+        }
+        MemoryDraftImportCard(
+            onImportDrafts = { imported ->
+                if (imported.isNotEmpty()) {
+                    onMemoriesChanged(memories + imported)
+                }
+            },
+            buttonLabel = "手动导入记忆"
+        )
         TextButton(onClick = {
-            val updated = items + GlobalMemory(
+            val updated = memories + GlobalMemory(
                 id = UUID.randomUUID().toString().take(8),
                 title = "新记忆",
                 content = ""
             )
             onMemoriesChanged(updated)
         }) { Text("+ 添加记忆") }
+    }
+}
+
+@Composable
+private fun ProjectRuleCard(
+    rule: GlobalRule,
+    onChanged: (GlobalRule) -> Unit,
+    onDelete: () -> Unit
+) {
+    ProjectInsetCard {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (rule.enabled) "已启用" else "已停用",
+                    color = if (rule.enabled) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(
+                        checked = rule.enabled,
+                        onCheckedChange = { checked ->
+                            onChanged(rule.copy(enabled = checked))
+                        }
+                    )
+                    TextButton(onClick = onDelete) {
+                        Text("删除", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+
+            OutlinedTextField(
+                value = rule.title,
+                onValueChange = { onChanged(rule.copy(title = it)) },
+                label = { Text("规则标题") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall
+            )
+
+            OutlinedTextField(
+                value = rule.content,
+                onValueChange = { onChanged(rule.copy(content = it)) },
+                label = { Text("规则内容") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 100.dp),
+                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                minLines = 4,
+                maxLines = 8
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProjectMemoryCard(
+    memory: GlobalMemory,
+    onChanged: (GlobalMemory) -> Unit,
+    onDelete: () -> Unit
+) {
+    ProjectInsetCard {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (memory.enabled) "已启用" else "已停用",
+                    color = if (memory.enabled) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(
+                        checked = memory.enabled,
+                        onCheckedChange = { checked ->
+                            onChanged(memory.copy(enabled = checked))
+                        }
+                    )
+                    TextButton(onClick = onDelete) {
+                        Text("删除", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+
+            OutlinedTextField(
+                value = memory.title,
+                onValueChange = { onChanged(memory.copy(title = it)) },
+                label = { Text("记忆标题") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall
+            )
+
+            OutlinedTextField(
+                value = memory.content,
+                onValueChange = { onChanged(memory.copy(content = it)) },
+                label = { Text("记忆内容") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 100.dp),
+                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                minLines = 4,
+                maxLines = 8
+            )
+        }
     }
 }
 
@@ -3056,16 +3669,65 @@ private fun ProjectGitDeferredContent(
 
 @Composable
 private fun ProjectGitSectionColumn(
+    fillAvailableHeight: Boolean = false,
+    scrollable: Boolean = true,
+    showSectionTitle: Boolean = true,
+    showRefreshAction: Boolean = false,
+    isRefreshEnabled: Boolean = true,
+    onRefresh: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val bottomBarScrollPadding = rememberMurongBottomBarScrollPadding()
+    val columnModifier = if (fillAvailableHeight) {
+        Modifier.fillMaxSize()
+    } else {
+        Modifier.fillMaxWidth()
+    }
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
+        modifier = columnModifier
+            .then(
+                if (scrollable) {
+                    Modifier.verticalScroll(rememberScrollState())
+                } else {
+                    Modifier
+                }
+            )
+            .then(
+                if (fillAvailableHeight) {
+                    Modifier
+                } else {
+                    Modifier.padding(
+                        start = 16.dp,
+                        top = 16.dp,
+                        end = 16.dp,
+                        bottom = if (scrollable) bottomBarScrollPadding else 16.dp
+                    )
+                }
+            ),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text("Git / GitHub", style = MaterialTheme.typography.titleMedium)
+        if (showSectionTitle) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Git / GitHub", style = MaterialTheme.typography.titleMedium)
+                if (showRefreshAction && onRefresh != null) {
+                    OutlinedButton(
+                        onClick = onRefresh,
+                        enabled = isRefreshEnabled
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Refresh,
+                            contentDescription = null
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("刷新")
+                    }
+                }
+            }
+        }
         content()
     }
 }
@@ -3077,6 +3739,7 @@ private fun ProjectGitSection(
     detectedRepos: List<ProjectDetectedRepoUi>,
     selectedRepoRoot: String?,
     onSelectRepoRoot: (String) -> Unit,
+    selectedViewerTaskRepository: ProjectGitHubRepoRef?,
     draftPathCount: Int,
     snapshotCount: Int,
     mcpToolCount: Int,
@@ -3084,6 +3747,7 @@ private fun ProjectGitSection(
     onRegisterSecondaryCloseRequest: (((() -> Unit)?) -> Unit),
     selectedPrimaryTab: ProjectPrimaryTab,
     onSelectPrimaryTab: (ProjectPrimaryTab) -> Unit,
+    onUpdateSelectedViewerTaskRepository: (ProjectGitHubRepoRef?) -> Unit,
     primaryChromeColor: Color,
     primaryMutedTextColor: Color,
     projectSecondaryBackProgress: Float,
@@ -3099,23 +3763,15 @@ private fun ProjectGitSection(
         mutableStateOf(loadProjectGitHubDownloadStore(projectStoragePath))
     }
     val repoStatusSummaries = remember(currentProjectPath) { mutableStateMapOf<String, ProjectGitStatusUi>() }
-    var workspaceRemoteSummaryStore by remember(currentProjectPath) {
-        val cache = loadProjectGitHubWorkspaceRemoteSummaryCache(projectStoragePath)
-        mutableStateOf(
-            ProjectGitHubWorkspaceRemoteSummaryStore(
-                summaries = cache.summaries,
-                lastUpdatedMillis = cache.lastUpdatedMillis
-            )
-        )
-    }
+    val repoCardExpandedStates = remember(currentProjectPath) { mutableStateMapOf<String, Boolean>() }
     val activeProjectPath = selectedRepoRoot ?: currentProjectPath
     var gitState by remember(activeProjectPath) { mutableStateOf(ProjectGitStatusUi.empty(activeProjectPath)) }
     var isGitLoading by remember(activeProjectPath) { mutableStateOf(false) }
     var isGitActionRunning by remember(activeProjectPath) { mutableStateOf(false) }
-    var workspaceRemoteSummaryLastResumeCheckAt by remember(currentProjectPath) { mutableStateOf(0L) }
-    var workspaceRemoteSummaryResumeSignal by remember(currentProjectPath) { mutableStateOf(0) }
-    var hasObservedWorkspaceResume by remember(currentProjectPath) { mutableStateOf(false) }
     var feedbackMessage by remember(activeProjectPath) { mutableStateOf<String?>(null) }
+    var pendingDiscardTarget by remember(currentProjectPath) {
+        mutableStateOf<ProjectGitDiscardTargetUi?>(null)
+    }
     var gitOperationRecords by remember(currentProjectPath) {
         mutableStateOf(listOf<ProjectGitOperationRecordUi>())
     }
@@ -3189,8 +3845,8 @@ private fun ProjectGitSection(
     var standaloneNavigationState by remember(currentProjectPath) {
         mutableStateOf(clearProjectGitHubStandaloneNavigationState())
     }
-    var selectedViewerTaskRepository by remember(currentProjectPath) {
-        mutableStateOf<ProjectGitHubRepoRef?>(null)
+    var showStandaloneRepoBrowserSecondary by remember(currentProjectPath) {
+        mutableStateOf(false)
     }
     var selectedViewerReadme by remember(currentProjectPath) {
         mutableStateOf<ProjectGitHubReadmeUi?>(null)
@@ -3199,13 +3855,6 @@ private fun ProjectGitSection(
         mutableStateOf<String?>(null)
     }
     var isViewerReadmeLoading by remember(currentProjectPath) { mutableStateOf(false) }
-    var workspaceWorkbenchReadme by remember(currentProjectPath) {
-        mutableStateOf<ProjectGitHubReadmeUi?>(null)
-    }
-    var workspaceWorkbenchReadmeErrorMessage by remember(currentProjectPath) {
-        mutableStateOf<String?>(null)
-    }
-    var isWorkspaceWorkbenchReadmeLoading by remember(currentProjectPath) { mutableStateOf(false) }
     var viewerRepositoryMenuTarget by remember(currentProjectPath) {
         mutableStateOf<ProjectGitHubAccountRepoUi?>(null)
     }
@@ -3218,27 +3867,6 @@ private fun ProjectGitSection(
     var suspectedRepoMenuTarget by remember(currentProjectPath) {
         mutableStateOf<ProjectDetectedRepoUi?>(null)
     }
-    var workspaceFilterType by remember(currentProjectPath) {
-        mutableStateOf(ProjectGitHubWorkspaceFilterType.ALL)
-    }
-    var workspaceSearchQuery by remember(currentProjectPath) {
-        mutableStateOf("")
-    }
-    var workspaceNavigationState by remember(currentProjectPath) {
-        mutableStateOf(clearProjectGitHubWorkspaceNavigationState())
-    }
-    var globalSearchStore by remember(currentProjectPath) {
-        mutableStateOf(ProjectGitHubGlobalSearchStore())
-    }
-    var globalTaskCenter by remember(currentProjectPath) {
-        mutableStateOf(ProjectGitHubGlobalTaskCenterUi())
-    }
-    var workspaceSelectedRepoPaths by remember(currentProjectPath) {
-        mutableStateOf(setOf<String>())
-    }
-    var isWorkspaceSelectionMode by remember(currentProjectPath) {
-        mutableStateOf(false)
-    }
     var standaloneSecondaryCloseRequest by remember(currentProjectPath) {
         mutableStateOf<(() -> Unit)?>(null)
     }
@@ -3250,11 +3878,6 @@ private fun ProjectGitSection(
     val activeRepoFeatureLabels = remember(activeDetectedRepo) {
         activeDetectedRepo?.let(::buildProjectDetectedRepoFeatureLabels).orEmpty()
     }
-    val showGitHubWorkspacePage = workspaceNavigationState.isVisible
-    val showGitHubWorkspaceDownloadCenterPage = workspaceNavigationState.isDownloadCenterVisible
-    val workspaceWorkbenchRepoRoot = workspaceNavigationState.workbenchRepoRoot
-    val workspaceWorkbenchSelectedTab = workspaceNavigationState.workbenchSelectedTab
-    val pendingWorkspaceDetailTarget = workspaceNavigationState.pendingDetailTarget
     val selectedViewerRepository = standaloneNavigationState.selectedRepo
     val selectedViewerSection = standaloneNavigationState.selectedSection
     val currentRepoOperationRecords = remember(gitOperationRecords, gitState.repoRoot) {
@@ -3308,6 +3931,10 @@ private fun ProjectGitSection(
                 isSuccess = isSuccess
             )
         ) + gitOperationRecords.take(11)
+    }
+
+    fun updateSelectedViewerTaskRepository(repo: ProjectGitHubRepoRef?) {
+        onUpdateSelectedViewerTaskRepository(repo)
     }
 
     fun loadIssueComments(issueNumber: Long) {
@@ -3465,16 +4092,6 @@ private fun ProjectGitSection(
             .onFailure { error ->
                 feedbackMessage = error.message ?: "无法打开 GitHub 页面"
             }
-    }
-
-    fun openSystemDownloads() {
-        runCatching {
-            context.startActivity(
-                Intent(DownloadManager.ACTION_VIEW_DOWNLOADS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
-        }.onFailure { error ->
-            feedbackMessage = error.message ?: "无法打开系统下载列表"
-        }
     }
 
     fun recordGitHubDownload(
@@ -3690,6 +4307,39 @@ private fun ProjectGitSection(
                 )
             }
             isGitHubLoading = false
+        }
+    }
+
+    fun refreshWholeGitPage() {
+        scope.launch {
+            isGitLoading = true
+            if (!activeProjectPath.isNullOrBlank()) {
+                val activeStatus = withContext(Dispatchers.IO) { loadProjectGitStatus(activeProjectPath) }
+                gitState = activeStatus
+                repoStatusSummaries[activeProjectPath] = activeStatus
+            }
+            if (detectedRepos.isNotEmpty()) {
+                val summaries = withContext(Dispatchers.IO) {
+                    detectedRepos.associate { repo ->
+                        repo.rootPath to if (repo.hasGitMetadata) {
+                            loadProjectGitStatus(repo.rootPath)
+                        } else {
+                            ProjectGitStatusUi.empty(repo.rootPath).copy(
+                                errorMessage = "当前目录是独立项目，但没有检测到 `.git` 仓库。"
+                            )
+                        }
+                    }
+                }
+                repoStatusSummaries.clear()
+                repoStatusSummaries.putAll(summaries)
+                activeProjectPath?.let { path ->
+                    summaries[path]?.let { gitState = it }
+                }
+            }
+            isGitLoading = false
+            if (gitState.isRepository && !gitState.remoteUrl.isNullOrBlank() && config.githubToken.isNotBlank()) {
+                refreshGitHubActions()
+            }
         }
     }
 
@@ -3909,160 +4559,6 @@ private fun ProjectGitSection(
         }
     }
 
-    fun refreshWorkspaceWorkbenchReadme() {
-        val repo = githubActionsState.repo
-        val token = config.githubToken.trim()
-        if (repo == null) {
-            workspaceWorkbenchReadme = null
-            workspaceWorkbenchReadmeErrorMessage = githubActionsState.errorMessage
-                ?: "当前仓库还没有可读取的 GitHub README。"
-            isWorkspaceWorkbenchReadmeLoading = false
-            return
-        }
-        if (token.isBlank()) {
-            workspaceWorkbenchReadme = null
-            workspaceWorkbenchReadmeErrorMessage = "请先在设置页填写 GitHub Token。"
-            isWorkspaceWorkbenchReadmeLoading = false
-            return
-        }
-        scope.launch {
-            isWorkspaceWorkbenchReadmeLoading = true
-            val result = withContext(Dispatchers.IO) {
-                loadProjectGitHubReadme(
-                    repo = repo,
-                    token = token,
-                    apiBaseUrl = config.getGitHubApiBaseUrl()
-                )
-            }
-            workspaceWorkbenchReadme = result.readme
-            workspaceWorkbenchReadmeErrorMessage = result.error
-            isWorkspaceWorkbenchReadmeLoading = false
-        }
-    }
-
-    fun openWorkspaceWorkbenchReadmeEditor(readme: ProjectGitHubReadmeUi) {
-        scope.launch {
-            isGitHubActionRunning = true
-            val result = withContext(Dispatchers.IO) {
-                openProjectGitHubRemoteFileEditor(
-                    currentRepo = githubActionsState.repo,
-                    gitRemoteUrl = gitState.remoteUrl,
-                    token = config.githubToken.trim(),
-                    currentRemoteRef = remoteRepoState.currentRef,
-                    refDraft = remoteRepoRefDraft,
-                    currentBranch = gitState.currentBranch,
-                    defaultBranch = githubActionsState.defaultBranch,
-                    entry = ProjectGitHubRemoteEntryUi(
-                        name = readme.name,
-                        path = readme.path,
-                        type = "file",
-                        sha = null,
-                        size = readme.content.toByteArray().size.toLong(),
-                        htmlUrl = readme.htmlUrl
-                    ),
-                    apiBaseUrl = config.getGitHubApiBaseUrl()
-                )
-            }
-            isGitHubActionRunning = false
-            if (result.file != null) {
-                remoteFileDialogState = result.file
-                remoteFileContentDraft = result.contentDraft
-                remoteFileCommitMessageDraft = result.commitMessageDraft
-            } else {
-                feedbackMessage = result.feedbackMessage ?: "读取远端文件失败"
-            }
-        }
-    }
-
-    fun refreshGitHubWorkspaceRemoteSummaries(
-        refreshPlan: ProjectGitHubWorkspaceRemoteSummaryRefreshPlan? = null
-    ) {
-        val token = config.githubToken.trim()
-        val refreshRequestedAt = System.currentTimeMillis()
-        if (token.isBlank()) {
-            workspaceRemoteSummaryStore = clearProjectGitHubWorkspaceRemoteSummaryStore()
-            workspaceRemoteSummaryLastResumeCheckAt = refreshRequestedAt
-            return
-        }
-        val repoSnapshot = detectedRepos.toList()
-        val repoStatusSnapshot = repoStatusSummaries.toMap()
-        val apiBaseUrl = config.getGitHubApiBaseUrl()
-        val effectiveRefreshPlan = refreshPlan ?: planProjectGitHubWorkspaceRemoteSummaryRefresh(
-            detectedRepos = repoSnapshot,
-            repoStatusSummaries = repoStatusSnapshot,
-            selectedRepoRoot = selectedRepoRoot,
-            token = token,
-            apiBaseUrl = apiBaseUrl,
-            currentStore = workspaceRemoteSummaryStore
-        )
-        if (!effectiveRefreshPlan.shouldRefresh) {
-            workspaceRemoteSummaryLastResumeCheckAt = refreshRequestedAt
-            return
-        }
-        if (effectiveRefreshPlan.targetsToRefresh.isEmpty()) {
-            workspaceRemoteSummaryStore = applyProjectGitHubWorkspaceRemoteSummaryRefreshResult(
-                currentStore = workspaceRemoteSummaryStore,
-                refreshPlan = effectiveRefreshPlan,
-                refreshedSummaries = emptyMap(),
-                fetchedAtMillis = null
-            )
-            workspaceRemoteSummaryLastResumeCheckAt = refreshRequestedAt
-            return
-        }
-        workspaceRemoteSummaryLastResumeCheckAt = refreshRequestedAt
-        scope.launch {
-            workspaceRemoteSummaryStore = beginProjectGitHubWorkspaceRemoteSummaryRefresh(
-                workspaceRemoteSummaryStore
-            )
-            runCatching {
-                withContext(Dispatchers.IO) {
-                    loadProjectGitHubWorkspaceRemoteSummaries(
-                        targets = effectiveRefreshPlan.targetsToRefresh,
-                        token = token,
-                        apiBaseUrl = apiBaseUrl
-                    )
-                }
-            }.onSuccess { summaries ->
-                val fetchedAtMillis = System.currentTimeMillis()
-                val newStore = applyProjectGitHubWorkspaceRemoteSummaryRefreshResult(
-                    currentStore = workspaceRemoteSummaryStore,
-                    refreshPlan = effectiveRefreshPlan,
-                    refreshedSummaries = summaries,
-                    fetchedAtMillis = fetchedAtMillis
-                )
-                workspaceRemoteSummaryStore = newStore
-                saveProjectGitHubWorkspaceRemoteSummaryCache(projectStoragePath, newStore.summaries)
-            }.onFailure { error ->
-                workspaceRemoteSummaryStore = failProjectGitHubWorkspaceRemoteSummaryRefresh(
-                    currentStore = workspaceRemoteSummaryStore,
-                    errorMessage = error.message ?: "刷新工作区远端摘要失败"
-                )
-            }
-        }
-    }
-
-    fun refreshGitHubWorkspaceRemoteSummariesForRoots(
-        rootPaths: List<String>
-    ) {
-        val token = config.githubToken.trim()
-        if (token.isBlank()) return
-
-        val repoSnapshot = detectedRepos.filter { it.rootPath in rootPaths }
-        val repoStatusSnapshot = repoStatusSummaries.filterKeys { it in rootPaths }
-        val apiBaseUrl = config.getGitHubApiBaseUrl()
-
-        val plan = planProjectGitHubWorkspaceRemoteSummaryRefresh(
-            detectedRepos = repoSnapshot,
-            repoStatusSummaries = repoStatusSnapshot,
-            selectedRepoRoot = null,
-            token = token,
-            apiBaseUrl = apiBaseUrl,
-            currentStore = workspaceRemoteSummaryStore,
-            forceRefreshTargets = true
-        )
-        refreshGitHubWorkspaceRemoteSummaries(plan)
-    }
-
     fun refreshRemoteRepositoryBrowser(
         targetPath: String = remoteRepoState.currentPath,
         resetRefIfBlank: Boolean = false
@@ -4122,7 +4618,7 @@ private fun ProjectGitSection(
 
     fun openCurrentGitHubRepoPage() {
         openGitHubPage(
-            githubActionsState.repoHtmlUrl ?: workspaceRemoteSummaryStore.summaries[activeProjectPath]?.repoHtmlUrl,
+            githubActionsState.repoHtmlUrl,
             "当前仓库还没有可打开的 GitHub 页面地址。"
         )
     }
@@ -4243,265 +4739,6 @@ private fun ProjectGitSection(
         }
     }
 
-    fun openGitHubWorkspaceRepoWorkbench(
-        rootPath: String,
-        selectedTab: ProjectGitHubWorkspaceRepoWorkbenchTab =
-            ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
-    ) {
-        // #region debug-point A:open-workbench-request
-        reportGitBackChatFlashProjectDebugBootstrap(
-            hypothesisId = "A",
-            location = "ProjectScreen.kt:openGitHubWorkspaceRepoWorkbench",
-            msg = "[DEBUG] open workspace workbench requested",
-            data = JSONObject()
-                .put("rootPath", rootPath)
-                .put("selectedTab", selectedTab.name)
-                .put("currentWorkbenchRepoRoot", workspaceWorkbenchRepoRoot ?: JSONObject.NULL)
-                .put("currentWorkbenchSelectedTab", workspaceWorkbenchSelectedTab.name)
-                .put("showGitHubWorkspacePage", showGitHubWorkspacePage)
-        )
-        // #endregion
-        onSelectRepoRoot(rootPath)
-        workspaceNavigationState = reduceProjectGitHubWorkspaceNavigationState(
-            currentState = workspaceNavigationState,
-            action = ProjectGitHubWorkspaceNavigationAction.OpenRepoWorkbench(
-                rootPath = rootPath,
-                selectedTab = selectedTab
-            )
-        )
-    }
-
-    fun openWorkflowRunDetailForRepo(
-        rootPath: String,
-        run: ProjectGitHubWorkflowRunUi
-    ) {
-        onSelectRepoRoot(rootPath)
-        workspaceNavigationState = reduceProjectGitHubWorkspaceNavigationState(
-            currentState = workspaceNavigationState,
-            action = ProjectGitHubWorkspaceNavigationAction.OpenDetailTarget(
-                target = ProjectGitHubWorkspaceDetailTarget(
-                    rootPath = rootPath,
-                    selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.WORKFLOW,
-                    workflowRun = run
-                )
-            )
-        )
-    }
-
-    fun openIssueDetailForRepo(
-        rootPath: String,
-        issue: ProjectGitHubIssueUi
-    ) {
-        onSelectRepoRoot(rootPath)
-        workspaceNavigationState = reduceProjectGitHubWorkspaceNavigationState(
-            currentState = workspaceNavigationState,
-            action = ProjectGitHubWorkspaceNavigationAction.OpenDetailTarget(
-                target = ProjectGitHubWorkspaceDetailTarget(
-                    rootPath = rootPath,
-                    selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.ISSUES,
-                    issue = issue
-                )
-            )
-        )
-    }
-
-    fun openPullRequestDetailForRepo(
-        rootPath: String,
-        pullRequest: ProjectGitHubPullRequestUi
-    ) {
-        onSelectRepoRoot(rootPath)
-        workspaceNavigationState = reduceProjectGitHubWorkspaceNavigationState(
-            currentState = workspaceNavigationState,
-            action = ProjectGitHubWorkspaceNavigationAction.OpenDetailTarget(
-                target = ProjectGitHubWorkspaceDetailTarget(
-                    rootPath = rootPath,
-                    selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.PULL_REQUESTS,
-                    pullRequest = pullRequest
-                )
-            )
-        )
-    }
-
-    fun searchGitHubGlobal() {
-        val query = globalSearchStore.query
-        if (query.isBlank()) return
-
-        val token = config.githubToken.trim()
-        if (token.isBlank()) {
-            globalSearchStore = globalSearchStore.copy(errorMessage = "请先在设置中配置 GitHub Token")
-            return
-        }
-
-        val repos = detectedRepos.mapNotNull { repo ->
-            val status = repoStatusSummaries[repo.rootPath] ?: return@mapNotNull null
-            parseProjectGitHubRepoRef(status.remoteUrl)
-        }
-
-        if (repos.isEmpty()) {
-            globalSearchStore = globalSearchStore.copy(errorMessage = "未找到已配置 GitHub 远端的仓库")
-            return
-        }
-
-        val localRepoMap = detectedRepos.mapNotNull { repo ->
-            val status = repoStatusSummaries[repo.rootPath] ?: return@mapNotNull null
-            val ref = parseProjectGitHubRepoRef(status.remoteUrl) ?: return@mapNotNull null
-            "${ref.owner}/${ref.repo}" to repo.rootPath
-        }.toMap()
-
-        globalSearchStore = globalSearchStore.copy(isLoading = true, errorMessage = null)
-        scope.launch {
-            val results = withContext(Dispatchers.IO) {
-                searchProjectGitHubGlobal(
-                    query = query,
-                    repos = repos,
-                    token = token,
-                    apiBaseUrl = config.getGitHubApiBaseUrl(),
-                    localRepoMap = localRepoMap
-                )
-            }
-            globalSearchStore = globalSearchStore.copy(
-                results = results,
-                isLoading = false
-            )
-        }
-    }
-
-    fun onGlobalSearchResultClick(result: ProjectGitHubGlobalSearchResultUi) {
-        globalSearchStore = globalSearchStore.copy(isVisible = false)
-        when (result.type) {
-            ProjectGitHubGlobalSearchResultType.ISSUE -> {
-                if (result.rootPath != null && result.number != null) {
-                    val issue = ProjectGitHubIssueUi(
-                        number = result.number,
-                        title = result.title,
-                        body = "",
-                        state = "open",
-                        authorLogin = null,
-                        updatedAt = result.updatedAt.orEmpty(),
-                        htmlUrl = result.url,
-                        labels = emptyList()
-                    )
-                    openIssueDetailForRepo(result.rootPath, issue)
-                } else {
-                    openGitHubPage(result.url, "无法打开 Issue 页面")
-                }
-            }
-            ProjectGitHubGlobalSearchResultType.PULL_REQUEST -> {
-                if (result.rootPath != null && result.number != null) {
-                    val pr = ProjectGitHubPullRequestUi(
-                        number = result.number,
-                        title = result.title,
-                        body = "",
-                        state = "open",
-                        isDraft = false,
-                        isMerged = false,
-                        authorLogin = "",
-                        updatedAt = result.updatedAt.orEmpty(),
-                        htmlUrl = result.url,
-                        labels = emptyList(),
-                        headSha = "",
-                        headBranch = "",
-                        baseBranch = ""
-                    )
-                    openPullRequestDetailForRepo(result.rootPath, pr)
-                } else {
-                    openGitHubPage(result.url, "无法打开 PR 页面")
-                }
-            }
-            ProjectGitHubGlobalSearchResultType.FILE -> {
-                if (result.rootPath != null && result.filePath != null) {
-                    openGitHubWorkspaceRepoWorkbench(result.rootPath, ProjectGitHubWorkspaceRepoWorkbenchTab.REMOTE)
-                } else {
-                    openGitHubPage(result.url, "无法打开文件页面")
-                }
-            }
-        }
-    }
-
-    fun onGlobalTaskClick(task: ProjectGitHubWorkspaceTaskUi) {
-        globalTaskCenter = globalTaskCenter.copy(isVisible = false)
-        when {
-            task.targetWorkflowRun != null -> {
-                openWorkflowRunDetailForRepo(task.repoRoot, task.targetWorkflowRun)
-            }
-            task.targetIssue != null -> {
-                openIssueDetailForRepo(task.repoRoot, task.targetIssue)
-            }
-            task.targetPullRequest != null -> {
-                openPullRequestDetailForRepo(task.repoRoot, task.targetPullRequest)
-            }
-            task.targetTab != null -> {
-                openGitHubWorkspaceRepoWorkbench(task.repoRoot, task.targetTab)
-            }
-            else -> {
-                openGitHubWorkspaceRepoWorkbench(task.repoRoot, ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW)
-            }
-        }
-    }
-
-    fun runGitHubWorkspaceBatchAction(action: ProjectGitHubWorkspaceBatchAction) {
-        val selectedPaths = workspaceSelectedRepoPaths.toList()
-        if (selectedPaths.isEmpty()) {
-            feedbackMessage = "请先选择要操作的仓库"
-            return
-        }
-
-        isWorkspaceSelectionMode = false
-        workspaceSelectedRepoPaths = emptySet()
-
-        scope.launch {
-            when (action) {
-                ProjectGitHubWorkspaceBatchAction.REFRESH_STATUS -> {
-                    feedbackMessage = "正在批量刷新 ${selectedPaths.size} 个仓库的状态..."
-                    selectedPaths.forEach { path ->
-                        val status = withContext(Dispatchers.IO) { loadProjectGitStatus(path) }
-                        repoStatusSummaries[path] = status
-                    }
-                    feedbackMessage = "批量刷新状态完成"
-                }
-                ProjectGitHubWorkspaceBatchAction.FETCH -> {
-                    feedbackMessage = "正在对 ${selectedPaths.size} 个仓库执行 Fetch..."
-                    selectedPaths.forEach { path ->
-                        withContext(Dispatchers.IO) {
-                            embeddedGitFetch(path, config.githubToken.trim())
-                        }
-                        val status = withContext(Dispatchers.IO) { loadProjectGitStatus(path) }
-                        repoStatusSummaries[path] = status
-                    }
-                    feedbackMessage = "批量 Fetch 完成"
-                }
-                ProjectGitHubWorkspaceBatchAction.PULL -> {
-                    feedbackMessage = "正在对 ${selectedPaths.size} 个仓库执行 Pull..."
-                    var successCount = 0
-                    var failCount = 0
-                    selectedPaths.forEach { path ->
-                        val success = withContext(Dispatchers.IO) {
-                            runCatching {
-                                embeddedGitPull(path, config.githubToken.trim())
-                            }.isSuccess
-                        }
-                        if (success) successCount++ else failCount++
-                        val status = withContext(Dispatchers.IO) { loadProjectGitStatus(path) }
-                        repoStatusSummaries[path] = status
-                    }
-                    feedbackMessage = "批量 Pull 完成: 成功 $successCount, 失败 $failCount"
-                }
-                ProjectGitHubWorkspaceBatchAction.REFRESH_REMOTE -> {
-                    feedbackMessage = "正在批量刷新 ${selectedPaths.size} 个仓库的 GitHub 摘要..."
-                    refreshGitHubWorkspaceRemoteSummariesForRoots(selectedPaths)
-                    feedbackMessage = "批量刷新 GitHub 摘要已排队"
-                }
-            }
-        }
-    }
-
-    fun openGitHubWorkspaceDownloadCenter() {
-        workspaceNavigationState = reduceProjectGitHubWorkspaceNavigationState(
-            currentState = workspaceNavigationState,
-            action = ProjectGitHubWorkspaceNavigationAction.OpenDownloadCenter
-        )
-    }
-
     LaunchedEffect(activeProjectPath, gitState.remoteUrl, config.githubToken) {
         remoteFileDialogState = null
         remoteFileContentDraft = ""
@@ -4513,49 +4750,6 @@ private fun ProjectGitSection(
         } else {
             remoteRepoState = ProjectGitHubRemoteBrowserState.empty()
         }
-    }
-
-    LaunchedEffect(activeProjectPath, workspaceWorkbenchRepoRoot, pendingWorkspaceDetailTarget) {
-        val target = pendingWorkspaceDetailTarget ?: return@LaunchedEffect
-        if (activeProjectPath != target.rootPath || workspaceWorkbenchRepoRoot != target.rootPath) {
-            return@LaunchedEffect
-        }
-        when {
-            target.workflowRun != null -> {
-                val token = config.githubToken.trim()
-                if (token.isBlank()) {
-                    feedbackMessage = "请先在设置页填写 GitHub Token。"
-                } else {
-                    val repo = workspaceRemoteSummaryStore.summaries[target.rootPath]?.repo
-                        ?: parseProjectGitHubRepoRef(repoStatusSummaries[target.rootPath]?.remoteUrl)
-                    if (repo == null) {
-                        feedbackMessage = "当前仓库还没有可用的 GitHub 远端信息。"
-                    } else {
-                        isGitHubActionRunning = true
-                        val result = withContext(Dispatchers.IO) {
-                            loadProjectGitHubWorkflowRunDetail(
-                                repo = repo,
-                                runId = target.workflowRun.id,
-                                token = token,
-                                apiBaseUrl = config.getGitHubApiBaseUrl()
-                            )
-                        }
-                        isGitHubActionRunning = false
-                        if (result.success) {
-                            workflowRunDetailDialogState = result.detail
-                        } else {
-                            feedbackMessage = result.error ?: "读取工作流运行详情失败"
-                        }
-                    }
-                }
-            }
-            target.issue != null -> openIssueDetail(target.issue)
-            target.pullRequest != null -> openPullRequestDetail(target.pullRequest)
-        }
-        workspaceNavigationState = reduceProjectGitHubWorkspaceNavigationState(
-            currentState = workspaceNavigationState,
-            action = ProjectGitHubWorkspaceNavigationAction.ClearPendingDetailTarget
-        )
     }
 
     fun runGitHubAction(
@@ -4617,31 +4811,6 @@ private fun ProjectGitSection(
         repoStatusSummaries.putAll(summaries)
     }
 
-    LaunchedEffect(detectedRepos, workspaceWorkbenchRepoRoot) {
-        val normalizedState = reduceProjectGitHubWorkspaceNavigationState(
-            currentState = workspaceNavigationState,
-            action = ProjectGitHubWorkspaceNavigationAction.NormalizeDetectedRepos(
-                detectedRepos = detectedRepos
-            )
-        )
-        // #region debug-point A:normalize-workspace-nav
-        reportGitBackChatFlashProjectDebugBootstrap(
-            hypothesisId = "A",
-            location = "ProjectScreen.kt:normalizeWorkspaceNavigation",
-            msg = "[DEBUG] normalized workspace navigation state",
-            data = JSONObject()
-                .put("repoCount", detectedRepos.size)
-                .put("beforeVisible", workspaceNavigationState.isVisible)
-                .put("beforeRepoRoot", workspaceNavigationState.workbenchRepoRoot ?: JSONObject.NULL)
-                .put("beforeTab", workspaceNavigationState.workbenchSelectedTab.name)
-                .put("afterVisible", normalizedState.isVisible)
-                .put("afterRepoRoot", normalizedState.workbenchRepoRoot ?: JSONObject.NULL)
-                .put("afterTab", normalizedState.workbenchSelectedTab.name)
-        )
-        // #endregion
-        workspaceNavigationState = normalizedState
-    }
-
     LaunchedEffect(
         gitState.remoteUrl,
         gitState.isRepository,
@@ -4661,29 +4830,6 @@ private fun ProjectGitSection(
         if (activeProjectPath.isNullOrBlank()) {
             refreshViewerRepositories()
         }
-    }
-
-    LaunchedEffect(workspaceWorkbenchRepoRoot) {
-        if (workspaceWorkbenchRepoRoot == null) {
-            workspaceWorkbenchReadme = null
-            workspaceWorkbenchReadmeErrorMessage = null
-            isWorkspaceWorkbenchReadmeLoading = false
-        }
-    }
-
-    LaunchedEffect(
-        workspaceWorkbenchRepoRoot,
-        workspaceWorkbenchSelectedTab,
-        githubActionsState.repo?.owner,
-        githubActionsState.repo?.repo,
-        config.githubToken,
-        config.githubApiBaseUrl
-    ) {
-        if (workspaceWorkbenchRepoRoot.isNullOrBlank()) return@LaunchedEffect
-        if (workspaceWorkbenchSelectedTab != ProjectGitHubWorkspaceRepoWorkbenchTab.README) {
-            return@LaunchedEffect
-        }
-        refreshWorkspaceWorkbenchReadme()
     }
 
     LaunchedEffect(
@@ -4725,88 +4871,14 @@ private fun ProjectGitSection(
         }
     }
 
-    DisposableEffect(lifecycleOwner, showGitHubWorkspacePage) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event != Lifecycle.Event.ON_RESUME) return@LifecycleEventObserver
-            if (!hasObservedWorkspaceResume) {
-                hasObservedWorkspaceResume = true
-                return@LifecycleEventObserver
-            }
-            val nowMillis = System.currentTimeMillis()
-            if (
-                shouldCheckProjectGitHubWorkspaceRemoteSummaryOnResume(
-                    showGitHubWorkspacePage = showGitHubWorkspacePage,
-                    lastResumeCheckAtMillis = workspaceRemoteSummaryLastResumeCheckAt,
-                    nowMillis = nowMillis
-                )
-            ) {
-                workspaceRemoteSummaryLastResumeCheckAt = nowMillis
-                workspaceRemoteSummaryResumeSignal += 1
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
-
-    val workspaceRemoteSummaryInputs = remember(detectedRepos, repoStatusSummaries.toMap()) {
-        detectedRepos.map { repo ->
-            repo.rootPath to parseProjectGitHubRepoRef(repoStatusSummaries[repo.rootPath]?.remoteUrl)
-        }
-    }
-    val workspaceRemoteSummaryRefreshPlan = remember(
-        detectedRepos,
-        repoStatusSummaries.toMap(),
-        config.githubToken,
-        config.githubApiBaseUrl,
-        workspaceRemoteSummaryStore
-    ) {
-        planProjectGitHubWorkspaceRemoteSummaryRefresh(
-            detectedRepos = detectedRepos,
-            repoStatusSummaries = repoStatusSummaries.toMap(),
-            selectedRepoRoot = selectedRepoRoot,
-            token = config.githubToken.trim(),
-            apiBaseUrl = config.getGitHubApiBaseUrl(),
-            currentStore = workspaceRemoteSummaryStore
-        )
-    }
-
-    LaunchedEffect(
-        showGitHubWorkspacePage,
-        workspaceRemoteSummaryInputs,
-        workspaceRemoteSummaryRefreshPlan,
-        config.githubToken,
-        config.githubApiBaseUrl
-    ) {
-        if (showGitHubWorkspacePage && workspaceRemoteSummaryRefreshPlan.shouldRefresh) {
-            refreshGitHubWorkspaceRemoteSummaries(workspaceRemoteSummaryRefreshPlan)
-        }
-    }
-    LaunchedEffect(
-        showGitHubWorkspacePage,
-        workspaceRemoteSummaryResumeSignal,
-        workspaceRemoteSummaryRefreshPlan
-    ) {
-        if (
-            showGitHubWorkspacePage &&
-            workspaceRemoteSummaryResumeSignal > 0 &&
-            workspaceRemoteSummaryRefreshPlan.shouldRefresh
-        ) {
-            refreshGitHubWorkspaceRemoteSummaries(workspaceRemoteSummaryRefreshPlan)
-        }
-    }
-
-    val workspaceWorkbenchRepo = remember(workspaceWorkbenchRepoRoot, detectedRepos) {
-        detectedRepos.firstOrNull { it.rootPath == workspaceWorkbenchRepoRoot }
-    }
+    val showStandaloneBrowserPage =
+        activeProjectPath.isNullOrBlank() || showStandaloneRepoBrowserSecondary
     val showStandaloneViewerSecondaryPage = isProjectGitHubStandaloneSecondaryPage(
         activeProjectPath = activeProjectPath,
-        currentState = standaloneNavigationState
+        currentState = standaloneNavigationState,
+        forceSecondaryPage = showStandaloneRepoBrowserSecondary
     )
-    val isGitSecondaryPage =
-        isProjectGitHubWorkspaceSecondaryPage(workspaceNavigationState) ||
-            showStandaloneViewerSecondaryPage
+    val isGitSecondaryPage = showStandaloneViewerSecondaryPage
     fun closeStandaloneViewerRepoSelection() {
         standaloneNavigationState = reduceProjectGitHubStandaloneNavigationState(
             currentState = standaloneNavigationState,
@@ -4816,6 +4888,11 @@ private fun ProjectGitSection(
         selectedViewerReadmeErrorMessage = null
         remoteRepoState = ProjectGitHubRemoteBrowserState.empty()
         remoteRepoRefDraft = ""
+    }
+    fun closeStandaloneRepoBrowserSecondaryPage() {
+        showStandaloneRepoBrowserSecondary = false
+        standaloneSecondaryCloseRequest = null
+        closeStandaloneViewerRepoSelection()
     }
     fun handleStandaloneViewerSecondaryCloseRequest() {
         val nextState = reduceProjectGitHubStandaloneNavigationState(
@@ -4830,26 +4907,23 @@ private fun ProjectGitSection(
             remoteRepoRefDraft = ""
         }
     }
-    var handleGitSecondaryCloseRequest: () -> Unit = {}
     val activeGitSecondaryCloseRequest =
         resolveProjectGitHubStandaloneCloseRequest(
             activeProjectPath = activeProjectPath,
             currentState = standaloneNavigationState,
             nestedCloseRequest = standaloneSecondaryCloseRequest,
-            fallbackCloseRequest = ::handleStandaloneViewerSecondaryCloseRequest
-        ) ?: if (isProjectGitHubWorkspaceSecondaryPage(workspaceNavigationState)) {
-            handleGitSecondaryCloseRequest
-        } else {
-            null
-        }
+            fallbackCloseRequest = ::handleStandaloneViewerSecondaryCloseRequest,
+            forceSecondaryPage = showStandaloneRepoBrowserSecondary,
+            clearSecondaryPageRequest = ::closeStandaloneRepoBrowserSecondaryPage
+        )
     val activeGitForegroundCloseLayer = resolveProjectGitHubForegroundCloseLayer(
         ProjectGitHubForegroundCloseState(
             hasPendingRemoteFileSaveConfirmation = pendingRemoteFileSaveConfirmation,
             hasViewerDescriptionEditor = viewerDescriptionEditTarget != null,
             hasViewerRepositoryMenu = viewerRepositoryMenuTarget != null,
             hasSuspectedRepoMenu = suspectedRepoMenuTarget != null,
-            isGlobalSearchVisible = globalSearchStore.isVisible,
-            isGlobalTaskCenterVisible = globalTaskCenter.isVisible,
+            isGlobalSearchVisible = false,
+            isGlobalTaskCenterVisible = false,
             hasWorkflowDispatch = workflowDispatchTarget != null,
             hasWorkflowRunDetail = workflowRunDetailDialogState != null,
             hasArtifactDialog = artifactDialogState != null,
@@ -4867,125 +4941,31 @@ private fun ProjectGitSection(
             hasCommitDialog = showCommitDialog
         )
     )
-    val activeGitSecondaryCloseLayer = resolveProjectGitHubSecondaryCloseLayer(
-        activeProjectPath = activeProjectPath,
-        workspaceNavigationState = workspaceNavigationState,
-        standaloneNavigationState = standaloneNavigationState
-    )
-    val workspaceNavigationBackProgress = if (
-        activeGitSecondaryCloseLayer == ProjectGitHubSecondaryCloseLayer.WORKSPACE_NAVIGATION
-    ) {
-        projectSecondaryBackProgress
-    } else {
-        0f
-    }
-    val workspaceWorkbenchTabBackProgress = if (
-        activeGitSecondaryCloseLayer == ProjectGitHubSecondaryCloseLayer.WORKSPACE_WORKBENCH_TAB
-    ) {
-        projectSecondaryBackProgress
-    } else {
-        0f
-    }
-    val workspaceWorkbenchRemoteSummary = workspaceWorkbenchRepoRoot?.let(workspaceRemoteSummaryStore.summaries::get)
-    val workspaceWorkbenchSubtitle = remember(
-        workspaceWorkbenchRepo,
-        workspaceWorkbenchRemoteSummary,
-        showGitHubWorkspaceDownloadCenterPage
-    ) {
-        if (showGitHubWorkspaceDownloadCenterPage) {
-            "工作区级日志、产物与 Release 下载记录"
-        } else if (workspaceWorkbenchRepo == null) {
-            "工作区总览、仓库摘要与异常聚合"
-        } else {
-            buildString {
-                append(
-                    if (workspaceWorkbenchRepo.isWorkspaceRoot) {
-                        "工作区根目录"
-                    } else {
-                        workspaceWorkbenchRepo.relativePath
-                    }
-                )
-                workspaceWorkbenchRemoteSummary?.repo?.let { repo ->
-                    append(" · ")
-                    append(repo.owner)
-                    append("/")
-                    append(repo.repo)
-                }
-            }
-        }
-    }
-
     LaunchedEffect(
-        showGitHubWorkspacePage,
         showStandaloneViewerSecondaryPage,
+        showStandaloneRepoBrowserSecondary,
         selectedViewerRepository?.fullName,
         selectedViewerSection,
-        workspaceWorkbenchRepo,
-        workspaceWorkbenchSelectedTab,
-        workspaceWorkbenchSubtitle,
-        showGitHubWorkspaceDownloadCenterPage
     ) {
         onProjectSecondaryPageChanged(
-            if (showGitHubWorkspacePage) {
+            if (showStandaloneViewerSecondaryPage) {
                 ProjectSecondaryChromeState(
                     active = true,
                     title = when {
-                        showGitHubWorkspaceDownloadCenterPage -> "下载中心"
-                        workspaceWorkbenchRepo != null &&
-                            workspaceWorkbenchSelectedTab != ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW -> {
-                            workspaceWorkbenchSelectedTab.label
+                        selectedViewerRepository == null -> "当前账户的所有仓库"
+                        selectedViewerSection == ProjectGitHubStandaloneSection.OVERVIEW -> {
+                            selectedViewerRepository.name.ifBlank { "仓库详情" }
                         }
-                        workspaceWorkbenchRepo != null -> workspaceWorkbenchRepo.displayName.ifBlank { "仓库工作台" }
-                        else -> "GitHub 工作区"
+                        else -> selectedViewerSection.label
                     },
-                    subtitle = workspaceWorkbenchSubtitle,
-                    supportsEditorMenu = false
-                )
-            } else if (showStandaloneViewerSecondaryPage) {
-                ProjectSecondaryChromeState(
-                    active = true,
-                    title = when (selectedViewerSection) {
-                        ProjectGitHubStandaloneSection.OVERVIEW -> {
-                            selectedViewerRepository?.name?.ifBlank { "仓库详情" } ?: "仓库详情"
-                        }
-                        else -> {
-                            selectedViewerSection.label
-                        }
-                    },
-                    subtitle = selectedViewerRepository?.fullName?.ifBlank { "GitHub 仓库详情" } ?: "GitHub 仓库详情",
+                    subtitle = selectedViewerRepository?.fullName?.ifBlank { "GitHub 仓库详情" }
+                        ?: "复用未选择本地项目时的 Git 页面",
                     supportsEditorMenu = false
                 )
             } else {
                 ProjectSecondaryChromeState()
             }
         )
-    }
-
-    LaunchedEffect(
-        workspaceNavigationState.isVisible,
-        workspaceNavigationState.isDownloadCenterVisible,
-        workspaceNavigationState.workbenchRepoRoot,
-        workspaceNavigationState.workbenchSelectedTab,
-        pendingWorkspaceDetailTarget?.rootPath,
-        pendingWorkspaceDetailTarget?.selectedTab
-    ) {
-        // #region debug-point A:workspace-nav-snapshot
-        reportGitBackChatFlashProjectDebugBootstrap(
-            hypothesisId = "A",
-            location = "ProjectScreen.kt:workspaceNavigationSnapshot",
-            msg = "[DEBUG] workspace navigation snapshot",
-            data = JSONObject()
-                .put("isVisible", workspaceNavigationState.isVisible)
-                .put("isDownloadCenterVisible", workspaceNavigationState.isDownloadCenterVisible)
-                .put("workbenchRepoRoot", workspaceNavigationState.workbenchRepoRoot ?: JSONObject.NULL)
-                .put("workbenchSelectedTab", workspaceNavigationState.workbenchSelectedTab.name)
-                .put("pendingDetailRootPath", pendingWorkspaceDetailTarget?.rootPath ?: JSONObject.NULL)
-                .put(
-                    "pendingDetailSelectedTab",
-                    pendingWorkspaceDetailTarget?.selectedTab?.name ?: JSONObject.NULL
-                )
-        )
-        // #endregion
     }
 
     fun closeRemoteFileDialog() {
@@ -4995,57 +4975,8 @@ private fun ProjectGitSection(
         pendingRemoteFileSaveConfirmation = false
     }
 
-    // #region debug-point A:git-debug-reporter
-    fun reportGitBackChatFlashProjectDebug(
-        hypothesisId: String,
-        location: String,
-        msg: String,
-        data: JSONObject
-    ) {
-        if (!ENABLE_REASONIX_BACK_DEBUG_REPORTS) return
-        Thread {
-            runCatching {
-                val connection = (URL("http://192.168.2.3:7777/event").openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    connectTimeout = 1200
-                    readTimeout = 1200
-                    doOutput = true
-                    setRequestProperty("Content-Type", "application/json")
-                }
-                val payload = JSONObject()
-                    .put("sessionId", "ui-regression-followup")
-                    .put("runId", "pre-fix")
-                    .put("hypothesisId", hypothesisId)
-                    .put("location", location)
-                    .put("msg", msg)
-                    .put("data", data)
-                    .put("ts", System.currentTimeMillis())
-                    .toString()
-                connection.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-                runCatching { connection.inputStream.use { input -> while (input.read() != -1) {} } }
-                connection.disconnect()
-            }
-        }.start()
-    }
-    // #endregion
 
-    handleGitSecondaryCloseRequest = {
-        // #region debug-point A:git-close-entry
-        reportGitBackChatFlashProjectDebug(
-            hypothesisId = "A",
-            location = "ProjectScreen.kt:handleGitSecondaryCloseRequest",
-            msg = "[DEBUG] git secondary close requested",
-            data = JSONObject()
-                .put("foregroundCloseLayer", activeGitForegroundCloseLayer.name)
-                .put("secondaryCloseLayer", activeGitSecondaryCloseLayer.name)
-                .put("showGitHubWorkspacePage", showGitHubWorkspacePage)
-                .put("workspaceWorkbenchRepoRoot", workspaceWorkbenchRepoRoot ?: JSONObject.NULL)
-                .put("workspaceWorkbenchSelectedTab", workspaceWorkbenchSelectedTab.name)
-                .put("showStandaloneViewerSecondaryPage", showStandaloneViewerSecondaryPage)
-                .put("selectedViewerSection", selectedViewerSection.name)
-                .put("showGitHubWorkspaceDownloadCenterPage", showGitHubWorkspaceDownloadCenterPage)
-        )
-        // #endregion
+    val handleGitSecondaryCloseRequest = {
         when (activeGitForegroundCloseLayer) {
             ProjectGitHubForegroundCloseLayer.PENDING_REMOTE_FILE_SAVE_CONFIRMATION -> {
                 pendingRemoteFileSaveConfirmation = false
@@ -5063,13 +4994,9 @@ private fun ProjectGitSection(
                 suspectedRepoMenuTarget = null
             }
 
-            ProjectGitHubForegroundCloseLayer.GLOBAL_SEARCH -> {
-                globalSearchStore = globalSearchStore.copy(isVisible = false)
-            }
+            ProjectGitHubForegroundCloseLayer.GLOBAL_SEARCH -> Unit
 
-            ProjectGitHubForegroundCloseLayer.GLOBAL_TASK_CENTER -> {
-                globalTaskCenter = globalTaskCenter.copy(isVisible = false)
-            }
+            ProjectGitHubForegroundCloseLayer.GLOBAL_TASK_CENTER -> Unit
 
             ProjectGitHubForegroundCloseLayer.WORKFLOW_DISPATCH -> {
                 workflowDispatchTarget = null
@@ -5139,57 +5066,8 @@ private fun ProjectGitSection(
             }
 
             ProjectGitHubForegroundCloseLayer.NONE -> {
-                when (activeGitSecondaryCloseLayer) {
-                    ProjectGitHubSecondaryCloseLayer.WORKSPACE_WORKBENCH_TAB -> {
-                        // #region debug-point A:git-close-workbench-tab
-                        reportGitBackChatFlashProjectDebug(
-                            hypothesisId = "A",
-                            location = "ProjectScreen.kt:handleGitSecondaryCloseRequest:workbenchTab",
-                            msg = "[DEBUG] closing workbench tab to overview",
-                            data = JSONObject()
-                                .put("workspaceWorkbenchRepoRoot", workspaceWorkbenchRepoRoot ?: JSONObject.NULL)
-                                .put("workspaceWorkbenchSelectedTab", workspaceWorkbenchSelectedTab.name)
-                        )
-                        // #endregion
-                        workspaceNavigationState = reduceProjectGitHubWorkspaceNavigationState(
-                            currentState = workspaceNavigationState,
-                            action = ProjectGitHubWorkspaceNavigationAction.SelectWorkbenchTab(
-                                selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.OVERVIEW
-                            )
-                        )
-                    }
-
-                    ProjectGitHubSecondaryCloseLayer.STANDALONE_NAVIGATION -> {
-                        handleStandaloneViewerSecondaryCloseRequest()
-                    }
-
-                    ProjectGitHubSecondaryCloseLayer.WORKSPACE_NAVIGATION -> {
-                        // #region debug-point A:git-close-workspace-layer
-                        reportGitBackChatFlashProjectDebug(
-                            hypothesisId = "A",
-                            location = "ProjectScreen.kt:handleGitSecondaryCloseRequest:workspaceLayer",
-                            msg = "[DEBUG] delegating workspace layer close helper",
-                            data = JSONObject()
-                                .put("workspaceWorkbenchRepoRoot", workspaceWorkbenchRepoRoot ?: JSONObject.NULL)
-                                .put("workspaceWorkbenchSelectedTab", workspaceWorkbenchSelectedTab.name)
-                                .put("showGitHubWorkspaceDownloadCenterPage", showGitHubWorkspaceDownloadCenterPage)
-                        )
-                        // #endregion
-                        workspaceNavigationState = if (
-                            activeProjectPath != null &&
-                            workspaceWorkbenchRepoRoot != null &&
-                            !showGitHubWorkspaceDownloadCenterPage
-                        ) {
-                            clearProjectGitHubWorkspaceNavigationState()
-                        } else {
-                            reduceProjectGitHubWorkspaceNavigationState(
-                                currentState = workspaceNavigationState,
-                                action = ProjectGitHubWorkspaceNavigationAction.CloseNavigationLayer
-                            )
-                        }
-                    }
-
-                    ProjectGitHubSecondaryCloseLayer.NONE -> Unit
+                if (showStandaloneViewerSecondaryPage) {
+                    handleStandaloneViewerSecondaryCloseRequest()
                 }
             }
         }
@@ -5221,695 +5099,309 @@ private fun ProjectGitSection(
 
     LaunchedEffect(
         isGitSecondaryPage,
-        showGitHubWorkspacePage,
         showStandaloneViewerSecondaryPage,
-        workspaceWorkbenchRepoRoot,
-        workspaceWorkbenchSelectedTab,
         selectedViewerSection,
         standaloneSecondaryCloseRequest
     ) {
         onRegisterSecondaryCloseRequest(activeGitSecondaryCloseRequest)
     }
 
-    if (showGitHubWorkspacePage) {
-        ProjectGitDeferredContent {
-            ProjectNestedPredictiveBackHost(
-                detailVisible = showGitHubWorkspaceDownloadCenterPage || workspaceWorkbenchRepo != null,
-                backProgress = workspaceNavigationBackProgress,
-                detailContent = {
-                    if (showGitHubWorkspaceDownloadCenterPage) {
-                        ProjectGitHubWorkspaceDownloadCenterPage(
-                            downloads = downloadStore.records,
-                            onOpenSystemDownloads = ::openSystemDownloads,
-                            onOpenDownloadSource = { item ->
-                                openGitHubPage(
-                                    item.sourceUrl,
-                                    "这条下载记录暂时没有可打开的来源页面。"
-                                )
-                            },
-                            onDeleteRecord = ::deleteGitHubDownloadRecord,
-                            onClearHistory = ::clearGitHubDownloadHistory,
-                            backProgress = workspaceNavigationBackProgress
+    ProjectGitSectionColumn(
+        fillAvailableHeight = showStandaloneViewerSecondaryPage,
+        scrollable = !showStandaloneViewerSecondaryPage,
+        showSectionTitle = !showStandaloneViewerSecondaryPage,
+        showRefreshAction = !showStandaloneViewerSecondaryPage,
+        isRefreshEnabled = !isGitLoading && !isGitActionRunning && !isGitHubActionRunning,
+        onRefresh = ::refreshWholeGitPage
+    ) {
+        if (showStandaloneBrowserPage) {
+            Box(
+                modifier = if (showStandaloneViewerSecondaryPage) {
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                } else {
+                    Modifier.fillMaxWidth()
+                }
+            ) {
+                ProjectGitDeferredContent {
+                ProjectGitHubStandaloneBrowserSection(
+                    tokenConfigured = config.githubToken.isNotBlank(),
+                    repoListState = viewerRepositoriesState,
+                    isRepoListLoading = isViewerRepositoriesLoading,
+                    selectedRepo = selectedViewerRepository,
+                    selectedTaskRepo = selectedViewerTaskRepository,
+                    activeSection = selectedViewerSection,
+                    repoDetailState = githubActionsState,
+                    isRepoDetailLoading = isGitHubLoading,
+                    readme = selectedViewerReadme,
+                    readmeErrorMessage = selectedViewerReadmeErrorMessage,
+                    isReadmeLoading = isViewerReadmeLoading,
+                    onRefreshRepoList = ::refreshViewerRepositories,
+                    onSelectRepo = { repo ->
+                        standaloneNavigationState = reduceProjectGitHubStandaloneNavigationState(
+                            currentState = standaloneNavigationState,
+                            action = ProjectGitHubStandaloneNavigationAction.SelectRepo(repo)
                         )
-                    } else {
-                        val currentWorkbenchRepo = workspaceWorkbenchRepo
-                            ?: return@ProjectNestedPredictiveBackHost
-                        val workbenchStatus = repoStatusSummaries[currentWorkbenchRepo.rootPath]
-                            ?: ProjectGitStatusUi.empty(currentWorkbenchRepo.rootPath)
-                        val workbenchSummary = ProjectGitHubWorkspaceRepoSummaryUi(
-                            repo = currentWorkbenchRepo,
-                            status = workbenchStatus,
-                            githubRepo = parseProjectGitHubRepoRef(workbenchStatus.remoteUrl),
-                            isSelected = currentWorkbenchRepo.rootPath == selectedRepoRoot
+                        remoteRepoState = ProjectGitHubRemoteBrowserState.empty(repo.repoRef)
+                        remoteRepoRefDraft = ""
+                    },
+                    onShowRepoMenu = { repo ->
+                        viewerRepositoryMenuTarget = repo
+                    },
+                    onEditRepoDescription = ::openViewerRepositoryDescriptionEditor,
+                    onBackToRepoList = ::closeStandaloneViewerRepoSelection,
+                    onChangeSection = {
+                        standaloneNavigationState = reduceProjectGitHubStandaloneNavigationState(
+                            currentState = standaloneNavigationState,
+                            action = ProjectGitHubStandaloneNavigationAction.SelectSection(it)
                         )
-                        ProjectGitHubWorkspaceRepoWorkbenchPage(
-                            summary = workbenchSummary,
-                            remoteSummary = workspaceWorkbenchRemoteSummary,
-                            gitState = gitState,
-                            githubActionsState = githubActionsState,
-                            remoteRepoState = remoteRepoState,
-                            isGitLoading = isGitLoading,
-                            isGitHubLoading = isGitHubLoading,
-                            isGitHubActionRunning = isGitHubActionRunning,
-                            isRemoteRepoLoading = isRemoteRepoLoading,
-                            tokenConfigured = config.githubToken.isNotBlank(),
-                            remoteRepoRefDraft = remoteRepoRefDraft,
-                            onRemoteRepoRefDraftChange = { remoteRepoRefDraft = it },
-                            onRefreshGitState = ::refreshGitState,
-                            onRefreshGitHubActions = ::refreshGitHubActions,
-                            onRefreshRemoteRepository = { refreshRemoteRepositoryBrowser(resetRefIfBlank = true) },
-                            onApplyRemoteRef = { refreshRemoteRepositoryBrowser(targetPath = remoteRepoState.currentPath) },
-                            onOpenRepoPage = ::openCurrentGitHubRepoPage,
-                            onOpenWorkflowPage = { workflow ->
-                                openGitHubPage(
-                                    workflow.htmlUrl,
-                                    "当前工作流还没有可打开的 GitHub 页面地址。"
-                                )
-                            },
-                            onRunWorkflow = { workflow ->
-                                openWorkflowDispatchDialog(
-                                    workflow = workflow,
-                                    preferredRef = gitState.currentBranch ?: githubActionsState.defaultBranch
-                                )
-                            },
-                            onOpenArtifacts = ::openWorkflowArtifacts,
-                            onOpenRunPage = { run ->
-                                openGitHubPage(
-                                    run.htmlUrl,
-                                    "当前运行记录还没有可打开的 GitHub 页面地址。"
-                                )
-                            },
-                            onDownloadRunLogs = { run ->
-                                val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
-                                val token = config.githubToken.trim()
-                                if (token.isBlank()) {
-                                    feedbackMessage = "请先在设置页填写 GitHub Token。"
-                                    return@ProjectGitHubWorkspaceRepoWorkbenchPage
-                                }
-                                val result = enqueueProjectGitHubWorkflowLogsDownload(
-                                    context = context,
-                                    repo = repo,
-                                    runId = run.id,
-                                    runDisplayTitle = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
-                                    token = token,
-                                    apiBaseUrl = config.getGitHubApiBaseUrl()
-                                )
-                                recordGitHubDownload(
-                                    typeLabel = "工作流日志",
-                                    title = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
-                                    fileName = result.fileName,
-                                    downloadId = result.downloadId,
-                                    sourceUrl = run.htmlUrl,
-                                    repo = repo
-                                )
-                                feedbackMessage = "已开始下载 ${result.fileName}"
-                            },
-                            onOpenRunDetail = ::openWorkflowRunDetail,
-                            onOpenRemoteParent = {
-                                refreshRemoteRepositoryBrowser(
-                                    targetPath = parentProjectGitHubRepoPath(remoteRepoState.currentPath).orEmpty()
-                                )
-                            },
-                            onOpenRemoteRoot = { refreshRemoteRepositoryBrowser(targetPath = "") },
-                            onOpenRemoteEntry = ::openRemoteRepositoryEntry,
-                            onOpenRemoteEntryPage = { entry ->
-                                openGitHubPage(
-                                    entry.htmlUrl,
-                                    "当前条目还没有可打开的 GitHub 页面地址。"
-                                )
-                            },
-                            readme = workspaceWorkbenchReadme,
-                            readmeErrorMessage = workspaceWorkbenchReadmeErrorMessage,
-                            isReadmeLoading = isWorkspaceWorkbenchReadmeLoading,
-                            onRefreshReadme = ::refreshWorkspaceWorkbenchReadme,
-                            onEditReadme = ::openWorkspaceWorkbenchReadmeEditor,
-                            onCreateIssue = {
-                                resetCreateIssueDraft()
-                                showCreateIssueDialog = true
-                            },
-                            onOpenIssueDetail = ::openIssueDetail,
-                            onToggleIssueState = { issue, shouldClose ->
-                                val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
-                                val token = config.githubToken.trim()
-                                if (token.isBlank()) {
-                                    feedbackMessage = "请先在设置页填写 GitHub Token。"
-                                    return@ProjectGitHubWorkspaceRepoWorkbenchPage
-                                }
-                                runGitHubAction(if (shouldClose) "已关闭 Issue #${issue.number}" else "已重新打开 Issue #${issue.number}") {
-                                    updateProjectGitHubIssueState(
-                                        repo = repo,
-                                        issueNumber = issue.number,
-                                        close = shouldClose,
-                                        token = token,
-                                        apiBaseUrl = config.getGitHubApiBaseUrl()
-                                    )
-                                }
-                            },
-                            onOpenIssuePage = { issue ->
-                                openGitHubPage(
-                                    issue.htmlUrl,
-                                    "当前 Issue 还没有可打开的 GitHub 页面地址。"
-                                )
-                            },
-                            onCreatePullRequest = {
-                                resetCreatePullRequestDraft()
-                                showCreatePullRequestDialog = true
-                            },
-                            onOpenPullRequestDetail = ::openPullRequestDetail,
-                            onTogglePullRequestState = { pullRequest, shouldClose ->
-                                val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
-                                val token = config.githubToken.trim()
-                                if (token.isBlank()) {
-                                    feedbackMessage = "请先在设置页填写 GitHub Token。"
-                                    return@ProjectGitHubWorkspaceRepoWorkbenchPage
-                                }
-                                runGitHubAction(if (shouldClose) "已关闭 PR #${pullRequest.number}" else "已重新打开 PR #${pullRequest.number}") {
-                                    updateProjectGitHubPullRequestState(
-                                        repo = repo,
-                                        pullNumber = pullRequest.number,
-                                        close = shouldClose,
-                                        token = token,
-                                        apiBaseUrl = config.getGitHubApiBaseUrl()
-                                    )
-                                }
-                            },
-                            onMergePullRequest = { pullRequest ->
-                                val repo = githubActionsState.repo ?: return@ProjectGitHubWorkspaceRepoWorkbenchPage
-                                val token = config.githubToken.trim()
-                                if (token.isBlank()) {
-                                    feedbackMessage = "请先在设置页填写 GitHub Token。"
-                                    return@ProjectGitHubWorkspaceRepoWorkbenchPage
-                                }
-                                runGitHubAction("已合并 PR #${pullRequest.number}") {
-                                    mergeProjectGitHubPullRequest(
-                                        repo = repo,
-                                        pullNumber = pullRequest.number,
-                                        title = pullRequest.title,
-                                        token = token,
-                                        apiBaseUrl = config.getGitHubApiBaseUrl()
-                                    )
-                                }
-                            },
-                            onOpenPullRequestPage = { pullRequest ->
-                                openGitHubPage(
-                                    pullRequest.htmlUrl,
-                                    "当前 Pull Request 还没有可打开的 GitHub 页面地址。"
-                                )
-                            },
-                            onCreateRelease = {
-                                releaseDraftState = createProjectGitHubReleaseDraftState(gitState.currentBranch)
-                                showCreateReleaseDialog = true
-                            },
-                            onEditRelease = { release ->
-                                releaseEditTarget = release
-                                releaseDraftState = editProjectGitHubReleaseDraftState(release)
-                            },
-                            onToggleReleaseMode = { release, makeDraft ->
-                                runGitHubMutationAction(
-                                    block = {
-                                        toggleProjectGitHubReleaseModeAction(
-                                            repo = githubActionsState.repo,
-                                            release = release,
-                                            token = config.githubToken.trim(),
-                                            apiBaseUrl = config.getGitHubApiBaseUrl(),
-                                            makeDraft = makeDraft
-                                        )
-                                    }
-                                )
-                            },
-                            onTogglePrerelease = { release, makePrerelease ->
-                                runGitHubMutationAction(
-                                    block = {
-                                        toggleProjectGitHubReleasePrereleaseAction(
-                                            repo = githubActionsState.repo,
-                                            release = release,
-                                            token = config.githubToken.trim(),
-                                            apiBaseUrl = config.getGitHubApiBaseUrl(),
-                                            makePrerelease = makePrerelease
-                                        )
-                                    }
-                                )
-                            },
-                            onDeleteRelease = { release ->
-                                runGitHubMutationAction(
-                                    block = {
-                                        deleteProjectGitHubReleaseAction(
-                                            repo = githubActionsState.repo,
-                                            release = release,
-                                            token = config.githubToken.trim(),
-                                            apiBaseUrl = config.getGitHubApiBaseUrl()
-                                        )
-                                    }
-                                )
-                            },
-                            onOpenReleasePage = { release ->
-                                openGitHubPage(
-                                    release.htmlUrl,
-                                    "当前 Release 还没有可打开的 GitHub 页面地址。"
-                                )
-                            },
-                            onOpenReleaseAssets = { release ->
-                                releaseAssetDialogState = ProjectGitHubReleaseAssetDialogUi(
-                                    releaseTitle = release.name.ifBlank { release.tagName },
-                                    assets = release.assets,
-                                    releaseHtmlUrl = release.htmlUrl
-                                )
-                            },
-                            downloads = downloadStore.records,
-                            onOpenSystemDownloads = ::openSystemDownloads,
-                            onOpenDownloadSource = { item ->
-                                openGitHubPage(
-                                    item.sourceUrl,
-                                    "这条下载记录暂时没有可打开的来源页面。"
-                                )
-                            },
-                            selectedTab = workspaceWorkbenchSelectedTab,
-                            onSelectTab = { tab ->
-                                // #region debug-point A:select-workbench-tab
-                                reportGitBackChatFlashProjectDebug(
-                                    hypothesisId = "A",
-                                    location = "ProjectScreen.kt:onSelectWorkbenchTab",
-                                    msg = "[DEBUG] workbench tab selected",
-                                    data = JSONObject()
-                                        .put("fromTab", workspaceWorkbenchSelectedTab.name)
-                                        .put("toTab", tab.name)
-                                        .put("workbenchRepoRoot", workspaceWorkbenchRepoRoot ?: JSONObject.NULL)
-                                )
-                                // #endregion
-                                workspaceNavigationState =
-                                    reduceProjectGitHubWorkspaceNavigationState(
-                                        currentState = workspaceNavigationState,
-                                        action =
-                                            ProjectGitHubWorkspaceNavigationAction.SelectWorkbenchTab(
-                                                selectedTab = tab
-                                            )
-                                    )
-                            },
-                            onExitWorkbench = {
-                                workspaceNavigationState = if (activeProjectPath != null) {
-                                    clearProjectGitHubWorkspaceNavigationState()
-                                } else {
-                                    reduceProjectGitHubWorkspaceNavigationState(
-                                        currentState = workspaceNavigationState,
-                                        action =
-                                            ProjectGitHubWorkspaceNavigationAction.CloseRepoWorkbench
-                                    )
-                                }
-                            },
-                            backProgress = workspaceNavigationBackProgress,
-                            tabBackProgress = workspaceWorkbenchTabBackProgress
+                    },
+                    onRefreshRepoDetail = ::refreshSelectedViewerRepositoryDetail,
+                    onOpenRepoPage = {
+                        openGitHubPage(
+                            selectedViewerRepository?.htmlUrl ?: githubActionsState.repoHtmlUrl,
+                            "当前仓库还没有可打开的 GitHub 页面地址。"
                         )
-                    }
-                },
-                listContent = {
-                    val overviewRepoCards = remember(
-                        detectedRepos,
-                        repoStatusSummaries,
-                        selectedRepoRoot,
-                        workspaceRemoteSummaryStore.summaries,
-                        workspaceFilterType,
-                        workspaceSearchQuery
-                    ) {
-                        buildProjectGitHubWorkspaceRepoCards(
-                            repos = detectedRepos,
-                            repoStatusSummaries = repoStatusSummaries,
-                            selectedRepoRoot = selectedRepoRoot,
-                            remoteSummaries = workspaceRemoteSummaryStore.summaries,
-                            filterType = workspaceFilterType,
-                            searchQuery = workspaceSearchQuery
+                    },
+                    remoteRepoState = remoteRepoState,
+                    isRemoteRepoLoading = isRemoteRepoLoading,
+                    isActionRunning = isGitHubActionRunning,
+                    remoteRepoRefDraft = remoteRepoRefDraft,
+                    onRemoteRepoRefDraftChange = { remoteRepoRefDraft = it },
+                    onRefreshRemoteRepository = {
+                        refreshStandaloneRemoteRepositoryBrowser(resetRefIfBlank = true)
+                    },
+                    onApplyRemoteRef = {
+                        refreshStandaloneRemoteRepositoryBrowser(targetPath = remoteRepoState.currentPath)
+                    },
+                    onOpenRemoteParent = {
+                        refreshStandaloneRemoteRepositoryBrowser(
+                            targetPath = parentProjectGitHubRepoPath(remoteRepoState.currentPath).orEmpty()
                         )
-                    }
-                    val overview = remember(
-                        overviewRepoCards,
-                        workspaceRemoteSummaryStore.summaries.size,
-                        workspaceRemoteSummaryStore.lastUpdatedMillis,
-                        gitState.remoteUrl,
-                        githubActionsState
-                    ) {
-                        buildProjectGitHubWorkspaceOverview(
-                            repoCards = overviewRepoCards,
-                            remoteSummaryCount = workspaceRemoteSummaryStore.summaries.size,
-                            activeRepo = parseProjectGitHubRepoRef(gitState.remoteUrl),
-                            activeGitHubState = githubActionsState,
-                            lastUpdatedMillis = workspaceRemoteSummaryStore.lastUpdatedMillis
+                    },
+                    onOpenRemoteRoot = {
+                        refreshStandaloneRemoteRepositoryBrowser(targetPath = "")
+                    },
+                    onOpenRemoteEntry = { entry ->
+                        openRemoteRepositoryEntry(entry)
+                    },
+                    onOpenRemoteEntryPage = { entry ->
+                        openGitHubPage(
+                            entry.htmlUrl,
+                            "当前条目还没有可打开的 GitHub 页面地址。"
                         )
-                    }
-                    val remoteSummaryStatusLabel = remember(
-                        config.githubToken,
-                        overviewRepoCards,
-                        workspaceRemoteSummaryStore
-                    ) {
-                        buildProjectGitHubWorkspaceRemoteSummaryStatusLabel(
-                            tokenConfigured = config.githubToken.isNotBlank(),
-                            targetRepoCount = overviewRepoCards.count { it.hasGitHubRepo },
-                            currentStore = workspaceRemoteSummaryStore
+                    },
+                    onRunWorkflow = { workflow ->
+                        openWorkflowDispatchDialog(
+                            workflow = workflow,
+                            preferredRef = githubActionsState.defaultBranch ?: selectedViewerRepository?.defaultBranch
                         )
-                    }
-                    Column(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        if (showGitHubWorkspaceDownloadCenterPage || workspaceWorkbenchRepo != null || projectSecondaryBackProgress > 0f) {
-                            Column(
-                                modifier = Modifier.padding(start = 12.dp, top = 12.dp, end = 12.dp)
-                            ) {
-                                ProjectPrimaryChrome(
-                                    currentProjectPath = currentProjectPath,
-                                    detectedRepos = detectedRepos,
-                                    mutedTextColor = primaryMutedTextColor,
-                                    chromeColor = primaryChromeColor,
-                                    selectedTab = selectedPrimaryTab,
-                                    onSelectTab = onSelectPrimaryTab
+                    },
+                    onOpenWorkflowPage = { workflow ->
+                        openGitHubPage(
+                            workflow.htmlUrl,
+                            "当前工作流还没有可打开的 GitHub 页面地址。"
+                        )
+                    },
+                    onOpenArtifacts = ::openWorkflowArtifacts,
+                    onOpenRunPage = { run ->
+                        openGitHubPage(
+                            run.htmlUrl,
+                            "当前运行记录还没有可打开的 GitHub 页面地址。"
+                        )
+                    },
+                    onDownloadRunLogs = { run ->
+                        val repo = githubActionsState.repo ?: return@ProjectGitHubStandaloneBrowserSection
+                        val token = config.githubToken.trim()
+                        if (token.isBlank()) {
+                            feedbackMessage = "请先在设置页填写 GitHub Token。"
+                            return@ProjectGitHubStandaloneBrowserSection
+                        }
+                        val result = enqueueProjectGitHubWorkflowLogsDownload(
+                            context = context,
+                            repo = repo,
+                            runId = run.id,
+                            runDisplayTitle = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
+                            token = token,
+                            apiBaseUrl = config.getGitHubApiBaseUrl()
+                        )
+                        recordGitHubDownload(
+                            typeLabel = "工作流日志",
+                            title = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
+                            fileName = result.fileName,
+                            downloadId = result.downloadId,
+                            sourceUrl = run.htmlUrl,
+                            repo = repo
+                        )
+                        feedbackMessage = "已开始下载 ${result.fileName}"
+                    },
+                    onOpenRunDetail = ::openWorkflowRunDetail,
+                    onLoadRunDetail = ::requestWorkflowRunDetail,
+                    onRefreshRunDetail = ::refreshStandaloneWorkflowRunDetail,
+                    onDownloadWorkflowArtifact = { detail, artifact ->
+                        val result = enqueueProjectGitHubWorkflowArtifactDownloadAction(
+                            context = context,
+                            repo = githubActionsState.repo,
+                            artifact = artifact,
+                            sourceUrl = detail.htmlUrl,
+                            token = config.githubToken.trim()
+                        )
+                        result.downloadRecord?.let { record ->
+                            recordGitHubDownload(
+                                typeLabel = record.typeLabel,
+                                title = record.title,
+                                fileName = record.fileName,
+                                downloadId = record.downloadId,
+                                sourceUrl = record.sourceUrl,
+                                repo = record.repo
+                            )
+                        }
+                        result.feedbackMessage?.let { feedbackMessage = it }
+                    },
+                    onCreateRelease = {
+                        releaseDraftState = createProjectGitHubReleaseDraftState(
+                            githubActionsState.defaultBranch ?: selectedViewerRepository?.defaultBranch
+                        )
+                        showCreateReleaseDialog = true
+                    },
+                    onEditRelease = { release ->
+                        releaseEditTarget = release
+                        releaseDraftState = editProjectGitHubReleaseDraftState(release)
+                    },
+                    onToggleReleaseMode = { release, makeDraft ->
+                        runGitHubMutationAction(
+                            block = {
+                                toggleProjectGitHubReleaseModeAction(
+                                    repo = githubActionsState.repo,
+                                    release = release,
+                                    token = config.githubToken.trim(),
+                                    apiBaseUrl = config.getGitHubApiBaseUrl(),
+                                    makeDraft = makeDraft
                                 )
                             }
-                        }
-                        Box(modifier = Modifier.weight(1f)) {
-                            ProjectGitHubWorkspaceOverviewPage(
-                                overview = overview,
-                                repoCards = overviewRepoCards,
-                                tokenConfigured = config.githubToken.isNotBlank(),
-                                remoteSummaryStatusLabel = remoteSummaryStatusLabel,
-                                isRemoteSummaryLoading = workspaceRemoteSummaryStore.isLoading,
-                                remoteSummaryErrorMessage = workspaceRemoteSummaryStore.globalErrorMessage,
-                                onRefreshRemoteSummaries = ::refreshGitHubWorkspaceRemoteSummaries,
-                                downloads = downloadStore.records,
-                                onOpenDownloadCenter = ::openGitHubWorkspaceDownloadCenter,
-                                onOpenSystemDownloads = ::openSystemDownloads,
-                                onOpenRepoWorkbench = ::openGitHubWorkspaceRepoWorkbench,
-                                onOpenWorkflowRunDetailTarget = ::openWorkflowRunDetailForRepo,
-                                onOpenIssueDetailTarget = ::openIssueDetailForRepo,
-                                onOpenPullRequestDetailTarget = ::openPullRequestDetailForRepo,
-                                currentFilter = workspaceFilterType,
-                                onFilterChange = { workspaceFilterType = it },
-                                searchQuery = workspaceSearchQuery,
-                                onSearchQueryChange = { workspaceSearchQuery = it },
-                                onOpenGlobalSearch = { globalSearchStore = globalSearchStore.copy(isVisible = true) },
-                                onOpenGlobalTaskCenter = {
-                                    globalTaskCenter =
-                                        buildProjectGitHubGlobalTaskCenter(overviewRepoCards)
-                                            .copy(isVisible = true)
-                                },
-                                isSelectionMode = isWorkspaceSelectionMode,
-                                onToggleSelectionMode = {
-                                    isWorkspaceSelectionMode = !isWorkspaceSelectionMode
-                                    if (!isWorkspaceSelectionMode) workspaceSelectedRepoPaths = emptySet()
-                                },
-                                selectedRepoPaths = workspaceSelectedRepoPaths,
-                                onToggleRepoSelection = { path ->
-                                    workspaceSelectedRepoPaths = if (workspaceSelectedRepoPaths.contains(path)) {
-                                        workspaceSelectedRepoPaths - path
-                                    } else {
-                                        workspaceSelectedRepoPaths + path
-                                    }
-                                },
-                                onBatchAction = ::runGitHubWorkspaceBatchAction,
-                                backProgress = workspaceNavigationBackProgress
-                            )
-                        }
-                    }
-                }
-            )
-        }
-        return
-    }
-
-    ProjectGitSectionColumn {
-        if (activeProjectPath.isNullOrBlank()) {
-            ProjectGitDeferredContent {
-            ProjectGitHubStandaloneBrowserSection(
-                tokenConfigured = config.githubToken.isNotBlank(),
-                repoListState = viewerRepositoriesState,
-                isRepoListLoading = isViewerRepositoriesLoading,
-                selectedRepo = selectedViewerRepository,
-                selectedTaskRepo = selectedViewerTaskRepository,
-                activeSection = selectedViewerSection,
-                repoDetailState = githubActionsState,
-                isRepoDetailLoading = isGitHubLoading,
-                readme = selectedViewerReadme,
-                readmeErrorMessage = selectedViewerReadmeErrorMessage,
-                isReadmeLoading = isViewerReadmeLoading,
-                onRefreshRepoList = ::refreshViewerRepositories,
-                onSelectRepo = { repo ->
-                    standaloneNavigationState = reduceProjectGitHubStandaloneNavigationState(
-                        currentState = standaloneNavigationState,
-                        action = ProjectGitHubStandaloneNavigationAction.SelectRepo(repo)
-                    )
-                    remoteRepoState = ProjectGitHubRemoteBrowserState.empty(repo.repoRef)
-                    remoteRepoRefDraft = ""
-                },
-                onShowRepoMenu = { repo ->
-                    viewerRepositoryMenuTarget = repo
-                },
-                onEditRepoDescription = ::openViewerRepositoryDescriptionEditor,
-                onBackToRepoList = ::closeStandaloneViewerRepoSelection,
-                onChangeSection = {
-                    standaloneNavigationState = reduceProjectGitHubStandaloneNavigationState(
-                        currentState = standaloneNavigationState,
-                        action = ProjectGitHubStandaloneNavigationAction.SelectSection(it)
-                    )
-                },
-                onRefreshRepoDetail = ::refreshSelectedViewerRepositoryDetail,
-                onOpenRepoPage = {
-                    openGitHubPage(
-                        selectedViewerRepository?.htmlUrl ?: githubActionsState.repoHtmlUrl,
-                        "当前仓库还没有可打开的 GitHub 页面地址。"
-                    )
-                },
-                remoteRepoState = remoteRepoState,
-                isRemoteRepoLoading = isRemoteRepoLoading,
-                isActionRunning = isGitHubActionRunning,
-                remoteRepoRefDraft = remoteRepoRefDraft,
-                onRemoteRepoRefDraftChange = { remoteRepoRefDraft = it },
-                onRefreshRemoteRepository = {
-                    refreshStandaloneRemoteRepositoryBrowser(resetRefIfBlank = true)
-                },
-                onApplyRemoteRef = {
-                    refreshStandaloneRemoteRepositoryBrowser(targetPath = remoteRepoState.currentPath)
-                },
-                onOpenRemoteParent = {
-                    refreshStandaloneRemoteRepositoryBrowser(
-                        targetPath = parentProjectGitHubRepoPath(remoteRepoState.currentPath).orEmpty()
-                    )
-                },
-                onOpenRemoteRoot = {
-                    refreshStandaloneRemoteRepositoryBrowser(targetPath = "")
-                },
-                onOpenRemoteEntry = { entry ->
-                    openRemoteRepositoryEntry(entry)
-                },
-                onOpenRemoteEntryPage = { entry ->
-                    openGitHubPage(
-                        entry.htmlUrl,
-                        "当前条目还没有可打开的 GitHub 页面地址。"
-                    )
-                },
-                onRunWorkflow = { workflow ->
-                    openWorkflowDispatchDialog(
-                        workflow = workflow,
-                        preferredRef = githubActionsState.defaultBranch ?: selectedViewerRepository?.defaultBranch
-                    )
-                },
-                onOpenWorkflowPage = { workflow ->
-                    openGitHubPage(
-                        workflow.htmlUrl,
-                        "当前工作流还没有可打开的 GitHub 页面地址。"
-                    )
-                },
-                onOpenArtifacts = ::openWorkflowArtifacts,
-                onOpenRunPage = { run ->
-                    openGitHubPage(
-                        run.htmlUrl,
-                        "当前运行记录还没有可打开的 GitHub 页面地址。"
-                    )
-                },
-                onDownloadRunLogs = { run ->
-                    val repo = githubActionsState.repo ?: return@ProjectGitHubStandaloneBrowserSection
-                    val token = config.githubToken.trim()
-                    if (token.isBlank()) {
-                        feedbackMessage = "请先在设置页填写 GitHub Token。"
-                        return@ProjectGitHubStandaloneBrowserSection
-                    }
-                    val result = enqueueProjectGitHubWorkflowLogsDownload(
-                        context = context,
-                        repo = repo,
-                        runId = run.id,
-                        runDisplayTitle = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
-                        token = token,
-                        apiBaseUrl = config.getGitHubApiBaseUrl()
-                    )
-                    recordGitHubDownload(
-                        typeLabel = "工作流日志",
-                        title = run.displayTitle.ifBlank { run.name.ifBlank { "运行 #${run.runNumber}" } },
-                        fileName = result.fileName,
-                        downloadId = result.downloadId,
-                        sourceUrl = run.htmlUrl,
-                        repo = repo
-                    )
-                    feedbackMessage = "已开始下载 ${result.fileName}"
-                },
-                onOpenRunDetail = ::openWorkflowRunDetail,
-                onLoadRunDetail = ::requestWorkflowRunDetail,
-                onRefreshRunDetail = ::refreshStandaloneWorkflowRunDetail,
-                onDownloadWorkflowArtifact = { detail, artifact ->
-                    val result = enqueueProjectGitHubWorkflowArtifactDownloadAction(
-                        context = context,
-                        repo = githubActionsState.repo,
-                        artifact = artifact,
-                        sourceUrl = detail.htmlUrl,
-                        token = config.githubToken.trim()
-                    )
-                    result.downloadRecord?.let { record ->
-                        recordGitHubDownload(
-                            typeLabel = record.typeLabel,
-                            title = record.title,
-                            fileName = record.fileName,
-                            downloadId = record.downloadId,
-                            sourceUrl = record.sourceUrl,
-                            repo = record.repo
                         )
-                    }
-                    result.feedbackMessage?.let { feedbackMessage = it }
-                },
-                onCreateRelease = {
-                    releaseDraftState = createProjectGitHubReleaseDraftState(
-                        githubActionsState.defaultBranch ?: selectedViewerRepository?.defaultBranch
-                    )
-                    showCreateReleaseDialog = true
-                },
-                onEditRelease = { release ->
-                    releaseEditTarget = release
-                    releaseDraftState = editProjectGitHubReleaseDraftState(release)
-                },
-                onToggleReleaseMode = { release, makeDraft ->
-                    runGitHubMutationAction(
-                        block = {
-                            toggleProjectGitHubReleaseModeAction(
-                                repo = githubActionsState.repo,
-                                release = release,
-                                token = config.githubToken.trim(),
-                                apiBaseUrl = config.getGitHubApiBaseUrl(),
-                                makeDraft = makeDraft
-                            )
+                    },
+                    onTogglePrerelease = { release, makePrerelease ->
+                        runGitHubMutationAction(
+                            block = {
+                                toggleProjectGitHubReleasePrereleaseAction(
+                                    repo = githubActionsState.repo,
+                                    release = release,
+                                    token = config.githubToken.trim(),
+                                    apiBaseUrl = config.getGitHubApiBaseUrl(),
+                                    makePrerelease = makePrerelease
+                                )
+                            }
+                        )
+                    },
+                    onDeleteRelease = { release ->
+                        runGitHubMutationAction(
+                            block = {
+                                deleteProjectGitHubReleaseAction(
+                                    repo = githubActionsState.repo,
+                                    release = release,
+                                    token = config.githubToken.trim(),
+                                    apiBaseUrl = config.getGitHubApiBaseUrl()
+                                )
+                            }
+                        )
+                    },
+                    onOpenReleasePage = { release ->
+                        openGitHubPage(
+                            release.htmlUrl,
+                            "当前 Release 还没有可打开的 GitHub 页面地址。"
+                        )
+                    },
+                    onOpenReleaseAssets = { release ->
+                        releaseAssetDialogState = ProjectGitHubReleaseAssetDialogUi(
+                            releaseTitle = release.name.ifBlank { release.tagName },
+                            assets = release.assets,
+                            releaseHtmlUrl = release.htmlUrl
+                        )
+                    },
+                    onCreateIssue = {
+                        resetCreateIssueDraft()
+                        showCreateIssueDialog = true
+                    },
+                    onOpenIssueDetail = ::openIssueDetail,
+                    onToggleIssueState = { issue, shouldClose ->
+                        val repo = githubActionsState.repo ?: return@ProjectGitHubStandaloneBrowserSection
+                        val token = config.githubToken.trim()
+                        if (token.isBlank()) {
+                            feedbackMessage = "请先在设置页填写 GitHub Token。"
+                            return@ProjectGitHubStandaloneBrowserSection
                         }
-                    )
-                },
-                onTogglePrerelease = { release, makePrerelease ->
-                    runGitHubMutationAction(
-                        block = {
-                            toggleProjectGitHubReleasePrereleaseAction(
-                                repo = githubActionsState.repo,
-                                release = release,
-                                token = config.githubToken.trim(),
-                                apiBaseUrl = config.getGitHubApiBaseUrl(),
-                                makePrerelease = makePrerelease
-                            )
-                        }
-                    )
-                },
-                onDeleteRelease = { release ->
-                    runGitHubMutationAction(
-                        block = {
-                            deleteProjectGitHubReleaseAction(
-                                repo = githubActionsState.repo,
-                                release = release,
-                                token = config.githubToken.trim(),
+                        runGitHubAction(if (shouldClose) "已关闭 Issue #${issue.number}" else "已重新打开 Issue #${issue.number}") {
+                            updateProjectGitHubIssueState(
+                                repo = repo,
+                                issueNumber = issue.number,
+                                close = shouldClose,
+                                token = token,
                                 apiBaseUrl = config.getGitHubApiBaseUrl()
                             )
                         }
-                    )
-                },
-                onOpenReleasePage = { release ->
-                    openGitHubPage(
-                        release.htmlUrl,
-                        "当前 Release 还没有可打开的 GitHub 页面地址。"
-                    )
-                },
-                onOpenReleaseAssets = { release ->
-                    releaseAssetDialogState = ProjectGitHubReleaseAssetDialogUi(
-                        releaseTitle = release.name.ifBlank { release.tagName },
-                        assets = release.assets,
-                        releaseHtmlUrl = release.htmlUrl
-                    )
-                },
-                onCreateIssue = {
-                    resetCreateIssueDraft()
-                    showCreateIssueDialog = true
-                },
-                onOpenIssueDetail = ::openIssueDetail,
-                onToggleIssueState = { issue, shouldClose ->
-                    val repo = githubActionsState.repo ?: return@ProjectGitHubStandaloneBrowserSection
-                    val token = config.githubToken.trim()
-                    if (token.isBlank()) {
-                        feedbackMessage = "请先在设置页填写 GitHub Token。"
-                        return@ProjectGitHubStandaloneBrowserSection
-                    }
-                    runGitHubAction(if (shouldClose) "已关闭 Issue #${issue.number}" else "已重新打开 Issue #${issue.number}") {
-                        updateProjectGitHubIssueState(
-                            repo = repo,
-                            issueNumber = issue.number,
-                            close = shouldClose,
-                            token = token,
-                            apiBaseUrl = config.getGitHubApiBaseUrl()
+                    },
+                    onOpenIssuePage = { issue ->
+                        openGitHubPage(
+                            issue.htmlUrl,
+                            "当前 Issue 还没有可打开的 GitHub 页面地址。"
                         )
-                    }
-                },
-                onOpenIssuePage = { issue ->
-                    openGitHubPage(
-                        issue.htmlUrl,
-                        "当前 Issue 还没有可打开的 GitHub 页面地址。"
-                    )
-                },
-                onCreatePullRequest = {
-                    resetCreatePullRequestDraft()
-                    showCreatePullRequestDialog = true
-                },
-                onOpenPullRequestDetail = ::openPullRequestDetail,
-                onTogglePullRequestState = { pullRequest, shouldClose ->
-                    val repo = githubActionsState.repo ?: return@ProjectGitHubStandaloneBrowserSection
-                    val token = config.githubToken.trim()
-                    if (token.isBlank()) {
-                        feedbackMessage = "请先在设置页填写 GitHub Token。"
-                        return@ProjectGitHubStandaloneBrowserSection
-                    }
-                    runGitHubAction(if (shouldClose) "已关闭 PR #${pullRequest.number}" else "已重新打开 PR #${pullRequest.number}") {
-                        updateProjectGitHubPullRequestState(
-                            repo = repo,
-                            pullNumber = pullRequest.number,
-                            close = shouldClose,
-                            token = token,
-                            apiBaseUrl = config.getGitHubApiBaseUrl()
+                    },
+                    onCreatePullRequest = {
+                        resetCreatePullRequestDraft()
+                        showCreatePullRequestDialog = true
+                    },
+                    onOpenPullRequestDetail = ::openPullRequestDetail,
+                    onTogglePullRequestState = { pullRequest, shouldClose ->
+                        val repo = githubActionsState.repo ?: return@ProjectGitHubStandaloneBrowserSection
+                        val token = config.githubToken.trim()
+                        if (token.isBlank()) {
+                            feedbackMessage = "请先在设置页填写 GitHub Token。"
+                            return@ProjectGitHubStandaloneBrowserSection
+                        }
+                        runGitHubAction(if (shouldClose) "已关闭 PR #${pullRequest.number}" else "已重新打开 PR #${pullRequest.number}") {
+                            updateProjectGitHubPullRequestState(
+                                repo = repo,
+                                pullNumber = pullRequest.number,
+                                close = shouldClose,
+                                token = token,
+                                apiBaseUrl = config.getGitHubApiBaseUrl()
+                            )
+                        }
+                    },
+                    onMergePullRequest = { pullRequest ->
+                        val repo = githubActionsState.repo ?: return@ProjectGitHubStandaloneBrowserSection
+                        val token = config.githubToken.trim()
+                        if (token.isBlank()) {
+                            feedbackMessage = "请先在设置页填写 GitHub Token。"
+                            return@ProjectGitHubStandaloneBrowserSection
+                        }
+                        runGitHubAction("已合并 PR #${pullRequest.number}") {
+                            mergeProjectGitHubPullRequest(
+                                repo = repo,
+                                pullNumber = pullRequest.number,
+                                title = pullRequest.title,
+                                token = token,
+                                apiBaseUrl = config.getGitHubApiBaseUrl()
+                            )
+                        }
+                    },
+                    onOpenPullRequestPage = { pullRequest ->
+                        openGitHubPage(
+                            pullRequest.htmlUrl,
+                            "当前 Pull Request 还没有可打开的 GitHub 页面地址。"
                         )
-                    }
-                },
-                onMergePullRequest = { pullRequest ->
-                    val repo = githubActionsState.repo ?: return@ProjectGitHubStandaloneBrowserSection
-                    val token = config.githubToken.trim()
-                    if (token.isBlank()) {
-                        feedbackMessage = "请先在设置页填写 GitHub Token。"
-                        return@ProjectGitHubStandaloneBrowserSection
-                    }
-                    runGitHubAction("已合并 PR #${pullRequest.number}") {
-                        mergeProjectGitHubPullRequest(
-                            repo = repo,
-                            pullNumber = pullRequest.number,
-                            title = pullRequest.title,
-                            token = token,
-                            apiBaseUrl = config.getGitHubApiBaseUrl()
-                        )
-                    }
-                },
-                onOpenPullRequestPage = { pullRequest ->
-                    openGitHubPage(
-                        pullRequest.htmlUrl,
-                        "当前 Pull Request 还没有可打开的 GitHub 页面地址。"
-                    )
-                },
-                onEditReadme = ::openStandaloneReadmeEditor,
-                onRegisterNestedCloseRequest = { closeRequest ->
-                    standaloneSecondaryCloseRequest = closeRequest
-                },
-                backProgress = projectSecondaryBackProgress
-            )
+                    },
+                    onEditReadme = ::openStandaloneReadmeEditor,
+                    onRegisterNestedCloseRequest = { closeRequest ->
+                        standaloneSecondaryCloseRequest = closeRequest
+                    },
+                    backProgress = projectSecondaryBackProgress,
+                    forceListInternalScroll = showStandaloneRepoBrowserSecondary
+                )
+                }
+            }
             feedbackMessage?.takeIf { it.isNotBlank() }?.let { message ->
                 ProjectSectionCard(
                     shape = RoundedCornerShape(12.dp),
@@ -5933,7 +5425,7 @@ private fun ProjectGitSection(
                         }
                         TextButton(
                             onClick = {
-                                selectedViewerTaskRepository = repo.repoRef
+                                updateSelectedViewerTaskRepository(repo.repoRef)
                                 viewerRepositoryMenuTarget = null
                                 feedbackMessage = "已将 ${repo.fullName} 设为当前任务仓库。"
                             }
@@ -5987,14 +5479,11 @@ private fun ProjectGitSection(
                     )
                 }
             }
-            }
         } else {
             ProjectGitDeferredContent {
             val surfaceColor = rememberMurongSurfaceColor()
             val chromeColor = rememberMurongChromeColor()
             val mutedTextColor = rememberMurongMutedTextColor()
-            val primaryWorkspaceRepoRoot = selectedRepoRoot
-                ?: detectedRepos.firstOrNull { it.hasGitMetadata }?.rootPath
             val gitMetadataRepos = detectedRepos.filter { it.hasGitMetadata }
             val suspectedRepos = detectedRepos.filter { !it.hasGitMetadata }
             if (detectedRepos.isNotEmpty()) {
@@ -6043,87 +5532,92 @@ private fun ProjectGitSection(
                                 ProjectRepoStatusSummaryUi(repo, status)
                             }
                         }.forEach { summary ->
-                            ProjectInsetCard(
-                                shape = RoundedCornerShape(12.dp),
-                                surfaceColorOverride = if (summary.repo.rootPath == selectedRepoRoot) {
-                                    surfaceColor.copy(alpha = 0.78f)
-                                } else {
-                                    chromeColor.copy(alpha = 0.30f)
+                            val isExpanded = repoCardExpandedStates[summary.repo.rootPath]
+                                ?: summary.status.hasWorkingTreeChanges
+                            ProjectGitRepoWorkCard(
+                                summary = summary,
+                                isSelected = summary.repo.rootPath == selectedRepoRoot,
+                                isExpanded = isExpanded,
+                                mutedTextColor = mutedTextColor,
+                                surfaceColor = surfaceColor,
+                                chromeColor = chromeColor,
+                                isBusy = isGitActionRunning,
+                                onToggleExpanded = {
+                                    repoCardExpandedStates[summary.repo.rootPath] = !isExpanded
                                 },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { onSelectRepoRoot(summary.repo.rootPath) }
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(12.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Text(
-                                        text = if (summary.repo.isWorkspaceRoot) {
-                                            "${summary.repo.displayName}（工作区根）"
-                                        } else if (!summary.repo.hasGitMetadata) {
-                                            "${summary.repo.relativePath}（独立项目）"
-                                        } else {
-                                            summary.repo.relativePath
-                                        },
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                    Text(
-                                        text = if (summary.status.branchSummary.isNotBlank()) {
-                                            "分支: ${summary.status.branchSummary}"
-                                        } else {
-                                            "分支: 未知"
-                                        },
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = mutedTextColor
-                                    )
-                                    summary.status.remoteUrl?.takeIf { it.isNotBlank() }?.let { remote ->
-                                        Text(
-                                            text = "远端: $remote",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = mutedTextColor,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
+                                onSelectRepo = { onSelectRepoRoot(summary.repo.rootPath) },
+                                onOpenDiff = { openDiffForRepo(summary.repo.rootPath, it) },
+                                onStageFile = { change ->
+                                    runGitActionForRepo(summary.repo.rootPath, "已暂存 ${change.displayPath}") {
+                                        runEmbeddedGitAction {
+                                            embeddedGitStagePath(summary.repo.rootPath, change.actionPath)
+                                        }
                                     }
-                                    Text(
-                                        text = "暂存 ${summary.status.stagedFiles.size} · 修改 ${summary.status.modifiedFiles.size} · 未跟踪 ${summary.status.untrackedFiles.size}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.primary
+                                },
+                                onUnstageFile = { change ->
+                                    runGitActionForRepo(summary.repo.rootPath, "已取消暂存 ${change.displayPath}") {
+                                        runEmbeddedGitAction {
+                                            embeddedGitUnstagePath(summary.repo.rootPath, change.actionPath)
+                                        }
+                                    }
+                                },
+                                onDiscardFile = { change ->
+                                    pendingDiscardTarget = ProjectGitDiscardTargetUi(
+                                        repoRoot = summary.repo.rootPath,
+                                        repoLabel = summary.repo.displayName,
+                                        change = change
+                                    )
+                                },
+                                onOpenCommit = {
+                                    if (summary.repo.rootPath == selectedRepoRoot) {
+                                        showCommitDialog = true
+                                    }
+                                },
+                                onOpenBranches = {
+                                    if (summary.repo.rootPath == selectedRepoRoot) {
+                                        showBranchDialog = true
+                                    }
+                                },
+                                onStageAll = {
+                                    runGitActionForRepo(summary.repo.rootPath, "已全部暂存") {
+                                        runEmbeddedGitAction {
+                                            embeddedGitStageAll(summary.repo.rootPath)
+                                        }
+                                    }
+                                },
+                                onPushAll = {
+                                    runGitActionForRepo(summary.repo.rootPath, "已完成推送") {
+                                        runEmbeddedGitAction {
+                                            embeddedGitPush(summary.repo.rootPath, config.githubToken.trim())
+                                        }
+                                    }
+                                },
+                                onDiscardAll = {
+                                    pendingDiscardTarget = ProjectGitDiscardTargetUi(
+                                        repoRoot = summary.repo.rootPath,
+                                        repoLabel = summary.repo.displayName,
+                                        change = null
                                     )
                                 }
-                            }
+                            )
                         }
                     }
                 }
             }
-            ProjectSectionCard(
-                shape = RoundedCornerShape(14.dp),
-                surfaceColorOverride = surfaceColor.copy(alpha = 0.56f)
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = when {
-                            gitMetadataRepos.size > 1 -> "多仓库方案"
-                            gitMetadataRepos.size == 1 -> "单仓库方案"
-                            else -> "疑似仓库方案"
-                        },
-                        style = MaterialTheme.typography.titleSmall
-                    )
-                    Text(
-                        text = when {
-                            gitMetadataRepos.size > 1 -> "第一行显示项目名，下面按仓库分组展示更改、暂存、同步和记录入口。"
-                            gitMetadataRepos.size == 1 -> "第一行显示“更改:”，下面列出当前仓库的已更改文件，并保留全部暂存、全部同步和记录入口。"
-                            else -> "当前还没有识别到 `.git`，先按疑似仓库处理，并提供初始化与后续识别入口。"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = mutedTextColor
-                    )
-                    if (suspectedRepos.isNotEmpty()) {
+            if (suspectedRepos.isNotEmpty()) {
+                ProjectSectionCard(
+                    shape = RoundedCornerShape(14.dp),
+                    surfaceColorOverride = surfaceColor.copy(alpha = 0.56f)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
                             text = "疑似仓库 ${suspectedRepos.size}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Text(
+                            text = "当前还没有识别到 `.git` 的目录保留在这里，需要时可以直接切换或初始化。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
                         )
                         suspectedRepos.take(4).forEach { repo ->
                             val childRepoCandidates = detectedRepos
@@ -6216,721 +5710,36 @@ private fun ProjectGitSection(
             }
             ProjectSectionCard(
                 shape = RoundedCornerShape(14.dp),
-                surfaceColorOverride = chromeColor.copy(alpha = 0.30f)
+                surfaceColorOverride = chromeColor.copy(alpha = 0.24f)
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "快捷入口",
+                        text = "当前账户仓库入口",
                         style = MaterialTheme.typography.titleSmall
                     )
                     Text(
-                        text = if (primaryWorkspaceRepoRoot == null) {
-                            "当前还没有可直接打开的 Git 仓库，先在上方选择仓库或初始化 Git。"
-                        } else if (detectedRepos.count { it.hasGitMetadata } > 1) {
-                            "已按多仓库模式识别项目，可直接切到当前选中仓库的项目页、工作流、Issue、PR、Release 和 README。"
-                        } else {
-                            "当前是单仓库模式，可直接进入项目页、工作流、Issue、PR、Release 和 README。"
-                        },
+                        text = "如果要看当前 GitHub 账号下的全部仓库，这里直接拉起未选择本地项目时的那套 Git 页面。",
                         style = MaterialTheme.typography.bodySmall,
                         color = mutedTextColor
                     )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                primaryWorkspaceRepoRoot?.let {
-                                    openGitHubWorkspaceRepoWorkbench(it)
-                                } ?: run {
-                                    workspaceNavigationState =
-                                        reduceProjectGitHubWorkspaceNavigationState(
-                                            currentState = workspaceNavigationState,
-                                            action =
-                                                ProjectGitHubWorkspaceNavigationAction.OpenOverview
-                                        )
-                                }
-                            },
-                            modifier = Modifier.weight(1f),
-                            enabled = detectedRepos.isNotEmpty()
-                        ) {
-                            Text("项目")
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                primaryWorkspaceRepoRoot?.let {
-                                    openGitHubWorkspaceRepoWorkbench(
-                                        rootPath = it,
-                                        selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.WORKFLOW
-                                    )
-                                }
-                            },
-                            modifier = Modifier.weight(1f),
-                            enabled = primaryWorkspaceRepoRoot != null
-                        ) {
-                            Text("工作流")
-                        }
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                primaryWorkspaceRepoRoot?.let {
-                                    openGitHubWorkspaceRepoWorkbench(
-                                        rootPath = it,
-                                        selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.RELEASES
-                                    )
-                                }
-                            },
-                            modifier = Modifier.weight(1f),
-                            enabled = primaryWorkspaceRepoRoot != null
-                        ) {
-                            Text("Release")
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                primaryWorkspaceRepoRoot?.let {
-                                    openGitHubWorkspaceRepoWorkbench(
-                                        rootPath = it,
-                                        selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.ISSUES
-                                    )
-                                }
-                            },
-                            modifier = Modifier.weight(1f),
-                            enabled = primaryWorkspaceRepoRoot != null
-                        ) {
-                            Text("Issue")
-                        }
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                primaryWorkspaceRepoRoot?.let {
-                                    openGitHubWorkspaceRepoWorkbench(
-                                        rootPath = it,
-                                        selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.PULL_REQUESTS
-                                    )
-                                }
-                            },
-                            modifier = Modifier.weight(1f),
-                            enabled = primaryWorkspaceRepoRoot != null
-                        ) {
-                            Text("PR")
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                primaryWorkspaceRepoRoot?.let {
-                                    openGitHubWorkspaceRepoWorkbench(
-                                        rootPath = it,
-                                        selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.README
-                                    )
-                                }
-                            },
-                            modifier = Modifier.weight(1f),
-                            enabled = primaryWorkspaceRepoRoot != null
-                        ) {
-                            Text("README")
-                        }
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = ::openGitHubWorkspaceDownloadCenter,
-                            modifier = Modifier.weight(1f),
-                            enabled = true
-                        ) {
-                            Text("下载")
-                        }
-                        Row(modifier = Modifier.weight(1f)) {}
-                    }
-                }
-            }
-            ProjectSectionCard(
-                shape = RoundedCornerShape(14.dp),
-                surfaceColorOverride = chromeColor.copy(alpha = 0.38f)
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "GitHub 工作区",
-                        style = MaterialTheme.typography.titleSmall
-                    )
-                    Text(
-                        text = "用工作区视角查看仓库健康度、GitHub 绑定状态和待处理事项，风格与设置页二级页面统一。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = mutedTextColor
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = {
-                                workspaceNavigationState =
-                                    reduceProjectGitHubWorkspaceNavigationState(
-                                        currentState = workspaceNavigationState,
-                                        action = ProjectGitHubWorkspaceNavigationAction.OpenOverview
-                                    )
-                            },
-                            enabled = detectedRepos.isNotEmpty()
-                        ) {
-                            Text("打开工作区")
-                        }
-                        OutlinedButton(
-                            onClick = { refreshGitState() },
-                            enabled = !isGitLoading && !isGitActionRunning
-                        ) {
-                            Text("刷新当前仓库")
-                        }
-                    }
-                }
-            }
-            if (gitMetadataRepos.size > 1) {
-                ProjectSectionCard(
-                    shape = RoundedCornerShape(14.dp),
-                    surfaceColorOverride = surfaceColor.copy(alpha = 0.52f)
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    activeDetectedRepo?.displayName?.takeIf { it.isNotBlank() }?.let { repoName ->
                         Text(
-                            text = "项目名",
-                            style = MaterialTheme.typography.titleSmall
-                        )
-                        Text(
-                            text = File(currentProjectPath.orEmpty()).name.ifBlank { currentProjectPath.orEmpty() },
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                        Text(
-                            text = "下面按仓库逐个展示更改、全部暂存、全部同步和推送拉取记录。",
+                            text = "当前项目: $repoName",
                             style = MaterialTheme.typography.bodySmall,
                             color = mutedTextColor
                         )
                     }
-                }
-            }
-            gitMetadataRepos.forEach { repo ->
-                val repoStatus = repoStatusSummaries[repo.rootPath]
-                    ?: if (repo.rootPath == activeProjectPath) {
-                        gitState
-                    } else {
-                        ProjectGitStatusUi.empty(repo.rootPath)
-                    }
-                ProjectLocalGitRepositoryCard(
-                    repoLabel = if (gitMetadataRepos.size > 1) {
-                        if (repo.isWorkspaceRoot) {
-                            "${repo.displayName}（工作区根）"
-                        } else {
-                            repo.relativePath
-                        }
-                    } else {
-                        null
-                    },
-                    repoSubtitle = if (gitMetadataRepos.size > 1) {
-                        repo.rootPath
-                    } else {
-                        gitState.repoRoot?.let { "仓库根目录: $it" }
-                    },
-                    status = repoStatus,
-                    recentOperationRecords = gitOperationRecords.filter { it.repoRoot == repo.rootPath },
-                    isActive = repo.rootPath == activeProjectPath,
-                    isBusy = isGitLoading || isGitActionRunning,
-                    onSelectRepo = { onSelectRepoRoot(repo.rootPath) },
-                    onRefresh = {
-                        feedbackMessage = null
-                        refreshRepoStatus(repo.rootPath)
-                    },
-                    onStagePath = { change ->
-                        runGitActionForRepo(repo.rootPath, "已暂存 ${change.displayPath}") {
-                            runEmbeddedGitAction {
-                                embeddedGitStagePath(repo.rootPath, change.actionPath)
-                            }
-                        }
-                    },
-                    onOpenDiff = { change -> openDiffForRepo(repo.rootPath, change) },
-                    onUnstagePath = { change ->
-                        runGitActionForRepo(repo.rootPath, "已取消暂存 ${change.displayPath}") {
-                            runEmbeddedGitAction {
-                                embeddedGitUnstagePath(repo.rootPath, change.actionPath)
-                            }
-                        }
-                    },
-                    onStageAll = if (repoStatus.canStageAll) {
-                        {
-                            runGitActionForRepo(repo.rootPath, "已全部暂存") {
-                                runEmbeddedGitAction {
-                                    embeddedGitStageAll(repo.rootPath)
-                                }
-                            }
-                        }
-                    } else {
-                        null
-                    },
-                    onSyncAll = if (repoStatus.canPull) {
-                        {
-                            runGitActionForRepo(repo.rootPath, "已完成全部同步") {
-                                runEmbeddedGitAction {
-                                    embeddedGitPull(repo.rootPath, config.githubToken)
-                                }
-                            }
-                        }
-                    } else {
-                        null
-                    }
-                )
-            }
-            if (gitMetadataRepos.isNotEmpty()) {
-                ProjectSectionCard(
-                    shape = RoundedCornerShape(14.dp),
-                    surfaceColorOverride = chromeColor.copy(alpha = 0.34f)
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            text = "当前仓库更多操作",
-                            style = MaterialTheme.typography.titleSmall
-                        )
-                        Text(
-                            text = detectedRepos.firstOrNull { it.rootPath == activeProjectPath }?.displayName
-                                ?: activeProjectPath,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = mutedTextColor
-                        )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = {
-                                    val repoRoot = gitState.repoRoot ?: return@OutlinedButton
-                                    runGitAction("已完成抓取") {
-                                        runEmbeddedGitAction {
-                                            embeddedGitFetch(repoRoot, config.githubToken)
-                                        }
-                                    }
-                                },
-                                enabled = gitState.hasRemote && !isGitLoading && !isGitActionRunning
-                            ) {
-                                Text("抓取")
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    val repoRoot = gitState.repoRoot ?: return@OutlinedButton
-                                    runGitAction("已完成推送") {
-                                        runEmbeddedGitAction {
-                                            embeddedGitPush(repoRoot, config.githubToken)
-                                        }
-                                    }
-                                },
-                                enabled = gitState.canPush && !isGitLoading && !isGitActionRunning
-                            ) {
-                                Text("推送")
-                            }
-                            Button(
-                                onClick = { showCommitDialog = true },
-                                enabled = gitState.canCommit && !isGitLoading && !isGitActionRunning
-                            ) {
-                                Text("提交")
-                            }
-                            OutlinedButton(
-                                onClick = { showBranchDialog = true },
-                                enabled = gitState.isRepository && gitState.hasGitCommand && !isGitLoading && !isGitActionRunning
-                            ) {
-                                Text("分支")
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (isGitLoading || isGitActionRunning) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.width(18.dp), strokeWidth = 2.dp)
-                    Text(
-                        if (isGitLoading) "正在读取 Git 状态..." else "正在执行 Git 操作...",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = mutedTextColor
-                    )
-                }
-            }
-
-            feedbackMessage?.takeIf { it.isNotBlank() }?.let { message ->
-                ProjectSectionCard(
-                    shape = RoundedCornerShape(12.dp),
-                    surfaceColorOverride = chromeColor.copy(alpha = 0.58f)
-                ) {
-                    Text(
-                        text = message,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            }
-
-            gitState.errorMessage?.takeIf { it.isNotBlank() }?.let { error ->
-                ProjectSectionCard(
-                    shape = RoundedCornerShape(12.dp),
-                    surfaceColorOverride = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
-                ) {
-                    Text(
-                        text = error,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onErrorContainer
-                    )
-                }
-            }
-
-            if (!gitState.isRepository) {
-                ProjectSectionCard(
-                    shape = RoundedCornerShape(12.dp),
-                    surfaceColorOverride = chromeColor.copy(alpha = 0.46f)
-                ) {
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(text = "仓库初始化", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            text = "当前项目还没有 `.git`。可以先初始化本地 Git，再一键创建 GitHub 仓库并绑定 origin。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = { showInitGitDialog = true },
-                                enabled = !isGitLoading && !isGitActionRunning
-                            ) {
-                                Text("初始化 Git")
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    resetCreateGitHubRepoDraft()
-                                    showCreateGitHubRepoDialog = true
-                                },
-                                enabled = config.githubToken.isNotBlank() && !isGitLoading && !isGitActionRunning && !isGitHubActionRunning
-                            ) {
-                                Text("新建 GitHub 仓库")
-                            }
-                        }
-                        if (config.githubToken.isBlank()) {
-                            Text(
-                                text = "要新建 GitHub 仓库，请先在设置页完成 GitHub 登录或填写 Token。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-                Text(
-                    "当前项目目录下没有发现 `.git` 仓库。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                val gitHubWorkbenchRepo = parseProjectGitHubRepoRef(gitState.remoteUrl)
-                if (!gitState.hasRemote) {
-                    ProjectSectionCard(
-                        shape = RoundedCornerShape(12.dp),
-                        surfaceColorOverride = chromeColor.copy(alpha = 0.46f)
-                    ) {
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(text = "GitHub 仓库绑定", style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                text = "当前本地仓库还没有 origin 远端。可以直接新建 GitHub 仓库并绑定。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedButton(
-                                    onClick = {
-                                        resetCreateGitHubRepoDraft()
-                                        showCreateGitHubRepoDialog = true
-                                    },
-                                    enabled = config.githubToken.isNotBlank() && !isGitLoading && !isGitActionRunning && !isGitHubActionRunning
-                                ) {
-                                    Text("新建 GitHub 仓库")
-                                }
-                            }
-                            if (config.githubToken.isBlank()) {
-                                Text(
-                                    text = "要新建 GitHub 仓库，请先在设置页完成 GitHub 登录或填写 Token。",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
-                ProjectGitRemoteSummaryCard(
-                    remoteUrl = gitState.remoteUrl,
-                    upstreamBranch = gitState.upstreamBranch,
-                    aheadCount = gitState.aheadCount,
-                    behindCount = gitState.behindCount,
-                    remoteBranchCount = gitState.remoteBranches.size,
-                    tokenConfigured = config.githubToken.isNotBlank()
-                )
-                Text("更改:", style = MaterialTheme.typography.titleSmall)
-                ProjectSectionCard(
-                    shape = RoundedCornerShape(14.dp),
-                    surfaceColorOverride = chromeColor.copy(alpha = 0.34f)
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("GitHub 主操作台", style = MaterialTheme.typography.titleSmall)
-                        when {
-                            !gitState.hasRemote -> {
-                                Text(
-                                    text = "当前仓库还没有 origin 远端，先完成远端绑定后才能进入 GitHub 工作台。",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = mutedTextColor
-                                )
-                            }
-                            gitHubWorkbenchRepo == null -> {
-                                Text(
-                                    text = "当前 origin 远端还不能识别为 GitHub 仓库地址，工作台暂时只保留本地 Git 能力。",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = mutedTextColor
-                                )
-                            }
-                            else -> {
-                                Text(
-                                    text = buildString {
-                                        append("${gitHubWorkbenchRepo.owner}/${gitHubWorkbenchRepo.repo}")
-                                        append(" · 工作流 ${githubActionsState.workflows.size}")
-                                        append(" · 运行 ${githubActionsState.recentRuns.size}")
-                                        append(" · Issue ${githubActionsState.issues.size}")
-                                        append(" · PR ${githubActionsState.pullRequests.size}")
-                                        append(" · Release ${githubActionsState.releases.size}")
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = mutedTextColor
-                                )
-                                githubActionsState.errorMessage?.takeIf { it.isNotBlank() }?.let { error ->
-                                    Text(
-                                        text = error,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.error
-                                    )
-                                } ?: Text(
-                                    text = "工作流、远端仓库、Issue、PR、Release、README 已迁入仓库工作台，主 Git 页只保留入口与本地仓库控制。",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = mutedTextColor
-                                )
-                            }
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = {
-                                    openGitHubWorkspaceRepoWorkbench(activeProjectPath)
-                                }
-                            ) {
-                                Text("进入仓库工作台")
-                            }
-                            if (gitHubWorkbenchRepo != null) {
-                                OutlinedButton(
-                                    onClick = { refreshGitHubActions() },
-                                    enabled = !isGitHubLoading && !isGitHubActionRunning
-                                ) {
-                                    Text("刷新 GitHub")
-                                }
-                                TextButton(
-                                    onClick = ::openCurrentGitHubRepoPage,
-                                    enabled = !isGitHubLoading && !isGitHubActionRunning
-                                ) {
-                                    Text("仓库页")
-                                }
-                            }
-                        }
-                        if (gitHubWorkbenchRepo != null) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                FilterChip(
-                                    selected = true,
-                                    onClick = {
-                                        openGitHubWorkspaceRepoWorkbench(
-                                            rootPath = activeProjectPath,
-                                            selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.WORKFLOW
-                                        )
-                                    },
-                                    label = { Text("工作流 ${githubActionsState.workflows.size}") }
-                                )
-                                FilterChip(
-                                    selected = true,
-                                    onClick = {
-                                        openGitHubWorkspaceRepoWorkbench(
-                                            rootPath = activeProjectPath,
-                                            selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.ISSUES
-                                        )
-                                    },
-                                    label = { Text("Issue ${githubActionsState.issues.size}") }
-                                )
-                                FilterChip(
-                                    selected = true,
-                                    onClick = {
-                                        openGitHubWorkspaceRepoWorkbench(
-                                            rootPath = activeProjectPath,
-                                            selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.PULL_REQUESTS
-                                        )
-                                    },
-                                    label = { Text("PR ${githubActionsState.pullRequests.size}") }
-                                )
-                                FilterChip(
-                                    selected = true,
-                                    onClick = {
-                                        openGitHubWorkspaceRepoWorkbench(
-                                            rootPath = activeProjectPath,
-                                            selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.RELEASES
-                                        )
-                                    },
-                                    label = { Text("Release ${githubActionsState.releases.size}") }
-                                )
-                                FilterChip(
-                                    selected = true,
-                                    onClick = {
-                                        openGitHubWorkspaceRepoWorkbench(
-                                            rootPath = activeProjectPath,
-                                            selectedTab = ProjectGitHubWorkspaceRepoWorkbenchTab.README
-                                        )
-                                    },
-                                    label = { Text("README") }
-                                )
-                            }
-                        }
-                    }
-                }
-                ProjectGitHubDownloadCenterSummaryCard(
-                    downloads = downloadStore.records,
-                    onOpenDownloadCenter = ::openGitHubWorkspaceDownloadCenter,
-                    onOpenSystemDownloads = ::openSystemDownloads
-                )
-                ProjectGitBranchSummaryCard(
-                    currentBranch = gitState.currentBranch,
-                    branchCount = gitState.localBranches.size,
-                    onManageBranches = { showBranchDialog = true }
-                )
-                if (gitState.conflictedFiles.isNotEmpty()) {
-                    ProjectGitFileGroup(
-                        title = "冲突文件",
-                        items = gitState.conflictedFiles,
-                        actionLabel = "差异",
-                        emptyText = "",
-                        onAction = { change -> openDiff(change) },
-                        onOpenDiff = ::openDiff
-                    )
-                }
-                ProjectGitFileGroup(
-                    title = "已暂存",
-                    items = gitState.stagedFiles,
-                    actionLabel = "取消暂存",
-                    emptyText = "暂存区目前为空。",
-                    onAction = { change ->
-                        val repoRoot = gitState.repoRoot ?: return@ProjectGitFileGroup
-                        runGitAction("已取消暂存 ${change.displayPath}") {
-                            runEmbeddedGitAction {
-                                embeddedGitUnstagePath(repoRoot, change.actionPath)
-                            }
-                        }
-                    },
-                    onOpenDiff = ::openDiff
-                )
-                ProjectGitFileGroup(
-                    title = "已修改",
-                    items = gitState.modifiedFiles,
-                    actionLabel = "暂存",
-                    emptyText = "工作区没有未暂存修改。",
-                    onAction = { change ->
-                        val repoRoot = gitState.repoRoot ?: return@ProjectGitFileGroup
-                        runGitAction("已暂存 ${change.displayPath}") {
-                            runEmbeddedGitAction {
-                                embeddedGitStagePath(repoRoot, change.actionPath)
-                            }
-                        }
-                    },
-                    onOpenDiff = ::openDiff
-                )
-                ProjectGitFileGroup(
-                    title = "未跟踪",
-                    items = gitState.untrackedFiles,
-                    actionLabel = "暂存",
-                    emptyText = "没有未跟踪文件。",
-                    onAction = { change ->
-                        val repoRoot = gitState.repoRoot ?: return@ProjectGitFileGroup
-                        runGitAction("已暂存 ${change.displayPath}") {
-                            runEmbeddedGitAction {
-                                embeddedGitStagePath(repoRoot, change.actionPath)
-                            }
-                        }
-                    },
-                    onOpenDiff = ::openDiff
-                )
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
+                    Button(
                         onClick = {
-                            val repoRoot = gitState.repoRoot ?: return@OutlinedButton
-                            runGitAction("已全部暂存") {
-                                runEmbeddedGitAction {
-                                    embeddedGitStageAll(repoRoot)
-                                }
-                            }
+                            showStandaloneRepoBrowserSecondary = true
+                            refreshViewerRepositories(preserveSelection = false)
                         },
-                        enabled = gitState.canStageAll && !isGitLoading && !isGitActionRunning
+                        enabled = !isViewerRepositoriesLoading
                     ) {
-                        Text("全部暂存")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            val repoRoot = gitState.repoRoot ?: return@OutlinedButton
-                            runGitAction("已完成全部同步") {
-                                runEmbeddedGitAction {
-                                    embeddedGitPull(repoRoot, config.githubToken)
-                                }
-                            }
-                        },
-                        enabled = gitState.canPull && !isGitLoading && !isGitActionRunning
-                    ) {
-                        Text("全部同步")
+                        Text(if (isViewerRepositoriesLoading) "加载中" else "当前账户的所有仓库")
                     }
                 }
-                ProjectGitOperationHistorySection(records = currentRepoOperationRecords)
-                ProjectGitHistorySection(
-                    commits = gitState.recentCommits,
-                    onOpenCommit = { commit ->
-                        val repoRoot = gitState.repoRoot ?: return@ProjectGitHistorySection
-                        scope.launch {
-                            isGitActionRunning = true
-                            val preview = withContext(Dispatchers.IO) {
-                                loadProjectGitCommitPreview(repoRoot, commit.commitHash)
-                            }
-                            isGitActionRunning = false
-                            if (preview == null) {
-                                feedbackMessage = "无法读取提交 ${commit.shortHash} 的详情"
-                            } else {
-                                diffPreview = preview
-                            }
-                        }
-                    }
-                )
             }
-
-            Text(
-                "知识草稿路径: $draftPathCount · 快照: $snapshotCount · MCP 工具: $mcpToolCount",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
             }
         }
     }
@@ -7569,6 +6378,55 @@ private fun ProjectGitSection(
             }
         }
     }
+
+    pendingDiscardTarget?.let { target ->
+        val filePath = target.change?.displayPath
+        ProjectScreenLargeDialog(
+            title = if (filePath == null) "确认全部撤回同步云端" else "确认撤回文件",
+            subtitle = target.repoLabel,
+            onDismissRequest = { pendingDiscardTarget = null },
+            actions = {
+                TextButton(onClick = { pendingDiscardTarget = null }) {
+                    Text("取消")
+                }
+                Button(
+                    onClick = {
+                        pendingDiscardTarget = null
+                        if (target.change == null) {
+                            runGitActionForRepo(target.repoRoot, "已撤回本地改动") {
+                                runEmbeddedGitAction {
+                                    embeddedGitSyncDiscardAll(target.repoRoot, config.githubToken.trim())
+                                }
+                            }
+                        } else {
+                            runGitActionForRepo(target.repoRoot, "已撤回 ${target.change.displayPath}") {
+                                runEmbeddedGitAction {
+                                    embeddedGitDiscardPath(
+                                        repoRoot = target.repoRoot,
+                                        relativePath = target.change.actionPath,
+                                        githubToken = config.githubToken.trim()
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    enabled = !isGitActionRunning
+                ) {
+                    Text("确认撤回")
+                }
+            }
+        ) {
+            Text(
+                text = if (filePath == null) {
+                    "会丢弃该仓库所有未提交改动，并尽量恢复到远端跟踪分支当前状态。"
+                } else {
+                    "会丢弃 `$filePath` 的本地改动，并尽量恢复到远端跟踪分支当前状态。"
+                },
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+    }
+
 
     if (showBranchDialog) {
         ProjectScreenLargeDialog(
@@ -8248,7 +7106,7 @@ private fun ProjectGitSection(
                     },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("Tag") },
-                    placeholder = { Text("例如：v1.2.0") },
+                    placeholder = { Text("例如：0.9.0-preview") },
                     singleLine = true
                 )
                 OutlinedTextField(
@@ -8567,17 +7425,28 @@ private fun ProjectGitSection(
             }
         ) {
             ProjectSectionCard(shape = RoundedCornerShape(12.dp)) {
+                val renderedDiffLines = remember(preview.content) {
+                    preview.content.lineSequence()
+                        .map { line -> projectGitBuildRenderedDiffLine(line) }
+                        .toList()
+                }
                 SelectionContainer {
-                    Text(
-                        text = preview.content,
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                        ),
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(max = 420.dp)
                             .verticalScroll(rememberScrollState())
-                    )
+                    ) {
+                        renderedDiffLines.forEachIndexed { index, line ->
+                            if (index > 0 && line.type == ProjectGitRenderedDiffLineType.FILE_HEADER) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
+                            ProjectGitRenderedDiffLine(
+                                line = line,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -8944,25 +7813,6 @@ private fun ProjectGitSection(
         }
     }
 
-    if (globalSearchStore.isVisible) {
-        ProjectGitHubGlobalSearchDialog(
-            store = globalSearchStore,
-            onQueryChange = { globalSearchStore = globalSearchStore.copy(query = it) },
-            onSearch = ::searchGitHubGlobal,
-            onClose = { globalSearchStore = globalSearchStore.copy(isVisible = false) },
-            onResultClick = ::onGlobalSearchResultClick,
-            chromeColor = rememberMurongChromeColor()
-        )
-    }
-
-    if (globalTaskCenter.isVisible) {
-        ProjectGitHubWorkspaceTaskCenterDialog(
-            taskCenter = globalTaskCenter,
-            onClose = { globalTaskCenter = globalTaskCenter.copy(isVisible = false) },
-            onTaskClick = ::onGlobalTaskClick,
-            chromeColor = rememberMurongChromeColor()
-        )
-    }
 }
 
 private fun approvalModeLabel(mode: ToolApprovalMode): String = when (mode) {
@@ -8970,6 +7820,35 @@ private fun approvalModeLabel(mode: ToolApprovalMode): String = when (mode) {
     ToolApprovalMode.ALL_APPROVAL -> "全部审批"
     ToolApprovalMode.WHITELIST_AUTO -> "白名单自动通过"
     ToolApprovalMode.ALL_AUTO -> "全部自动通过"
+}
+
+private fun approvalModeDescription(mode: ToolApprovalMode): String = when (mode) {
+    ToolApprovalMode.READ_ONLY -> "仅允许只读类能力自动运行，写入和执行类操作会被明显收紧。"
+    ToolApprovalMode.ALL_APPROVAL -> "所有工具调用都需要你显式确认后才会继续。"
+    ToolApprovalMode.WHITELIST_AUTO -> "命中白名单的操作可自动通过，其余请求仍然审批。"
+    ToolApprovalMode.ALL_AUTO -> "默认不再弹审批，适合你完全信任当前任务时使用。"
+}
+
+private fun normalizeProjectToolPreferences(
+    preferences: ProjectToolPreferences
+): ProjectToolPreferences? {
+    return if (
+        preferences.workflowExecutionMode == null &&
+        preferences.autoRouteBeforeExecution == null &&
+        preferences.failureFallbackMode == null &&
+        preferences.approvalMode == null &&
+        preferences.enabledBuiltinTools == null &&
+        preferences.enabledFileToolOperations == null &&
+        preferences.allowAllMcpTools == null &&
+        preferences.allowedMcpTools == null &&
+        preferences.allowedShellCommandPrefixes == null &&
+        preferences.allowedPathPrefixes == null &&
+        preferences.subagentTemplates == null
+    ) {
+        null
+    } else {
+        preferences
+    }
 }
 
 private fun mergeProjectGitHubWorkflowDispatchInputs(
@@ -8994,6 +7873,7 @@ private fun mergeProjectGitHubWorkflowDispatchInputs(
 internal enum class ProjectPrimaryTab(val label: String) {
     EDITOR("项目"),
     CONFIG("项目配置"),
+    TERMINAL("终端"),
     GIT("Git")
 }
 
@@ -9001,6 +7881,353 @@ private enum class ProjectEditorMode(val label: String) {
     PREVIEW("高亮预览"),
     EDIT("编辑"),
     RAW_JSON("原始 JSON")
+}
+
+private data class ProjectGitDiscardTargetUi(
+    val repoRoot: String,
+    val repoLabel: String,
+    val change: ProjectGitFileChangeUi?
+)
+
+private data class ProjectRepoWorkingFileItemUi(
+    val change: ProjectGitFileChangeUi,
+    val canStage: Boolean,
+    val canUnstage: Boolean = false
+)
+
+@Composable
+private fun ProjectGitRepoWorkCard(
+    summary: ProjectRepoStatusSummaryUi,
+    isSelected: Boolean,
+    isExpanded: Boolean,
+    mutedTextColor: Color,
+    surfaceColor: Color,
+    chromeColor: Color,
+    isBusy: Boolean,
+    onToggleExpanded: () -> Unit,
+    onSelectRepo: () -> Unit,
+    onOpenDiff: (ProjectGitFileChangeUi) -> Unit,
+    onStageFile: (ProjectGitFileChangeUi) -> Unit,
+    onUnstageFile: (ProjectGitFileChangeUi) -> Unit,
+    onDiscardFile: (ProjectGitFileChangeUi) -> Unit,
+    onOpenCommit: () -> Unit,
+    onOpenBranches: () -> Unit,
+    onStageAll: () -> Unit,
+    onPushAll: () -> Unit,
+    onDiscardAll: () -> Unit
+) {
+    val repo = summary.repo
+    val status = summary.status
+    val workingFiles = remember(status) { buildProjectRepoWorkingFileItems(status) }
+    ProjectInsetCard(
+        shape = RoundedCornerShape(12.dp),
+        surfaceColorOverride = if (isSelected) {
+            surfaceColor.copy(alpha = 0.78f)
+        } else {
+            chromeColor.copy(alpha = 0.30f)
+        },
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = if (repo.isWorkspaceRoot) {
+                            "${repo.displayName}（工作区根）"
+                        } else {
+                            repo.relativePath
+                        },
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = if (status.branchSummary.isNotBlank()) {
+                            "分支: ${status.branchSummary}"
+                        } else {
+                            "分支: 未知"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                    status.remoteUrl?.takeIf { it.isNotBlank() }?.let { remote ->
+                        Text(
+                            text = remote,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Text(
+                        text = "暂存 ${status.stagedFiles.size} · 修改 ${status.modifiedFiles.size} · 未跟踪 ${status.untrackedFiles.size}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!isSelected) {
+                        TextButton(onClick = onSelectRepo, enabled = !isBusy) {
+                            Text("切换")
+                        }
+                    }
+                    TextButton(onClick = onToggleExpanded) {
+                        Text(if (isExpanded) "收起" else "展开")
+                    }
+                }
+            }
+            if (isExpanded) {
+                if (workingFiles.isEmpty()) {
+                    Text(
+                        text = "当前仓库没有待处理改动。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                } else {
+                    workingFiles.forEach { item ->
+                        ProjectGitRepoWorkFileRow(
+                            item = item,
+                            mutedTextColor = mutedTextColor,
+                            isBusy = isBusy,
+                            onOpenDiff = { onOpenDiff(item.change) },
+                            onStage = if (item.canStage) {
+                                { onStageFile(item.change) }
+                            } else {
+                                null
+                            },
+                            onUnstage = if (item.canUnstage) {
+                                { onUnstageFile(item.change) }
+                            } else {
+                                null
+                            },
+                            onDiscard = { onDiscardFile(item.change) }
+                        )
+                    }
+                }
+                HorizontalDivider()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onOpenCommit,
+                        enabled = isSelected && status.canCommit && !isBusy
+                    ) {
+                        Text("提交")
+                    }
+                    OutlinedButton(
+                        onClick = onOpenBranches,
+                        enabled = isSelected && !isBusy
+                    ) {
+                        Text("分支")
+                    }
+                    OutlinedButton(
+                        onClick = onStageAll,
+                        enabled = status.canStageAll && !isBusy
+                    ) {
+                        Text("全部暂存")
+                    }
+                    OutlinedButton(
+                        onClick = onPushAll,
+                        enabled = status.canPush && !isBusy
+                    ) {
+                        Text("全部推送")
+                    }
+                    OutlinedButton(
+                        onClick = onDiscardAll,
+                        enabled = status.hasWorkingTreeChanges && !isBusy
+                    ) {
+                        Text("全部撤回同步云端")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProjectGitRepoWorkFileRow(
+    item: ProjectRepoWorkingFileItemUi,
+    mutedTextColor: Color,
+    isBusy: Boolean,
+    onOpenDiff: () -> Unit,
+    onStage: (() -> Unit)?,
+    onUnstage: (() -> Unit)?,
+    onDiscard: () -> Unit
+) {
+    val fileName = projectGitDisplayFileName(item.change.displayPath)
+    val filePath = projectGitDisplayFilePath(item.change.displayPath)
+    ProjectInsetCard(
+        shape = RoundedCornerShape(10.dp),
+        surfaceColorOverride = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = !isBusy, onClick = onOpenDiff)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = fileName,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    text = filePath,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = mutedTextColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = item.change.statusLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onOpenDiff, enabled = !isBusy) {
+                    Text("差异")
+                }
+                onStage?.let {
+                    TextButton(onClick = it, enabled = !isBusy) {
+                        Text("暂存")
+                    }
+                }
+                onUnstage?.let {
+                    TextButton(onClick = it, enabled = !isBusy) {
+                        Text("取消暂存")
+                    }
+                }
+                TextButton(onClick = onDiscard, enabled = !isBusy) {
+                    Text("撤回")
+                }
+            }
+        }
+    }
+}
+
+private fun buildProjectRepoWorkingFileItems(
+    status: ProjectGitStatusUi
+): List<ProjectRepoWorkingFileItemUi> {
+    return buildList {
+        status.conflictedFiles.forEach {
+            add(ProjectRepoWorkingFileItemUi(it, canStage = false, canUnstage = false))
+        }
+        status.modifiedFiles.forEach {
+            add(ProjectRepoWorkingFileItemUi(it, canStage = true, canUnstage = false))
+        }
+        status.untrackedFiles.forEach {
+            add(ProjectRepoWorkingFileItemUi(it, canStage = true, canUnstage = false))
+        }
+        status.stagedFiles.forEach {
+            add(ProjectRepoWorkingFileItemUi(it, canStage = false, canUnstage = true))
+        }
+    }
+}
+
+private fun projectGitDisplayFileName(path: String): String {
+    val normalized = path.replace('\\', '/')
+    return normalized.substringAfterLast('/', normalized)
+}
+
+private fun projectGitDisplayFilePath(path: String): String {
+    val normalized = path.replace('\\', '/')
+    return normalized.substringBeforeLast('/', "").ifBlank { "." }
+}
+
+private enum class ProjectGitRenderedDiffLineType {
+    FILE_HEADER,
+    META,
+    HUNK,
+    ADDED,
+    REMOVED,
+    NOTE,
+    CONTEXT
+}
+
+private data class ProjectGitRenderedDiffLineUi(
+    val text: String,
+    val type: ProjectGitRenderedDiffLineType
+)
+
+private fun projectGitBuildRenderedDiffLine(line: String): ProjectGitRenderedDiffLineUi {
+    val type = when {
+        line.startsWith("diff --git ") -> ProjectGitRenderedDiffLineType.FILE_HEADER
+        line.startsWith("@@") -> ProjectGitRenderedDiffLineType.HUNK
+        line.startsWith("+++") || line.startsWith("---") || line.startsWith("index ") -> ProjectGitRenderedDiffLineType.META
+        line.startsWith("+") -> ProjectGitRenderedDiffLineType.ADDED
+        line.startsWith("-") -> ProjectGitRenderedDiffLineType.REMOVED
+        line.startsWith("\\") -> ProjectGitRenderedDiffLineType.NOTE
+        else -> ProjectGitRenderedDiffLineType.CONTEXT
+    }
+    return ProjectGitRenderedDiffLineUi(text = line, type = type)
+}
+
+@Composable
+private fun ProjectGitRenderedDiffLine(
+    line: ProjectGitRenderedDiffLineUi,
+    modifier: Modifier = Modifier
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val (textColor, backgroundColor, typography) = when (line.type) {
+        ProjectGitRenderedDiffLineType.FILE_HEADER -> Triple(
+            colorScheme.primary,
+            colorScheme.primary.copy(alpha = 0.10f),
+            MaterialTheme.typography.labelMedium
+        )
+        ProjectGitRenderedDiffLineType.META -> Triple(
+            colorScheme.onSurfaceVariant,
+            colorScheme.surfaceVariant.copy(alpha = 0.35f),
+            MaterialTheme.typography.labelSmall
+        )
+        ProjectGitRenderedDiffLineType.HUNK -> Triple(
+            colorScheme.tertiary,
+            colorScheme.tertiary.copy(alpha = 0.12f),
+            MaterialTheme.typography.labelSmall
+        )
+        ProjectGitRenderedDiffLineType.ADDED -> Triple(
+            Color(0xFF1B5E20),
+            Color(0xFF1B5E20).copy(alpha = 0.10f),
+            MaterialTheme.typography.bodySmall
+        )
+        ProjectGitRenderedDiffLineType.REMOVED -> Triple(
+            colorScheme.error,
+            colorScheme.error.copy(alpha = 0.10f),
+            MaterialTheme.typography.bodySmall
+        )
+        ProjectGitRenderedDiffLineType.NOTE -> Triple(
+            colorScheme.onSurfaceVariant,
+            colorScheme.surfaceVariant.copy(alpha = 0.25f),
+            MaterialTheme.typography.labelSmall
+        )
+        ProjectGitRenderedDiffLineType.CONTEXT -> Triple(
+            colorScheme.onSurface,
+            Color.Transparent,
+            MaterialTheme.typography.bodySmall
+        )
+    }
+    Text(
+        text = line.text.ifEmpty { " " },
+        style = typography.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+        color = textColor,
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(backgroundColor)
+            .padding(horizontal = 8.dp, vertical = 3.dp)
+    )
 }
 
 private fun isJsonLikeProjectFile(path: String?, language: String? = null): Boolean {
@@ -9184,22 +8411,20 @@ private fun suggestProjectGitHubRepoDescription(repo: ProjectDetectedRepoUi?): S
 }
 
 private fun listProjectEntries(dir: File): List<ProjectTreeEntry> {
-    val children = dir.listFiles()
-    if (!children.isNullOrEmpty()) {
-        return children
-            .sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase(Locale.getDefault()) }))
-            .map { child ->
-                ProjectTreeEntry(
-                    absolutePath = child.absolutePath,
-                    name = child.name,
-                    isDirectory = child.isDirectory
-                )
-            }
-    }
+    val mergedEntries = linkedMapOf<String, ProjectTreeEntry>()
+    dir.listFiles()
+        ?.sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase(Locale.getDefault()) }))
+        ?.forEach { child ->
+            mergedEntries[child.absolutePath] = ProjectTreeEntry(
+                absolutePath = child.absolutePath,
+                name = child.name,
+                isDirectory = child.isDirectory
+            )
+        }
     if (!dir.isDirectory && !RootFile.dirExists(dir.absolutePath)) {
         error("目录不存在: ${dir.absolutePath}")
     }
-    return RootFile.ls(dir.absolutePath)
+    RootFile.ls(dir.absolutePath)
         .mapNotNull { name ->
             val childPath = File(dir, name).absolutePath
             when {
@@ -9216,11 +8441,15 @@ private fun listProjectEntries(dir: File): List<ProjectTreeEntry> {
                 else -> null
             }
         }
+        .forEach { entry ->
+            mergedEntries.putIfAbsent(entry.absolutePath, entry)
+        }
+    return mergedEntries.values
         .sortedWith(compareBy<ProjectTreeEntry>({ !it.isDirectory }, { it.name.lowercase(Locale.getDefault()) }))
 }
 
 private fun readProjectFile(file: File): String {
-    if (file.exists() && file.isFile) {
+    if (!shouldUseRootProjectFileAccess(file.absolutePath) && file.exists() && file.isFile) {
         require(file.length() <= MAX_PROJECT_EDITOR_BYTES) {
             "文件过大，暂不在项目页直接打开: ${formatProjectFileSize(file.length())}"
         }
@@ -9251,7 +8480,7 @@ private fun readProjectFile(file: File): String {
 }
 
 private fun saveProjectFile(file: File, content: String) {
-    if (file.exists() && file.isFile) {
+    if (!shouldUseRootProjectFileAccess(file.absolutePath) && file.exists() && file.isFile) {
         try {
             file.writeText(content)
             return
@@ -9263,6 +8492,13 @@ private fun saveProjectFile(file: File, content: String) {
     }
     val result = RootFile.writeFileChecked(file.absolutePath, content)
     require(result.success) { result.error ?: "文件写入失败: ${file.absolutePath}" }
+}
+
+private fun shouldUseRootProjectFileAccess(path: String): Boolean {
+    val normalized = path.replace('\\', '/')
+    return normalized.startsWith("/storage/")
+        || normalized.startsWith("/sdcard/")
+        || normalized.startsWith("/mnt/")
 }
 
 private fun buildProjectAiCompletionPrompt(
@@ -9612,12 +8848,6 @@ private data class ProjectGitCommitTemplateUi(
     val prefix: String,
     val detailHint: String
 )
-internal data class ProjectGitHubWorkspaceRepoSummaryUi(
-    val repo: ProjectDetectedRepoUi,
-    val status: ProjectGitStatusUi,
-    val githubRepo: ProjectGitHubRepoRef?,
-    val isSelected: Boolean
-)
 internal data class ProjectCppClassLikeBlock(val kind: String, val startLine: Int, val expectedBraceDepth: Int)
 internal data class ProjectFoldRegion(val startLine: Int, val endLine: Int, val headerLine: String)
 internal data class ProjectOutlineEntry(val startLine: Int, val lineNumber: Int, val depth: Int, val label: String, val kind: String)
@@ -9644,6 +8874,7 @@ private enum class ProjectGitConflictResolution {
 
 enum class ProjectEditorMenuAction(val label: String) {
     SEARCH_REPLACE("搜索与替换"),
+    TOGGLE_WORD_WRAP("自动换行"),
     LANGUAGE("切换语法高亮"),
     DIAGNOSTICS("错误列表"),
     CONFLICTS("处理冲突"),
@@ -9679,39 +8910,6 @@ enum class ProjectEditorMenuAction(val label: String) {
     }
 }
 
-// #region debug-point A:project-bootstrap-reporter
-private fun reportGitBackChatFlashProjectDebugBootstrap(
-    hypothesisId: String,
-    location: String,
-    msg: String,
-    data: JSONObject
-) {
-    if (!ENABLE_REASONIX_BACK_DEBUG_REPORTS) return
-    Thread {
-        runCatching {
-            val connection = (URL("http://192.168.2.3:7777/event").openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 1200
-                readTimeout = 1200
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json")
-            }
-            val payload = JSONObject()
-                .put("sessionId", "app-launch-crash")
-                .put("runId", "pre-fix")
-                .put("hypothesisId", hypothesisId)
-                .put("location", location)
-                .put("msg", msg)
-                .put("data", data)
-                .put("ts", System.currentTimeMillis())
-                .toString()
-            connection.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-            runCatching { connection.inputStream.use { input -> while (input.read() != -1) {} } }
-            connection.disconnect()
-        }
-    }.start()
-}
-// #endregion
 
 
 private enum class ProjectSearchResultFilter { ALL, FILE_NAME, TEXT }

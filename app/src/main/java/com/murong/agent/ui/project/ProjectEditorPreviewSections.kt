@@ -37,7 +37,9 @@ internal fun EmptyEditorState(
     title: String,
     message: String,
     actionLabel: String? = null,
-    onAction: (() -> Unit)? = null
+    onAction: (() -> Unit)? = null,
+    secondaryActionLabel: String? = null,
+    onSecondaryAction: (() -> Unit)? = null
 ) {
     Box(
         modifier = Modifier
@@ -55,9 +57,21 @@ internal fun EmptyEditorState(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            if (!actionLabel.isNullOrBlank() && onAction != null) {
-                OutlinedButton(onClick = onAction) {
-                    Text(actionLabel)
+            if (
+                (!actionLabel.isNullOrBlank() && onAction != null) ||
+                (!secondaryActionLabel.isNullOrBlank() && onSecondaryAction != null)
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!actionLabel.isNullOrBlank() && onAction != null) {
+                        OutlinedButton(onClick = onAction) {
+                            Text(actionLabel)
+                        }
+                    }
+                    if (!secondaryActionLabel.isNullOrBlank() && onSecondaryAction != null) {
+                        OutlinedButton(onClick = onSecondaryAction) {
+                            Text(secondaryActionLabel)
+                        }
+                    }
                 }
             }
         }

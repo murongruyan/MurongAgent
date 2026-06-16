@@ -5,7 +5,6 @@ import android.content.Intent
 import android.content.ClipData
 import android.os.Environment
 import android.os.Bundle
-import android.widget.Toast
 import android.provider.OpenableColumns
 import android.provider.DocumentsContract
 import android.net.Uri
@@ -23,6 +22,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
@@ -48,6 +48,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -68,6 +69,7 @@ import com.murong.agent.ui.auth.AuthViewModel
 import com.murong.agent.ui.auth.GitHubAuthFlow
 import com.murong.agent.ui.auth.GitHubLoginScreen
 import com.murong.agent.ui.project.ProjectEditorMenuAction
+import com.murong.agent.ui.project.ProjectGitHubRepoRef
 import com.murong.agent.ui.project.ProjectSecondaryHostBridgeState
 import com.murong.agent.ui.project.ProjectScreen
 import com.murong.agent.ui.settings.AboutPage
@@ -79,9 +81,6 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
-import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -137,7 +136,8 @@ internal data class ProjectSecondaryChromeState(
     val active: Boolean = false,
     val title: String = "",
     val subtitle: String = "",
-    val supportsEditorMenu: Boolean = false
+    val supportsEditorMenu: Boolean = false,
+    val wordWrapEnabled: Boolean = true
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -172,6 +172,18 @@ fun MainScreen() {
     val rootStatus by settingsVm.rootStatus.collectAsState()
     val isCheckingRoot by settingsVm.isCheckingRoot.collectAsState()
     val settingsSessions by settingsVm.sessions.collectAsState()
+    val selectedProjectTaskRepository = remember(
+        chatState.remoteTaskRepositoryOwner,
+        chatState.remoteTaskRepositoryName
+    ) {
+        val owner = chatState.remoteTaskRepositoryOwner?.trim().orEmpty()
+        val repo = chatState.remoteTaskRepositoryName?.trim().orEmpty()
+        if (owner.isNotBlank() && repo.isNotBlank()) {
+            ProjectGitHubRepoRef(owner = owner, repo = repo)
+        } else {
+            null
+        }
+    }
     val balanceSyncStates by settingsVm.balanceSyncStates.collectAsState()
     val mcpServers by settingsVm.mcpServers.collectAsState()
     val mcpStatuses by settingsVm.mcpStatuses.collectAsState()
@@ -286,20 +298,6 @@ fun MainScreen() {
     fun navigateToTopLevel(target: Screen) {
         val targetIndex = shellScreens.indexOfFirst { it.route == target.route }
         if (targetIndex < 0) return
-        // #region debug-point C:chat-nav-request
-        reportGitBackChatFlashMainDebug(
-            hypothesisId = "C",
-            location = "MainActivity.kt:navigateToTopLevel",
-            msg = "[DEBUG] request top-level navigation",
-            data = JSONObject()
-                .put("targetRoute", target.route)
-                .put("targetIndex", targetIndex)
-                .put("selectedTopLevelPage", selectedTopLevelPage)
-                .put("visibleTopLevelPage", visibleTopLevelPage)
-                .put("visibleRoute", visibleScreen.route)
-                .put("drawerValue", if (isChatSessionPanelVisible) "Open" else "Closed")
-        )
-        // #endregion
         dispatchHostAction(MainScreenHostAction.NavigateToTopLevelPage(targetIndex))
     }
 
@@ -315,35 +313,7 @@ fun MainScreen() {
                 }
             }
             is MainScreenChatAction.LoadSession -> {
-                // #region debug-point F:load-local-project-session
-                reportGitBackChatFlashMainDebug(
-                    hypothesisId = "F",
-                    location = "MainActivity.kt:dispatchChatAction:loadSession:before",
-                    msg = "[DEBUG] loading chat session requested",
-                    data = JSONObject()
-                        .put("sessionId", action.sessionId)
-                        .put("selectedTopLevelPage", selectedTopLevelPage)
-                        .put("visibleTopLevelPage", visibleTopLevelPage)
-                        .put("visibleRoute", visibleScreen.route)
-                        .put("currentSessionId", chatState.sessionId)
-                        .put("currentProjectPath", chatState.projectPath ?: JSONObject.NULL)
-                )
-                // #endregion
                 chatVm.loadSession(action.sessionId)
-                // #region debug-point F:load-local-project-session
-                reportGitBackChatFlashMainDebug(
-                    hypothesisId = "F",
-                    location = "MainActivity.kt:dispatchChatAction:loadSession:after",
-                    msg = "[DEBUG] loading chat session returned",
-                    data = JSONObject()
-                        .put("sessionId", action.sessionId)
-                        .put("selectedTopLevelPage", selectedTopLevelPage)
-                        .put("visibleTopLevelPage", visibleTopLevelPage)
-                        .put("visibleRoute", visibleScreen.route)
-                        .put("currentSessionId", chatState.sessionId)
-                        .put("currentProjectPath", chatState.projectPath ?: JSONObject.NULL)
-                )
-                // #endregion
                 if (action.closeDrawer) {
                     dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
                 }
@@ -361,7 +331,12 @@ fun MainScreen() {
                 }
             }
             is MainScreenChatAction.OpenTaskDialog -> {
-                dispatchDialogAction(MainScreenDialogAction.ShowTaskDialog(action.projectPath))
+                dispatchDialogAction(
+                    MainScreenDialogAction.ShowTaskDialog(
+                        projectPath = action.projectPath,
+                        applyToCurrentSession = action.applyToCurrentSession
+                    )
+                )
                 if (action.dismissMenu) {
                     dispatchOverlayVisibilityAction(MainScreenOverlayVisibilityAction.HIDE_CHAT_MENU)
                 }
@@ -406,20 +381,6 @@ fun MainScreen() {
     LaunchedEffect(pagerState.settledPage) {
         val settledPage = pagerState.settledPage
         val navigationTargetPage = topLevelNavigationTargetPage
-        // #region debug-point C:chat-settled
-        reportGitBackChatFlashMainDebug(
-            hypothesisId = "C",
-            location = "MainActivity.kt:settledPage",
-            msg = "[DEBUG] pager settled page observed",
-            data = JSONObject()
-                .put("settledPage", settledPage)
-                .put("selectedTopLevelPage", selectedTopLevelPage)
-                .put("visibleTopLevelPage", visibleTopLevelPage)
-                .put("visibleRoute", visibleScreen.route)
-                .put("navigationTargetPage", navigationTargetPage ?: JSONObject.NULL)
-                .put("drawerValue", if (isChatSessionPanelVisible) "Open" else "Closed")
-        )
-        // #endregion
         if (navigationTargetPage != null && settledPage != navigationTargetPage) {
             return@LaunchedEffect
         }
@@ -430,20 +391,6 @@ fun MainScreen() {
 
     LaunchedEffect(topLevelNavigationTargetPage) {
         val navigationTargetPage = topLevelNavigationTargetPage ?: return@LaunchedEffect
-        // #region debug-point C:chat-selected
-        reportGitBackChatFlashMainDebug(
-            hypothesisId = "C",
-            location = "MainActivity.kt:selectedTopLevelPage",
-            msg = "[DEBUG] selected top-level page changed",
-            data = JSONObject()
-                .put("selectedTopLevelPage", selectedTopLevelPage)
-                .put("visibleTopLevelPage", visibleTopLevelPage)
-                .put("visibleRoute", visibleScreen.route)
-                .put("pagerCurrentPage", pagerState.currentPage)
-                .put("navigationTargetPage", navigationTargetPage)
-                .put("drawerValue", if (isChatSessionPanelVisible) "Open" else "Closed")
-        )
-        // #endregion
         if (navigationTargetPage != pagerState.currentPage) {
             pagerState.scrollToPage(navigationTargetPage)
         }
@@ -487,7 +434,13 @@ fun MainScreen() {
 
     LaunchedEffect(Unit) {
         chatVm.toastMessages.collect { message ->
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            snackbarHostState.showSnackbar(message)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        MurongTransientMessageBus.messages.collect { message ->
+            snackbarHostState.showSnackbar(message)
         }
     }
 
@@ -591,23 +544,6 @@ fun MainScreen() {
         chatState.sessionId,
         chatState.messages.size
     ) {
-        // #region debug-point E:chat-host-snapshot
-        reportGitBackChatFlashMainDebug(
-            hypothesisId = "E",
-            location = "MainActivity.kt:chatHostSnapshot",
-            msg = "[DEBUG] chat host snapshot",
-            data = JSONObject()
-                .put("chromeRoute", shellState.chromeScreen.route)
-                .put("visibleRoute", visibleScreen.route)
-                .put("selectedTopLevelPage", selectedTopLevelPage)
-                .put("visibleTopLevelPage", visibleTopLevelPage)
-                .put("isChatChromeVisible", isChatChromeVisible)
-                .put("drawerOpen", isChatSessionPanelVisible)
-                .put("showChatMenu", showChatMenu)
-                .put("chatSessionId", chatState.sessionId)
-                .put("chatMessageCount", chatState.messages.size)
-        )
-        // #endregion
     }
 
     LaunchedEffect(
@@ -617,21 +553,6 @@ fun MainScreen() {
         topLevelPreviewState.isVisible
     ) {
         if (topLevelBackProgressBucket < 0) return@LaunchedEffect
-        // #region debug-point E:top-level-progress-bucket
-        reportGitBackChatFlashMainDebug(
-            hypothesisId = "E",
-            location = "MainActivity.kt:topLevelBackProgressBucket",
-            msg = "[DEBUG] top-level back progress bucket",
-            data = JSONObject()
-                .put("bucket", topLevelBackProgressBucket)
-                .put("progress", topLevelBackProgress)
-                .put("previewVisible", topLevelPreviewState.isVisible)
-                .put("previewCurrentPage", topLevelPreviewState.currentPage)
-                .put("previewTargetPage", topLevelPreviewState.targetPage ?: JSONObject.NULL)
-                .put("selectedTopLevelPage", selectedTopLevelPage)
-                .put("visibleTopLevelPage", visibleTopLevelPage)
-        )
-        // #endregion
     }
 
     LaunchedEffect(
@@ -641,22 +562,6 @@ fun MainScreen() {
         secondaryHostRuntimeState.hostBackAction::class.simpleName
     ) {
         if (secondaryHostBackProgressBucket < 0) return@LaunchedEffect
-        // #region debug-point E:secondary-host-progress-bucket
-        reportGitBackChatFlashMainDebug(
-            hypothesisId = "E",
-            location = "MainActivity.kt:secondaryHostBackProgressBucket",
-            msg = "[DEBUG] secondary host back progress bucket",
-            data = JSONObject()
-                .put("bucket", secondaryHostBackProgressBucket)
-                .put("progress", secondaryHostRuntimeState.hostBackProgress)
-                .put("isSettingsSecondaryPage", secondaryHostRuntimeState.isSettingsSecondaryPage)
-                .put("isProjectSecondaryPage", secondaryHostRuntimeState.isProjectSecondaryPage)
-                .put(
-                    "hostBackAction",
-                    secondaryHostRuntimeState.hostBackAction::class.simpleName ?: "unknown"
-                )
-        )
-        // #endregion
     }
 
     LaunchedEffect(
@@ -667,22 +572,6 @@ fun MainScreen() {
         projectSecondaryChromeState.title,
         projectSecondaryBackRequest
     ) {
-        // #region debug-point B:project-secondary-state
-        reportGitBackChatFlashMainDebug(
-            hypothesisId = "B",
-            location = "MainActivity.kt:projectSecondaryState",
-            msg = "[DEBUG] project secondary state snapshot",
-            data = JSONObject()
-                .put("shellOwnerTopLevelPage", shellState.shellOwnerTopLevelPage)
-                .put("visibleTopLevelPage", visibleTopLevelPage)
-                .put("visibleRoute", visibleScreen.route)
-                .put("selectedTopLevelPage", selectedTopLevelPage)
-                .put("projectSecondaryActive", projectSecondaryChromeState.active)
-                .put("projectSecondaryTitle", projectSecondaryChromeState.title)
-                .put("isProjectSecondaryPage", isProjectSecondaryPage)
-                .put("hasBackRequest", projectSecondaryBackRequest != null)
-        )
-        // #endregion
     }
 
     LaunchedEffect(secondaryHostRuntimeState.shouldResetProjectSecondaryCarrier) {
@@ -701,41 +590,9 @@ fun MainScreen() {
         topLevelNavigationTargetPage,
         topLevelHistory.size
     ) {
-        // #region debug-point C:shell-visibility-snapshot
-        reportGitBackChatFlashMainDebug(
-            hypothesisId = "C",
-            location = "MainActivity.kt:shellVisibilitySnapshot",
-            msg = "[DEBUG] shell visibility snapshot",
-            data = JSONObject()
-                .put("selectedTopLevelPage", selectedTopLevelPage)
-                .put("visibleTopLevelPage", visibleTopLevelPage)
-                .put("visibleRoute", visibleScreen.route)
-                .put("settingsSubpage", settingsSubpage.toString())
-                .put("showChatMenu", showChatMenu)
-                .put("drawerCurrentValue", if (isChatSessionPanelVisible) "Open" else "Closed")
-                .put("drawerTargetValue", if (isChatSessionPanelVisible) "Open" else "Closed")
-                .put("topLevelNavigationTargetPage", topLevelNavigationTargetPage ?: JSONObject.NULL)
-                .put("topLevelHistorySize", topLevelHistory.size)
-                .put("projectSecondaryActive", projectSecondaryChromeState.active)
-                .put("projectSecondaryTitle", projectSecondaryChromeState.title)
-        )
-        // #endregion
     }
 
     BackHandler(enabled = overlayState.canHandleTopLevelBack) {
-        // #region debug-point C:top-level-back
-        reportGitBackChatFlashMainDebug(
-            hypothesisId = "C",
-            location = "MainActivity.kt:topLevelBackHandler",
-            msg = "[DEBUG] top-level back handler fired",
-            data = JSONObject()
-                .put("selectedTopLevelPage", selectedTopLevelPage)
-                .put("visibleTopLevelPage", visibleTopLevelPage)
-                .put("visibleRoute", visibleScreen.route)
-                .put("topLevelHistorySize", topLevelHistory.size)
-                .put("projectSecondaryActive", projectSecondaryChromeState.active)
-        )
-        // #endregion
         dispatchHostAction(MainScreenHostAction.NavigateTopLevelBack)
     }
 
@@ -747,19 +604,6 @@ fun MainScreen() {
                 )
             }
             dispatchTopLevelNavigationAction(MainScreenTopLevelNavigationAction.UpdateBackProgress(1f))
-            // #region debug-point C:top-level-predictive
-            reportGitBackChatFlashMainDebug(
-                hypothesisId = "C",
-                location = "MainActivity.kt:topLevelPredictiveBack",
-                msg = "[DEBUG] top-level predictive back committed",
-                data = JSONObject()
-                    .put("selectedTopLevelPage", selectedTopLevelPage)
-                    .put("visibleTopLevelPage", visibleTopLevelPage)
-                    .put("visibleRoute", visibleScreen.route)
-                    .put("topLevelHistorySize", topLevelHistory.size)
-                    .put("projectSecondaryActive", projectSecondaryChromeState.active)
-            )
-            // #endregion
             dispatchHostAction(MainScreenHostAction.NavigateTopLevelBack)
         } catch (_: CancellationException) {
             dispatchTopLevelNavigationAction(MainScreenTopLevelNavigationAction.UpdateBackProgress(0f))
@@ -897,10 +741,11 @@ fun MainScreen() {
             pageScreen = pageScreen,
             shellState = shellState
         )
+        val hostBottomPadding = if (pageScreen is Screen.Chat) 0.dp else pageLayoutState.bottomPadding
         Box(
             modifier = modifier
                 .fillMaxSize()
-                .padding(bottom = pageLayoutState.bottomPadding)
+                .padding(bottom = hostBottomPadding)
         ) {
             when (pageScreen) {
                 is Screen.Chat -> {
@@ -914,25 +759,6 @@ fun MainScreen() {
                         chatState.sessionId,
                         chatState.messages.size
                     ) {
-                        // #region debug-point E:chat-page-composition
-                        reportGitBackChatFlashMainDebug(
-                            hypothesisId = "E",
-                            location = "MainActivity.kt:chatPageComposition",
-                            msg = "[DEBUG] chat page composition snapshot",
-                            data = JSONObject()
-                                .put("page", page)
-                                .put("previewMode", previewMode)
-                                .put("pageOwnsShellState", pageOwnsShellState)
-                                .put("isChatChromeVisible", isChatChromeVisible)
-                                .put("computedIsScreenActive", pageOwnsShellState &&
-                                    isChatChromeVisible &&
-                                    page == chatPageIndex)
-                                .put("chromeRoute", shellState.chromeScreen.route)
-                                .put("visibleRoute", visibleScreen.route)
-                                .put("chatSessionId", chatState.sessionId)
-                                .put("chatMessageCount", chatState.messages.size)
-                        )
-                        // #endregion
                     }
                     val shouldRenderFullChat = !previewMode
                     val chatSecondaryVisible = shouldRenderFullChat &&
@@ -948,9 +774,18 @@ fun MainScreen() {
                                 isScreenActive = pageOwnsShellState &&
                                     isChatChromeVisible &&
                                     page == chatPageIndex,
+                                bottomReservedPadding = pageLayoutState.bottomPadding,
+                                multimodalEnabled = settingsConfig.isMultimodalEnabled(),
+                                executionProfileConfig = effectiveChatConfig,
                                 projectKnowledgePaths = chatState.projectKnowledgePaths,
-                                onSend = { text, mentions, images ->
-                                    chatVm.sendMessage(text, mentions, images)
+                                onSend = { text, mentions, images, skills ->
+                                    chatVm.sendMessage(text, mentions, images, skills)
+                                },
+                                onSetSessionGoal = { goal ->
+                                    chatVm.setCurrentSessionGoal(goal)
+                                },
+                                onClearSessionGoal = {
+                                    chatVm.clearCurrentSessionGoal()
                                 },
                                 onStopSending = {
                                     val message = if (chatVm.stopSending()) {
@@ -970,8 +805,15 @@ fun MainScreen() {
                                 hasApiKey = chatVm.hasActiveApiKey(chatConfig),
                                 workflowExecutionMode = effectiveChatConfig.workflowExecutionMode,
                                 autoRouteBeforeExecution = false,
+                                projectToolPreferences = chatState.projectToolPreferences,
                                 onNavigateToSettings = {
                                     navigateToTopLevel(Screen.Settings)
+                                },
+                                onUpdateProjectToolPreferences = { preferences ->
+                                    chatVm.updateProjectToolPreferences(
+                                        chatState.activeProjectScopePath,
+                                        preferences
+                                    )
                                 },
                                 onEditMessage = { messageId ->
                                     chatVm.rollbackToUserMessage(messageId)
@@ -1005,8 +847,14 @@ fun MainScreen() {
                                 onDismissClarification = {
                                     chatVm.dismissPendingClarification()
                                 },
+                                onSubmitAskAnswers = { answers ->
+                                    chatVm.submitPendingAskAnswers(answers)
+                                },
+                                onDismissAsk = {
+                                    chatVm.dismissPendingAsk()
+                                },
                                 onSearchFiles = { query ->
-                                    chatVm.searchProjectFiles(query)
+                                    chatVm.searchMentionFiles(query)
                                 },
                                 onRetrySubagent = { runId ->
                                     chatVm.retrySubagentRun(runId)
@@ -1148,6 +996,7 @@ fun MainScreen() {
                         projectSkills = chatState.projectSkills,
                         projectToolPreferences = chatState.projectToolPreferences,
                         repoScopedConfigs = chatState.repoScopedConfigs,
+                        selectedViewerTaskRepository = selectedProjectTaskRepository,
                         mcpToolNames = mcpStatuses.flatMap { status ->
                             status.toolNames.map { "mcp_$it" }
                         }.distinct().sorted(),
@@ -1170,6 +1019,9 @@ fun MainScreen() {
                         },
                         onUpdateProjectToolPreferences = { scopePath, preferences ->
                             chatVm.updateProjectToolPreferences(scopePath, preferences)
+                        },
+                        onUpdateSelectedViewerTaskRepository = { repo ->
+                            chatVm.updateRemoteTaskRepositorySelection(repo)
                         },
                         onUpdateProjectKnowledgeDraftPaths = { paths ->
                             chatVm.updateProjectKnowledgePaths(paths)
@@ -1264,6 +1116,10 @@ fun MainScreen() {
                         SettingsScreen(
                             config = settingsConfig,
                             onConfigChanged = { settingsVm.updateConfig(it) },
+                            onUpdateApiKey = { providerId, value -> settingsVm.updateApiKey(providerId, value) },
+                            onUpdateBaseUrl = { providerId, value -> settingsVm.updateBaseUrl(providerId, value) },
+                            onUpdateModel = { providerId, value -> settingsVm.updateModel(providerId, value) },
+                            onSetActiveProvider = { providerId -> settingsVm.setActiveProvider(providerId) },
                             gitHubAuthState = gitHubAuthState,
                             rootStatus = rootStatus,
                             isCheckingRoot = isCheckingRoot,
@@ -1304,18 +1160,6 @@ fun MainScreen() {
                         settingsSubpage,
                         secondaryHostRuntimeState.hostBackProgress
                     ) {
-                        // #region debug-point U:settings-host-state
-                        reportGitBackChatFlashMainDebug(
-                            hypothesisId = "U2",
-                            location = "MainActivity.kt:settingsHostState",
-                            msg = "[DEBUG] settings host state snapshot",
-                            data = JSONObject()
-                                .put("previewMode", previewMode)
-                                .put("settingsSubpage", settingsSubpage.toString())
-                                .put("hostBackProgress", secondaryHostRuntimeState.hostBackProgress)
-                                .put("isSettingsSecondaryPage", isSettingsSecondaryPage)
-                        )
-                        // #endregion
                     }
 
                     if (previewMode) {
@@ -1406,7 +1250,7 @@ fun MainScreen() {
                         }
                         MainScreenTopBarLeadingAction.BRAND -> {
                             Text(
-                                text = "慕容AI",
+                                text = "Murong Agent",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1502,6 +1346,16 @@ fun MainScreen() {
                                     text = { Text(ProjectEditorMenuAction.SEARCH_REPLACE.label) },
                                     onClick = {
                                         dispatchProjectEditorMenuAction(ProjectEditorMenuAction.SEARCH_REPLACE)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            "自动换行：${if (projectSecondaryChromeState.wordWrapEnabled) "开" else "关"}"
+                                        )
+                                    },
+                                    onClick = {
+                                        dispatchProjectEditorMenuAction(ProjectEditorMenuAction.TOGGLE_WORD_WRAP)
                                     }
                                 )
                                 DropdownMenuItem(
@@ -1605,6 +1459,27 @@ fun MainScreen() {
                                         dispatchChatAction(
                                             MainScreenChatAction.OpenTaskDialog(
                                                 projectPath = "",
+                                                applyToCurrentSession = false,
+                                                dismissMenu = true
+                                            )
+                                        )
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (chatState.projectPath.isNullOrBlank()) {
+                                                "添加任务"
+                                            } else {
+                                                "更改任务"
+                                            }
+                                        )
+                                    },
+                                    onClick = {
+                                        dispatchChatAction(
+                                            MainScreenChatAction.OpenTaskDialog(
+                                                projectPath = chatState.projectPath.orEmpty(),
+                                                applyToCurrentSession = true,
                                                 dismissMenu = true
                                             )
                                         )
@@ -1775,7 +1650,10 @@ fun MainScreen() {
             }
             Scaffold(
                 snackbarHost = {
-                    SnackbarHost(hostState = snackbarHostState)
+                    MainScreenSnackbarHost(
+                        hostState = snackbarHostState,
+                        liftedAboveBottomBar = showBottomBar
+                    )
                 },
                 containerColor = Color.Transparent,
                 topBar = {
@@ -1904,6 +1782,7 @@ fun MainScreen() {
             CreateTaskDialog(
                 onDismiss = { dispatchDialogAction(MainScreenDialogAction.HideTaskDialog) },
                 projectPath = taskProjectPath,
+                applyToCurrentSession = dialogState.taskDialogAppliesToCurrentSession,
                 onProjectPathChange = {
                     dispatchDialogAction(MainScreenDialogAction.UpdateTaskProjectPath(it))
                 },
@@ -1911,32 +1790,11 @@ fun MainScreen() {
                     folderPickerLauncher.launch(null)
                 },
                 onCreateTask = { projectPath ->
-                    // #region debug-point F:create-local-project-task
-                    reportGitBackChatFlashMainDebug(
-                        hypothesisId = "F",
-                        location = "MainActivity.kt:CreateTaskDialog:onCreateTask:before",
-                        msg = "[DEBUG] create task requested",
-                        data = JSONObject()
-                            .put("projectPath", projectPath)
-                            .put("trimmedProjectPath", projectPath.trim())
-                            .put("selectedTopLevelPage", selectedTopLevelPage)
-                            .put("visibleTopLevelPage", visibleTopLevelPage)
-                            .put("visibleRoute", visibleScreen.route)
-                    )
-                    // #endregion
-                    chatVm.startTask(projectPath)
-                    // #region debug-point F:create-local-project-task
-                    reportGitBackChatFlashMainDebug(
-                        hypothesisId = "F",
-                        location = "MainActivity.kt:CreateTaskDialog:onCreateTask:after",
-                        msg = "[DEBUG] create task returned",
-                        data = JSONObject()
-                            .put("projectPath", projectPath)
-                            .put("trimmedProjectPath", projectPath.trim())
-                            .put("currentSessionId", chatState.sessionId)
-                            .put("currentProjectPath", chatState.projectPath ?: JSONObject.NULL)
-                    )
-                    // #endregion
+                    if (dialogState.taskDialogAppliesToCurrentSession) {
+                        chatVm.updateCurrentTask(projectPath)
+                    } else {
+                        chatVm.startTask(projectPath)
+                    }
                     dispatchDialogAction(MainScreenDialogAction.HideTaskDialog)
                     dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
                     navigateToTopLevel(Screen.Chat)
@@ -2001,6 +1859,37 @@ fun MainScreen() {
     }
 }
 
+@Composable
+private fun MainScreenSnackbarHost(
+    hostState: SnackbarHostState,
+    liftedAboveBottomBar: Boolean
+) {
+    val chromeColor = rememberMurongChromeColor()
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 12.dp)
+    ) {
+        SnackbarHost(
+            hostState = hostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = if (liftedAboveBottomBar) 108.dp else 20.dp),
+            snackbar = { data ->
+                Snackbar(
+                    snackbarData = data,
+                    shape = RoundedCornerShape(22.dp),
+                    containerColor = chromeColor.copy(alpha = 0.94f),
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    actionColor = MaterialTheme.colorScheme.primary,
+                    dismissActionContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        )
+    }
+}
+
 private fun copyTextToClipboard(context: Context, text: String) {
     val clipboard = context.getSystemService(android.content.ClipboardManager::class.java) ?: return
     clipboard.setPrimaryClip(ClipData.newPlainText(null, text))
@@ -2047,7 +1936,7 @@ private fun ChatPagePreviewPlaceholder(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)
             ) {
                 Text(
-                    text = if (it == 0) "聊天预览占位" else "切页时不再挂载完整消息列表",
+                    text = if (it == 0) "聊天页预览已折叠" else "切页时不再挂载完整消息列表",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2057,41 +1946,6 @@ private fun ChatPagePreviewPlaceholder(
     }
 }
 
-// #region debug-point C:chat-debug-reporter
-private const val ENABLE_REASONIX_BACK_DEBUG_REPORTS = true
-
-private fun reportGitBackChatFlashMainDebug(
-    hypothesisId: String,
-    location: String,
-    msg: String,
-    data: JSONObject
-) {
-    if (!ENABLE_REASONIX_BACK_DEBUG_REPORTS) return
-    Thread {
-        runCatching {
-            val connection = (URL("http://192.168.2.3:7777/event").openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 1200
-                readTimeout = 1200
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json")
-            }
-            val payload = JSONObject()
-                .put("sessionId", "app-launch-crash")
-                .put("runId", "pre-fix")
-                .put("hypothesisId", hypothesisId)
-                .put("location", location)
-                .put("msg", msg)
-                .put("data", data)
-                .put("ts", System.currentTimeMillis())
-                .toString()
-            connection.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-            runCatching { connection.inputStream.use { input -> while (input.read() != -1) {} } }
-            connection.disconnect()
-        }
-    }.start()
-}
-// #endregion
 
 private data class PromptCacheMetrics(
     val hitRatePercent: Int
@@ -2354,12 +2208,17 @@ private fun ExportConversationDialog(
 private fun CreateTaskDialog(
     onDismiss: () -> Unit,
     projectPath: String,
+    applyToCurrentSession: Boolean,
     onProjectPathChange: (String) -> Unit,
     onPickFolder: () -> Unit,
     onCreateTask: (String) -> Unit
 ) {
     MainScreenPopupDialog(
-        title = "新建任务",
+        title = if (applyToCurrentSession) {
+            if (projectPath.isBlank()) "添加任务" else "更改任务"
+        } else {
+            "新建任务"
+        },
         onDismissRequest = onDismiss,
         actions = {
             TextButton(onClick = onDismiss) {
@@ -2369,12 +2228,16 @@ private fun CreateTaskDialog(
                 onClick = { onCreateTask(projectPath.trim()) },
                 enabled = projectPath.isNotBlank()
             ) {
-                Text("创建")
+                Text(if (applyToCurrentSession) "保存" else "创建")
             }
         }
     ) {
         Text(
-            text = "可以直接手动输入项目目录，也可以用系统文件夹选择器选择项目。",
+            text = if (applyToCurrentSession) {
+                "把当前聊天绑定到一个项目目录，后续文件搜索、知识范围和项目上下文都会切到这个任务。"
+            } else {
+                "可以直接手动输入项目目录，也可以用系统文件夹选择器选择项目。"
+            },
             style = MaterialTheme.typography.bodySmall
         )
         OutlinedButton(
@@ -2522,10 +2385,13 @@ private fun ApprovalDialog(
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary
                     )
-                    Text(
-                        text = approval.rawArgs,
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                    SelectionContainer {
+                        Text(
+                            text = sanitizeForUiDisplay(approval.rawArgs),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
                 }
             }
         }

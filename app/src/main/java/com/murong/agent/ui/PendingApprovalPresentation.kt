@@ -69,8 +69,8 @@ internal fun PendingApprovalSummaryCard(
 internal fun PendingApprovalUi.toPendingApprovalPresentation(): PendingApprovalPresentation {
     if (!isGitHubPendingApproval()) {
         return PendingApprovalPresentation(
-            headline = summary,
-            supportText = detail.takeIf { it.isNotBlank() },
+            headline = sanitizeForUiDisplay(summary),
+            supportText = detail.takeIf { it.isNotBlank() }?.let(::sanitizeForUiDisplay),
             rows = emptyList(),
             rawArgsLabel = "参数",
             approveLabel = "允许",

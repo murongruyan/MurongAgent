@@ -12,9 +12,9 @@ class FileTool(
 
     override val name = "file"
     override val description = if (allowedOperations == setOf("read", "list", "exists")) {
-        "只读文件工具。读取文件内容、列出目录、检查文件是否存在。适合安全的只读探索任务。用 read 操作读取文件内容比 shell cat 更可靠。"
+        "只读文件工具。读取文件内容、列出目录、检查文件是否存在。适合安全的只读探索任务。已知文件名但还不知道精确路径时，先用 list 在 src/main、src/test、app/src、core/src、common/src 等源码目录逐步缩小范围；读取内容再用 read，比 shell cat 更可靠。"
     } else {
-        "文件系统工具。读取、写入、列出或删除 Android 设备上的文件。路径可以是任何位置（需要 root）。读取文件用 read 操作（比 shell cat 更可靠），写入用 write，列目录用 list，删除用 delete，检查存在用 exists。"
+        "文件系统工具。读取、写入、列出或删除 Android 设备上的文件。路径可以是任何位置（需要 root）。已知文件名但还不知道精确路径时，先用 list 在源码目录逐步定位，再用 read 读取内容；读取文件比 shell cat 更可靠，写入用 write，列目录用 list，删除用 delete，检查存在用 exists。"
     }
     override val parameters: Map<String, Any> = mapOf(
         "type" to "object",

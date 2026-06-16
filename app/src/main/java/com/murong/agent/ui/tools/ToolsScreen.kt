@@ -30,6 +30,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -41,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
+import com.murong.agent.ui.sanitizeForUiDisplay
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -110,12 +112,47 @@ fun ToolsScreen(
     }
     var showApprovalPolicyEditor by remember { mutableStateOf(false) }
     var showWorkflowExecutionEditor by remember { mutableStateOf(false) }
-    var showToolAccessEditor by remember { mutableStateOf(false) }
+    var showInlineToolAccess by remember { mutableStateOf(false) }
+    var showSubagentGroup by remember { mutableStateOf(false) }
     var selectedCheckpoint by remember { mutableStateOf<ConversationCheckpointUi?>(null) }
     var selectedRecord by remember { mutableStateOf<FileChangeRecordUi?>(null) }
     var selectedToolCall by remember { mutableStateOf<ToolCallRecordUi?>(null) }
     var selectedError by remember { mutableStateOf<ErrorRecordUi?>(null) }
-    var selectedMcpStatus by remember { mutableStateOf<McpServerStatus?>(null) }
+    val subagentPresetNames = remember { listOf("explore", "research", "review", "security_review") }
+
+    fun updateBuiltinToolEnabled(toolName: String, enabled: Boolean) {
+        val updated = config.enabledBuiltinTools.toMutableSet()
+        when (toolName) {
+            "subagent" -> {
+                if (enabled) {
+                    updated.add("subagent_launch")
+                    updated.addAll(subagentPresetNames)
+                } else {
+                    updated.remove("subagent")
+                    updated.remove("subagent_launch")
+                    updated.removeAll(subagentPresetNames.toSet())
+                }
+            }
+            in subagentPresetNames -> {
+                if (enabled) {
+                    updated.add("subagent_launch")
+                    updated.add(toolName)
+                } else {
+                    updated.remove(toolName)
+                }
+            }
+            else -> {
+                if (enabled) updated.add(toolName) else updated.remove(toolName)
+            }
+        }
+        onUpdateConfig(config.copy(enabledBuiltinTools = updated.sorted()))
+    }
+
+    fun updateFileOperationEnabled(operation: String, enabled: Boolean) {
+        val updated = config.enabledFileToolOperations.toMutableSet()
+        if (enabled) updated.add(operation) else updated.remove(operation)
+        onUpdateConfig(config.copy(enabledFileToolOperations = updated.sorted()))
+    }
 
     val mcpToolNames = remember(mcpStatuses) {
         mcpStatuses.flatMap { status -> status.toolNames.map { "mcp_$it" } }.distinct().sorted()
@@ -155,10 +192,44 @@ fun ToolsScreen(
                 status = if (config.isBuiltinToolEnabled("web_search")) "已启用" else "已禁用"
             ),
             ToolEntry(
+                name = "web_fetch",
+                title = "网页抓取",
+                description = "抓取单个网页并提取标题、摘要和正文。",
+                status = if (config.isBuiltinToolEnabled("web_fetch")) "已启用" else "已禁用"
+            ),
+            ToolEntry(
                 name = "subagent",
                 title = "子代理",
                 description = "子任务分发与摘要回传。",
                 status = if (config.isBuiltinToolEnabled("subagent")) "已启用" else "已禁用"
+            )
+        )
+    }
+    val subagentPresetTools = remember(config) {
+        listOf(
+            ToolEntry(
+                name = "explore",
+                title = "探索代理",
+                description = "子代理预设：快速摸清代码结构、关键文件和调用链。",
+                status = if (config.isBuiltinToolEnabled("explore")) "已启用" else "已禁用"
+            ),
+            ToolEntry(
+                name = "research",
+                title = "研究代理",
+                description = "子代理预设：偏文档、网页和方案调研。",
+                status = if (config.isBuiltinToolEnabled("research")) "已启用" else "已禁用"
+            ),
+            ToolEntry(
+                name = "review",
+                title = "审查代理",
+                description = "子代理预设：偏 bug、回归和实现风险审查。",
+                status = if (config.isBuiltinToolEnabled("review")) "已启用" else "已禁用"
+            ),
+            ToolEntry(
+                name = "security_review",
+                title = "安全审查代理",
+                description = "子代理预设：偏权限边界、漏洞面和安全风险检查。",
+                status = if (config.isBuiltinToolEnabled("security_review")) "已启用" else "已禁用"
             )
         )
     }
@@ -175,20 +246,71 @@ fun ToolsScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             item {
-                SectionTitle(
+                SectionTitleWithAction(
                     title = "内置工具",
-                    subtitle = "集中查看当前工具开关、审批、工作流和 MCP 状态。"
+                    subtitle = "把常用开关直接收在这一页，少弹窗、少跳转。",
+                    action = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text("权限编辑", style = MaterialTheme.typography.bodySmall)
+                            Switch(
+                                checked = showInlineToolAccess,
+                                onCheckedChange = { showInlineToolAccess = it }
+                            )
+                        }
+                    }
                 )
             }
             items(builtInTools, key = { it.name }) { tool ->
-                ToolEntryCard(tool = tool)
+                if (tool.name == "subagent") {
+                    CollapsibleToolGroupCard(
+                        tool = tool,
+                        checked = config.isBuiltinToolEnabled(tool.name),
+                        expanded = showSubagentGroup,
+                        onCheckedChange = { updateBuiltinToolEnabled(tool.name, it) },
+                        onExpandedChange = { showSubagentGroup = it }
+                    ) {
+                        subagentPresetTools.forEach { preset ->
+                            ToolToggleRow(
+                                tool = preset,
+                                checked = config.isBuiltinToolEnabled(preset.name),
+                                enabled = config.isBuiltinToolEnabled("subagent"),
+                                onCheckedChange = { updateBuiltinToolEnabled(preset.name, it) }
+                            )
+                        }
+                    }
+                } else {
+                    ToolToggleCard(
+                        tool = tool,
+                        checked = config.isBuiltinToolEnabled(tool.name),
+                        onCheckedChange = { updateBuiltinToolEnabled(tool.name, it) }
+                    )
+                }
+            }
+            if (showInlineToolAccess) {
+                item("inline-tool-access") {
+                    ToolAccessInlineCard(
+                        config = config,
+                        mcpToolNames = mcpToolNames,
+                        onFileOperationToggle = ::updateFileOperationEnabled,
+                        onAllowAllMcpToggle = { enabled ->
+                            onUpdateConfig(config.copy(allowAllMcpTools = enabled))
+                        },
+                        onMcpToolToggle = { toolName, enabled ->
+                            val updated = config.allowedMcpTools.toMutableSet()
+                            if (enabled) updated.add(toolName) else updated.remove(toolName)
+                            onUpdateConfig(config.copy(allowedMcpTools = updated.sorted()))
+                        }
+                    )
+                }
             }
             item {
                 WorkflowCard(
                     config = config,
                     onManageWorkflow = { showWorkflowExecutionEditor = true },
-                    onManageApproval = { showApprovalPolicyEditor = true },
-                    onManageTools = { showToolAccessEditor = true }
+                    onManageApproval = { showApprovalPolicyEditor = true }
                 )
             }
             item {
@@ -206,9 +328,7 @@ fun ToolsScreen(
                     currentProjectPath = currentProjectPath,
                     projectRuleCount = projectRuleCount,
                     projectMemoryCount = projectMemoryCount,
-                    projectSkillCount = projectSkillCount,
-                    mcpServerCount = mcpStatuses.size,
-                    availableMcpToolCount = mcpToolNames.size
+                    projectSkillCount = projectSkillCount
                 )
             }
             item {
@@ -226,15 +346,6 @@ fun ToolsScreen(
                     onOpenCheckpoint = { selectedCheckpoint = it },
                     onOpenRecord = { selectedRecord = it },
                     onRollbackCheckpoint = onRollbackFileCheckpoint
-                )
-            }
-            item {
-                McpCard(
-                    mcpStatuses = mcpStatuses,
-                    mcpConnectError = mcpConnectError,
-                    onConnectMcpServers = onConnectMcpServers,
-                    onRefreshMcpStatus = onRefreshMcpStatus,
-                    onOpenStatus = { selectedMcpStatus = it }
                 )
             }
             item {
@@ -287,17 +398,6 @@ fun ToolsScreen(
             }
         )
     }
-    if (showToolAccessEditor) {
-        ToolAccessEditorDialog(
-            config = config,
-            mcpToolNames = mcpToolNames,
-            onDismiss = { showToolAccessEditor = false },
-            onSave = { updatedConfig ->
-                showToolAccessEditor = false
-                onUpdateConfig(updatedConfig)
-            }
-        )
-    }
     selectedCheckpoint?.let { checkpoint ->
         CheckpointDetailSheet(
             checkpoint = checkpoint,
@@ -318,9 +418,6 @@ fun ToolsScreen(
     }
     selectedError?.let { record ->
         ErrorDetailSheet(record = record, onDismiss = { selectedError = null })
-    }
-    selectedMcpStatus?.let { status ->
-        McpStatusDetailSheet(status = status, onDismiss = { selectedMcpStatus = null })
     }
 }
 
@@ -377,8 +474,7 @@ private fun RootStatusCard(
 private fun WorkflowCard(
     config: ProviderConfig,
     onManageWorkflow: () -> Unit,
-    onManageApproval: () -> Unit,
-    onManageTools: () -> Unit
+    onManageApproval: () -> Unit
 ) {
     ToolsPanelCard {
         Column(
@@ -393,7 +489,6 @@ private fun WorkflowCard(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilledTonalButton(onClick = onManageWorkflow) { Text("工作流") }
                 FilledTonalButton(onClick = onManageApproval) { Text("审批") }
-                FilledTonalButton(onClick = onManageTools) { Text("工具权限") }
             }
         }
     }
@@ -444,9 +539,7 @@ private fun ProjectPreferenceCard(
     currentProjectPath: String?,
     projectRuleCount: Int,
     projectMemoryCount: Int,
-    projectSkillCount: Int,
-    mcpServerCount: Int,
-    availableMcpToolCount: Int
+    projectSkillCount: Int
 ) {
     ToolsPanelCard {
         Column(
@@ -458,8 +551,6 @@ private fun ProjectPreferenceCard(
             KeyValueRow("项目规则", "$projectRuleCount")
             KeyValueRow("项目记忆", "$projectMemoryCount")
             KeyValueRow("项目技能", "$projectSkillCount")
-            KeyValueRow("MCP 服务器", "$mcpServerCount")
-            KeyValueRow("MCP 工具", "$availableMcpToolCount")
         }
     }
 }
@@ -570,7 +661,11 @@ private fun McpCard(
 }
 
 @Composable
-private fun ToolEntryCard(tool: ToolEntry) {
+private fun ToolToggleCard(
+    tool: ToolEntry,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
     ToolsPanelCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -585,7 +680,91 @@ private fun ToolEntryCard(tool: ToolEntry) {
                 Text(tool.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Spacer(modifier = Modifier.width(8.dp))
-            StatusBadge(text = tool.status, color = MaterialTheme.colorScheme.primary)
+            Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange
+            )
+        }
+    }
+}
+
+@Composable
+private fun CollapsibleToolGroupCard(
+    tool: ToolEntry,
+    checked: Boolean,
+    expanded: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    onExpandedChange: (Boolean) -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    ToolsPanelCard {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(tool.title, style = MaterialTheme.typography.titleSmall)
+                    Text(tool.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                TextButton(onClick = { onExpandedChange(!expanded) }) {
+                    Text(if (expanded) "收起" else "展开")
+                }
+                Switch(
+                    checked = checked,
+                    onCheckedChange = onCheckedChange
+                )
+            }
+            if (expanded) {
+                content()
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolToggleRow(
+    tool: ToolEntry,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.26f)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(tool.title, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    tool.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Switch(
+                checked = checked,
+                enabled = enabled,
+                onCheckedChange = onCheckedChange
+            )
         }
     }
 }
@@ -1077,6 +1256,78 @@ private fun SectionTitle(title: String, subtitle: String) {
 }
 
 @Composable
+private fun SectionTitleWithAction(
+    title: String,
+    subtitle: String,
+    action: @Composable RowScope.() -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        Row(content = action)
+    }
+}
+
+@Composable
+private fun ToolAccessInlineCard(
+    config: ProviderConfig,
+    mcpToolNames: List<String>,
+    onFileOperationToggle: (String, Boolean) -> Unit,
+    onAllowAllMcpToggle: (Boolean) -> Unit,
+    onMcpToolToggle: (String, Boolean) -> Unit
+) {
+    ToolsPanelCard {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text("工具权限", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "直接在这里改文件操作和 MCP 白名单，不再额外弹一层勾选框。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text("文件操作", style = MaterialTheme.typography.labelLarge)
+            DEFAULT_ENABLED_FILE_TOOL_OPERATIONS.forEach { operation ->
+                ToggleRow(
+                    title = fileOperationLabel(operation),
+                    subtitle = fileOperationDescription(operation),
+                    checked = config.isFileToolOperationEnabled(operation),
+                    onCheckedChange = { onFileOperationToggle(operation, it) }
+                )
+            }
+            ToggleRow(
+                title = "允许全部 MCP 工具",
+                subtitle = "关闭后，只允许下面打开的 MCP 工具进入调用列表。",
+                checked = config.allowAllMcpTools,
+                onCheckedChange = onAllowAllMcpToggle
+            )
+            if (!config.allowAllMcpTools && mcpToolNames.isNotEmpty()) {
+                Text("MCP 白名单", style = MaterialTheme.typography.labelLarge)
+                mcpToolNames.forEach { toolName ->
+                    ToggleRow(
+                        title = toolName,
+                        subtitle = "仅允许当前工具自动进入调用列表。",
+                        checked = toolName in config.allowedMcpTools,
+                        onCheckedChange = { onMcpToolToggle(toolName, it) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun StatusBadge(text: String, color: Color) {
     Surface(shape = CircleShape, color = color.copy(alpha = 0.14f)) {
         Text(
@@ -1234,7 +1485,7 @@ private fun CodeBlock(content: String) {
                 .padding(12.dp)
         ) {
             Text(
-                text = content,
+                text = sanitizeForUiDisplay(content),
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace
             )
@@ -1249,7 +1500,11 @@ private fun builtInToolCatalog(): List<ToolEntry> {
         ToolEntry("code_edit", "代码编辑", "查看文件并执行 SEARCH/REPLACE。", ""),
         ToolEntry("web_search", "联网搜索", "联网检索文档与网页内容。", ""),
         ToolEntry("web_fetch", "网页抓取", "抓取单个网页并提取标题、摘要和正文。", ""),
-        ToolEntry("subagent", "子代理", "派发受限的子代理执行只读任务。", "")
+        ToolEntry("subagent", "子代理", "派发受限的子代理执行只读任务。", ""),
+        ToolEntry("explore", "探索代理", "快速探索代码结构、关键文件和调用链。", ""),
+        ToolEntry("research", "研究代理", "聚焦文档、网页和方案调研。", ""),
+        ToolEntry("review", "审查代理", "聚焦 bug、回归和实现风险。", ""),
+        ToolEntry("security_review", "安全审查代理", "聚焦权限边界、漏洞面和安全问题。", "")
     )
 }
 

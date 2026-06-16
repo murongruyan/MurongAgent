@@ -1,0 +1,230 @@
+{
+  "schemaVersion": 1,
+  "toolchainId": "murong-official",
+  "abi": "arm64-v8a",
+  "version": "0.1.0-draft",
+  "sourcePolicy": {
+    "mode": "self-built-only",
+    "note": "外部提取的二进制只允许作为临时验证样本，不作为正式发布来源。"
+  },
+  "layout": {
+    "binDir": "bin",
+    "libDir": "lib",
+    "manifestPath": "toolchain/official-toolchain-arm64-v8a.json"
+  },
+  "tiers": {
+    "tier1_required": [
+      "sh",
+      "bash",
+      "coreutils",
+      "grep",
+      "find",
+      "sed",
+      "xargs",
+      "gawk",
+      "awk",
+      "cat",
+      "ls",
+      "cp",
+      "mv",
+      "rm",
+      "mkdir",
+      "pwd",
+      "head",
+      "tail",
+      "sort",
+      "cut",
+      "tr",
+      "wc",
+      "env",
+      "echo",
+      "printf",
+      "basename",
+      "dirname"
+    ],
+    "tier2_recommended": [
+      "readlink",
+      "realpath",
+      "ln",
+      "chmod",
+      "chown",
+      "stat",
+      "touch",
+      "test",
+      "uname",
+      "whoami",
+      "id",
+      "date",
+      "sleep",
+      "tee",
+      "paste",
+      "nl",
+      "tac",
+      "uniq",
+      "comm",
+      "join",
+      "seq",
+      "mktemp",
+      "cksum",
+      "md5sum",
+      "sha1sum",
+      "sha224sum",
+      "sha256sum",
+      "sha384sum",
+      "sha512sum",
+      "b2sum",
+      "base32",
+      "base64",
+      "basenc"
+    ],
+    "tier3_optional": [
+      "brotli",
+      "bzip2",
+      "bunzip2",
+      "bzcat",
+      "bzcmp",
+      "bzdiff",
+      "bzgrep",
+      "bzless",
+      "bzmore",
+      "lz4",
+      "lz4cat",
+      "pzstd",
+      "unlz4",
+      "unzstd",
+      "zstd",
+      "zstdcat",
+      "zstdgrep",
+      "zstdless",
+      "zip",
+      "zipcloak",
+      "zipnote",
+      "zipsplit",
+      "iconv",
+      "idn2",
+      "curl",
+      "wget",
+      "openssl"
+    ],
+    "tier4_remote_optional": [
+      "ssh",
+      "scp",
+      "sftp",
+      "ssh-add",
+      "ssh-agent",
+      "ssh-copy-id",
+      "ssh-keygen",
+      "ssh-keyscan"
+    ],
+    "excluded_by_default": [
+      "adb",
+      "add-trusted-certificate",
+      "su",
+      "su2",
+      "sudo",
+      "mt-envdump",
+      "chcon",
+      "runcon",
+      "chroot",
+      "mknod",
+      "mkfifo"
+    ]
+  },
+  "runtime": {
+    "preferredPathOrder": [
+      "bin",
+      "/system/bin",
+      "/system/xbin",
+      "/system_ext/bin",
+      "/product/bin",
+      "/apex/com.android.runtime/bin"
+    ],
+    "libraryPathOrder": [
+      "lib"
+    ],
+    "searchPolicy": {
+      "preferredSearchBinary": "rg",
+      "fallbackSearchBinary": "grep"
+    }
+  },
+  "packages": [
+    {
+      "name": "shell-base",
+      "status": "planned",
+      "commands": [
+        "sh",
+        "bash"
+      ],
+      "source": {
+        "project": "",
+        "version": "",
+        "license": ""
+      }
+    },
+    {
+      "name": "text-search-base",
+      "status": "planned",
+      "commands": [
+        "grep",
+        "find",
+        "sed",
+        "xargs",
+        "gawk",
+        "awk"
+      ],
+      "source": {
+        "project": "",
+        "version": "",
+        "license": ""
+      }
+    },
+    {
+      "name": "coreutils-base",
+      "status": "planned",
+      "commands": [
+        "coreutils",
+        "cat",
+        "ls",
+        "cp",
+        "mv",
+        "rm",
+        "mkdir",
+        "pwd",
+        "head",
+        "tail",
+        "sort",
+        "cut",
+        "tr",
+        "wc",
+        "env",
+        "echo",
+        "printf",
+        "basename",
+        "dirname"
+      ],
+      "source": {
+        "project": "",
+        "version": "",
+        "license": ""
+      }
+    },
+    {
+      "name": "ripgrep-search",
+      "status": "planned",
+      "commands": [
+        "rg"
+      ],
+      "source": {
+        "project": "",
+        "version": "",
+        "license": ""
+      },
+      "note": "这是 code_search 的最终优先搜索后端。"
+    }
+  ],
+  "upgrade": {
+    "strategy": "bundle-with-apk",
+    "versionFile": ".version",
+    "replacePolicy": "delete-old-then-extract"
+  }
+}

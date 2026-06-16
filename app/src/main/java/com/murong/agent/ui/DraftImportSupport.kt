@@ -1,5 +1,8 @@
 package com.murong.agent.ui
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -21,11 +24,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.murong.agent.core.config.GlobalMemory
+import com.murong.agent.core.config.GlobalRule
 import com.murong.agent.core.config.GlobalSkill
 import com.murong.agent.core.config.SkillRunAs
 import com.murong.agent.core.mcp.McpServerConfig
@@ -224,6 +230,110 @@ private fun SkillAllowedToolsBudgetChip(
 }
 
 @Composable
+fun RuleDraftImportCard(
+    onImportDrafts: (List<GlobalRule>) -> Unit,
+    modifier: Modifier = Modifier,
+    buttonLabel: String = "导入规则"
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var draftText by remember { mutableStateOf("") }
+    var previewItems by remember { mutableStateOf<List<GlobalRule>>(emptyList()) }
+    var feedback by remember { mutableStateOf<String?>(null) }
+
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        TextButton(onClick = { expanded = !expanded }) {
+            Text(if (expanded) "收起导入" else buttonLabel, fontSize = 12.sp)
+        }
+
+        AnimatedVisibility(visible = expanded) {
+            DraftImportCardShell(
+                title = "规则导入",
+                hint = "支持 Markdown frontmatter + 正文，也支持对象数组 JSON 和单个对象。",
+                draftText = draftText,
+                onDraftTextChange = {
+                    draftText = it
+                    previewItems = emptyList()
+                    feedback = null
+                },
+                feedback = feedback,
+                feedbackIsError = previewItems.isEmpty(),
+                previewLabels = previewItems.map(::buildRuleDraftPreviewLabel),
+                importButtonLabel = "确认导入 ${previewItems.size} 条规则",
+                onParse = {
+                    val result = parseRuleDrafts(draftText)
+                    previewItems = result.items
+                    feedback = result.feedback
+                },
+                onImport = {
+                    if (previewItems.isNotEmpty()) {
+                        onImportDrafts(previewItems)
+                        draftText = ""
+                        previewItems = emptyList()
+                        feedback = "已导入规则"
+                        expanded = false
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+fun MemoryDraftImportCard(
+    onImportDrafts: (List<GlobalMemory>) -> Unit,
+    modifier: Modifier = Modifier,
+    buttonLabel: String = "导入记忆"
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var draftText by remember { mutableStateOf("") }
+    var previewItems by remember { mutableStateOf<List<GlobalMemory>>(emptyList()) }
+    var feedback by remember { mutableStateOf<String?>(null) }
+
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        TextButton(onClick = { expanded = !expanded }) {
+            Text(if (expanded) "收起导入" else buttonLabel, fontSize = 12.sp)
+        }
+
+        AnimatedVisibility(visible = expanded) {
+            DraftImportCardShell(
+                title = "记忆导入",
+                hint = "支持 Markdown frontmatter + 正文，也支持对象数组 JSON 和单个对象。",
+                draftText = draftText,
+                onDraftTextChange = {
+                    draftText = it
+                    previewItems = emptyList()
+                    feedback = null
+                },
+                feedback = feedback,
+                feedbackIsError = previewItems.isEmpty(),
+                previewLabels = previewItems.map(::buildMemoryDraftPreviewLabel),
+                importButtonLabel = "确认导入 ${previewItems.size} 条记忆",
+                onParse = {
+                    val result = parseMemoryDrafts(draftText)
+                    previewItems = result.items
+                    feedback = result.feedback
+                },
+                onImport = {
+                    if (previewItems.isNotEmpty()) {
+                        onImportDrafts(previewItems)
+                        draftText = ""
+                        previewItems = emptyList()
+                        feedback = "已导入记忆"
+                        expanded = false
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
 fun McpDraftImportCard(
     onImportDrafts: (List<McpServerConfig>) -> Unit,
     modifier: Modifier = Modifier,
@@ -245,7 +355,7 @@ fun McpDraftImportCard(
         AnimatedVisibility(visible = expanded) {
             DraftImportCardShell(
                 title = "MCP 草案导入",
-                hint = "兼容桌面端 `.mcp.json` / `mcpServers` JSON，也兼容旧版原始 spec 字符串，如 `fs=npx -y @modelcontextprotocol/server-filesystem .`。",
+                hint = "支持 Markdown frontmatter、桌面端 `.mcp.json` / `mcpServers` JSON，也兼容原始 spec 字符串，如 `fs=npx -y @modelcontextprotocol/server-filesystem .`。",
                 draftText = draftText,
                 onDraftTextChange = {
                     draftText = it
@@ -297,7 +407,7 @@ fun SkillDraftImportCard(
         AnimatedVisibility(visible = expanded) {
             DraftImportCardShell(
                 title = "Skill 草案导入",
-                hint = "兼容桌面端 Skill markdown 文件，支持 YAML frontmatter + 正文；也兼容对象数组 JSON 和单个对象。",
+                hint = "支持 Skill Markdown frontmatter + 正文，也兼容对象数组 JSON 和单个对象。",
                 draftText = draftText,
                 onDraftTextChange = {
                     draftText = it
@@ -346,6 +456,19 @@ private fun DraftImportCardShell(
     onParse: () -> Unit,
     onImport: () -> Unit
 ) {
+    val context = LocalContext.current
+    val filePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        val importedText = uri?.let { selectedUri ->
+            runCatching {
+                context.contentResolver.openInputStream(selectedUri)?.bufferedReader()?.use { it.readText() }
+            }.getOrNull()
+        }.orEmpty()
+        if (importedText.isNotBlank()) {
+            onDraftTextChange(importedText)
+        }
+    }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
@@ -369,7 +492,7 @@ private fun DraftImportCardShell(
             OutlinedTextField(
                 value = draftText,
                 onValueChange = onDraftTextChange,
-                label = { Text("草案 JSON") },
+                label = { Text("草案内容（支持 Markdown / JSON）") },
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 140.dp),
@@ -380,6 +503,11 @@ private fun DraftImportCardShell(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilledTonalButton(onClick = onParse, enabled = draftText.isNotBlank()) {
                     Text("解析草案", fontSize = 12.sp)
+                }
+                TextButton(onClick = {
+                    filePicker.launch(arrayOf("text/*", "application/json", "application/octet-stream"))
+                }) {
+                    Text("选择文件", fontSize = 12.sp)
                 }
                 if (draftText.isNotBlank() || previewLabels.isNotEmpty() || feedback != null) {
                     TextButton(onClick = onDraftTextChange.clearingAction()) {
@@ -435,7 +563,68 @@ private fun DraftImportCardShell(
 
 private fun ((String) -> Unit).clearingAction(): () -> Unit = { invoke("") }
 
+internal fun parseRuleDrafts(raw: String): DraftImportParseResult<GlobalRule> {
+    val markdownRule = parseMarkdownRule(raw)
+    if (markdownRule != null) {
+        return DraftImportParseResult(
+            items = listOf(markdownRule),
+            feedback = "已按 Markdown 解析 1 条规则。"
+        )
+    }
+    val parsed = parseDraftRoot(raw) ?: return DraftImportParseResult(
+        items = emptyList(),
+        feedback = "草案不是合法 JSON，也不是可识别的 Markdown 规则。"
+    )
+    val entries = unwrapDraftEntries(parsed, "rules", "items", "drafts")
+    var invalidCount = 0
+    val items = entries.mapNotNull { element ->
+        parseRuleDraft(element).getOrElse {
+            invalidCount += 1
+            null
+        }
+    }.distinctBy { it.id }
+    return buildParseResult(
+        items = items,
+        invalidCount = invalidCount,
+        successLabel = "规则"
+    )
+}
+
+internal fun parseMemoryDrafts(raw: String): DraftImportParseResult<GlobalMemory> {
+    val markdownMemory = parseMarkdownMemory(raw)
+    if (markdownMemory != null) {
+        return DraftImportParseResult(
+            items = listOf(markdownMemory),
+            feedback = "已按 Markdown 解析 1 条记忆。"
+        )
+    }
+    val parsed = parseDraftRoot(raw) ?: return DraftImportParseResult(
+        items = emptyList(),
+        feedback = "草案不是合法 JSON，也不是可识别的 Markdown 记忆。"
+    )
+    val entries = unwrapDraftEntries(parsed, "memories", "items", "drafts")
+    var invalidCount = 0
+    val items = entries.mapNotNull { element ->
+        parseMemoryDraft(element).getOrElse {
+            invalidCount += 1
+            null
+        }
+    }.distinctBy { it.id }
+    return buildParseResult(
+        items = items,
+        invalidCount = invalidCount,
+        successLabel = "记忆"
+    )
+}
+
 internal fun parseMcpServerDrafts(raw: String): DraftImportParseResult<McpServerConfig> {
+    val markdownMcp = parseMarkdownMcpServer(raw)
+    if (markdownMcp != null) {
+        return DraftImportParseResult(
+            items = listOf(markdownMcp),
+            feedback = "已按 Markdown 解析 1 条 MCP 草案。"
+        )
+    }
     val rawSpecItems = parseMcpSpecLines(raw)
     if (rawSpecItems.isNotEmpty()) {
         return DraftImportParseResult(
@@ -626,6 +815,41 @@ private fun parseMcpServerDraft(element: JsonElement): Result<McpServerConfig> =
     )
 }
 
+private fun parseRuleDraft(element: JsonElement): Result<GlobalRule> = runCatching {
+    val obj = element.jsonObject
+    val title = obj.string("title")
+        ?: obj.string("name")
+        ?: "导入规则"
+    val content = obj.string("content")
+        ?: obj.string("body")
+        ?: obj.string("instruction")
+        ?: obj.string("prompt")
+        ?: error("missing content")
+    GlobalRule(
+        id = obj.string("id").orEmpty().ifBlank { UUID.randomUUID().toString().take(8) },
+        title = title,
+        content = content,
+        enabled = obj.boolean("enabled") ?: true
+    )
+}
+
+private fun parseMemoryDraft(element: JsonElement): Result<GlobalMemory> = runCatching {
+    val obj = element.jsonObject
+    val title = obj.string("title")
+        ?: obj.string("name")
+        ?: "导入记忆"
+    val content = obj.string("content")
+        ?: obj.string("body")
+        ?: obj.string("note")
+        ?: error("missing content")
+    GlobalMemory(
+        id = obj.string("id").orEmpty().ifBlank { UUID.randomUUID().toString().take(8) },
+        title = title,
+        content = content,
+        enabled = obj.boolean("enabled") ?: true
+    )
+}
+
 private fun parseSkillDraft(element: JsonElement): Result<GlobalSkill> = runCatching {
     val obj = element.jsonObject
     val title = obj.string("title").orEmpty()
@@ -664,6 +888,34 @@ private fun parseSkillDraft(element: JsonElement): Result<GlobalSkill> = runCatc
     )
 }
 
+private fun parseMarkdownRule(raw: String): GlobalRule? {
+    return parseMarkdownTextEntry(
+        raw = raw,
+        defaultTitle = "导入规则"
+    )?.let { parsed ->
+        GlobalRule(
+            id = UUID.randomUUID().toString().take(8),
+            title = parsed.title,
+            content = parsed.content,
+            enabled = parsed.enabled
+        )
+    }
+}
+
+private fun parseMarkdownMemory(raw: String): GlobalMemory? {
+    return parseMarkdownTextEntry(
+        raw = raw,
+        defaultTitle = "导入记忆"
+    )?.let { parsed ->
+        GlobalMemory(
+            id = UUID.randomUUID().toString().take(8),
+            title = parsed.title,
+            content = parsed.content,
+            enabled = parsed.enabled
+        )
+    }
+}
+
 private fun parseDesktopSkillMarkdown(raw: String): GlobalSkill? {
     val sanitized = raw.trimStart('\uFEFF').trim()
     if (sanitized.isBlank()) return null
@@ -696,12 +948,163 @@ private fun parseDesktopSkillMarkdown(raw: String): GlobalSkill? {
     )
 }
 
+private fun parseMarkdownMcpServer(raw: String): McpServerConfig? {
+    val sanitized = raw.trimStart('\uFEFF').trim()
+    if (sanitized.isBlank()) return null
+    if (sanitized.startsWith("{") || sanitized.startsWith("[")) return null
+    val parsed = parseFrontmatterCompat(sanitized)
+    val body = parsed.body.trim()
+    val title = parsed.data["title"]
+        ?.takeIf { it.isNotBlank() }
+        ?: parsed.data["name"]?.takeIf { it.isNotBlank() }
+    val transport = parseTransportOrNull(
+        parsed.data["transport"]
+            ?: parsed.data["transportType"]
+            ?: parsed.data["type"]
+    )
+    val explicitUrl = parsed.data["url"]
+        ?: parsed.data["sseUrl"]
+        ?: parsed.data["endpoint"]
+    val commandLine = when {
+        parsed.data["command"].isNullOrBlank().not() -> listOfNotNull(
+            parsed.data["command"],
+            parsed.data["args"]
+        ).joinToString(" ")
+        body.isNotBlank() -> body.lineSequence().firstOrNull()?.trim().orEmpty()
+        else -> ""
+    }
+    val config = when {
+        explicitUrl.orEmpty().isNotBlank() -> {
+            val normalizedTransport = transport ?: inferRemoteTransport(explicitUrl.orEmpty())
+            McpServerConfig(
+                name = title ?: inferMcpNameFromUrl(explicitUrl.orEmpty()) ?: "imported-mcp",
+                transport = normalizedTransport,
+                url = explicitUrl.orEmpty(),
+                headers = parseKeyValueLines(parsed.data["headers"]),
+                requestTimeoutMs = parsed.data["requestTimeoutMs"]?.toLongOrNull(),
+                enabled = parsed.data["enabled"]?.toBooleanStrictOrNull() ?: true
+            )
+        }
+
+        commandLine.isNotBlank() -> {
+            val parsedSpec = parseDesktopMcpSpec(commandLine).getOrNull() ?: return null
+            parsedSpec.copy(
+                name = title ?: parsedSpec.name,
+                cwd = parsed.data["cwd"].orEmpty().ifBlank { parsedSpec.cwd },
+                env = parseKeyValueLines(parsed.data["env"]).ifEmpty { parsedSpec.env },
+                headers = parseKeyValueLines(parsed.data["headers"]).ifEmpty { parsedSpec.headers },
+                requestTimeoutMs = parsed.data["requestTimeoutMs"]?.toLongOrNull() ?: parsedSpec.requestTimeoutMs,
+                enabled = parsed.data["enabled"]?.toBooleanStrictOrNull() ?: parsedSpec.enabled
+            )
+        }
+
+        else -> null
+    }
+    return config
+}
+
 private fun parseTransport(raw: String?): McpTransportType {
     return when (raw?.trim()?.lowercase()) {
         null, "", "stdio" -> McpTransportType.STDIO
         "sse" -> McpTransportType.SSE
         "streamable-http", "http" -> McpTransportType.STREAMABLE_HTTP
         else -> error("unknown transport")
+    }
+}
+
+private fun parseTransportOrNull(raw: String?): McpTransportType? {
+    return when (raw?.trim()?.lowercase()) {
+        null, "" -> null
+        "stdio" -> McpTransportType.STDIO
+        "sse" -> McpTransportType.SSE
+        "streamable-http", "streamable_http", "http" -> McpTransportType.STREAMABLE_HTTP
+        else -> null
+    }
+}
+
+private fun inferRemoteTransport(url: String): McpTransportType {
+    return if (url.contains("/mcp", ignoreCase = true) || url.contains("streamable+", ignoreCase = true)) {
+        McpTransportType.STREAMABLE_HTTP
+    } else {
+        McpTransportType.SSE
+    }
+}
+
+private data class ParsedMarkdownTextEntry(
+    val title: String,
+    val content: String,
+    val enabled: Boolean
+)
+
+private fun parseMarkdownTextEntry(raw: String, defaultTitle: String): ParsedMarkdownTextEntry? {
+    val sanitized = raw.trimStart('\uFEFF').trim()
+    if (sanitized.isBlank()) return null
+    if (sanitized.startsWith("{") || sanitized.startsWith("[")) return null
+    val parsed = parseFrontmatterCompat(sanitized)
+    val body = parsed.body.trim()
+    val title = parsed.data["title"]
+        ?.takeIf { it.isNotBlank() }
+        ?: parsed.data["name"]?.takeIf { it.isNotBlank() }
+        ?: sanitized.lineSequence()
+            .firstOrNull()
+            ?.removePrefix("#")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() && it != "---" }
+        ?: defaultTitle
+    val enabled = parsed.data["enabled"]?.toBooleanStrictOrNull() ?: true
+    if (body.isBlank() && title == defaultTitle) return null
+    val content = body.ifBlank {
+        sanitized.lineSequence()
+            .drop(1)
+            .joinToString("\n")
+            .trim()
+    }
+    if (content.isBlank()) return null
+    return ParsedMarkdownTextEntry(
+        title = title,
+        content = content,
+        enabled = enabled
+    )
+}
+
+private fun parseKeyValueLines(raw: String?): Map<String, String> {
+    if (raw.isNullOrBlank()) return emptyMap()
+    return raw.lineSequence()
+        .mapNotNull { line ->
+            val trimmed = line.trim().removePrefix("-").trim()
+            val delimiterIndex = trimmed.indexOf(':').takeIf { it >= 0 } ?: trimmed.indexOf('=').takeIf { it >= 0 }
+            if (delimiterIndex == null) {
+                null
+            } else {
+                val key = trimmed.substring(0, delimiterIndex).trim()
+                val value = trimmed.substring(delimiterIndex + 1).trim()
+                if (key.isBlank() || value.isBlank()) null else key to value
+            }
+        }
+        .toMap()
+}
+
+private fun buildRuleDraftPreviewLabel(rule: GlobalRule): String {
+    return buildString {
+        append(rule.title.ifBlank { "未命名规则" })
+        append(" · ")
+        append(if (rule.enabled) "已启用" else "已停用")
+        rule.content.lineSequence().firstOrNull()?.trim()?.takeIf { it.isNotBlank() }?.let {
+            append(" · ")
+            append(it)
+        }
+    }
+}
+
+private fun buildMemoryDraftPreviewLabel(memory: GlobalMemory): String {
+    return buildString {
+        append(memory.title.ifBlank { "未命名记忆" })
+        append(" · ")
+        append(if (memory.enabled) "已启用" else "已停用")
+        memory.content.lineSequence().firstOrNull()?.trim()?.takeIf { it.isNotBlank() }?.let {
+            append(" · ")
+            append(it)
+        }
     }
 }
 

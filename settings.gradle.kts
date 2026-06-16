@@ -25,3 +25,5 @@ rootProject.name = "MurongAgent"
 include(":app")
 include(":core")
 include(":common")
+include(":terminal-emulator")
+include(":terminal-view")

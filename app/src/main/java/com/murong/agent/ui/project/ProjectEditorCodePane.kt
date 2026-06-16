@@ -59,6 +59,7 @@ internal fun ProjectCodeEditorPane(
     editorValue: TextFieldValue,
     onValueChange: (TextFieldValue) -> Unit,
     language: String?,
+    wordWrapEnabled: Boolean,
     searchQuery: String,
     searchRequest: ProjectEditorSearchRequest = ProjectEditorSearchRequest(),
     replaceQuery: String = "",
@@ -87,7 +88,7 @@ internal fun ProjectCodeEditorPane(
             setTabWidth(4)
             typefaceText = Typeface.MONOSPACE
             typefaceLineNumber = Typeface.MONOSPACE
-            isWordwrap = false
+            isWordwrap = wordWrapEnabled
             props.overScrollEnabled = false
             overScrollMode = View.OVER_SCROLL_NEVER
             setDividerWidth(1f)
@@ -130,10 +131,15 @@ internal fun ProjectCodeEditorPane(
         }
         val selectionReceipt = editor.subscribeEvent<SelectionChangeEvent> { event, _ ->
             if (suppressExternalSync.get()) return@subscribeEvent
+            val currentText = editor.text.toString()
             val currentValue = latestEditorValue
             val selection = TextRange(event.left.index, event.right.index)
-            if (selection != currentValue.selection) {
-                latestValueChange(currentValue.copy(selection = selection))
+            val nextValue = currentValue.copy(
+                text = currentText,
+                selection = selection
+            )
+            if (nextValue != currentValue) {
+                latestValueChange(nextValue)
             }
         }
         val scrollReceipt = editor.subscribeEvent<ScrollEvent> { event, _ ->
@@ -203,6 +209,10 @@ internal fun ProjectCodeEditorPane(
         )
     }
 
+    LaunchedEffect(wordWrapEnabled) {
+        editor.isWordwrap = wordWrapEnabled
+    }
+
     LaunchedEffect(diagnostics, editorValue.text) {
         editor.applyDiagnostics(diagnostics, editorValue.text.length)
     }
@@ -257,6 +267,7 @@ internal fun ProjectCodeEditorPane(
             modifier = Modifier.fillMaxSize(),
             update = {
                 it.setBackgroundColor(backgroundColor.copy(alpha = 0.08f).toArgb())
+                it.isWordwrap = wordWrapEnabled
             },
             onRelease = {
                 it.release()

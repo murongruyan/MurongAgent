@@ -8,6 +8,7 @@ import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -51,7 +52,7 @@ fun MarkdownText(
 ) {
     if (text.isBlank()) return
 
-    val segments = parseMarkdown(text)
+    val segments = remember(text) { parseMarkdown(text) }
     val textColor = MaterialTheme.colorScheme.onSurface
     val surfaceColor = rememberMurongSurfaceColor()
     val chromeColor = rememberMurongChromeColor()

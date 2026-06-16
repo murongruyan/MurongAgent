@@ -1,6 +1,7 @@
 package com.murong.agent.ui.project
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,7 +16,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
@@ -48,6 +52,12 @@ internal fun projectGitHubLogMatchesJob(
 ): Boolean {
     val normalizedJob = normalizeProjectGitHubConsoleToken(jobName)
     if (normalizedJob.isBlank()) return false
+    entry.jobName?.let { metadataJobName ->
+        val normalizedMetadataJob = normalizeProjectGitHubConsoleToken(metadataJobName)
+        if (normalizedMetadataJob.isNotBlank()) {
+            return normalizedMetadataJob == normalizedJob
+        }
+    }
     val candidates = listOf(entry.displayName, entry.entryName)
     return candidates.any { candidate ->
         val normalizedCandidate = normalizeProjectGitHubConsoleToken(candidate)
@@ -61,9 +71,33 @@ internal fun projectGitHubLogMentionsStep(
 ): Boolean {
     val normalizedStep = normalizeProjectGitHubConsoleToken(stepName)
     if (normalizedStep.isBlank()) return false
+    entry.stepName?.let { metadataStepName ->
+        val normalizedMetadataStep = normalizeProjectGitHubConsoleToken(metadataStepName)
+        if (normalizedMetadataStep.isNotBlank()) {
+            return normalizedMetadataStep == normalizedStep
+        }
+    }
+    if (entry.sourceEntryName != null) {
+        return false
+    }
     val candidates = listOf(entry.displayName, entry.entryName, entry.preview)
     return candidates.any { candidate ->
         normalizeProjectGitHubConsoleToken(candidate).contains(normalizedStep)
+    }
+}
+
+internal fun projectGitHubLogMatchesStep(
+    entry: ProjectGitHubWorkflowLogEntryUi,
+    stepName: String,
+    stepNumber: Int? = null
+): Boolean {
+    if (projectGitHubLogMentionsStep(entry, stepName).not()) {
+        return false
+    }
+    val metadataStepNumber = entry.stepNumber
+    return when {
+        stepNumber == null || metadataStepNumber == null -> true
+        else -> metadataStepNumber == stepNumber
     }
 }
 
@@ -79,7 +113,7 @@ internal fun buildProjectGitHubAutoExpandedLogEntries(
         detail.logEntries
             .filter { entry ->
                 projectGitHubLogMatchesJob(entry, activeJob.name) &&
-                    projectGitHubLogMentionsStep(entry, activeStep.name)
+                    projectGitHubLogMatchesStep(entry, activeStep.name, activeStep.number)
             }
             .map { it.entryName }
             .toSet()
@@ -442,6 +476,7 @@ internal fun ProjectGitHubWorkflowLogPreviewBody(
     queries: List<String>,
     expanded: Boolean,
     activeLineNumber: Int?,
+    showTimestamps: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val bodyTextStyle = MaterialTheme.typography.bodySmall.copy(
@@ -466,6 +501,13 @@ internal fun ProjectGitHubWorkflowLogPreviewBody(
 
     val mutedTextColor = rememberMurongMutedTextColor()
     val lines = remember(preview) { preview.lines() }
+    val parsedLines = remember(lines) { lines.map(::parseProjectGitHubWorkflowLogLineUi) }
+    val foldedGroupIds = remember(lines) {
+        parsedLines.mapNotNull { line -> line.groupId }.toSet()
+    }
+    var expandedGroupIds by remember(preview) {
+        mutableStateOf(emptySet<String>())
+    }
     val activeLineIndex = activeLineNumber?.minus(1)
     val lineNumberWidth = remember(lines.size) {
         maxOf(3, lines.size.toString().length)
@@ -487,25 +529,62 @@ internal fun ProjectGitHubWorkflowLogPreviewBody(
                 .verticalScroll(expandedScrollState),
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            lines.forEachIndexed { index, line ->
-                val annotatedLine = remember(line, queries, index, lineNumberWidth, mutedTextColor) {
+            parsedLines.forEachIndexed { index, parsedLine ->
+                val line = parsedLine.originalLine
+                val isInsideCollapsedGroup = parsedLine.groupId != null &&
+                    parsedLine.groupRole == ProjectGitHubWorkflowLogGroupRole.Content &&
+                    !expandedGroupIds.contains(parsedLine.groupId)
+                if (isInsideCollapsedGroup) {
+                    return@forEachIndexed
+                }
+                val annotatedLine = remember(
+                    line,
+                    parsedLine.displayLine,
+                    parsedLine.timestamp,
+                    queries,
+                    index,
+                    lineNumberWidth,
+                    mutedTextColor,
+                    showTimestamps
+                ) {
                     buildProjectGitHubWorkflowAnnotatedLogLine(
                         lineNumber = index + 1,
-                        line = line,
+                        line = parsedLine.displayLine,
+                        timestamp = parsedLine.timestamp,
+                        showTimestamp = showTimestamps &&
+                            parsedLine.timestamp != null &&
+                            parsedLine.groupRole != ProjectGitHubWorkflowLogGroupRole.Header,
                         queries = queries,
                         lineNumberWidth = lineNumberWidth,
                         lineNumberColor = mutedTextColor
                     )
                 }
                 val isActiveLine = activeLineIndex == index
+                val isGroupHeader = parsedLine.groupRole == ProjectGitHubWorkflowLogGroupRole.Header
+                val groupExpanded = parsedLine.groupId?.let { expandedGroupIds.contains(it) } ?: false
                 Text(
                     text = annotatedLine,
                     style = bodyTextStyle,
                     modifier = Modifier
                         .fillMaxWidth()
                         .bringIntoViewRequester(lineBringIntoViewRequesters[index])
+                        .then(
+                            if (isGroupHeader && parsedLine.groupId != null) {
+                                Modifier.clickable {
+                                    expandedGroupIds = if (groupExpanded) {
+                                        expandedGroupIds - parsedLine.groupId
+                                    } else {
+                                        expandedGroupIds + parsedLine.groupId
+                                    }
+                                }
+                            } else {
+                                Modifier
+                            }
+                        )
                         .background(
-                            if (isActiveLine) {
+                            if (isGroupHeader) {
+                                MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.28f)
+                            } else if (isActiveLine) {
                                 MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.56f)
                             } else {
                                 Color.Transparent
@@ -521,6 +600,8 @@ internal fun ProjectGitHubWorkflowLogPreviewBody(
 private fun buildProjectGitHubWorkflowAnnotatedLogLine(
     lineNumber: Int,
     line: String,
+    timestamp: String?,
+    showTimestamp: Boolean,
     queries: List<String>,
     lineNumberWidth: Int,
     lineNumberColor: Color
@@ -533,6 +614,16 @@ private fun buildProjectGitHubWorkflowAnnotatedLogLine(
     )
     append("L${lineNumber.toString().padStart(lineNumberWidth, ' ')} | ")
     pop()
+    if (showTimestamp && !timestamp.isNullOrBlank()) {
+        pushStyle(
+            SpanStyle(
+                color = lineNumberColor.copy(alpha = 0.78f),
+                fontWeight = FontWeight.Normal
+            )
+        )
+        append("[$timestamp] ")
+        pop()
+    }
     append(highlightProjectGitHubLogText(line, queries))
 }
 
@@ -577,4 +668,81 @@ internal fun projectGitHubCollapsedLogPreviewAroundMatch(
         segment += "... 后面省略 ${lines.lastIndex - end} 行 ..."
     }
     return segment.joinToString("\n")
+}
+
+private data class ProjectGitHubWorkflowParsedLogLineUi(
+    val originalLine: String,
+    val displayLine: String,
+    val timestamp: String?,
+    val groupId: String?,
+    val groupRole: ProjectGitHubWorkflowLogGroupRole
+)
+
+private enum class ProjectGitHubWorkflowLogGroupRole {
+    None,
+    Header,
+    Content
+}
+
+private fun parseProjectGitHubWorkflowLogLineUi(
+    line: String
+): ProjectGitHubWorkflowParsedLogLineUi {
+    val timestampMatch = Regex("""^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\s+(.*)$""")
+        .find(line)
+    val timestamp = timestampMatch?.groupValues?.getOrNull(1)
+    val body = timestampMatch?.groupValues?.getOrNull(2).orEmpty().ifBlank { line }
+    val groupHeader = when {
+        body.startsWith("##[group]") -> body.removePrefix("##[group]").trim()
+        body.startsWith("::group::") -> body.removePrefix("::group::").trim()
+        else -> null
+    }
+    return when {
+        !groupHeader.isNullOrBlank() -> {
+            val groupId = normalizeProjectGitHubConsoleToken(groupHeader)
+            ProjectGitHubWorkflowParsedLogLineUi(
+                originalLine = line,
+                displayLine = "[-] $groupHeader",
+                timestamp = null,
+                groupId = groupId,
+                groupRole = ProjectGitHubWorkflowLogGroupRole.Header
+            )
+        }
+        body.startsWith("##[endgroup]") || body.startsWith("::endgroup::") -> {
+            ProjectGitHubWorkflowParsedLogLineUi(
+                originalLine = line,
+                displayLine = "",
+                timestamp = null,
+                groupId = null,
+                groupRole = ProjectGitHubWorkflowLogGroupRole.None
+            )
+        }
+        else -> {
+            val activeGroupId = inferProjectGitHubWorkflowGroupIdFromLine(body)
+            ProjectGitHubWorkflowParsedLogLineUi(
+                originalLine = line,
+                displayLine = body,
+                timestamp = timestamp,
+                groupId = activeGroupId,
+                groupRole = if (activeGroupId != null) {
+                    ProjectGitHubWorkflowLogGroupRole.Content
+                } else {
+                    ProjectGitHubWorkflowLogGroupRole.None
+                }
+            )
+        }
+    }
+}
+
+private fun inferProjectGitHubWorkflowGroupIdFromLine(
+    line: String
+): String? {
+    val normalized = normalizeProjectGitHubConsoleToken(line)
+    if (normalized.isBlank()) return null
+    return when {
+        normalized.contains("setupjob") -> "setupjob"
+        normalized.contains("completejob") -> "completejob"
+        normalized.contains("post") -> "post"
+        normalized.contains("run") -> "run"
+        else -> null
+    }
 }

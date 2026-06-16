@@ -972,6 +972,7 @@ class SubagentTool(
             }
             if (effectiveAllowCodeEdits) {
                 add("code_edit")
+                add("code_search")
             }
             if (effectiveAllowShell) {
                 add("shell")
@@ -983,11 +984,12 @@ class SubagentTool(
                 register(FileTool(effectiveFileOperations.toSet()))
             }
             if (requestedToolBudget.enableWebSearch) {
-                register(WebSearchTool())
+                register(WebSearchTool(subConfig))
                 register(WebFetchTool())
             }
             if (effectiveAllowCodeEdits) {
                 register(CodeEditTool())
+                register(CodeSearchTool())
             }
             if (effectiveAllowShell) {
                 register(ShellTool())
@@ -1139,6 +1141,11 @@ class SubagentTool(
                             totalTokens = usageSummary.totalTokens + event.usage.totalTokens,
                             promptCacheHitTokens = usageSummary.promptCacheHitTokens + (event.usage.promptCacheHitTokens ?: 0),
                             promptCacheMissTokens = usageSummary.promptCacheMissTokens + (event.usage.promptCacheMissTokens ?: 0),
+                            estimatedCostAmount = usageSummary.resolvedEstimatedCostAmount() + request.subConfig.estimateCostAmount(
+                                promptTokens = event.usage.promptTokens,
+                                completionTokens = event.usage.completionTokens
+                            ),
+                            estimatedCostCurrency = request.subConfig.estimateCostCurrency(),
                             estimatedCostUsd = usageSummary.estimatedCostUsd + request.subConfig.estimateCostUsd(
                                 promptTokens = event.usage.promptTokens,
                                 completionTokens = event.usage.completionTokens
@@ -1361,33 +1368,34 @@ class SubagentTool(
         modelOverride: String?,
         reasoningEffortOverride: String?
     ): ProviderConfig {
-        val resolvedEffort = reasoningEffortOverride ?: baseConfig.getActiveReasoningEffort()
-        return when (baseConfig.activeProviderId) {
+        val defaultConfig = baseConfig.getSubagentDefaultResolvedConfig()
+        val resolvedEffort = reasoningEffortOverride ?: defaultConfig.getActiveReasoningEffort()
+        return when (defaultConfig.activeProviderId) {
             "deepseek" -> {
-                val targetModel = modelOverride ?: baseConfig.getActiveModel()
+                val targetModel = modelOverride ?: defaultConfig.getActiveModel()
                 val preset = when (targetModel) {
                     "deepseek-v4-flash" -> "flash"
                     "deepseek-v4-pro" -> "pro"
                     else -> "custom"
                 }
-                baseConfig.copy(
+                defaultConfig.copy(
                     deepseekModelPreset = preset,
                     deepseekModel = targetModel,
-                    deepseekReasoningEffort = resolvedEffort ?: baseConfig.deepseekReasoningEffort
+                    deepseekReasoningEffort = resolvedEffort ?: defaultConfig.deepseekReasoningEffort
                 )
             }
 
-            "openai-compatible" -> baseConfig.copy(
-                openaiModel = modelOverride ?: baseConfig.getActiveModel(),
-                openaiReasoningEffort = resolvedEffort ?: baseConfig.openaiReasoningEffort
+            "openai-compatible" -> defaultConfig.copy(
+                openaiModel = modelOverride ?: defaultConfig.getActiveModel(),
+                openaiReasoningEffort = resolvedEffort ?: defaultConfig.openaiReasoningEffort
             )
 
-            "claude" -> baseConfig.copy(
-                claudeModel = modelOverride ?: baseConfig.getActiveModel(),
-                claudeReasoningEffort = resolvedEffort ?: baseConfig.claudeReasoningEffort
+            "claude" -> defaultConfig.copy(
+                claudeModel = modelOverride ?: defaultConfig.getActiveModel(),
+                claudeReasoningEffort = resolvedEffort ?: defaultConfig.claudeReasoningEffort
             )
 
-            else -> baseConfig
+            else -> defaultConfig
         }
     }
 }

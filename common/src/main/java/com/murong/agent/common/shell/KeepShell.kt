@@ -1,8 +1,10 @@
 package com.murong.agent.common.shell
 
+import com.murong.agent.common.toolchain.ToolchainManager
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -91,14 +93,17 @@ class KeepShell(
     private fun initProcess() {
         if (process != null && process!!.isAlive) return
         try {
-            val pb = ProcessBuilder("su")
+            ToolchainManager.ensureInstalled()
+            val pb = ProcessBuilder(RootShellStrategy.buildRootCommand())
             pb.redirectErrorStream(false)
+            ToolchainManager.applyProcessEnvironment(pb.environment())
             process = pb.start()
-            writer = java.io.OutputStreamWriter(process!!.outputStream)
+            writer = OutputStreamWriter(process!!.outputStream, Charsets.UTF_8)
             // 主 stdout reader
-            reader = BufferedReader(InputStreamReader(process!!.inputStream))
+            reader = BufferedReader(InputStreamReader(process!!.inputStream, Charsets.UTF_8))
             // stderr 单独读取（丢弃）
-            stderrReader = BufferedReader(InputStreamReader(process!!.errorStream))
+            stderrReader = BufferedReader(InputStreamReader(process!!.errorStream, Charsets.UTF_8))
+            bootstrapEnvironment()
             // 启动一个线程丢弃 stderr，防止缓冲区堵塞
             Thread {
                 try {
@@ -114,6 +119,18 @@ class KeepShell(
             process = null
             writer = null
             reader = null
+        }
+    }
+
+    private fun bootstrapEnvironment() {
+        val pw = writer ?: return
+        try {
+            val bootstrap = ToolchainManager.buildShellBootstrapCommands()
+            if (bootstrap.isNotBlank()) {
+                pw.write("$bootstrap\n")
+                pw.flush()
+            }
+        } catch (_: IOException) {
         }
     }
 

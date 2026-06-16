@@ -9,15 +9,20 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -30,27 +35,35 @@ import com.murong.agent.core.config.ProviderConfig
 import com.murong.agent.core.config.ResponseVerbosity
 import com.murong.agent.core.config.SkillRunAs
 import com.murong.agent.core.loop.SessionSummary
+import com.murong.agent.core.loop.formatCurrencyAmount
 import com.murong.agent.core.mcp.McpServerConfig
 import com.murong.agent.core.mcp.McpServerStatus
 import com.murong.agent.core.provider.ModelProvider
 import com.murong.agent.core.provider.ProviderRegistry
+import com.murong.agent.ui.MemoryDraftImportCard
 import com.murong.agent.ui.McpDraftImportCard
 import com.murong.agent.ui.MurongGlassSurface
 import com.murong.agent.ui.MurongInfoCard
 import com.murong.agent.ui.MurongOutlinedActionButton
 import com.murong.agent.ui.MurongPrimaryPageSurface
 import com.murong.agent.ui.MurongSectionCard
+import com.murong.agent.ui.RuleDraftImportCard
 import com.murong.agent.ui.rememberMurongBottomBarScrollPadding
 import com.murong.agent.ui.normalizeSkillAllowedTools
 import com.murong.agent.ui.sanitizeSkillAllowedTools
 import com.murong.agent.ui.SkillAllowedToolsBudgetView
 import com.murong.agent.ui.SkillDraftImportCard
 import java.util.UUID
+import kotlinx.coroutines.delay
 
 @Composable
 fun SettingsScreen(
     config: ProviderConfig,
     onConfigChanged: (ProviderConfig) -> Unit,
+    onUpdateApiKey: (String, String) -> Unit = { _, _ -> },
+    onUpdateBaseUrl: (String, String) -> Unit = { _, _ -> },
+    onUpdateModel: (String, String) -> Unit = { _, _ -> },
+    onSetActiveProvider: (String) -> Unit = {},
     gitHubAuthState: GitHubAuthUiState = GitHubAuthUiState(),
     rootStatus: Boolean? = null,
     isCheckingRoot: Boolean = false,
@@ -77,7 +90,12 @@ fun SettingsScreen(
     var showApiKey by remember { mutableStateOf(false) }
     val uriHandler = LocalUriHandler.current
     var lastOpenedGitHubAuthUrl by remember { mutableStateOf<String?>(null) }
-    var providerSectionExpanded by remember { mutableStateOf(true) }
+    var providerSectionExpanded by rememberSaveable { mutableStateOf(!hasConfiguredProvider(config)) }
+    var chatAndSearchExpanded by rememberSaveable { mutableStateOf(false) }
+    var systemPromptExpanded by rememberSaveable { mutableStateOf(false) }
+    var rulesExpanded by rememberSaveable { mutableStateOf(false) }
+    var memoriesExpanded by rememberSaveable { mutableStateOf(false) }
+    var skillsExpanded by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(gitHubAuthState.authorizationUrl) {
         val uri = gitHubAuthState.authorizationUrl?.trim().orEmpty()
@@ -105,6 +123,7 @@ fun SettingsScreen(
     MurongPrimaryPageSurface(
         modifier = Modifier
             .fillMaxSize()
+            .imePadding()
             .padding(horizontal = 12.dp, vertical = 8.dp),
         contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
     ) {
@@ -180,65 +199,6 @@ fun SettingsScreen(
                     }
                 }
             }
-
-            Text(
-                text = "界面与调试",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surface,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            text = "显示调试细节",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "关闭时隐藏工具调用 ID 等内部字段；开启后会额外显示调用 ID 和等待中的工具细节。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Switch(
-                        checked = config.showDebugToolDetails,
-                        onCheckedChange = { checked ->
-                            onConfigChanged(config.copy(showDebugToolDetails = checked))
-                        }
-                    )
-                }
-            }
-
-        // ═══════════════════════════════════════
-        // AI 模型提供商
-        // ═══════════════════════════════════════
-            ProviderSettingsSection(
-                providers = providers,
-                config = config,
-                showApiKey = showApiKey,
-                onToggleShowApiKey = { showApiKey = !showApiKey },
-                providerSectionExpanded = providerSectionExpanded,
-                onProviderSectionExpandedChange = { providerSectionExpanded = it },
-                balanceSyncStates = balanceSyncStates,
-                onConfigChanged = onConfigChanged,
-                onRefreshProviderBalance = onRefreshProviderBalance,
-                supportsBalanceFetch = supportsBalanceFetch
-            )
 
             Text(
                 text = "GitHub 联动",
@@ -372,13 +332,10 @@ fun SettingsScreen(
         val totalPromptTokens = activeSessions.sumOf { it.usageSummary.promptTokens }
         val totalCompletionTokens = activeSessions.sumOf { it.usageSummary.completionTokens }
         val totalTokens = activeSessions.sumOf { it.usageSummary.totalTokens }
-        val totalEstimatedCost = activeSessions.sumOf { it.usageSummary.estimatedCostUsd }
+        val totalEstimatedCost = activeSessions.sumOf { it.usageSummary.resolvedEstimatedCostAmount() }
+        val estimatedCostCurrency = config.getPriceCurrency()
         val activeBalanceCurrency = config.getBalanceCurrency()
-        val remainingBalance = if (activeBalanceCurrency == "USD") {
-            config.getBalanceUsd() - totalEstimatedCost
-        } else {
-            null
-        }
+        val remainingBalance = config.getBalanceAmount() - totalEstimatedCost
 
         Text(
             text = "用量与成本",
@@ -413,160 +370,161 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = "累计预估成本 \$${"%.6f".format(totalEstimatedCost)}",
+                    text = "累计预估成本 ${formatCurrencyAmount(totalEstimatedCost, estimatedCostCurrency)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface
                 )
-                if (remainingBalance != null) {
-                    Text(
-                        text = "剩余额度估算 \$${"%.6f".format(remainingBalance)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (remainingBalance < 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-                    )
-                } else {
-                    Text(
-                        text = "当前余额为 ${formatBalance(config.getBalanceUsd(), activeBalanceCurrency)}，成本仍按 USD 统计，暂不做跨币种换算。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-
-        // ═══════════════════════════════════════
-        // 高级设置
-        // ═══════════════════════════════════════
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-
-        Text(
-            text = "高级设置",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onBackground
-        )
-
-        Text(
-            text = "回答风格",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            listOf(
-                ResponseVerbosity.CONCISE to "简洁",
-                ResponseVerbosity.BALANCED to "平衡",
-                ResponseVerbosity.DETAILED to "详细"
-            ).forEach { (verbosity, label) ->
-                FilterChip(
-                    selected = config.responseVerbosity == verbosity,
-                    onClick = {
-                        onConfigChanged(config.copy(responseVerbosity = verbosity))
-                    },
-                    label = { Text(label, fontSize = 12.sp) }
+                Text(
+                    text = "当前余额 ${formatBalance(config.getBalanceAmount(), activeBalanceCurrency)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "剩余额度估算 ${formatCurrencyAmount(remainingBalance, activeBalanceCurrency)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (remainingBalance < 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                 )
             }
         }
-        Text(
-            text = when (config.responseVerbosity) {
-                ResponseVerbosity.CONCISE ->
-                    "更像命令式助手，默认少说废话，工具执行后只做简短总结。"
-                ResponseVerbosity.BALANCED ->
-                    "结论、关键点和下一步都会说，但不会展开得太长。"
-                ResponseVerbosity.DETAILED ->
-                    "更像桌面端长说明风格，会更主动解释过程、结果和后续建议。"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+
+        ChatAndSearchSection(
+            config = config,
+            showApiKey = showApiKey,
+            onToggleShowApiKey = { showApiKey = !showApiKey },
+            expanded = chatAndSearchExpanded,
+            onExpandedChange = { chatAndSearchExpanded = it },
+            onConfigChanged = onConfigChanged
         )
 
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface,
-            modifier = Modifier.fillMaxWidth()
+        // ═══════════════════════════════════════
+        // AI 模型提供商
+        // ═══════════════════════════════════════
+            ProviderSettingsSection(
+                providers = providers,
+                config = config,
+                showApiKey = showApiKey,
+                onToggleShowApiKey = { showApiKey = !showApiKey },
+                providerSectionExpanded = providerSectionExpanded,
+                onProviderSectionExpandedChange = { providerSectionExpanded = it },
+                balanceSyncStates = balanceSyncStates,
+                onConfigChanged = onConfigChanged,
+                onUpdateApiKey = onUpdateApiKey,
+                onUpdateBaseUrl = onUpdateBaseUrl,
+                onUpdateModel = onUpdateModel,
+                onSetActiveProvider = onSetActiveProvider,
+                onRefreshProviderBalance = onRefreshProviderBalance,
+                supportsBalanceFetch = supportsBalanceFetch
+            )
+
+        SettingsExpandableSectionCard(
+            title = "系统提示词",
+            subtitle = "控制所有会话的默认系统行为、回答风格和基础约束。",
+            expanded = systemPromptExpanded,
+            onExpandedChange = { systemPromptExpanded = it }
         ) {
+            Text(
+                text = "回答风格",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
             Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf(
+                    ResponseVerbosity.CONCISE to "简洁",
+                    ResponseVerbosity.BALANCED to "平衡",
+                    ResponseVerbosity.DETAILED to "详细"
+                ).forEach { (verbosity, label) ->
+                    FilterChip(
+                        selected = config.responseVerbosity == verbosity,
+                        onClick = { onConfigChanged(config.copy(responseVerbosity = verbosity)) },
+                        label = { Text(label, fontSize = 12.sp) }
+                    )
+                }
+            }
+            Text(
+                text = when (config.responseVerbosity) {
+                    ResponseVerbosity.CONCISE -> "更像命令式助手，默认少说废话，工具执行后只做简短总结。"
+                    ResponseVerbosity.BALANCED -> "结论、关键点和下一步都会说，但不会展开得太长。"
+                    ResponseVerbosity.DETAILED -> "更像桌面端长说明风格，会更主动解释过程、结果和后续建议。"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedTextField(
+                value = config.systemPrompt,
+                onValueChange = { prompt ->
+                    onConfigChanged(config.copy(systemPrompt = prompt))
+                },
+                label = { Text("系统提示词 (System Prompt)") },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(
-                        text = "复杂任务自动升档",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = if (config.autoUpgradeExecutionProfile) {
-                            "复杂任务会自动切到更强模型或更高推理档位，并用 Toast 提示。"
-                        } else {
-                            "关闭后保持当前手动选择的模型与推理档位，不再按复杂度自动升档。"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Spacer(modifier = Modifier.width(12.dp))
-                Switch(
-                    checked = config.autoUpgradeExecutionProfile,
-                    onCheckedChange = { checked ->
-                        onConfigChanged(config.copy(autoUpgradeExecutionProfile = checked))
-                    }
+                    .heightIn(min = 120.dp),
+                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                maxLines = 10,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                    cursorColor = MaterialTheme.colorScheme.primary
                 )
-            }
+            )
         }
 
-        // 系统提示词
-        OutlinedTextField(
-            value = config.systemPrompt,
-            onValueChange = { prompt ->
-                onConfigChanged(config.copy(systemPrompt = prompt))
-            },
-            label = { Text("系统提示词 (System Prompt)") },
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 120.dp),
-            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-            maxLines = 10,
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = MaterialTheme.colorScheme.primary,
-                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                cursorColor = MaterialTheme.colorScheme.primary
+        SettingsExpandableSectionCard(
+            title = "全局规则",
+            subtitle = "启用后自动注入到每次对话，适合放硬约束。",
+            expanded = rulesExpanded,
+            onExpandedChange = { rulesExpanded = it }
+        ) {
+            RuleSection(
+                rules = config.globalRules,
+                onRulesChanged = { rules ->
+                    onConfigChanged(config.copy(globalRules = rules))
+                },
+                showHeader = false,
+                showDivider = false
             )
-        )
+        }
 
-        RuleSection(
-            rules = config.globalRules,
-            onRulesChanged = { rules ->
-                onConfigChanged(config.copy(globalRules = rules))
-            }
-        )
+        SettingsExpandableSectionCard(
+            title = "全局记忆",
+            subtitle = "保存长期偏好和稳定上下文，不必每次重说。",
+            expanded = memoriesExpanded,
+            onExpandedChange = { memoriesExpanded = it }
+        ) {
+            MemorySection(
+                memories = config.globalMemories,
+                onMemoriesChanged = { memories ->
+                    onConfigChanged(config.copy(globalMemories = memories))
+                },
+                showHeader = false,
+                showDivider = false
+            )
+        }
 
-        MemorySection(
-            memories = config.globalMemories,
-            onMemoriesChanged = { memories ->
-                onConfigChanged(config.copy(globalMemories = memories))
-            }
-        )
-
-        SkillSection(
-            skills = config.globalSkills,
-            onSkillsChanged = { skills ->
-                onConfigChanged(config.copy(globalSkills = skills.sanitizedSkills()))
-            },
-            onImportSkills = { imported ->
-                onConfigChanged(
-                    config.copy(
-                        globalSkills = mergeImportedSkills(config.globalSkills, imported).sanitizedSkills()
+        SettingsExpandableSectionCard(
+            title = "全局 Skills",
+            subtitle = "保存可复用模板和工作流能力，按需展开编辑。",
+            expanded = skillsExpanded,
+            onExpandedChange = { skillsExpanded = it }
+        ) {
+            SkillSection(
+                skills = config.globalSkills,
+                onSkillsChanged = { skills ->
+                    onConfigChanged(config.copy(globalSkills = skills.sanitizedSkills()))
+                },
+                onImportSkills = { imported ->
+                    onConfigChanged(
+                        config.copy(
+                            globalSkills = mergeImportedSkills(config.globalSkills, imported).sanitizedSkills()
+                        )
                     )
-                )
-            }
-        )
+                },
+                showHeader = false,
+                showDivider = false
+            )
+        }
 
         // 温度和最大 Token
         Row(
@@ -622,7 +580,7 @@ fun SettingsScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
-                InfoRow("版本", "1.0.0")
+                InfoRow("版本", "0.9.0-preview")
                 Spacer(modifier = Modifier.height(4.dp))
                 InfoRow("引擎", "Murong Agent Core")
                 Spacer(modifier = Modifier.height(4.dp))
@@ -639,39 +597,219 @@ fun SettingsScreen(
             }
         }
 
-        // ═══════════════════════════════════════
-        // MCP 服务器
-        // ═══════════════════════════════════════
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+        McpSettingsSection(
+            mcpServers = mcpServers,
+            mcpStatuses = mcpStatuses,
+            mcpConnectError = mcpConnectError,
+            onAddMcpServer = onAddMcpServer,
+            onRemoveMcpServer = onRemoveMcpServer,
+            onConnectMcpServers = onConnectMcpServers,
+            onRefreshMcpStatus = onRefreshMcpStatus
+        )
 
+        Spacer(modifier = Modifier.height(32.dp))
+        }
+    }
+}
+
+@Composable
+private fun SettingsExpandableSectionCard(
+    title: String,
+    subtitle: String,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    MurongSectionCard(
+        title = title,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onExpandedChange(!expanded) },
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Icon(
+                imageVector = if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
+                contentDescription = if (expanded) "收起$title" else "展开$title",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        AnimatedVisibility(visible = expanded) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                content()
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatAndSearchSection(
+    config: ProviderConfig,
+    showApiKey: Boolean,
+    onToggleShowApiKey: () -> Unit,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onConfigChanged: (ProviderConfig) -> Unit
+) {
+    SettingsExpandableSectionCard(
+        title = "聊天与搜索",
+        subtitle = "把聊天开关和搜索后端收在一起，默认折叠减少设置页噪音。",
+        expanded = expanded,
+        onExpandedChange = onExpandedChange
+    ) {
+        SettingsToggleCard(
+            title = "流式输出",
+            description = if (config.isStreamingResponsesEnabled()) {
+                "回复会边生成边显示，更适合观察工具调用和长回答过程。"
+            } else {
+                "改为整段返回，适合想减少 UI 抖动或排查兼容性问题时使用。"
+            },
+            checked = config.isStreamingResponsesEnabled(),
+            onCheckedChange = { checked ->
+                onConfigChanged(config.copy(enableStreamingResponses = checked))
+            }
+        )
+        SettingsToggleCard(
+            title = "多模态",
+            description = if (config.isMultimodalEnabled()) {
+                "允许发送图片给模型；关闭后聊天输入区会直接隐藏拍照和选图。"
+            } else {
+                "关闭后只发送文本，拍照和选图入口也会一起隐藏。"
+            },
+            checked = config.isMultimodalEnabled(),
+            onCheckedChange = { checked ->
+                onConfigChanged(config.copy(enableMultimodalMessages = checked))
+            }
+        )
+        Text(
+            text = "搜索引擎",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Text(
+            text = "默认按 Bing 抓取 -> Google 抓取 -> 百度抓取 回退；也可以额外配置自定义搜索后端和 API Key。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        OutlinedTextField(
+            value = config.webSearchSearxngBaseUrl,
+            onValueChange = { value ->
+                onConfigChanged(config.copy(webSearchSearxngBaseUrl = value))
+            },
+            label = { Text("自定义搜索后端") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodySmall,
+            placeholder = { Text("例如 https://your-search.example 或 https://api.anysearch.com/mcp", fontSize = 12.sp) },
+            supportingText = {
+                Text("留空则走内置回退顺序；填写后会先尝试这里，再回退到 Bing / Google / 百度。", fontSize = 10.sp)
+            },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                cursorColor = MaterialTheme.colorScheme.primary
+            )
+        )
+        OutlinedTextField(
+            value = config.webSearchBingApiKey,
+            onValueChange = { value ->
+                onConfigChanged(config.copy(webSearchBingApiKey = value))
+            },
+            label = { Text("搜索 API Key（可选）") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
+            trailingIcon = {
+                TextButton(onClick = onToggleShowApiKey) {
+                    Text(if (showApiKey) "隐藏" else "显示", fontSize = 12.sp)
+                }
+            },
+            textStyle = MaterialTheme.typography.bodySmall,
+            placeholder = { Text("用于 AnySearch 或其他需要 Bearer Token 的后端", fontSize = 12.sp) },
+            supportingText = {
+                Text("默认抓取链不需要 Key；填写后会在请求自定义搜索后端时附带 Authorization 头。", fontSize = 10.sp)
+            },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                cursorColor = MaterialTheme.colorScheme.primary
+            )
+        )
+    }
+}
+
+private fun hasConfiguredProvider(config: ProviderConfig): Boolean {
+    return listOf(
+        config.deepseekApiKey.trim(),
+        config.openaiApiKey.trim(),
+        config.claudeApiKey.trim(),
+        config.deepseekBaseUrl.trim(),
+        config.openaiBaseUrl.trim(),
+        config.claudeBaseUrl.trim(),
+        config.deepseekModel.trim(),
+        config.openaiModel.trim(),
+        config.claudeModel.trim()
+    ).any { it.isNotBlank() }
+}
+
+@Composable
+private fun McpSettingsSection(
+    mcpServers: List<McpServerConfig>,
+    mcpStatuses: List<McpServerStatus>,
+    mcpConnectError: String?,
+    onAddMcpServer: (McpServerConfig) -> Unit,
+    onRemoveMcpServer: (String) -> Unit,
+    onConnectMcpServers: () -> Unit,
+    onRefreshMcpStatus: () -> Unit
+) {
+    var showAddMcp by remember { mutableStateOf(false) }
+    var editingMcp by remember { mutableStateOf<McpServerConfig?>(null) }
+    val allMcpNames = remember(mcpServers, mcpStatuses) {
+        (mcpServers.map { it.name } + mcpStatuses.map { it.name }).distinct().sorted()
+    }
+
+    MurongSectionCard(
+        title = "MCP 集成",
+        modifier = Modifier.fillMaxWidth()
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "MCP 服务器",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onBackground
+                text = "MCP 服务器和连接状态统一放这里管理，工具页不再重复展示一遍。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
             )
-            Row {
-                FilledTonalButton(
-                    onClick = onConnectMcpServers,
-                    modifier = Modifier.height(32.dp)
-                ) {
+            Spacer(modifier = Modifier.width(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilledTonalButton(onClick = onConnectMcpServers, modifier = Modifier.height(32.dp)) {
                     Text("连接", fontSize = 12.sp)
                 }
-                Spacer(modifier = Modifier.width(4.dp))
-                FilledTonalButton(
-                    onClick = onRefreshMcpStatus,
-                    modifier = Modifier.height(32.dp)
-                ) {
+                FilledTonalButton(onClick = onRefreshMcpStatus, modifier = Modifier.height(32.dp)) {
                     Text("刷新", fontSize = 12.sp)
                 }
             }
         }
-
         if (mcpConnectError != null) {
+            Spacer(modifier = Modifier.height(10.dp))
             Surface(
                 shape = RoundedCornerShape(8.dp),
                 color = MaterialTheme.colorScheme.error.copy(alpha = 0.1f),
@@ -685,13 +823,7 @@ fun SettingsScreen(
                 )
             }
         }
-
-        // 显示已有 MCP 服务器状态
-        var showAddMcp by remember { mutableStateOf(false) }
-        var editingMcp by remember { mutableStateOf<McpServerConfig?>(null) }
-        val allMcpNames = remember(mcpServers, mcpStatuses) {
-            (mcpServers.map { it.name } + mcpStatuses.map { it.name }).distinct().sorted()
-        }
+        Spacer(modifier = Modifier.height(10.dp))
         allMcpNames.forEach { serverName ->
             val status = mcpStatuses.firstOrNull { it.name == serverName }
             val savedConfig = mcpServers.firstOrNull { it.name == serverName }
@@ -707,7 +839,7 @@ fun SettingsScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = serverName,
                             style = MaterialTheme.typography.bodyMedium,
@@ -743,9 +875,8 @@ fun SettingsScreen(
                     }
                 }
             }
+            Spacer(modifier = Modifier.height(8.dp))
         }
-
-        // 添加 MCP 服务器
         TextButton(
             onClick = {
                 if (showAddMcp && editingMcp == null) {
@@ -763,7 +894,6 @@ fun SettingsScreen(
                 fontSize = 12.sp
             )
         }
-
         AnimatedVisibility(visible = showAddMcp) {
             AddMcpServerForm(
                 initialConfig = editingMcp,
@@ -778,15 +908,13 @@ fun SettingsScreen(
                 }
             )
         }
-
+        Spacer(modifier = Modifier.height(8.dp))
         McpDraftImportCard(
             onImportDrafts = { drafts ->
                 drafts.forEach(onAddMcpServer)
-            }
+            },
+            buttonLabel = "手动导入 MCP"
         )
-
-        Spacer(modifier = Modifier.height(32.dp))
-        }
     }
 }
 
@@ -800,9 +928,14 @@ private fun ProviderSettingsSection(
     onProviderSectionExpandedChange: (Boolean) -> Unit,
     balanceSyncStates: Map<String, BalanceSyncUiState>,
     onConfigChanged: (ProviderConfig) -> Unit,
+    onUpdateApiKey: (String, String) -> Unit,
+    onUpdateBaseUrl: (String, String) -> Unit,
+    onUpdateModel: (String, String) -> Unit,
+    onSetActiveProvider: (String) -> Unit,
     onRefreshProviderBalance: (String) -> Unit,
     supportsBalanceFetch: (String) -> Boolean
 ) {
+    val focusManager = LocalFocusManager.current
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surface,
@@ -865,12 +998,24 @@ private fun ProviderSettingsSection(
                             else -> ""
                         }
                         val resolvedModel = config.getResolvedModel(provider.id)
+                        val supportsAutoModelSelection = provider.id == "deepseek"
+                        val modelAutoSelectionEnabled = supportsAutoModelSelection &&
+                            config.isModelAutoSelectionEnabled(provider.id)
                         val reasoningEffort = when (provider.id) {
                             "deepseek" -> config.deepseekReasoningEffort
                             "openai-compatible" -> config.openaiReasoningEffort
                             "claude" -> config.claudeReasoningEffort
                             else -> ""
                         }
+                        val reasoningAutoSelectionEnabled = config.isReasoningAutoSelectionEnabled(provider.id)
+                        val mainProfileSummary = buildMainExecutionProfileSummary(
+                            provider = provider,
+                            resolvedModel = resolvedModel,
+                            reasoningEffort = reasoningEffort,
+                            modelAutoSelectionEnabled = modelAutoSelectionEnabled,
+                            reasoningAutoSelectionEnabled = reasoningAutoSelectionEnabled,
+                            supportsAutoModelSelection = supportsAutoModelSelection
+                        )
                         val promptPricePer1M = when (provider.id) {
                             "deepseek" -> config.deepseekPromptPricePer1M
                             "openai-compatible" -> config.openaiPromptPricePer1M
@@ -891,9 +1036,47 @@ private fun ProviderSettingsSection(
                         }
                         val balanceApiPath = config.getBalanceApiPath(provider.id)
                         val balanceCurrency = config.getBalanceCurrency(provider.id)
+                        val priceCurrency = config.getPriceCurrency(provider.id)
                         val balanceSyncedAt = config.getBalanceSyncedAt(provider.id)
                         val balanceSyncState = balanceSyncStates[provider.id] ?: BalanceSyncUiState()
                         val canFetchBalance = supportsBalanceFetch(provider.id)
+                        var apiKeyDraft by rememberSaveable(provider.id, "apiKey") { mutableStateOf(apiKey) }
+                        var baseUrlDraft by rememberSaveable(provider.id, "baseUrl") { mutableStateOf(baseUrl) }
+                        var modelDraft by rememberSaveable(provider.id, "model") { mutableStateOf(model) }
+                        var isApiKeyFocused by remember { mutableStateOf(false) }
+                        var isBaseUrlFocused by remember { mutableStateOf(false) }
+                        var isModelFocused by remember { mutableStateOf(false) }
+                        val commitApiKey = {
+                            if (apiKeyDraft != apiKey) {
+                                onUpdateApiKey(provider.id, apiKeyDraft)
+                            }
+                        }
+                        val commitBaseUrl = {
+                            if (baseUrlDraft != baseUrl) {
+                                onUpdateBaseUrl(provider.id, baseUrlDraft)
+                            }
+                        }
+                        val commitModel = {
+                            if (modelDraft != model) {
+                                onUpdateModel(provider.id, modelDraft)
+                            }
+                        }
+
+                        LaunchedEffect(provider.id, apiKey, isApiKeyFocused) {
+                            if (!isApiKeyFocused && apiKeyDraft != apiKey) {
+                                apiKeyDraft = apiKey
+                            }
+                        }
+                        LaunchedEffect(provider.id, baseUrl, isBaseUrlFocused) {
+                            if (!isBaseUrlFocused && baseUrlDraft != baseUrl) {
+                                baseUrlDraft = baseUrl
+                            }
+                        }
+                        LaunchedEffect(provider.id, model, isModelFocused) {
+                            if (!isModelFocused && modelDraft != model) {
+                                modelDraft = model
+                            }
+                        }
 
                         Surface(
                             shape = RoundedCornerShape(12.dp),
@@ -902,15 +1085,18 @@ private fun ProviderSettingsSection(
                             } else {
                                 MaterialTheme.colorScheme.surface
                             },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onConfigChanged(config.copy(activeProviderId = provider.id)) }
+                            modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(modifier = Modifier.padding(12.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onSetActiveProvider(provider.id) },
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     RadioButton(
                                         selected = isActive,
-                                        onClick = { onConfigChanged(config.copy(activeProviderId = provider.id)) },
+                                        onClick = { onSetActiveProvider(provider.id) },
                                         colors = RadioButtonDefaults.colors(
                                             selectedColor = MaterialTheme.colorScheme.primary
                                         )
@@ -937,24 +1123,35 @@ private fun ProviderSettingsSection(
                                         verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
                                         OutlinedTextField(
-                                            value = apiKey,
+                                            value = apiKeyDraft,
                                             onValueChange = { key ->
-                                                onConfigChanged(
-                                                    when (provider.id) {
-                                                        "deepseek" -> config.copy(deepseekApiKey = key)
-                                                        "openai-compatible" -> config.copy(openaiApiKey = key)
-                                                        "claude" -> config.copy(claudeApiKey = key)
-                                                        else -> config
-                                                    }
-                                                )
+                                                apiKeyDraft = key
                                             },
                                             label = { Text("API Key") },
-                                            modifier = Modifier.fillMaxWidth(),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .onFocusChanged {
+                                                    val wasFocused = isApiKeyFocused
+                                                    isApiKeyFocused = it.isFocused
+                                                    if (wasFocused && !it.isFocused) {
+                                                        commitApiKey()
+                                                    }
+                                                },
                                             visualTransformation = if (showApiKey) {
                                                 VisualTransformation.None
                                             } else {
                                                 PasswordVisualTransformation()
                                             },
+                                            keyboardOptions = KeyboardOptions(
+                                                keyboardType = KeyboardType.Password,
+                                                imeAction = ImeAction.Done
+                                            ),
+                                            keyboardActions = KeyboardActions(
+                                                onDone = {
+                                                    commitApiKey()
+                                                    focusManager.clearFocus()
+                                                }
+                                            ),
                                             trailingIcon = {
                                                 TextButton(onClick = onToggleShowApiKey) {
                                                     Text(if (showApiKey) "隐藏" else "显示", fontSize = 12.sp)
@@ -970,23 +1167,34 @@ private fun ProviderSettingsSection(
                                         )
 
                                         OutlinedTextField(
-                                            value = baseUrl,
+                                            value = baseUrlDraft,
                                             onValueChange = { url ->
-                                                onConfigChanged(
-                                                    when (provider.id) {
-                                                        "deepseek" -> config.copy(deepseekBaseUrl = url)
-                                                        "openai-compatible" -> config.copy(openaiBaseUrl = url)
-                                                        "claude" -> config.copy(claudeBaseUrl = url)
-                                                        else -> config
-                                                    }
-                                                )
+                                                baseUrlDraft = url
                                             },
                                             label = { Text("Base URL（中转站地址）") },
-                                            modifier = Modifier.fillMaxWidth(),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .onFocusChanged {
+                                                    val wasFocused = isBaseUrlFocused
+                                                    isBaseUrlFocused = it.isFocused
+                                                    if (wasFocused && !it.isFocused) {
+                                                        commitBaseUrl()
+                                                    }
+                                                },
                                             singleLine = true,
+                                            keyboardOptions = KeyboardOptions(
+                                                keyboardType = KeyboardType.Uri,
+                                                imeAction = ImeAction.Done
+                                            ),
+                                            keyboardActions = KeyboardActions(
+                                                onDone = {
+                                                    commitBaseUrl()
+                                                    focusManager.clearFocus()
+                                                }
+                                            ),
                                             textStyle = MaterialTheme.typography.bodySmall,
                                             placeholder = { Text(provider.defaultBaseUrl, fontSize = 12.sp) },
-                                            supportingText = { Text("留空 = 官方 API", fontSize = 10.sp) },
+                                            supportingText = { Text("留空 = 官方 API；点键盘完成后保存", fontSize = 10.sp) },
                                             colors = OutlinedTextFieldDefaults.colors(
                                                 focusedBorderColor = MaterialTheme.colorScheme.primary,
                                                 unfocusedBorderColor = MaterialTheme.colorScheme.outline,
@@ -1000,28 +1208,103 @@ private fun ProviderSettingsSection(
                                                 style = MaterialTheme.typography.bodyMedium,
                                                 color = MaterialTheme.colorScheme.onSurface
                                             )
-                                            Row(
+                                            FlowRow(
                                                 modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalArrangement = Arrangement.spacedBy(8.dp)
                                             ) {
                                                 FilterChip(
-                                                    selected = config.deepseekModelPreset == "flash",
-                                                    onClick = { onConfigChanged(config.copy(deepseekModelPreset = "flash")) },
+                                                    selected = modelAutoSelectionEnabled,
+                                                    onClick = {
+                                                        onConfigChanged(config.withModelAutoSelection(provider.id, true))
+                                                    },
+                                                    label = { Text("自动", fontSize = 12.sp) }
+                                                )
+                                                FilterChip(
+                                                    selected = !modelAutoSelectionEnabled && config.deepseekModelPreset == "flash",
+                                                    onClick = {
+                                                        onConfigChanged(
+                                                            config.copy(
+                                                                deepseekModelPreset = "flash",
+                                                                deepseekModel = "deepseek-v4-flash"
+                                                            ).withModelAutoSelection(provider.id, false)
+                                                        )
+                                                    },
                                                     label = { Text("Flash", fontSize = 12.sp) }
                                                 )
                                                 FilterChip(
-                                                    selected = config.deepseekModelPreset == "pro",
-                                                    onClick = { onConfigChanged(config.copy(deepseekModelPreset = "pro")) },
+                                                    selected = !modelAutoSelectionEnabled && config.deepseekModelPreset == "pro",
+                                                    onClick = {
+                                                        onConfigChanged(
+                                                            config.copy(
+                                                                deepseekModelPreset = "pro",
+                                                                deepseekModel = "deepseek-v4-pro"
+                                                            ).withModelAutoSelection(provider.id, false)
+                                                        )
+                                                    },
                                                     label = { Text("Pro", fontSize = 12.sp) }
                                                 )
                                                 FilterChip(
-                                                    selected = config.deepseekModelPreset == "custom",
-                                                    onClick = { onConfigChanged(config.copy(deepseekModelPreset = "custom")) },
+                                                    selected = !modelAutoSelectionEnabled && config.deepseekModelPreset == "custom",
+                                                    onClick = {
+                                                        onConfigChanged(
+                                                            config.copy(deepseekModelPreset = "custom")
+                                                                .withModelAutoSelection(provider.id, false)
+                                                        )
+                                                    },
                                                     label = { Text("自定义", fontSize = 12.sp) }
                                                 )
                                             }
                                             Text(
-                                                text = "当前实际模型: $resolvedModel",
+                                                text = if (modelAutoSelectionEnabled) {
+                                                    "当前基础模型: $resolvedModel"
+                                                } else {
+                                                    "当前固定模型: $resolvedModel"
+                                                },
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                fontSize = 11.sp
+                                            )
+                                        } else {
+                                            Text(
+                                                text = "模型档位",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            FlowRow(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                FilterChip(
+                                                    selected = model == provider.defaultModel,
+                                                    onClick = {
+                                                        onConfigChanged(
+                                                            when (provider.id) {
+                                                                "openai-compatible" -> config.copy(openaiModel = provider.defaultModel)
+                                                                "claude" -> config.copy(claudeModel = provider.defaultModel)
+                                                                else -> config
+                                                            }
+                                                        )
+                                                    },
+                                                    label = { Text(provider.formatModelDisplayName(provider.defaultModel), fontSize = 12.sp) }
+                                                )
+                                                FilterChip(
+                                                    selected = model != provider.defaultModel,
+                                                    onClick = {
+                                                        onConfigChanged(
+                                                            when (provider.id) {
+                                                                "openai-compatible" -> config.copy(openaiModel = "")
+                                                                "claude" -> config.copy(claudeModel = "")
+                                                                else -> config
+                                                            }
+                                                        )
+                                                    },
+                                                    label = { Text("自定义", fontSize = 12.sp) }
+                                                )
+                                            }
+                                            Text(
+                                                text = "当前固定模型: $resolvedModel",
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                 fontSize = 11.sp
@@ -1029,26 +1312,52 @@ private fun ProviderSettingsSection(
                                         }
 
                                         OutlinedTextField(
-                                            value = model,
+                                            value = modelDraft,
                                             onValueChange = { m ->
-                                                onConfigChanged(
-                                                    when (provider.id) {
-                                                        "deepseek" -> config.copy(deepseekModel = m)
-                                                        "openai-compatible" -> config.copy(openaiModel = m)
-                                                        "claude" -> config.copy(claudeModel = m)
-                                                        else -> config
-                                                    }
-                                                )
+                                                modelDraft = m
+                                                if (provider.id == "deepseek" && config.deepseekModelPreset != "custom") {
+                                                    onConfigChanged(
+                                                        config.copy(deepseekModelPreset = "custom")
+                                                            .withModelAutoSelection(provider.id, false)
+                                                    )
+                                                }
                                             },
-                                            label = { Text("模型名称") },
-                                            modifier = Modifier.fillMaxWidth(),
-                                            enabled = provider.id != "deepseek" || config.deepseekModelPreset == "custom",
+                                            label = {
+                                                Text(if (supportsAutoModelSelection && modelAutoSelectionEnabled) "基础模型名称" else "模型名称")
+                                            },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .onFocusChanged {
+                                                    val wasFocused = isModelFocused
+                                                    isModelFocused = it.isFocused
+                                                    if (wasFocused && !it.isFocused) {
+                                                        commitModel()
+                                                    }
+                                                },
+                                            enabled = if (provider.id == "deepseek") {
+                                                config.deepseekModelPreset == "custom"
+                                            } else {
+                                                model != provider.defaultModel
+                                            },
                                             singleLine = true,
+                                            keyboardOptions = KeyboardOptions(
+                                                imeAction = ImeAction.Done
+                                            ),
+                                            keyboardActions = KeyboardActions(
+                                                onDone = {
+                                                    commitModel()
+                                                    focusManager.clearFocus()
+                                                }
+                                            ),
                                             textStyle = MaterialTheme.typography.bodySmall,
                                             placeholder = { Text(provider.defaultModel, fontSize = 12.sp) },
                                             supportingText = {
                                                 if (provider.id == "deepseek" && config.deepseekModelPreset != "custom") {
                                                     Text("切换到“自定义”后可手动输入模型 ID", fontSize = 10.sp)
+                                                } else if (supportsAutoModelSelection && modelAutoSelectionEnabled) {
+                                                    Text("复杂任务会在这个基础上自动升到更强模型。", fontSize = 10.sp)
+                                                } else if (provider.id != "deepseek" && model == provider.defaultModel) {
+                                                    Text("如需其他模型，先点上面的“自定义”。", fontSize = 10.sp)
                                                 }
                                             },
                                             colors = OutlinedTextFieldDefaults.colors(
@@ -1064,13 +1373,37 @@ private fun ProviderSettingsSection(
                                                 style = MaterialTheme.typography.bodyMedium,
                                                 color = MaterialTheme.colorScheme.onSurface
                                             )
-                                            Row(
+                                            FlowRow(
                                                 modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                FilterChip(
+                                                    selected = reasoningAutoSelectionEnabled,
+                                                    onClick = {
+                                                        onConfigChanged(config.withReasoningAutoSelection(provider.id, true))
+                                                    },
+                                                    label = { Text("自动", fontSize = 12.sp) }
+                                                )
+                                            }
+                                            Text(
+                                                text = if (reasoningAutoSelectionEnabled) {
+                                                    "复杂任务会自动抬高推理深度；下面的档位作为当前默认值保留。"
+                                                } else {
+                                                    "关闭自动后，始终使用下面选定的推理档位。"
+                                                },
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                fontSize = 11.sp
+                                            )
+                                            FlowRow(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalArrangement = Arrangement.spacedBy(8.dp)
                                             ) {
                                                 provider.supportedReasoningEfforts.forEach { effort ->
                                                     FilterChip(
-                                                        selected = reasoningEffort == effort,
+                                                        selected = !reasoningAutoSelectionEnabled && reasoningEffort == effort,
                                                         onClick = {
                                                             onConfigChanged(
                                                                 when (provider.id) {
@@ -1078,10 +1411,15 @@ private fun ProviderSettingsSection(
                                                                     "openai-compatible" -> config.copy(openaiReasoningEffort = effort)
                                                                     "claude" -> config.copy(claudeReasoningEffort = effort)
                                                                     else -> config
-                                                                }
+                                                                }.withReasoningAutoSelection(provider.id, false)
                                                             )
                                                         },
-                                                        label = { Text(effort, fontSize = 12.sp) }
+                                                        label = {
+                                                            Text(
+                                                                provider.formatReasoningDisplayName(effort) ?: effort,
+                                                                fontSize = 12.sp
+                                                            )
+                                                        }
                                                     )
                                                 }
                                             }
@@ -1093,6 +1431,67 @@ private fun ProviderSettingsSection(
                                                 fontSize = 11.sp
                                             )
                                         }
+
+                                        Text(
+                                            text = "执行 Profile",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        ProfileSummaryCard(
+                                            title = "主聊天",
+                                            description = "普通聊天、直接执行和最终真正动手的这一轮，默认都走这一层。",
+                                            summary = mainProfileSummary
+                                        )
+                                        ProfileOverrideCard(
+                                            title = "计划 / 分流",
+                                            description = "自动分流、生成计划和澄清问题走这一层。关闭时直接继承主聊天。",
+                                            enabled = config.plannerProfileEnabled,
+                                            summary = buildProfileOverrideSummary(
+                                                provider = provider,
+                                                inheritedModel = resolvedModel,
+                                                inheritedReasoningEffort = reasoningEffort,
+                                                overrideModel = config.plannerModel,
+                                                overrideReasoningEffort = config.plannerReasoningEffort
+                                            ),
+                                            model = config.plannerModel,
+                                            onEnabledChange = { enabled ->
+                                                onConfigChanged(config.copy(plannerProfileEnabled = enabled))
+                                            },
+                                            onModelChange = { value ->
+                                                onConfigChanged(config.copy(plannerModel = value))
+                                            },
+                                            reasoningEffort = config.plannerReasoningEffort,
+                                            onReasoningEffortChange = { effort ->
+                                                onConfigChanged(config.copy(plannerReasoningEffort = effort))
+                                            },
+                                            supportedReasoningEfforts = provider.supportedReasoningEfforts,
+                                            reasoningSupported = provider.supportsReasoning
+                                        )
+                                        ProfileOverrideCard(
+                                            title = "子代理默认",
+                                            description = "子代理默认先继承这一层；项目模板里若另设 model / effort，会继续覆盖默认子代理 Profile。",
+                                            enabled = config.subagentDefaultProfileEnabled,
+                                            summary = buildProfileOverrideSummary(
+                                                provider = provider,
+                                                inheritedModel = resolvedModel,
+                                                inheritedReasoningEffort = reasoningEffort,
+                                                overrideModel = config.subagentDefaultModel,
+                                                overrideReasoningEffort = config.subagentDefaultReasoningEffort
+                                            ),
+                                            model = config.subagentDefaultModel,
+                                            onEnabledChange = { enabled ->
+                                                onConfigChanged(config.copy(subagentDefaultProfileEnabled = enabled))
+                                            },
+                                            onModelChange = { value ->
+                                                onConfigChanged(config.copy(subagentDefaultModel = value))
+                                            },
+                                            reasoningEffort = config.subagentDefaultReasoningEffort,
+                                            onReasoningEffortChange = { effort ->
+                                                onConfigChanged(config.copy(subagentDefaultReasoningEffort = effort))
+                                            },
+                                            supportedReasoningEfforts = provider.supportedReasoningEfforts,
+                                            reasoningSupported = provider.supportsReasoning
+                                        )
 
                                         Text(
                                             text = "价格与预算",
@@ -1113,7 +1512,7 @@ private fun ProviderSettingsSection(
                                                     )
                                                 }
                                             },
-                                            label = { Text("输入价格（USD / 1M tokens）") },
+                                            label = { Text("输入价格（$priceCurrency / 1M tokens）") },
                                             modifier = Modifier.fillMaxWidth(),
                                             singleLine = true,
                                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -1133,7 +1532,7 @@ private fun ProviderSettingsSection(
                                                     )
                                                 }
                                             },
-                                            label = { Text("输出价格（USD / 1M tokens）") },
+                                            label = { Text("输出价格（$priceCurrency / 1M tokens）") },
                                             modifier = Modifier.fillMaxWidth(),
                                             singleLine = true,
                                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -1199,7 +1598,7 @@ private fun ProviderSettingsSection(
                                                         )
                                                     }
                                                 },
-                                                label = { Text("本地预算余额（估算，USD）") },
+                                                label = { Text("本地预算余额（估算，$balanceCurrency）") },
                                                 modifier = Modifier.fillMaxWidth(),
                                                 singleLine = true,
                                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -1227,6 +1626,154 @@ private fun ProviderSettingsSection(
     }
 }
 
+private fun buildMainExecutionProfileSummary(
+    provider: ModelProvider,
+    resolvedModel: String,
+    reasoningEffort: String,
+    modelAutoSelectionEnabled: Boolean,
+    reasoningAutoSelectionEnabled: Boolean,
+    supportsAutoModelSelection: Boolean
+): String {
+    val modelPart = if (supportsAutoModelSelection && modelAutoSelectionEnabled) {
+        "模型自动（基础 ${provider.formatModelDisplayName(resolvedModel)}）"
+    } else {
+        "模型固定（${provider.formatModelDisplayName(resolvedModel)}）"
+    }
+    val reasoningLabel = provider.formatReasoningDisplayName(reasoningEffort) ?: reasoningEffort
+    val reasoningPart = if (provider.supportsReasoning) {
+        if (reasoningAutoSelectionEnabled) {
+            "推理自动（默认 $reasoningLabel）"
+        } else {
+            "推理固定（$reasoningLabel）"
+        }
+    } else {
+        "无独立推理档位"
+    }
+    return "$modelPart · $reasoningPart"
+}
+
+private fun buildProfileOverrideSummary(
+    provider: ModelProvider,
+    inheritedModel: String,
+    inheritedReasoningEffort: String,
+    overrideModel: String,
+    overrideReasoningEffort: String
+): String {
+    val resolvedModel = overrideModel.trim().ifBlank { inheritedModel }
+    val resolvedReasoning = overrideReasoningEffort.trim().ifBlank { inheritedReasoningEffort }
+    val profileLabel = provider.buildExecutionProfileLabel(resolvedModel, resolvedReasoning)
+    val overrideParts = buildList {
+        if (overrideModel.isNotBlank()) add("模型")
+        if (overrideReasoningEffort.isNotBlank()) add("推理")
+    }
+    return if (overrideParts.isEmpty()) {
+        "已开启，但当前仍完全继承主聊天 · $profileLabel"
+    } else {
+        "独立 ${overrideParts.joinToString(" + ")} · $profileLabel"
+    }
+}
+
+@Composable
+private fun ProfileSummaryCard(
+    title: String,
+    description: String,
+    summary: String
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface)
+            Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+@Composable
+private fun ProfileOverrideCard(
+    title: String,
+    description: String,
+    enabled: Boolean,
+    summary: String,
+    model: String,
+    onEnabledChange: (Boolean) -> Unit,
+    onModelChange: (String) -> Unit,
+    reasoningEffort: String,
+    onReasoningEffortChange: (String) -> Unit,
+    supportedReasoningEfforts: List<String>,
+    reasoningSupported: Boolean
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface)
+                    Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        if (enabled) summary else "继承主聊天",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(checked = enabled, onCheckedChange = onEnabledChange)
+            }
+            AnimatedVisibility(visible = enabled) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = model,
+                        onValueChange = onModelChange,
+                        label = { Text("模型覆盖（可留空）") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodySmall,
+                        placeholder = { Text("留空 = 继承主聊天模型", fontSize = 12.sp) }
+                    )
+                    if (reasoningSupported && supportedReasoningEfforts.isNotEmpty()) {
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = reasoningEffort.isBlank(),
+                                onClick = { onReasoningEffortChange("") },
+                                label = { Text("继承", fontSize = 12.sp) }
+                            )
+                            supportedReasoningEfforts.forEach { effort ->
+                                FilterChip(
+                                    selected = reasoningEffort == effort,
+                                    onClick = { onReasoningEffortChange(effort) },
+                                    label = { Text(effort, fontSize = 12.sp) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 private fun formatDoubleInput(value: Double): String {
     return if (value == 0.0) "" else value.toString()
 }
@@ -1234,6 +1781,49 @@ private fun formatDoubleInput(value: Double): String {
 private fun parseDoubleInput(value: String): Double? {
     if (value.isBlank()) return 0.0
     return value.toDoubleOrNull()
+}
+
+@Composable
+private fun SettingsToggleCard(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange
+            )
+        }
+    }
 }
 
 @Composable
@@ -1301,10 +1891,7 @@ private fun BalanceSyncCard(
 }
 
 private fun formatBalance(balance: Double, currency: String): String {
-    return when (currency.uppercase()) {
-        "USD" -> "$${"%.6f".format(balance)}"
-        else -> "${"%.6f".format(balance)} $currency"
-    }
+    return formatCurrencyAmount(balance, currency)
 }
 
 private fun formatTimestamp(timestamp: Long): String {
@@ -1316,27 +1903,48 @@ private fun formatTimestamp(timestamp: Long): String {
 private fun SkillSection(
     skills: List<GlobalSkill>,
     onSkillsChanged: (List<GlobalSkill>) -> Unit,
-    onImportSkills: (List<GlobalSkill>) -> Unit
+    onImportSkills: (List<GlobalSkill>) -> Unit,
+    showHeader: Boolean = true,
+    showDivider: Boolean = true
 ) {
-    HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+    if (showDivider) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+    }
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "全局 Skills",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            Text(
-                text = "用于保存可复用的操作模板、工作流说明和固定能力描述",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+    if (showHeader) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "全局 Skills",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Text(
+                    text = "用于保存可复用的操作模板、工作流说明和固定能力描述",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            FilledTonalButton(
+                onClick = {
+                    val newSkill = GlobalSkill(
+                        id = UUID.randomUUID().toString().take(8),
+                        title = "新 Skill",
+                        content = ""
+                    )
+                    onSkillsChanged(skills + newSkill)
+                }
+            ) {
+                Text("新增", fontSize = 12.sp)
+            }
         }
+    }
+
+    if (!showHeader) {
         FilledTonalButton(
             onClick = {
                 val newSkill = GlobalSkill(
@@ -1347,11 +1955,14 @@ private fun SkillSection(
                 onSkillsChanged(skills + newSkill)
             }
         ) {
-            Text("新增", fontSize = 12.sp)
+            Text("新增 Skill", fontSize = 12.sp)
         }
     }
 
-    SkillDraftImportCard(onImportDrafts = onImportSkills)
+    SkillDraftImportCard(
+        onImportDrafts = onImportSkills,
+        buttonLabel = "手动导入 Skill"
+    )
 
     if (skills.isEmpty()) {
         Surface(
@@ -1536,27 +2147,48 @@ private fun SkillCard(
 @Composable
 private fun MemorySection(
     memories: List<GlobalMemory>,
-    onMemoriesChanged: (List<GlobalMemory>) -> Unit
+    onMemoriesChanged: (List<GlobalMemory>) -> Unit,
+    showHeader: Boolean = true,
+    showDivider: Boolean = true
 ) {
-    HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+    if (showDivider) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+    }
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "全局记忆",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            Text(
-                text = "用于保存长期偏好和固定上下文，如“默认用中文回复”",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+    if (showHeader) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "全局记忆",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Text(
+                    text = "用于保存长期偏好和固定上下文，如“默认用中文回复”",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            FilledTonalButton(
+                onClick = {
+                    val newMemory = GlobalMemory(
+                        id = UUID.randomUUID().toString().take(8),
+                        title = "新记忆",
+                        content = ""
+                    )
+                    onMemoriesChanged(memories + newMemory)
+                }
+            ) {
+                Text("新增", fontSize = 12.sp)
+            }
         }
+    }
+
+    if (!showHeader) {
         FilledTonalButton(
             onClick = {
                 val newMemory = GlobalMemory(
@@ -1567,9 +2199,18 @@ private fun MemorySection(
                 onMemoriesChanged(memories + newMemory)
             }
         ) {
-            Text("新增", fontSize = 12.sp)
+            Text("新增记忆", fontSize = 12.sp)
         }
     }
+
+    MemoryDraftImportCard(
+        onImportDrafts = { imported ->
+            if (imported.isNotEmpty()) {
+                onMemoriesChanged(memories + imported)
+            }
+        },
+        buttonLabel = "手动导入记忆"
+    )
 
     if (memories.isEmpty()) {
         Surface(
@@ -1664,27 +2305,48 @@ private fun MemoryCard(
 @Composable
 private fun RuleSection(
     rules: List<GlobalRule>,
-    onRulesChanged: (List<GlobalRule>) -> Unit
+    onRulesChanged: (List<GlobalRule>) -> Unit,
+    showHeader: Boolean = true,
+    showDivider: Boolean = true
 ) {
-    HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+    if (showDivider) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+    }
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "全局规则",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            Text(
-                text = "启用后会自动注入到每次对话的系统上下文",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+    if (showHeader) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "全局规则",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Text(
+                    text = "启用后会自动注入到每次对话的系统上下文",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            FilledTonalButton(
+                onClick = {
+                    val newRule = GlobalRule(
+                        id = UUID.randomUUID().toString().take(8),
+                        title = "新规则",
+                        content = ""
+                    )
+                    onRulesChanged(rules + newRule)
+                }
+            ) {
+                Text("新增", fontSize = 12.sp)
+            }
         }
+    }
+
+    if (!showHeader) {
         FilledTonalButton(
             onClick = {
                 val newRule = GlobalRule(
@@ -1695,9 +2357,18 @@ private fun RuleSection(
                 onRulesChanged(rules + newRule)
             }
         ) {
-            Text("新增", fontSize = 12.sp)
+            Text("新增规则", fontSize = 12.sp)
         }
     }
+
+    RuleDraftImportCard(
+        onImportDrafts = { imported ->
+            if (imported.isNotEmpty()) {
+                onRulesChanged(rules + imported)
+            }
+        },
+        buttonLabel = "手动导入规则"
+    )
 
     if (rules.isEmpty()) {
         Surface(

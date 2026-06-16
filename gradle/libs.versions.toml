@@ -10,6 +10,7 @@ navigation-compose = "2.7.7"
 lifecycle = "2.6.2"
 coroutines = "1.7.3"
 okhttp = "4.12.0"
+jsoup = "1.18.3"
 serialization-json = "1.7.3"
 datastore = "1.1.3"
 work = "2.9.0"
@@ -48,6 +49,7 @@ kotlin-metadata-jvm = { group = "org.jetbrains.kotlin", name = "kotlin-metadata-
 # Networking
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 okhttp-sse = { group = "com.squareup.okhttp3", name = "okhttp-sse", version.ref = "okhttp" }
+jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
 
 # DI
 hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
@@ -67,7 +69,6 @@ desugar-jdk-libs = { group = "com.android.tools", name = "desugar_jdk_libs", ver
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-kapt = { id = "org.jetbrains.kotlin.kapt", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }

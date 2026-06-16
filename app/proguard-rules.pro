@@ -36,6 +36,7 @@
 -dontwarn javax.management.JMException
 -dontwarn javax.management.MBeanRegistrationException
 -dontwarn javax.management.MBeanServer
+-dontwarn javax.management.MXBean
 -dontwarn javax.management.MalformedObjectNameException
 -dontwarn javax.management.NotCompliantMBeanException
 -dontwarn javax.management.ObjectInstance
@@ -47,6 +48,10 @@
 -dontwarn org.ietf.jgss.GSSName
 -dontwarn org.ietf.jgss.Oid
 -dontwarn org.slf4j.impl.StaticLoggerBinder
+
+# JGit uses runtime lookups/internal factories that break under aggressive release obfuscation.
+# Keep the package intact so local repository status still works in release builds.
+-keep class org.eclipse.jgit.** { *; }
 
 # Keep our model classes
 -keep class com.murong.agent.core.provider.** { *; }

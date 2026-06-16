@@ -12,11 +12,12 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.ByteArrayOutputStream
+import java.time.Instant
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
@@ -484,18 +485,6 @@ internal fun loadProjectGitHubWorkflowRunDetail(
             error = jobsResult.error ?: "读取工作流 job 详情失败"
         )
     }
-    val artifactsResult = loadProjectGitHubArtifacts(
-        repo = repo,
-        runId = runId,
-        token = token,
-        apiBaseUrl = apiBaseUrl
-    )
-    val logsResult = loadProjectGitHubWorkflowRunLogsPreview(
-        repo = repo,
-        runId = runId,
-        token = token,
-        apiBaseUrl = apiBaseUrl
-    )
     val runObject = parseProjectGitHubJsonObject(runResult.body)
         ?: return ProjectGitHubWorkflowRunDetailLoadResult(
             success = false,
@@ -527,6 +516,19 @@ internal fun loadProjectGitHubWorkflowRunDetail(
             )
         }
         .orEmpty()
+    val artifactsResult = loadProjectGitHubArtifacts(
+        repo = repo,
+        runId = runId,
+        token = token,
+        apiBaseUrl = apiBaseUrl
+    )
+    val logsResult = loadProjectGitHubWorkflowRunLogsPreview(
+        repo = repo,
+        runId = runId,
+        jobs = jobs,
+        token = token,
+        apiBaseUrl = apiBaseUrl
+    )
     val detail = ProjectGitHubWorkflowRunDetailUi(
         id = runId,
         repo = repo,
@@ -558,6 +560,7 @@ internal fun loadProjectGitHubWorkflowRunDetail(
 private fun loadProjectGitHubWorkflowRunLogsPreview(
     repo: ProjectGitHubRepoRef,
     runId: Long,
+    jobs: List<ProjectGitHubWorkflowJobUi>,
     token: String,
     apiBaseUrl: String
 ): ProjectGitHubWorkflowLogLoadResult {
@@ -588,26 +591,18 @@ private fun loadProjectGitHubWorkflowRunLogsPreview(
                 )
             ZipInputStream(bodyStream).use { zip ->
                 var entry = zip.nextEntry
-                while (entry != null && entries.size < 12) {
+                while (entry != null && entries.size < 48) {
                     if (!entry.isDirectory) {
-                        val raw = readProjectGitHubZipEntryBytes(zip, maxBytes = 96 * 1024)
+                        val raw = readProjectGitHubZipEntryBytes(zip, maxBytes = 2 * 1024 * 1024)
                         val normalized = raw.first.toString(Charsets.UTF_8)
                             .replace("\r\n", "\n")
                             .trimEnd()
                         val lines = normalized.lines().filterNot { it.isEmpty() }
-                        val previewLines = when {
-                            lines.size <= 120 -> lines
-                            else -> {
-                                val hiddenCount = (lines.size - 84).coerceAtLeast(0)
-                                lines.take(36) + listOf("... 已折叠 $hiddenCount 行 ...") + lines.takeLast(48)
-                            }
-                        }
-                        entries += ProjectGitHubWorkflowLogEntryUi(
+                        entries += buildProjectGitHubWorkflowLogEntries(
                             entryName = entry.name,
-                            displayName = entry.name.substringAfterLast('/').ifBlank { entry.name },
-                            preview = previewLines.joinToString("\n").ifBlank { "(当前日志文件为空)" },
-                            totalLineCount = lines.size,
-                            truncated = raw.second || lines.size > previewLines.size
+                            lines = lines,
+                            truncated = raw.second,
+                            jobs = jobs
                         )
                     }
                     zip.closeEntry()
@@ -651,6 +646,807 @@ private fun readProjectGitHubZipEntryBytes(
         }
     }
     return output.toByteArray() to truncated
+}
+
+private fun buildProjectGitHubWorkflowLogEntries(
+    entryName: String,
+    lines: List<String>,
+    truncated: Boolean,
+    jobs: List<ProjectGitHubWorkflowJobUi>
+): List<ProjectGitHubWorkflowLogEntryUi> {
+    val matchedJob = jobs.firstOrNull { job ->
+        projectGitHubLogMatchesJob(
+            entry = ProjectGitHubWorkflowLogEntryUi(
+                entryName = entryName,
+                displayName = entryName.substringAfterLast('/').ifBlank { entryName },
+                preview = lines.take(24).joinToString("\n"),
+                totalLineCount = lines.size,
+                truncated = truncated,
+                sourceEntryName = entryName
+            ),
+            jobName = job.name
+        )
+    }
+    if (matchedJob == null || matchedJob.steps.isEmpty()) {
+        return listOf(
+            buildProjectGitHubWorkflowLogEntryUi(
+                entryName = entryName,
+                sourceEntryName = entryName,
+                jobName = null,
+                lines = lines,
+                truncated = truncated
+            )
+        )
+    }
+    val setupStep = findProjectGitHubWorkflowStepByName(matchedJob, "Set up job")
+    if (isProjectGitHubWorkflowSystemLogEntry(entryName) && setupStep != null) {
+        return listOf(
+            buildProjectGitHubWorkflowLogEntryUi(
+                entryName = "$entryName#step-${setupStep.number}",
+                sourceEntryName = entryName,
+                jobName = matchedJob.name,
+                lines = lines,
+                truncated = truncated,
+                stepName = setupStep.name,
+                stepNumber = setupStep.number
+            )
+        )
+    }
+    val apiAlignedEntries = buildProjectGitHubWorkflowApiAlignedEntries(
+        entryName = entryName,
+        lines = lines,
+        truncated = truncated,
+        job = matchedJob
+    )
+    if (apiAlignedEntries.isNotEmpty()) {
+        return apiAlignedEntries
+    }
+    val segmentedEntries = buildProjectGitHubWorkflowSegmentMappedEntries(
+        entryName = entryName,
+        lines = lines,
+        truncated = truncated,
+        job = matchedJob
+    )
+    if (segmentedEntries.isNotEmpty()) {
+        return segmentedEntries
+    }
+    val timeSegmentEntries = buildProjectGitHubWorkflowTimeSegmentEntries(
+        entryName = entryName,
+        lines = lines,
+        truncated = truncated,
+        job = matchedJob
+    )
+    if (timeSegmentEntries.isNotEmpty()) {
+        return timeSegmentEntries
+    }
+    val stepRanges = buildProjectGitHubWorkflowStepRanges(lines, matchedJob.steps)
+    if (stepRanges.isEmpty()) {
+        return listOf(
+            buildProjectGitHubWorkflowLogEntryUi(
+                entryName = entryName,
+                sourceEntryName = entryName,
+                jobName = matchedJob.name,
+                lines = lines,
+                truncated = truncated
+            )
+        )
+    }
+    return stepRanges.map { stepRange ->
+        val segmentLines = lines.subList(stepRange.range.first, stepRange.range.last + 1)
+        buildProjectGitHubWorkflowLogEntryUi(
+            entryName = "$entryName#step-${stepRange.step.number}",
+            sourceEntryName = entryName,
+            jobName = matchedJob.name,
+            lines = segmentLines,
+            truncated = truncated,
+            stepName = stepRange.step.name,
+            stepNumber = stepRange.step.number
+        )
+    }.ifEmpty {
+        listOf(
+            buildProjectGitHubWorkflowLogEntryUi(
+                entryName = entryName,
+                sourceEntryName = entryName,
+                jobName = matchedJob.name,
+                lines = lines,
+                truncated = truncated
+            )
+        )
+    }
+}
+
+private enum class ProjectGitHubWorkflowSegmentKind {
+    Setup,
+    Run,
+    Post,
+    Complete
+}
+
+private data class ProjectGitHubWorkflowRawSegment(
+    val kind: ProjectGitHubWorkflowSegmentKind,
+    val header: String,
+    val range: IntRange,
+    val startMillis: Long?,
+    val endMillis: Long?
+)
+
+private fun buildProjectGitHubWorkflowApiAlignedEntries(
+    entryName: String,
+    lines: List<String>,
+    truncated: Boolean,
+    job: ProjectGitHubWorkflowJobUi
+): List<ProjectGitHubWorkflowLogEntryUi> {
+    if (lines.isEmpty() || job.steps.isEmpty()) return emptyList()
+    val activeSteps = job.steps.filterNot { it.conclusion.equals("skipped", ignoreCase = true) }
+    if (activeSteps.isEmpty()) return emptyList()
+    val segments = buildProjectGitHubWorkflowRawSegments(lines)
+    if (segments.isEmpty()) return emptyList()
+    val boundaryStartByStepNumber = linkedMapOf<Int, Int>()
+    var searchStartIndex = 0
+    activeSteps.forEach { step ->
+        val stepKind = classifyProjectGitHubWorkflowStepKind(step.name)
+        val segmentIndex = segments.withIndex()
+            .drop(searchStartIndex)
+            .firstOrNull { (_, segment) -> segment.kind == stepKind }
+            ?.index
+            ?: return@forEach
+        boundaryStartByStepNumber[step.number] = segments[segmentIndex].range.first
+        searchStartIndex = segmentIndex + 1
+    }
+    if (boundaryStartByStepNumber.isEmpty()) return emptyList()
+    val firstMatchedStart = boundaryStartByStepNumber.values.minOrNull() ?: return emptyList()
+    val setupStep = findProjectGitHubWorkflowStepByName(job, "Set up job")
+    if (setupStep != null && setupStep.number !in boundaryStartByStepNumber && firstMatchedStart > 0) {
+        boundaryStartByStepNumber[setupStep.number] = 0
+    }
+    val mappedSteps = activeSteps.mapNotNull { step ->
+        boundaryStartByStepNumber[step.number]?.let { startLine -> step to startLine }
+    }
+    if (mappedSteps.isEmpty()) return emptyList()
+    val ranges = mutableListOf<ProjectGitHubWorkflowStepRangeMatch>()
+    mappedSteps.forEachIndexed { index, (step, startLine) ->
+        val nextStartLine = mappedSteps.getOrNull(index + 1)?.second ?: lines.size
+        val defaultEndLine = (nextStartLine - 1).coerceAtLeast(startLine)
+        if (defaultEndLine !in lines.indices || startLine !in lines.indices) return@forEachIndexed
+        val trailingActiveSteps = mappedSteps.drop(index + 1).map { it.first }
+        val immediateUnmappedTrailingSteps = activeSteps
+            .filter { candidate -> candidate.number > step.number && trailingActiveSteps.none { it.number == candidate.number } }
+        val completeSplitRange = if (
+            index == mappedSteps.lastIndex &&
+            immediateUnmappedTrailingSteps.size == 1 &&
+            classifyProjectGitHubWorkflowStepKind(step.name) == ProjectGitHubWorkflowSegmentKind.Post &&
+            classifyProjectGitHubWorkflowStepKind(immediateUnmappedTrailingSteps.first().name) == ProjectGitHubWorkflowSegmentKind.Complete
+        ) {
+            findProjectGitHubWorkflowPostCompleteSplitIndex(
+                lines = lines,
+                startLine = startLine,
+                endLine = defaultEndLine
+            )?.takeIf { splitLine -> splitLine in startLine until defaultEndLine }
+        } else {
+            null
+        }
+        if (completeSplitRange != null) {
+            ranges += ProjectGitHubWorkflowStepRangeMatch(
+                step = step,
+                range = startLine..completeSplitRange
+            )
+            ranges += ProjectGitHubWorkflowStepRangeMatch(
+                step = immediateUnmappedTrailingSteps.first(),
+                range = (completeSplitRange + 1)..defaultEndLine
+            )
+        } else {
+            ranges += ProjectGitHubWorkflowStepRangeMatch(
+                step = step,
+                range = startLine..defaultEndLine
+            )
+        }
+    }
+    if (ranges.isEmpty()) return emptyList()
+    return ranges.mapNotNull { rangeMatch ->
+        val start = rangeMatch.range.first.coerceIn(0, lines.lastIndex)
+        val end = rangeMatch.range.last.coerceIn(start, lines.lastIndex)
+        val segmentLines = lines.subList(start, end + 1)
+        if (segmentLines.isEmpty()) {
+            null
+        } else {
+            buildProjectGitHubWorkflowLogEntryUi(
+                entryName = "$entryName#step-${rangeMatch.step.number}",
+                sourceEntryName = entryName,
+                jobName = job.name,
+                lines = segmentLines,
+                truncated = truncated,
+                stepName = rangeMatch.step.name,
+                stepNumber = rangeMatch.step.number
+            )
+        }
+    }
+}
+
+private fun findProjectGitHubWorkflowPostCompleteSplitIndex(
+    lines: List<String>,
+    startLine: Int,
+    endLine: Int
+): Int? {
+    if (startLine !in lines.indices || endLine !in lines.indices || startLine >= endLine) return null
+    for (index in endLine downTo startLine) {
+        val trimmedLine = stripProjectGitHubWorkflowLogTimestampPrefix(lines[index]).trimStart()
+        if (trimmedLine.startsWith("##[endgroup]") || trimmedLine.startsWith("::endgroup::")) {
+            return index
+        }
+    }
+    return null
+}
+
+private fun buildProjectGitHubWorkflowSegmentMappedEntries(
+    entryName: String,
+    lines: List<String>,
+    truncated: Boolean,
+    job: ProjectGitHubWorkflowJobUi
+): List<ProjectGitHubWorkflowLogEntryUi> {
+    if (lines.isEmpty() || job.steps.isEmpty()) return emptyList()
+    val segments = buildProjectGitHubWorkflowRawSegments(lines)
+    if (segments.isEmpty()) return emptyList()
+    val mappedSegments = buildProjectGitHubWorkflowStepSegmentMapping(
+        steps = job.steps,
+        segments = segments
+    )
+    if (mappedSegments.isEmpty()) return emptyList()
+    val matchedSegmentIndices = mappedSegments.values.toSet()
+    val matchedLineIndices = matchedSegmentIndices.flatMapTo(linkedSetOf()) { segmentIndex ->
+        segments[segmentIndex].range.toList()
+    }
+    val otherIndexedLines = lines.mapIndexedNotNull { index, line ->
+        if (matchedLineIndices.contains(index)) null else index to line
+    }
+    val orderedMappedSteps = job.steps.mapNotNull { step ->
+        mappedSegments[step.number]?.let { segmentIndex -> step to segmentIndex }
+    }
+    val remainingOtherIndexedLines = otherIndexedLines.toMutableList()
+    val builtEntries = buildList {
+        val setupStep = findProjectGitHubWorkflowStepByName(job, "Set up job")
+        val firstMappedLineIndex = orderedMappedSteps.firstOrNull()
+            ?.second
+            ?.let { segmentIndex -> segments[segmentIndex].range.first }
+            ?: Int.MAX_VALUE
+        val setupPreludeLines = remainingOtherIndexedLines
+            .takeWhile { (index, _) -> index < firstMappedLineIndex }
+        if (setupStep != null && setupPreludeLines.isNotEmpty()) {
+            add(
+                buildProjectGitHubWorkflowLogEntryUi(
+                    entryName = "$entryName#step-${setupStep.number}",
+                    sourceEntryName = entryName,
+                    jobName = job.name,
+                    lines = setupPreludeLines.map { it.second },
+                    truncated = truncated,
+                    stepName = setupStep.name,
+                    stepNumber = setupStep.number
+                )
+            )
+            remainingOtherIndexedLines.subList(0, setupPreludeLines.size).clear()
+        }
+        orderedMappedSteps.forEachIndexed { mappedIndex, (step, segmentIndex) ->
+            val segment = segments[segmentIndex]
+            val segmentLines = lines.subList(
+                segment.range.first,
+                segment.range.last + 1
+            )
+            if (segmentLines.isEmpty()) return@forEachIndexed
+            val nextMappedStepNumber = orderedMappedSteps.getOrNull(mappedIndex + 1)?.first?.number
+            val candidateSteps = buildProjectGitHubWorkflowSegmentCandidateSteps(
+                steps = job.steps,
+                startStepNumber = step.number,
+                nextMappedStepNumber = nextMappedStepNumber,
+                segmentKind = segment.kind
+            )
+            val timeSplitEntries = if (candidateSteps.size > 1) {
+                buildProjectGitHubWorkflowTimeSegmentEntries(
+                    entryName = "$entryName#segment-$segmentIndex",
+                    lines = segmentLines,
+                    truncated = truncated,
+                    job = job.copy(steps = candidateSteps)
+                )
+            } else {
+                emptyList()
+            }
+            val shouldUseTimeSplit = timeSplitEntries.any { splitEntry ->
+                splitEntry.stepNumber != null && splitEntry.stepNumber != step.number
+            }
+            if (shouldUseTimeSplit) {
+                addAll(
+                    timeSplitEntries.map { splitEntry ->
+                        if (splitEntry.stepNumber != null) {
+                            splitEntry.copy(
+                                entryName = "$entryName#step-${splitEntry.stepNumber}",
+                                sourceEntryName = entryName
+                            )
+                        } else {
+                            splitEntry.copy(
+                                entryName = "$entryName#segment-$segmentIndex-other",
+                                sourceEntryName = entryName
+                            )
+                        }
+                    }
+                )
+            } else {
+                add(
+                    buildProjectGitHubWorkflowLogEntryUi(
+                        entryName = "$entryName#step-${step.number}",
+                        sourceEntryName = entryName,
+                        jobName = job.name,
+                        lines = segmentLines,
+                        truncated = truncated,
+                        stepName = step.name,
+                        stepNumber = step.number
+                    )
+                )
+            }
+        }
+        if (remainingOtherIndexedLines.isNotEmpty()) {
+            val trailingSteps = job.steps.filter { step ->
+                val lastMappedStepNumber = orderedMappedSteps.lastOrNull()?.first?.number ?: Int.MIN_VALUE
+                step.number > lastMappedStepNumber &&
+                    !step.conclusion.equals("skipped", ignoreCase = true)
+            }
+            val trailingEntries = if (trailingSteps.isNotEmpty()) {
+                buildProjectGitHubWorkflowTimeSegmentEntries(
+                    entryName = "$entryName#tail",
+                    lines = remainingOtherIndexedLines.map { it.second },
+                    truncated = truncated,
+                    job = job.copy(steps = trailingSteps)
+                )
+            } else {
+                emptyList()
+            }
+            if (trailingEntries.isNotEmpty()) {
+                addAll(
+                    trailingEntries.map { trailingEntry ->
+                        if (trailingEntry.stepNumber != null) {
+                            trailingEntry.copy(
+                                entryName = "$entryName#step-${trailingEntry.stepNumber}",
+                                sourceEntryName = entryName
+                            )
+                        } else {
+                            trailingEntry.copy(
+                                entryName = "$entryName#other",
+                                sourceEntryName = entryName
+                            )
+                        }
+                    }
+                )
+            } else {
+                add(
+                    buildProjectGitHubWorkflowLogEntryUi(
+                        entryName = "$entryName#other",
+                        sourceEntryName = entryName,
+                        jobName = job.name,
+                        lines = remainingOtherIndexedLines.map { it.second },
+                        truncated = truncated
+                    )
+                )
+            }
+        }
+    }
+    return builtEntries
+}
+
+private fun isProjectGitHubWorkflowSystemLogEntry(entryName: String): Boolean {
+    return entryName.endsWith("/system.txt", ignoreCase = true)
+}
+
+private fun findProjectGitHubWorkflowStepByName(
+    job: ProjectGitHubWorkflowJobUi,
+    stepName: String
+): ProjectGitHubWorkflowStepUi? {
+    return job.steps.firstOrNull { it.name.equals(stepName, ignoreCase = true) }
+}
+
+private fun buildProjectGitHubWorkflowSegmentCandidateSteps(
+    steps: List<ProjectGitHubWorkflowStepUi>,
+    startStepNumber: Int,
+    nextMappedStepNumber: Int?,
+    segmentKind: ProjectGitHubWorkflowSegmentKind
+): List<ProjectGitHubWorkflowStepUi> {
+    return steps.filter { step ->
+        step.number >= startStepNumber &&
+            (nextMappedStepNumber == null || step.number < nextMappedStepNumber) &&
+            !step.conclusion.equals("skipped", ignoreCase = true) &&
+            classifyProjectGitHubWorkflowStepKind(step.name) == segmentKind
+    }
+}
+
+private fun buildProjectGitHubWorkflowRawSegments(
+    lines: List<String>
+): List<ProjectGitHubWorkflowRawSegment> {
+    if (lines.isEmpty()) return emptyList()
+    val boundaries = lines.mapIndexedNotNull { index, line ->
+        parseProjectGitHubWorkflowBoundary(line)?.let { boundary ->
+            index to boundary
+        }
+    }
+    if (boundaries.isEmpty()) return emptyList()
+    return boundaries.mapIndexed { boundaryIndex, (startLineIndex, boundary) ->
+        val endLineIndex = (
+            boundaries.getOrNull(boundaryIndex + 1)?.first?.minus(1)
+                ?: lines.lastIndex
+            ).coerceAtLeast(startLineIndex)
+        val segmentLines = lines.subList(startLineIndex, endLineIndex + 1)
+        ProjectGitHubWorkflowRawSegment(
+            kind = boundary.first,
+            header = boundary.second,
+            range = startLineIndex..endLineIndex,
+            startMillis = segmentLines.firstNotNullOfOrNull(::parseProjectGitHubWorkflowLogLineMillis),
+            endMillis = segmentLines.asReversed().firstNotNullOfOrNull(::parseProjectGitHubWorkflowLogLineMillis)
+        )
+    }
+}
+
+private fun buildProjectGitHubWorkflowStepSegmentMapping(
+    steps: List<ProjectGitHubWorkflowStepUi>,
+    segments: List<ProjectGitHubWorkflowRawSegment>
+): Map<Int, Int> {
+    if (steps.isEmpty() || segments.isEmpty()) return emptyMap()
+    val mapping = linkedMapOf<Int, Int>()
+    var searchStartIndex = 0
+    steps
+        .filterNot { it.conclusion.equals("skipped", ignoreCase = true) }
+        .forEach { step ->
+            val segmentIndex = findProjectGitHubWorkflowBestSegmentIndex(
+                step = step,
+                segments = segments,
+                fromIndex = searchStartIndex
+            ) ?: return@forEach
+            mapping[step.number] = segmentIndex
+            searchStartIndex = segmentIndex + 1
+        }
+    return mapping
+}
+
+private fun findProjectGitHubWorkflowBestSegmentIndex(
+    step: ProjectGitHubWorkflowStepUi,
+    segments: List<ProjectGitHubWorkflowRawSegment>,
+    fromIndex: Int
+): Int? {
+    val stepKind = classifyProjectGitHubWorkflowStepKind(step.name)
+    val stepStartMillis = parseProjectGitHubWorkflowStepMillis(step.startedAt)
+    val stepEndMillis = parseProjectGitHubWorkflowStepMillis(step.completedAt) ?: stepStartMillis
+    return segments
+        .withIndex()
+        .drop(fromIndex.coerceAtLeast(0))
+        .filter { (_, segment) -> segment.kind == stepKind }
+        .map { indexedValue ->
+            val score = scoreProjectGitHubWorkflowSegmentMatch(
+                step = step,
+                stepKind = stepKind,
+                stepStartMillis = stepStartMillis,
+                stepEndMillis = stepEndMillis,
+                segment = indexedValue.value,
+                segmentIndex = indexedValue.index,
+                startIndex = fromIndex
+            )
+            indexedValue.index to score
+        }
+        .filter { (_, score) -> score > Int.MIN_VALUE / 4 }
+        .maxWithOrNull(compareBy<Pair<Int, Int>>({ it.second }, { -it.first }))
+        ?.first
+}
+
+private fun scoreProjectGitHubWorkflowSegmentMatch(
+    step: ProjectGitHubWorkflowStepUi,
+    stepKind: ProjectGitHubWorkflowSegmentKind,
+    stepStartMillis: Long?,
+    stepEndMillis: Long?,
+    segment: ProjectGitHubWorkflowRawSegment,
+    segmentIndex: Int,
+    startIndex: Int
+): Int {
+    var score = 0
+    score -= (segmentIndex - startIndex).coerceAtLeast(0) * 8
+    if (stepKind == segment.kind) {
+        score += 80
+    }
+    val normalizedStepName = normalizeProjectGitHubWorkflowApiToken(step.name)
+    val normalizedHeader = normalizeProjectGitHubWorkflowApiToken(segment.header)
+    if (normalizedStepName.isNotBlank() && normalizedHeader.isNotBlank()) {
+        if (normalizedHeader.contains(normalizedStepName) || normalizedStepName.contains(normalizedHeader)) {
+            score += 60
+        }
+    }
+    if (
+        stepStartMillis != null &&
+        stepEndMillis != null &&
+        segment.startMillis != null
+    ) {
+        val effectiveSegmentEnd = segment.endMillis ?: segment.startMillis
+        if (effectiveSegmentEnd >= stepStartMillis - 2_000L && segment.startMillis <= stepEndMillis + 2_000L) {
+            score += 120
+        } else {
+            val timeDistance = when {
+                segment.startMillis > stepEndMillis -> segment.startMillis - stepEndMillis
+                effectiveSegmentEnd < stepStartMillis -> stepStartMillis - effectiveSegmentEnd
+                else -> 0L
+            }
+            score -= (timeDistance / 1000L).toInt().coerceAtMost(90)
+        }
+    }
+    return score
+}
+
+private fun classifyProjectGitHubWorkflowStepKind(
+    stepName: String
+): ProjectGitHubWorkflowSegmentKind {
+    val trimmed = stepName.trim()
+    return when {
+        trimmed.equals("set up job", ignoreCase = true) -> ProjectGitHubWorkflowSegmentKind.Setup
+        trimmed.equals("complete job", ignoreCase = true) -> ProjectGitHubWorkflowSegmentKind.Complete
+        trimmed.startsWith("post ", ignoreCase = true) -> ProjectGitHubWorkflowSegmentKind.Post
+        else -> ProjectGitHubWorkflowSegmentKind.Run
+    }
+}
+
+private fun buildProjectGitHubWorkflowTimeSegmentEntries(
+    entryName: String,
+    lines: List<String>,
+    truncated: Boolean,
+    job: ProjectGitHubWorkflowJobUi
+): List<ProjectGitHubWorkflowLogEntryUi> {
+    if (lines.isEmpty() || job.steps.isEmpty()) return emptyList()
+    val stepBuckets = job.steps.map { mutableListOf<String>() }
+    val otherLines = mutableListOf<String>()
+    var activeStepIndex: Int? = null
+    var matchedTimestampedLineCount = 0
+    lines.forEach { line ->
+        val timestampMillis = parseProjectGitHubWorkflowLogLineMillis(line)
+        if (timestampMillis != null) {
+            activeStepIndex = findProjectGitHubWorkflowStepIndexByTimestamp(
+                steps = job.steps,
+                timestampMillis = timestampMillis,
+                currentStepIndex = activeStepIndex
+            )
+        }
+        val targetStepIndex = activeStepIndex
+        if (targetStepIndex != null && targetStepIndex in stepBuckets.indices) {
+            stepBuckets[targetStepIndex] += line
+            if (timestampMillis != null) {
+                matchedTimestampedLineCount++
+            }
+        } else {
+            otherLines += line
+        }
+    }
+    if (matchedTimestampedLineCount == 0) return emptyList()
+    val entries = buildList {
+        job.steps.forEachIndexed { index, step ->
+            val stepLines = stepBuckets[index]
+            if (stepLines.isNotEmpty()) {
+                add(
+                    buildProjectGitHubWorkflowLogEntryUi(
+                        entryName = "$entryName#step-${step.number}",
+                        sourceEntryName = entryName,
+                        jobName = job.name,
+                        lines = stepLines,
+                        truncated = truncated,
+                        stepName = step.name,
+                        stepNumber = step.number
+                    )
+                )
+            }
+        }
+        if (otherLines.isNotEmpty()) {
+            add(
+                buildProjectGitHubWorkflowLogEntryUi(
+                    entryName = "$entryName#other",
+                    sourceEntryName = entryName,
+                    jobName = job.name,
+                    lines = otherLines,
+                    truncated = truncated
+                )
+            )
+        }
+    }
+    return entries
+}
+
+private fun buildProjectGitHubWorkflowLogEntryUi(
+    entryName: String,
+    sourceEntryName: String,
+    jobName: String?,
+    lines: List<String>,
+    truncated: Boolean,
+    stepName: String? = null,
+    stepNumber: Int? = null
+): ProjectGitHubWorkflowLogEntryUi {
+    val previewLines = when {
+        lines.size <= 120 -> lines
+        else -> {
+            val hiddenCount = (lines.size - 84).coerceAtLeast(0)
+            lines.take(36) + listOf("... 已折叠 $hiddenCount 行 ...") + lines.takeLast(48)
+        }
+    }
+    val displayName = buildString {
+        jobName?.takeIf { it.isNotBlank() }?.let { append(it) }
+        stepName?.takeIf { it.isNotBlank() }?.let {
+            if (isNotBlank()) append(" / ")
+            append(it)
+        }
+        if (isBlank()) {
+            append(entryName.substringAfterLast('/').ifBlank { entryName })
+        }
+    }
+    return ProjectGitHubWorkflowLogEntryUi(
+        entryName = entryName,
+        displayName = displayName,
+        preview = previewLines.joinToString("\n").ifBlank { "(当前日志文件为空)" },
+        totalLineCount = lines.size,
+        truncated = truncated || lines.size > previewLines.size,
+        jobName = jobName,
+        stepName = stepName,
+        stepNumber = stepNumber,
+        sourceEntryName = sourceEntryName
+    )
+}
+
+private data class ProjectGitHubWorkflowStepRangeMatch(
+    val step: ProjectGitHubWorkflowStepUi,
+    val range: IntRange
+)
+
+private fun buildProjectGitHubWorkflowStepRanges(
+    lines: List<String>,
+    steps: List<ProjectGitHubWorkflowStepUi>
+) : List<ProjectGitHubWorkflowStepRangeMatch> {
+    if (lines.isEmpty() || steps.isEmpty()) return emptyList()
+    val matchedStarts = mutableListOf<Pair<ProjectGitHubWorkflowStepUi, Int>>()
+    var searchStartIndex = 0
+    steps.forEach { step ->
+        val startIndex = findProjectGitHubWorkflowStepStartIndex(
+            lines = lines,
+            stepName = step.name,
+            fromIndex = searchStartIndex
+        )
+        if (startIndex >= 0) {
+            matchedStarts += step to startIndex
+            searchStartIndex = (startIndex + 1).coerceAtMost(lines.size)
+        }
+    }
+    if (matchedStarts.isEmpty()) return emptyList()
+    return matchedStarts.mapIndexed { index, (step, start) ->
+        val nextStart = matchedStarts
+            .drop(index + 1)
+            .firstOrNull { (_, nextIndex) -> nextIndex > start }
+            ?.second
+            ?: lines.size
+        ProjectGitHubWorkflowStepRangeMatch(
+            step = step,
+            range = start..(nextStart - 1).coerceAtLeast(start)
+        )
+    }.filter { range ->
+        range.range.first in lines.indices && range.range.last in lines.indices
+    }
+}
+
+private fun findProjectGitHubWorkflowStepStartIndex(
+    lines: List<String>,
+    stepName: String,
+    fromIndex: Int = 0
+): Int {
+    val normalizedStep = normalizeProjectGitHubWorkflowApiToken(stepName)
+    if (normalizedStep.isBlank()) return -1
+    val safeFromIndex = fromIndex.coerceIn(0, lines.size)
+    val preferredOffset = lines.drop(safeFromIndex).indexOfFirst { line ->
+        val normalizedLine = normalizeProjectGitHubWorkflowApiToken(
+            stripProjectGitHubWorkflowLogTimestampPrefix(line)
+        )
+        normalizedLine.contains(normalizedStep) && (
+            line.contains("##[group]") ||
+                line.contains("::group::") ||
+                line.contains("Run ") ||
+                line.contains("Post ") ||
+                line.contains("Complete job") ||
+                line.contains("Set up job")
+            )
+    }
+    if (preferredOffset >= 0) return safeFromIndex + preferredOffset
+    val fallbackOffset = lines.drop(safeFromIndex).indexOfFirst { line ->
+        normalizeProjectGitHubWorkflowApiToken(
+            stripProjectGitHubWorkflowLogTimestampPrefix(line)
+        ).contains(normalizedStep)
+    }
+    return if (fallbackOffset >= 0) safeFromIndex + fallbackOffset else -1
+}
+
+private fun findProjectGitHubWorkflowStepIndexByTimestamp(
+    steps: List<ProjectGitHubWorkflowStepUi>,
+    timestampMillis: Long,
+    currentStepIndex: Int?
+): Int? {
+    if (steps.isEmpty()) return null
+    val startTimes = steps.map { step -> parseProjectGitHubWorkflowStepMillis(step.startedAt) }
+    if (startTimes.all { it == null }) return currentStepIndex
+    if (currentStepIndex != null) {
+        var candidateIndex = currentStepIndex.coerceIn(0, steps.lastIndex)
+        while (candidateIndex + 1 < steps.size) {
+            val nextStartMillis = startTimes[candidateIndex + 1] ?: break
+            if (timestampMillis >= nextStartMillis) {
+                candidateIndex++
+            } else {
+                break
+            }
+        }
+        val candidateStartMillis = startTimes[candidateIndex]
+        if (candidateStartMillis != null && timestampMillis >= candidateStartMillis) {
+            return candidateIndex
+        }
+    }
+    val fallbackIndex = startTimes.indexOfLast { startMillis ->
+        startMillis != null && timestampMillis >= startMillis
+    }
+    return fallbackIndex.takeIf { it >= 0 }
+}
+
+private fun parseProjectGitHubWorkflowLogLineMillis(line: String): Long? {
+    val timestamp = Regex("""^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\b""")
+        .find(line)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?: return null
+    return parseProjectGitHubWorkflowStepMillis(timestamp)
+}
+
+private fun parseProjectGitHubWorkflowStepMillis(raw: String): Long? {
+    if (raw.isBlank()) return null
+    return runCatching { Instant.parse(raw).toEpochMilli() }.getOrNull()
+}
+
+private fun parseProjectGitHubWorkflowBoundary(
+    line: String
+): Pair<ProjectGitHubWorkflowSegmentKind, String>? {
+    val trimmed = stripProjectGitHubWorkflowLogTimestampPrefix(line).trimStart()
+    val payload = when {
+        trimmed.startsWith("##[group]") -> trimmed.removePrefix("##[group]").trimStart()
+        trimmed.startsWith("::group::") -> trimmed.removePrefix("::group::").trimStart()
+        isProjectGitHubWorkflowPlainBoundary(trimmed) -> trimmed
+        else -> return null
+    }
+    return when {
+        payload.startsWith("Set up job", ignoreCase = true) ->
+            ProjectGitHubWorkflowSegmentKind.Setup to payload
+        isProjectGitHubWorkflowCompleteBoundary(payload) ->
+            ProjectGitHubWorkflowSegmentKind.Complete to payload
+        payload.startsWith("Post ", ignoreCase = true) ->
+            ProjectGitHubWorkflowSegmentKind.Post to payload
+        payload.startsWith("Run ", ignoreCase = true) ->
+            ProjectGitHubWorkflowSegmentKind.Run to payload
+        else -> null
+    }
+}
+
+private fun isProjectGitHubWorkflowPlainBoundary(trimmed: String): Boolean {
+    return trimmed.startsWith("Set up job", ignoreCase = true) ||
+        trimmed.startsWith("Post ", ignoreCase = true) ||
+        isProjectGitHubWorkflowCompleteBoundary(trimmed)
+}
+
+private fun isProjectGitHubWorkflowCompleteBoundary(value: String): Boolean {
+    val normalized = value.trim()
+    if (normalized.isBlank()) return false
+    if (!normalized.startsWith("Complete job", ignoreCase = true)) return false
+    val suffix = normalized.removePrefix("Complete job").trimStart()
+    return suffix.isEmpty() ||
+        suffix.startsWith("(", ignoreCase = true) ||
+        suffix.startsWith("-", ignoreCase = true)
+}
+
+private fun stripProjectGitHubWorkflowLogTimestampPrefix(line: String): String {
+    return line.replaceFirst(
+        Regex("""^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\s+"""),
+        ""
+    )
+}
+
+private fun normalizeProjectGitHubWorkflowApiToken(value: String): String {
+    return value
+        .lowercase(Locale.getDefault())
+        .replace(Regex("[^a-z0-9\\u4e00-\\u9fff]+"), "")
 }
 
 internal fun updateProjectGitHubRelease(
@@ -2062,6 +2858,157 @@ internal suspend fun searchProjectGitHubGlobal(
     return results.sortedByDescending { it.updatedAt ?: "" }
 }
 
+internal suspend fun searchProjectGitHubFileNames(
+    query: String,
+    repo: ProjectGitHubRepoRef,
+    token: String,
+    apiBaseUrl: String,
+    ref: String = ""
+): List<ProjectGitHubGlobalSearchResultUi> {
+    val normalizedQuery = query.trim()
+    if (normalizedQuery.isBlank()) return emptyList()
+    val effectiveRef = ref.trim().ifBlank {
+        val repoResult = runProjectGitHubApiRequest(
+            apiBaseUrl = apiBaseUrl,
+            token = token,
+            path = "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}"
+        )
+        if (!repoResult.success) return emptyList()
+        parseProjectGitHubJsonObject(repoResult.body)
+            ?.string("default_branch")
+            .orEmpty()
+            .ifBlank { "main" }
+    }
+    val treeResult = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}/git/trees/${Uri.encode(effectiveRef)}?recursive=1"
+    )
+    if (!treeResult.success) return emptyList()
+
+    val lowerQuery = normalizedQuery.lowercase(Locale.getDefault())
+    val matches = parseProjectGitHubJsonObject(treeResult.body)
+        ?.jsonArrayOrEmpty("tree")
+        ?.mapNotNull { item ->
+            val obj = item.jsonObjectOrNull() ?: return@mapNotNull null
+            if (!obj.string("type").orEmpty().equals("blob", ignoreCase = true)) {
+                return@mapNotNull null
+            }
+            val path = obj.string("path").orEmpty()
+            val name = path.substringAfterLast('/')
+            val lowerPath = path.lowercase(Locale.getDefault())
+            val lowerName = name.lowercase(Locale.getDefault())
+            if (!lowerPath.contains(lowerQuery) && !lowerName.contains(lowerQuery)) {
+                return@mapNotNull null
+            }
+            ProjectGitHubGlobalSearchResultUi(
+                type = ProjectGitHubGlobalSearchResultType.FILE,
+                title = name,
+                subtitle = path,
+                repoOwner = repo.owner,
+                repoName = repo.repo,
+                rootPath = null,
+                url = "https://github.com/${repo.owner}/${repo.repo}/blob/${Uri.encode(effectiveRef)}/${path}",
+                filePath = path,
+                matchLabel = "文件名命中"
+            )
+        }
+        .orEmpty()
+
+    return matches.sortedWith(
+        compareBy<ProjectGitHubGlobalSearchResultUi>(
+            { result ->
+                val path = result.filePath.orEmpty().lowercase(Locale.getDefault())
+                val name = result.title.lowercase(Locale.getDefault())
+                when {
+                    name == lowerQuery -> 0
+                    name.startsWith(lowerQuery) -> 1
+                    name.contains(lowerQuery) -> 2
+                    path.contains("/$lowerQuery") -> 3
+                    path.contains(lowerQuery) -> 4
+                    else -> 5
+                }
+            },
+            { result -> result.title.length },
+            { result -> result.filePath?.length ?: Int.MAX_VALUE }
+        )
+    )
+}
+
+internal suspend fun searchProjectGitHubCodeMatches(
+    query: String,
+    repo: ProjectGitHubRepoRef,
+    token: String,
+    apiBaseUrl: String,
+    ref: String = ""
+): List<ProjectGitHubGlobalSearchResultUi> {
+    val normalizedQuery = query.trim()
+    if (normalizedQuery.isBlank()) return emptyList()
+
+    val effectiveRef = ref.trim().ifBlank {
+        val repoResult = runProjectGitHubApiRequest(
+            apiBaseUrl = apiBaseUrl,
+            token = token,
+            path = "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}"
+        )
+        if (!repoResult.success) return emptyList()
+        parseProjectGitHubJsonObject(repoResult.body)
+            ?.string("default_branch")
+            .orEmpty()
+            .ifBlank { "main" }
+    }
+
+    val codeSearchPath = "/search/code?q=${
+        Uri.encode("$normalizedQuery repo:${repo.owner}/${repo.repo}")
+    }&per_page=8"
+    val codeResult = runProjectGitHubApiRequest(apiBaseUrl, token, codeSearchPath)
+    if (!codeResult.success) return emptyList()
+
+    return parseProjectGitHubJsonObject(codeResult.body)
+        ?.jsonArrayOrEmpty("items")
+        ?.mapNotNull { item ->
+            val obj = item.jsonObjectOrNull() ?: return@mapNotNull null
+            val path = obj.string("path").orEmpty()
+            if (path.isBlank()) return@mapNotNull null
+            val name = obj.string("name").orEmpty().ifBlank { path.substringAfterLast('/') }
+            val snippet = loadProjectGitHubRemoteFile(
+                repo = repo,
+                path = path,
+                ref = effectiveRef,
+                token = token,
+                apiBaseUrl = apiBaseUrl
+            ).file?.content?.let { content ->
+                extractProjectGitHubSearchSnippet(content, normalizedQuery)
+            }
+            ProjectGitHubGlobalSearchResultUi(
+                type = ProjectGitHubGlobalSearchResultType.FILE,
+                title = name,
+                subtitle = path,
+                repoOwner = repo.owner,
+                repoName = repo.repo,
+                rootPath = null,
+                url = obj.string("html_url"),
+                filePath = path,
+                matchLabel = "代码命中",
+                matchSnippet = snippet
+            )
+        }
+        .orEmpty()
+}
+
+private fun extractProjectGitHubSearchSnippet(
+    content: String,
+    query: String
+): String {
+    val lowerQuery = query.trim().lowercase(Locale.getDefault())
+    if (lowerQuery.isBlank()) return ""
+    return content.lineSequence()
+        .map { it.trim() }
+        .firstOrNull { line -> line.lowercase(Locale.getDefault()).contains(lowerQuery) }
+        ?.take(140)
+        .orEmpty()
+}
+
 private fun runProjectGitHubApiRequest(
     apiBaseUrl: String,
     token: String,
@@ -2300,124 +3247,4 @@ internal fun parentProjectGitHubRepoPath(path: String): String? {
 
 internal fun displayProjectGitHubRepoPath(path: String): String {
     return normalizeProjectGitHubRepoPath(path).ifBlank { "/" }
-}
-
-internal fun loadProjectGitHubWorkspaceRemoteSummary(
-    repo: ProjectGitHubRepoRef,
-    token: String,
-    apiBaseUrl: String,
-    includeWorkItemPreview: Boolean = false
-): ProjectGitHubWorkspaceRemoteSummaryUi {
-    var defaultBranch: String? = null
-    var repoHtmlUrl: String? = null
-    var latestRun: ProjectGitHubWorkflowRunUi? = null
-    var runningRunCount = 0
-    var openIssueCount = 0
-    var latestOpenIssue: ProjectGitHubIssueUi? = null
-    var openPullRequestCount = 0
-    var latestOpenPullRequest: ProjectGitHubPullRequestUi? = null
-    val errors = mutableListOf<String>()
-
-    val repoResult = runProjectGitHubApiRequest(
-        apiBaseUrl = apiBaseUrl,
-        token = token,
-        path = "/repos/${repo.owner}/${repo.repo}"
-    )
-    if (repoResult.success) {
-        parseProjectGitHubJsonObject(repoResult.body)?.let { repoObject ->
-            defaultBranch = repoObject.string("default_branch")
-            repoHtmlUrl = repoObject.string("html_url")
-        }
-    } else {
-        errors += repoResult.error ?: "读取仓库信息失败"
-    }
-
-    val runsResult = runProjectGitHubApiRequest(
-        apiBaseUrl = apiBaseUrl,
-        token = token,
-        path = "/repos/${repo.owner}/${repo.repo}/actions/runs?per_page=6"
-    )
-    if (runsResult.success) {
-        val runs = parseProjectGitHubJsonObject(runsResult.body)
-            ?.jsonArrayOrEmpty("workflow_runs")
-            ?.mapNotNull { item ->
-                val obj = item.jsonObjectOrNull() ?: return@mapNotNull null
-                ProjectGitHubWorkflowRunUi(
-                    id = obj.long("id") ?: return@mapNotNull null,
-                    name = obj.string("name").orEmpty(),
-                    displayTitle = obj.string("display_title").orEmpty(),
-                    headBranch = obj.string("head_branch").orEmpty(),
-                    status = obj.string("status").orEmpty(),
-                    conclusion = obj.string("conclusion"),
-                    event = obj.string("event").orEmpty(),
-                    runNumber = obj.long("run_number") ?: 0L,
-                    updatedAt = obj.string("updated_at").orEmpty(),
-                    htmlUrl = obj.string("html_url")
-                )
-            }
-            .orEmpty()
-        latestRun = runs.firstOrNull()
-        runningRunCount = runs.count { !it.status.equals("completed", ignoreCase = true) }
-    } else {
-        errors += runsResult.error ?: "读取工作流摘要失败"
-    }
-
-    val issuesQuery = Uri.encode("repo:${repo.owner}/${repo.repo} is:issue is:open")
-    val issuesResult = runProjectGitHubApiRequest(
-        apiBaseUrl = apiBaseUrl,
-        token = token,
-        path = "/search/issues?q=$issuesQuery&sort=updated&order=desc&per_page=1"
-    )
-    if (issuesResult.success) {
-        val issuesObject = parseProjectGitHubJsonObject(issuesResult.body)
-        openIssueCount = issuesObject?.long("total_count")?.toInt() ?: 0
-        if (includeWorkItemPreview) {
-            latestOpenIssue = issuesObject
-                ?.jsonArrayOrEmpty("items")
-                ?.mapNotNull { item ->
-                    val obj = item.jsonObjectOrNull() ?: return@mapNotNull null
-                    if (obj.jsonObjectOrNull("pull_request") != null) return@mapNotNull null
-                    parseProjectGitHubIssue(obj)
-                }
-                ?.firstOrNull()
-        }
-    } else {
-        errors += issuesResult.error ?: "读取开放 Issue 摘要失败"
-    }
-
-    val pullRequestsQuery = Uri.encode("repo:${repo.owner}/${repo.repo} is:pr is:open")
-    val pullRequestsResult = runProjectGitHubApiRequest(
-        apiBaseUrl = apiBaseUrl,
-        token = token,
-        path = "/search/issues?q=$pullRequestsQuery&sort=updated&order=desc&per_page=1"
-    )
-    if (pullRequestsResult.success) {
-        val pullRequestsObject = parseProjectGitHubJsonObject(pullRequestsResult.body)
-        openPullRequestCount = pullRequestsObject?.long("total_count")?.toInt() ?: 0
-        if (includeWorkItemPreview) {
-            latestOpenPullRequest = pullRequestsObject
-                ?.jsonArrayOrEmpty("items")
-                ?.mapNotNull { item ->
-                    val obj = item.jsonObjectOrNull() ?: return@mapNotNull null
-                    parseProjectGitHubPullRequest(obj)
-                }
-                ?.firstOrNull()
-        }
-    } else {
-        errors += pullRequestsResult.error ?: "读取开放 PR 摘要失败"
-    }
-
-    return ProjectGitHubWorkspaceRemoteSummaryUi(
-        repo = repo,
-        defaultBranch = defaultBranch,
-        repoHtmlUrl = repoHtmlUrl,
-        latestRun = latestRun,
-        runningRunCount = runningRunCount,
-        openIssueCount = openIssueCount,
-        latestOpenIssue = latestOpenIssue,
-        openPullRequestCount = openPullRequestCount,
-        latestOpenPullRequest = latestOpenPullRequest,
-        hasWorkItemPreview = includeWorkItemPreview,
-        errorMessage = errors.firstOrNull()
-    )
 }

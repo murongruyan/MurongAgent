@@ -105,9 +105,23 @@ internal fun shouldSkipSearchDir(dir: File, root: File): Boolean {
 }
 
 internal fun projectLanguageForPath(path: String?): String? {
-    val name = path?.substringAfterLast(File.separatorChar)?.lowercase(Locale.getDefault()) ?: return null
+    val name = path
+        ?.substringAfterLast('/')
+        ?.substringAfterLast(File.separatorChar)
+        ?.lowercase(Locale.getDefault())
+        ?: return null
     val ext = name.substringAfterLast('.', name)
-    return when (ext) {
+    return when (name) {
+        "makefile", "gnumakefile", "dockerfile", "containerfile", "cmakelists.txt",
+        ".bashrc", ".bash_profile", ".profile", ".zshrc", ".zprofile", ".zshenv", ".envrc",
+        "gradlew", "mvnw" -> "bash"
+        ".clang-format", ".clang-tidy", ".yamllint" -> "yaml"
+        ".gitignore", ".gitattributes", ".gitmodules", ".editorconfig", ".npmrc",
+        ".prettierrc", ".prettierignore", ".dockerignore", ".bazelignore", ".bazelrc",
+        ".bazelversion", ".python-version", ".codespellrc", ".codespellignore",
+        ".htaccess", ".gitkeep", ".nojekyll" -> "properties"
+        "readme", "license", "changelog", "notice", "copying", "authors", "contributing" -> "markdown"
+        else -> when (ext) {
         "kt", "kts" -> "kotlin"
         "java" -> "java"
         "gradle", "groovy", "gvy" -> "groovy"
@@ -115,28 +129,38 @@ internal fun projectLanguageForPath(path: String?): String? {
         "jsx" -> "jsx"
         "ts", "mts", "cts" -> "typescript"
         "tsx" -> "tsx"
+        "go" -> "go"
         "rs" -> "rust"
         "c" -> "c"
         "h" -> "h"
-        "cpp", "cc", "cxx" -> "cpp"
+        "cpp", "cc", "cxx", "inc", "inl", "ipp", "ixx", "tcc", "m", "mm", "cu", "cuh",
+        "hip", "ispc", "s", "asm", "f", "f90", "pas", "proto", "textproto" -> "cpp"
         "hpp", "hh", "hxx" -> "hpp"
-        "json", "jsonc", "geojson", "webmanifest" -> "json"
+        "json", "jsonc", "geojson", "webmanifest", "jsonl", "ndjson" -> "json"
         "toml" -> "toml"
         "pro" -> "pro"
         "ini" -> "ini"
-        "conf", "cfg" -> "conf"
-        "cmake" -> "cmake"
+        "conf", "cfg", "cnf", "env" -> "conf"
+        "cmake", "mk", "bazel", "bzl", "awk", "fish", "csh", "bashrc", "bash_completion",
+        "nix", "nsi", "vim", "el", "scm", "lark", "m4" -> "bash"
         "sql" -> "sql"
-        "css" -> "css"
-        "html", "htm" -> "html"
-        "xml" -> "xml"
-        "md", "mdown", "markdown" -> "markdown"
+        "css", "tcss" -> "css"
+        "html", "htm", "php", "astro" -> "html"
+        "xml", "svg", "plist", "xaml", "iml", "classpath", "project", "targets", "props" -> "xml"
+        "md", "mdown", "markdown", "rst", "org", "txt", "log", "patch" -> "markdown"
         "py" -> "python"
         "lua", "luau" -> "lua"
-        "sh", "bash" -> "bash"
+        "sh", "bash", "zsh", "bat", "cmd", "ps1", "rc", "ninja" -> "bash"
         "yml", "yaml" -> "yaml"
-        "properties", "prop" -> "properties"
+        "properties", "prop", "prefs", "manifest", "policy", "template", "tpl", "sample",
+        "example", "secure", "marker", "htaccess" -> "properties"
+        "gitignore", "gitattributes", "gitmodules", "editorconfig", "npmrc", "prettierrc",
+        "prettierignore", "dockerignore", "bazelignore", "bazelrc", "bazelversion",
+        "python-version", "codespellrc", "codespellignore", "nojekyll", "gitkeep" -> "properties"
+        "makefile", "dockerfile" -> "bash"
+        "readme", "license", "changelog", "notice" -> "markdown"
         else -> null
+        }
     }
 }
 
