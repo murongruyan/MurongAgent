@@ -599,5 +599,5 @@ val DEFAULT_ENABLED_BUILTIN_TOOLS = listOf(
 val DEFAULT_ENABLED_FILE_TOOL_OPERATIONS = listOf("read", "list", "exists", "write", "delete", "chmod")
 val DEFAULT_SUBAGENT_FILE_TOOL_OPERATIONS = listOf("read", "list", "exists", "write", "delete")
 const val GITHUB_OAUTH_REDIRECT_URI = "murongagent://github/callback"
-const val MURONG_BACKEND_AUTH_API_URL = "https://murongdiaodu.rl1.cc/api/reasonix_auth.php"
+const val MURONG_BACKEND_AUTH_API_URL = "https://murongagent.rl1.cc/api/github_auth.php"
 const val MURONG_APP_GITHUB_REDIRECT_URI = "murongagent://auth/github"
