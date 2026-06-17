@@ -40,6 +40,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Sanitize Gradle Properties For Linux CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The repository keeps a Windows-only local JDK path for on-device development.
+          # GitHub Actions runs on Linux, so this path must not be present in CI.
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("gradle.properties")
+          text = path.read_text(encoding="utf-8")
+          lines = [line for line in text.splitlines() if not line.startswith("org.gradle.java.home=")]
+          path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
       - name: Set Up JDK ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v5
         with:
