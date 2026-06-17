@@ -1,4 +1,4 @@
-name: Build APK
+name: 构建主程序 APK
 
 permissions:
   contents: write
@@ -11,10 +11,10 @@ on:
   workflow_dispatch:
     inputs:
       app_version:
-        description: "APK 大版本号 versionName，默认读取 app/build.gradle.kts"
+        description: "主程序大版本号 versionName，默认读取 app/build.gradle.kts"
         required: false
       app_version_code:
-        description: "APK 小版本号 versionCode，默认读取 app/build.gradle.kts"
+        description: "主程序小版本号 versionCode，默认读取 app/build.gradle.kts"
         required: false
       release_tag:
         description: "GitHub Release 标签，默认自动生成为 murong-agent-v<version>"
@@ -22,6 +22,11 @@ on:
       release_name:
         description: "Release 标题，默认 MurongAgent <version> (<code>)"
         required: false
+      sync_to_server:
+        description: "是否同步上传到服务器并回写后端版本信息"
+        required: false
+        default: true
+        type: boolean
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -178,7 +183,7 @@ jobs:
           tag: ${{ env.RELEASE_TAG }}
 
       - name: Ensure Remote App Downloads Directory
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
@@ -191,7 +196,7 @@ jobs:
             mkdir -p "${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}/tmp/app"
 
       - name: Upload APK To Murong Site Temp
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
@@ -203,7 +208,7 @@ jobs:
           overwrite: true
 
       - name: Move APK Into Final Downloads Path
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
@@ -218,7 +223,7 @@ jobs:
             rm -rf "${ROOT}/tmp/app/dist"
 
       - name: Publish Release Metadata To Murong Backend
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
         shell: bash
         env:
           RELEASES_API_URL: https://murongagent.rl1.cc/api/releases.php
