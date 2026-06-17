@@ -1,6 +1,7 @@
 package com.murong.agent.ui.settings
 
 import android.content.Intent
+import android.content.pm.PackageInfo
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,6 +31,8 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -44,6 +47,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.murong.agent.ui.defaultMurongChromeColor
 import com.murong.agent.ui.defaultMurongMutedTextColor
 import com.murong.agent.ui.defaultMurongSurfaceColor
@@ -785,16 +789,29 @@ private fun backgroundModeLabel(mode: MurongBackgroundMode): String {
 }
 
 @Composable
-fun AboutPage() {
+fun AboutPage(settingsVm: SettingsViewModel = hiltViewModel()) {
     val context = LocalContext.current
     val accent = rememberMurongAccentColor()
     val uriHandler = LocalUriHandler.current
+    val settingsConfig by settingsVm.config.collectAsState()
+    val appUpdateState by settingsVm.appUpdateState.collectAsState()
     val packageInfo = remember(context) {
         runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0)
         }.getOrNull()
     }
     val versionName = packageInfo?.versionName ?: "0.9.0-preview"
+    val versionCode = remember(packageInfo) {
+        packageInfo?.let(::resolvePackageVersionCode) ?: 0
+    }
+    LaunchedEffect(versionCode, versionName) {
+        if (versionCode > 0) {
+            settingsVm.checkAppUpdate(
+                currentVersionCode = versionCode,
+                currentVersionName = versionName
+            )
+        }
+    }
     fun openSupportLink(primaryUrl: String, fallbackUrl: String? = null, errorMessage: String) {
         val opened = runCatching {
             uriHandler.openUri(primaryUrl)
@@ -858,15 +875,107 @@ fun AboutPage() {
                             color = MaterialTheme.colorScheme.onSurface,
                             fontWeight = FontWeight.SemiBold
                         )
+                        if (versionCode > 0) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "versionCode $versionCode",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    MurongGlassSurface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.large,
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp)
+                    ) {
+                        Text(
+                            text = "检查更新",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = accent
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = when {
+                                appUpdateState.isChecking -> "正在检查远端版本..."
+                                !appUpdateState.latestVersionName.isNullOrBlank() ->
+                                    "最新版本 ${appUpdateState.latestVersionName}"
+                                appUpdateState.latestVersionCode != null ->
+                                    "最新版本 code ${appUpdateState.latestVersionCode}"
+                                else -> "暂未获取到远端版本"
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        val updateStatusText = appUpdateState.error
+                            ?: appUpdateState.updateMessage
+                            ?: appUpdateState.message
+                            ?: "通过 MurongAgent 后端检查当前 stable 通道版本。"
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = updateStatusText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (appUpdateState.error != null) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                        appUpdateState.publishedAt?.takeIf { it.isNotBlank() }?.let { publishedAt ->
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "发布时间：$publishedAt",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            MurongOutlinedActionButton(
+                                text = if (appUpdateState.isChecking) "检查中..." else "重新检查",
+                                onClick = {
+                                    if (versionCode > 0) {
+                                        settingsVm.checkAppUpdate(
+                                            currentVersionCode = versionCode,
+                                            currentVersionName = versionName
+                                        )
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                enabled = !appUpdateState.isChecking && versionCode > 0
+                            )
+                            MurongOutlinedActionButton(
+                                text = if (appUpdateState.isUpdateAvailable) "下载新版本" else "打开下载页",
+                                onClick = {
+                                    uriHandler.openUri(
+                                        appUpdateState.downloadUrl
+                                            ?: settingsConfig.getMurongDownloadsPageUrl()
+                                    )
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
                     }
                 }
 
                 MurongSectionCard(title = "应用信息") {
                     AboutInfoRow("应用", "Murong Agent")
                     AboutInfoRow("版本", versionName)
+                    if (versionCode > 0) {
+                        AboutInfoRow("Version Code", versionCode.toString())
+                    }
+                    AboutInfoRow(
+                        "更新通道",
+                        if (appUpdateState.isUpdateAvailable) "stable · 有新版本" else "stable"
+                    )
                     AboutInfoRow("引擎", "Murong Agent Core")
                     AboutInfoRow("设计方向", "现代玻璃 / 桌面端式信息密度")
-                    AboutInfoRow("当前重点", "统一 UI 壳层 / 编辑页 / 对话体验")
+                    AboutInfoRow("当前重点", "登录与更新闭环 / 下载页联动")
                 }
 
                 MurongSectionCard(title = "项目链接") {
@@ -1204,6 +1313,15 @@ private fun ThemeColorSliderChannel(
 
 private fun themeColorToHex(color: Color): String {
     return String.format("#%08X", color.toArgb())
+}
+
+private fun resolvePackageVersionCode(packageInfo: PackageInfo): Int {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        packageInfo.longVersionCode.toInt()
+    } else {
+        @Suppress("DEPRECATION")
+        packageInfo.versionCode
+    }
 }
 
 @Composable

@@ -48,6 +48,24 @@ data class GitHubAuthUiState(
     val error: String? = null
 )
 
+data class AppUpdateUiState(
+    val isChecking: Boolean = false,
+    val currentVersionName: String? = null,
+    val currentVersionCode: Int? = null,
+    val latestVersionName: String? = null,
+    val latestVersionCode: Int? = null,
+    val downloadUrl: String? = null,
+    val updateMessage: String? = null,
+    val publishedAt: String? = null,
+    val message: String? = null,
+    val error: String? = null
+) {
+    val isUpdateAvailable: Boolean
+        get() = currentVersionCode != null &&
+            latestVersionCode != null &&
+            latestVersionCode > currentVersionCode
+}
+
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val configRepository: ConfigRepository,
@@ -96,6 +114,9 @@ class SettingsViewModel @Inject constructor(
     private val _gitHubAuthState = MutableStateFlow(GitHubAuthUiState())
     val gitHubAuthState: StateFlow<GitHubAuthUiState> = _gitHubAuthState.asStateFlow()
     private var lastHandledGitHubCallback: String? = null
+
+    private val _appUpdateState = MutableStateFlow(AppUpdateUiState())
+    val appUpdateState: StateFlow<AppUpdateUiState> = _appUpdateState.asStateFlow()
 
     init {
         // 加载已保存的 MCP 配置
@@ -388,6 +409,70 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun checkAppUpdate(currentVersionCode: Int, currentVersionName: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val currentConfig = configRepository.getConfig()
+            _appUpdateState.value = _appUpdateState.value.copy(
+                isChecking = true,
+                currentVersionName = currentVersionName,
+                currentVersionCode = currentVersionCode,
+                error = null,
+                message = "正在检查更新..."
+            )
+            runCatching {
+                fetchCurrentRelease(
+                    apiUrl = currentConfig.getMurongReleasesApiUrl(),
+                    artifactKey = currentConfig.getMurongAppReleaseArtifactKey()
+                )
+            }.onSuccess { release ->
+                if (release == null) {
+                    _appUpdateState.value = AppUpdateUiState(
+                        isChecking = false,
+                        currentVersionName = currentVersionName,
+                        currentVersionCode = currentVersionCode,
+                        message = "服务器暂未发布可用版本。"
+                    )
+                    return@onSuccess
+                }
+                val latestVersionCode = release.versionCode.takeIf { it > 0 }
+                val latestVersionName = release.versionName.ifBlank { null }
+                val updateAvailable = latestVersionCode != null && latestVersionCode > currentVersionCode
+                val resolvedDownloadUrl = release.downloadUrl.ifBlank {
+                    currentConfig.getMurongDownloadsPageUrl()
+                }
+                _appUpdateState.value = AppUpdateUiState(
+                    isChecking = false,
+                    currentVersionName = currentVersionName,
+                    currentVersionCode = currentVersionCode,
+                    latestVersionName = latestVersionName,
+                    latestVersionCode = latestVersionCode,
+                    downloadUrl = resolvedDownloadUrl,
+                    updateMessage = release.updateMessage.ifBlank {
+                        if (updateAvailable) {
+                            "发现新版本，前往下载页安装即可。"
+                        } else {
+                            "当前已是最新版本。"
+                        }
+                    },
+                    publishedAt = release.publishedAt.ifBlank { null },
+                    message = if (updateAvailable) {
+                        "发现新版本 ${latestVersionName ?: latestVersionCode}"
+                    } else {
+                        "当前已是最新版本。"
+                    },
+                    error = null
+                )
+            }.onFailure { error ->
+                _appUpdateState.value = AppUpdateUiState(
+                    isChecking = false,
+                    currentVersionName = currentVersionName,
+                    currentVersionCode = currentVersionCode,
+                    error = error.message ?: "检查更新失败"
+                )
+            }
+        }
+    }
+
     private fun fetchGitHubViewer(apiBaseUrl: String, token: String): GitHubViewerResult {
         val request = Request.Builder()
             .url(apiBaseUrl.trimEnd('/') + "/user")
@@ -405,7 +490,7 @@ class SettingsViewModel @Inject constructor(
                         success = false,
                         viewerLogin = null,
                         viewerName = null,
-                        error = parseGitHubJsonMessage(body) ?: "GitHub 账号校验失败，HTTP ${response.code}"
+                        error = parseApiJsonMessage(body) ?: "GitHub 账号校验失败，HTTP ${response.code}"
                     )
                 }
                 val obj = githubJson.parseToJsonElement(body).jsonObject
@@ -447,7 +532,7 @@ class SettingsViewModel @Inject constructor(
                     return GitHubOAuthTokenResult(
                         success = false,
                         accessToken = null,
-                        error = parseGitHubJsonMessage(body) ?: "完成 GitHub 登录失败，HTTP ${response.code}"
+                        error = parseApiJsonMessage(body) ?: "完成 GitHub 登录失败，HTTP ${response.code}"
                     )
                 }
                 val obj = githubJson.parseToJsonElement(body).jsonObject["data"]?.jsonObject
@@ -461,7 +546,7 @@ class SettingsViewModel @Inject constructor(
                     return GitHubOAuthTokenResult(
                         success = false,
                         accessToken = null,
-                        error = parseGitHubJsonMessage(body) ?: "服务器没有返回 GitHub Token"
+                        error = parseApiJsonMessage(body) ?: "服务器没有返回 GitHub Token"
                     )
                 }
                 GitHubOAuthTokenResult(
@@ -488,7 +573,44 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    private fun parseGitHubJsonMessage(body: String): String? {
+    private fun fetchCurrentRelease(apiUrl: String, artifactKey: String): AppReleaseInfo? {
+        val request = Request.Builder()
+            .url(
+                Uri.parse(apiUrl)
+                    .buildUpon()
+                    .appendQueryParameter("action", "current")
+                    .appendQueryParameter("artifact", artifactKey)
+                    .build()
+                    .toString()
+            )
+            .addHeader("Accept", "application/json")
+            .addHeader("User-Agent", "MurongAgent/1.0")
+            .get()
+            .build()
+        return githubClient.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IllegalStateException(
+                    parseApiJsonMessage(body) ?: "检查更新失败，HTTP ${response.code}"
+                )
+            }
+            val root = githubJson.parseToJsonElement(body).jsonObject
+            val success = root["success"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
+            if (!success) {
+                throw IllegalStateException(parseApiJsonMessage(body) ?: "检查更新失败")
+            }
+            val data = root["data"]?.jsonObject ?: return null
+            AppReleaseInfo(
+                versionName = data["versionName"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                versionCode = data["versionCode"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0,
+                downloadUrl = data["downloadUrl"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                updateMessage = data["updateMessage"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                publishedAt = data["publishedAt"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            )
+        }
+    }
+
+    private fun parseApiJsonMessage(body: String): String? {
         return runCatching {
             githubJson.parseToJsonElement(body).jsonObject["message"]?.jsonPrimitive?.contentOrNull
                 ?: githubJson.parseToJsonElement(body).jsonObject["error_description"]?.jsonPrimitive?.contentOrNull
@@ -530,4 +652,12 @@ private data class GitHubOAuthTokenResult(
     val viewerLogin: String? = null,
     val viewerName: String? = null,
     val error: String?
+)
+
+private data class AppReleaseInfo(
+    val versionName: String,
+    val versionCode: Int,
+    val downloadUrl: String,
+    val updateMessage: String,
+    val publishedAt: String
 )
