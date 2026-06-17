@@ -28,6 +28,7 @@ env:
   JAVA_VERSION: "26"
   GRADLE_VERSION: "9.6.0-rc-1"
   ANDROID_API_LEVEL: "37"
+  ANDROID_PLATFORM_PACKAGE: "platforms;android-37.0"
   ANDROID_BUILD_TOOLS_VERSION: "37.0.0"
   ANDROID_SDK_CHANNEL: "3"
 
@@ -76,7 +77,7 @@ jobs:
           yes | sdkmanager --licenses > /dev/null || true
           sdkmanager --channel="${ANDROID_SDK_CHANNEL}" --install \
             "platform-tools" \
-            "platforms;android-${ANDROID_API_LEVEL}" \
+            "${ANDROID_PLATFORM_PACKAGE}" \
             "build-tools;${ANDROID_BUILD_TOOLS_VERSION}"
 
       - name: Prepare Release Metadata
