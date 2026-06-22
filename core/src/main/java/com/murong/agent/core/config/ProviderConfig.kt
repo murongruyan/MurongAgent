@@ -265,6 +265,7 @@ data class ProviderConfig(
     fun getMurongBackendAuthApiUrl(): String = MURONG_BACKEND_AUTH_API_URL
     fun getMurongGitHubRedirectUri(): String = MURONG_APP_GITHUB_REDIRECT_URI
     fun getMurongReleasesApiUrl(): String = MURONG_BACKEND_RELEASES_API_URL
+    fun getMurongUsageApiUrl(): String = MURONG_BACKEND_USAGE_API_URL
     fun getMurongDownloadsPageUrl(): String = MURONG_DOWNLOADS_PAGE_URL
     fun getMurongAppReleaseArtifactKey(): String = MURONG_APP_RELEASE_ARTIFACT_KEY
     fun getMurongExtensionReleaseArtifactKey(): String = MURONG_EXTENSION_RELEASE_ARTIFACT_KEY
@@ -606,6 +607,7 @@ const val GITHUB_OAUTH_REDIRECT_URI = "murongagent://github/callback"
 const val MURONG_BACKEND_AUTH_API_URL = "https://murongagent.rl1.cc/api/github_auth.php"
 const val MURONG_APP_GITHUB_REDIRECT_URI = "murongagent://auth/github"
 const val MURONG_BACKEND_RELEASES_API_URL = "https://murongagent.rl1.cc/api/releases.php"
+const val MURONG_BACKEND_USAGE_API_URL = "https://murongagent.rl1.cc/api/usage.php"
 const val MURONG_DOWNLOADS_PAGE_URL = "https://murongagent.rl1.cc/downloads.html"
 const val MURONG_APP_RELEASE_ARTIFACT_KEY = "murongagent-app"
 const val MURONG_EXTENSION_RELEASE_ARTIFACT_KEY = "murong-terminal-extension"
