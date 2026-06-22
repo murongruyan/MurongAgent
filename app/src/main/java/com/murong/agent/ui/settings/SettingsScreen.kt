@@ -1498,45 +1498,35 @@ private fun ProviderSettingsSection(
                                             style = MaterialTheme.typography.bodyMedium,
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
-                                        OutlinedTextField(
-                                            value = formatDoubleInput(promptPricePer1M),
-                                            onValueChange = { value ->
-                                                parseDoubleInput(value)?.let { parsed ->
-                                                    onConfigChanged(
-                                                        when (provider.id) {
-                                                            "deepseek" -> config.copy(deepseekPromptPricePer1M = parsed)
-                                                            "openai-compatible" -> config.copy(openaiPromptPricePer1M = parsed)
-                                                            "claude" -> config.copy(claudePromptPricePer1M = parsed)
-                                                            else -> config
-                                                        }
-                                                    )
-                                                }
-                                            },
-                                            label = { Text("输入价格（$priceCurrency / 1M tokens）") },
-                                            modifier = Modifier.fillMaxWidth(),
-                                            singleLine = true,
-                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                            textStyle = MaterialTheme.typography.bodySmall
+                                        DeferredDoubleField(
+                                            fieldKey = "${provider.id}-prompt-price",
+                                            currentValue = promptPricePer1M,
+                                            label = "输入价格（$priceCurrency / 1M tokens）",
+                                            onCommit = { parsed ->
+                                                onConfigChanged(
+                                                    when (provider.id) {
+                                                        "deepseek" -> config.copy(deepseekPromptPricePer1M = parsed)
+                                                        "openai-compatible" -> config.copy(openaiPromptPricePer1M = parsed)
+                                                        "claude" -> config.copy(claudePromptPricePer1M = parsed)
+                                                        else -> config
+                                                    }
+                                                )
+                                            }
                                         )
-                                        OutlinedTextField(
-                                            value = formatDoubleInput(completionPricePer1M),
-                                            onValueChange = { value ->
-                                                parseDoubleInput(value)?.let { parsed ->
-                                                    onConfigChanged(
-                                                        when (provider.id) {
-                                                            "deepseek" -> config.copy(deepseekCompletionPricePer1M = parsed)
-                                                            "openai-compatible" -> config.copy(openaiCompletionPricePer1M = parsed)
-                                                            "claude" -> config.copy(claudeCompletionPricePer1M = parsed)
-                                                            else -> config
-                                                        }
-                                                    )
-                                                }
-                                            },
-                                            label = { Text("输出价格（$priceCurrency / 1M tokens）") },
-                                            modifier = Modifier.fillMaxWidth(),
-                                            singleLine = true,
-                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                            textStyle = MaterialTheme.typography.bodySmall
+                                        DeferredDoubleField(
+                                            fieldKey = "${provider.id}-completion-price",
+                                            currentValue = completionPricePer1M,
+                                            label = "输出价格（$priceCurrency / 1M tokens）",
+                                            onCommit = { parsed ->
+                                                onConfigChanged(
+                                                    when (provider.id) {
+                                                        "deepseek" -> config.copy(deepseekCompletionPricePer1M = parsed)
+                                                        "openai-compatible" -> config.copy(openaiCompletionPricePer1M = parsed)
+                                                        "claude" -> config.copy(claudeCompletionPricePer1M = parsed)
+                                                        else -> config
+                                                    }
+                                                )
+                                            }
                                         )
 
                                         if (provider.id == "openai-compatible" || provider.id == "claude") {
@@ -1584,33 +1574,23 @@ private fun ProviderSettingsSection(
                                                 onRefresh = { onRefreshProviderBalance(provider.id) }
                                             )
                                         } else {
-                                            OutlinedTextField(
-                                                value = formatDoubleInput(balanceUsd),
-                                                onValueChange = { value ->
-                                                    parseDoubleInput(value)?.let { parsed ->
-                                                        onConfigChanged(
-                                                            when (provider.id) {
-                                                                "deepseek" -> config.copy(deepseekBalanceUsd = parsed)
-                                                                "openai-compatible" -> config.copy(openaiBalanceUsd = parsed)
-                                                                "claude" -> config.copy(claudeBalanceUsd = parsed)
-                                                                else -> config
-                                                            }
-                                                        )
-                                                    }
+                                            DeferredDoubleField(
+                                                fieldKey = "${provider.id}-balance",
+                                                currentValue = balanceUsd,
+                                                label = "本地预算余额（估算，$balanceCurrency）",
+                                                supportingText = if (provider.id == "deepseek") {
+                                                    "该 Provider 当前没有统一余额接口，先用本地预算做剩余额度估算。"
+                                                } else {
+                                                    "未配置余额接口路径时，先用本地预算做剩余额度估算。"
                                                 },
-                                                label = { Text("本地预算余额（估算，$balanceCurrency）") },
-                                                modifier = Modifier.fillMaxWidth(),
-                                                singleLine = true,
-                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                                textStyle = MaterialTheme.typography.bodySmall,
-                                                supportingText = {
-                                                    Text(
-                                                        if (provider.id == "deepseek") {
-                                                            "该 Provider 当前没有统一余额接口，先用本地预算做剩余额度估算。"
-                                                        } else {
-                                                            "未配置余额接口路径时，先用本地预算做剩余额度估算。"
-                                                        },
-                                                        fontSize = 10.sp
+                                                onCommit = { parsed ->
+                                                    onConfigChanged(
+                                                        when (provider.id) {
+                                                            "deepseek" -> config.copy(deepseekBalanceUsd = parsed)
+                                                            "openai-compatible" -> config.copy(openaiBalanceUsd = parsed)
+                                                            "claude" -> config.copy(claudeBalanceUsd = parsed)
+                                                            else -> config
+                                                        }
                                                     )
                                                 }
                                             )
@@ -1778,9 +1758,78 @@ private fun formatDoubleInput(value: Double): String {
     return if (value == 0.0) "" else value.toString()
 }
 
-private fun parseDoubleInput(value: String): Double? {
-    if (value.isBlank()) return 0.0
-    return value.toDoubleOrNull()
+private fun isPartialDoubleInput(value: String): Boolean {
+    if (value.isEmpty()) return true
+    if (value.count { it == '.' } > 1) return false
+    return value.all { it.isDigit() || it == '.' }
+}
+
+private fun parseCommittedDoubleInput(value: String): Double? {
+    val normalized = value.trim()
+    if (normalized.isBlank() || normalized == ".") return 0.0
+    return normalized.toDoubleOrNull()
+}
+
+@Composable
+private fun DeferredDoubleField(
+    fieldKey: String,
+    currentValue: Double,
+    label: String,
+    supportingText: String? = null,
+    onCommit: (Double) -> Unit
+) {
+    val focusManager = LocalFocusManager.current
+    var isFocused by remember(fieldKey) { mutableStateOf(false) }
+    var draft by rememberSaveable(fieldKey) { mutableStateOf(formatDoubleInput(currentValue)) }
+
+    LaunchedEffect(fieldKey, currentValue, isFocused) {
+        if (!isFocused) {
+            draft = formatDoubleInput(currentValue)
+        }
+    }
+
+    val commitValue = {
+        val parsed = parseCommittedDoubleInput(draft)
+        if (parsed != null && parsed != currentValue) {
+            onCommit(parsed)
+        } else {
+            draft = formatDoubleInput(currentValue)
+        }
+    }
+
+    OutlinedTextField(
+        value = draft,
+        onValueChange = { value ->
+            if (isPartialDoubleInput(value)) {
+                draft = value
+            }
+        },
+        label = { Text(label) },
+        modifier = Modifier
+            .fillMaxWidth()
+            .onFocusChanged {
+                val wasFocused = isFocused
+                isFocused = it.isFocused
+                if (wasFocused && !it.isFocused) {
+                    commitValue()
+                }
+            },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Decimal,
+            imeAction = ImeAction.Done
+        ),
+        keyboardActions = KeyboardActions(
+            onDone = {
+                commitValue()
+                focusManager.clearFocus()
+            }
+        ),
+        textStyle = MaterialTheme.typography.bodySmall,
+        supportingText = supportingText?.let { text ->
+            { Text(text, fontSize = 10.sp) }
+        }
+    )
 }
 
 @Composable

@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -25,6 +26,7 @@ class ConfigRepository(private val context: Context) {
 
     companion object {
         private val CONFIG_KEY = stringPreferencesKey("provider_config")
+        private val CONFIG_REVISION_KEY = longPreferencesKey("provider_config_revision")
         private const val SECRET_DEEPSEEK_API_KEY = "deepseek_api_key"
         private const val SECRET_OPENAI_API_KEY = "openai_api_key"
         private const val SECRET_CLAUDE_API_KEY = "claude_api_key"
@@ -51,6 +53,7 @@ class ConfigRepository(private val context: Context) {
         val sanitizedConfig = config.withSensitiveSecretsCleared()
         context.dataStore.edit { prefs ->
             prefs[CONFIG_KEY] = json.encodeToString(sanitizedConfig)
+            prefs[CONFIG_REVISION_KEY] = System.currentTimeMillis()
         }
     }
 
