@@ -14,6 +14,8 @@ import com.murong.agent.core.mcp.McpRegistry
 import com.murong.agent.core.mcp.McpServerConfig
 import com.murong.agent.core.mcp.McpServerStatus
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -54,9 +56,12 @@ data class AppUpdateUiState(
     val currentVersionCode: Int? = null,
     val latestVersionName: String? = null,
     val latestVersionCode: Int? = null,
+    val fileName: String? = null,
     val downloadUrl: String? = null,
+    val directDownloadUrl: String? = null,
     val updateMessage: String? = null,
     val publishedAt: String? = null,
+    val forceUpdate: Boolean = false,
     val message: String? = null,
     val error: String? = null
 ) {
@@ -64,6 +69,22 @@ data class AppUpdateUiState(
         get() = currentVersionCode != null &&
             latestVersionCode != null &&
             latestVersionCode > currentVersionCode
+
+    val hasRemoteRelease: Boolean
+        get() = latestVersionCode != null ||
+            !latestVersionName.isNullOrBlank() ||
+            !downloadUrl.isNullOrBlank()
+
+    val isInstallOrUpdateAvailable: Boolean
+        get() = when {
+            currentVersionCode == null -> hasRemoteRelease
+            latestVersionCode == null -> false
+            else -> latestVersionCode > currentVersionCode
+        }
+
+    val preferredDownloadUrl: String?
+        get() = directDownloadUrl?.takeIf { it.isNotBlank() }
+            ?: downloadUrl?.takeIf { it.isNotBlank() }
 }
 
 @HiltViewModel
@@ -117,6 +138,9 @@ class SettingsViewModel @Inject constructor(
 
     private val _appUpdateState = MutableStateFlow(AppUpdateUiState())
     val appUpdateState: StateFlow<AppUpdateUiState> = _appUpdateState.asStateFlow()
+
+    private val _extensionUpdateState = MutableStateFlow(AppUpdateUiState())
+    val extensionUpdateState: StateFlow<AppUpdateUiState> = _extensionUpdateState.asStateFlow()
 
     init {
         // 加载已保存的 MCP 配置
@@ -473,6 +497,176 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun checkExtensionUpdate(currentVersionCode: Int?, currentVersionName: String?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val currentConfig = configRepository.getConfig()
+            _extensionUpdateState.value = _extensionUpdateState.value.copy(
+                isChecking = true,
+                currentVersionName = currentVersionName,
+                currentVersionCode = currentVersionCode,
+                error = null,
+                message = "正在检查扩展包更新..."
+            )
+            runCatching {
+                fetchCurrentRelease(
+                    apiUrl = currentConfig.getMurongReleasesApiUrl(),
+                    artifactKey = currentConfig.getMurongExtensionReleaseArtifactKey()
+                )
+            }.onSuccess { release ->
+                _extensionUpdateState.value = buildReleaseUiState(
+                    release = release,
+                    currentVersionCode = currentVersionCode,
+                    currentVersionName = currentVersionName,
+                    defaultDownloadUrl = currentConfig.getMurongDownloadsPageUrl(),
+                    emptyReleaseMessage = if (currentVersionCode == null) {
+                        "当前未安装扩展包，服务器也暂未发布可用版本。"
+                    } else {
+                        "服务器暂未发布可用扩展包。"
+                    },
+                    missingInstallMessage = "检测到可用扩展包，下载后即可启用终端增强环境。"
+                )
+            }.onFailure { error ->
+                _extensionUpdateState.value = AppUpdateUiState(
+                    isChecking = false,
+                    currentVersionName = currentVersionName,
+                    currentVersionCode = currentVersionCode,
+                    error = error.message ?: "检查扩展包更新失败"
+                )
+            }
+        }
+    }
+
+    fun checkAllUpdates(
+        appVersionCode: Int,
+        appVersionName: String,
+        extensionVersionCode: Int?,
+        extensionVersionName: String?
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val currentConfig = configRepository.getConfig()
+            _appUpdateState.value = _appUpdateState.value.copy(
+                isChecking = true,
+                currentVersionName = appVersionName,
+                currentVersionCode = appVersionCode,
+                error = null,
+                message = "正在检查更新..."
+            )
+            _extensionUpdateState.value = _extensionUpdateState.value.copy(
+                isChecking = true,
+                currentVersionName = extensionVersionName,
+                currentVersionCode = extensionVersionCode,
+                error = null,
+                message = "正在检查扩展包更新..."
+            )
+
+            val (appReleaseResult, extensionReleaseResult) = coroutineScope {
+                val appDeferred = async {
+                    runCatching {
+                        fetchCurrentRelease(
+                            apiUrl = currentConfig.getMurongReleasesApiUrl(),
+                            artifactKey = currentConfig.getMurongAppReleaseArtifactKey()
+                        )
+                    }
+                }
+                val extensionDeferred = async {
+                    runCatching {
+                        fetchCurrentRelease(
+                            apiUrl = currentConfig.getMurongReleasesApiUrl(),
+                            artifactKey = currentConfig.getMurongExtensionReleaseArtifactKey()
+                        )
+                    }
+                }
+                appDeferred.await() to extensionDeferred.await()
+            }
+
+            _appUpdateState.value = appReleaseResult.fold(
+                onSuccess = { release ->
+                    buildReleaseUiState(
+                        release = release,
+                        currentVersionCode = appVersionCode,
+                        currentVersionName = appVersionName,
+                        defaultDownloadUrl = currentConfig.getMurongDownloadsPageUrl(),
+                        emptyReleaseMessage = "服务器暂未发布可用版本。",
+                        missingInstallMessage = "检测到可下载版本，前往下载页安装即可。"
+                    )
+                },
+                onFailure = { error ->
+                    AppUpdateUiState(
+                        isChecking = false,
+                        currentVersionName = appVersionName,
+                        currentVersionCode = appVersionCode,
+                        error = error.message ?: "检查更新失败"
+                    )
+                }
+            )
+
+            _extensionUpdateState.value = extensionReleaseResult.fold(
+                onSuccess = { release ->
+                    buildReleaseUiState(
+                        release = release,
+                        currentVersionCode = extensionVersionCode,
+                        currentVersionName = extensionVersionName,
+                        defaultDownloadUrl = currentConfig.getMurongDownloadsPageUrl(),
+                        emptyReleaseMessage = if (extensionVersionCode == null) {
+                            "当前未安装扩展包，服务器也暂未发布可用版本。"
+                        } else {
+                            "服务器暂未发布可用扩展包。"
+                        },
+                        missingInstallMessage = "检测到可用扩展包，下载后即可启用终端增强环境。"
+                    )
+                },
+                onFailure = { error ->
+                    AppUpdateUiState(
+                        isChecking = false,
+                        currentVersionName = extensionVersionName,
+                        currentVersionCode = extensionVersionCode,
+                        error = error.message ?: "检查扩展包更新失败"
+                    )
+                }
+            )
+        }
+    }
+
+    fun skipAppUpdateVersion(versionCode: Int?) {
+        if (versionCode == null || versionCode <= 0) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val currentConfig = configRepository.getConfig()
+            configRepository.saveConfig(
+                currentConfig.copy(skippedAppUpdateVersionCode = versionCode)
+            )
+        }
+    }
+
+    fun clearSkippedAppUpdateVersion() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val currentConfig = configRepository.getConfig()
+            if (currentConfig.skippedAppUpdateVersionCode == null) return@launch
+            configRepository.saveConfig(
+                currentConfig.copy(skippedAppUpdateVersionCode = null)
+            )
+        }
+    }
+
+    fun ignoreExtensionUpdateVersion(versionCode: Int?) {
+        if (versionCode == null || versionCode <= 0) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val currentConfig = configRepository.getConfig()
+            configRepository.saveConfig(
+                currentConfig.copy(ignoredExtensionUpdateVersionCode = versionCode)
+            )
+        }
+    }
+
+    fun clearIgnoredExtensionUpdateVersion() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val currentConfig = configRepository.getConfig()
+            if (currentConfig.ignoredExtensionUpdateVersionCode == null) return@launch
+            configRepository.saveConfig(
+                currentConfig.copy(ignoredExtensionUpdateVersionCode = null)
+            )
+        }
+    }
+
     private fun fetchGitHubViewer(apiBaseUrl: String, token: String): GitHubViewerResult {
         val request = Request.Builder()
             .url(apiBaseUrl.trimEnd('/') + "/user")
@@ -600,12 +794,22 @@ class SettingsViewModel @Inject constructor(
                 throw IllegalStateException(parseApiJsonMessage(body) ?: "检查更新失败")
             }
             val data = root["data"]?.jsonObject ?: return null
+            val updateMessage = data["updateMessage"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val changelog = data["changelog"]?.jsonPrimitive?.contentOrNull.orEmpty()
             AppReleaseInfo(
                 versionName = data["versionName"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                 versionCode = data["versionCode"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0,
+                fileName = data["fileName"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                 downloadUrl = data["downloadUrl"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-                updateMessage = data["updateMessage"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-                publishedAt = data["publishedAt"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                directDownloadUrl = data["directDownloadUrl"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                updateMessage = updateMessage,
+                changelog = changelog,
+                publishedAt = data["publishedAt"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                forceUpdate = parseForceUpdateFlag(
+                    explicitValue = data["forceUpdate"]?.jsonPrimitive?.contentOrNull,
+                    updateMessage = updateMessage,
+                    changelog = changelog
+                )
             )
         }
     }
@@ -657,7 +861,94 @@ private data class GitHubOAuthTokenResult(
 private data class AppReleaseInfo(
     val versionName: String,
     val versionCode: Int,
+    val fileName: String,
     val downloadUrl: String,
+    val directDownloadUrl: String,
     val updateMessage: String,
-    val publishedAt: String
+    val changelog: String,
+    val publishedAt: String,
+    val forceUpdate: Boolean
 )
+
+private fun buildReleaseUiState(
+    release: AppReleaseInfo?,
+    currentVersionCode: Int?,
+    currentVersionName: String?,
+    defaultDownloadUrl: String,
+    emptyReleaseMessage: String,
+    missingInstallMessage: String
+): AppUpdateUiState {
+    if (release == null) {
+        return AppUpdateUiState(
+            isChecking = false,
+            currentVersionName = currentVersionName,
+            currentVersionCode = currentVersionCode,
+            message = emptyReleaseMessage
+        )
+    }
+    val latestVersionCode = release.versionCode.takeIf { it > 0 }
+    val latestVersionName = release.versionName.ifBlank { null }
+    val resolvedDownloadUrl = release.downloadUrl.ifBlank { defaultDownloadUrl }
+    val isUpdateAvailable = latestVersionCode != null &&
+        currentVersionCode != null &&
+        latestVersionCode > currentVersionCode
+    val isInstallAvailable = currentVersionCode == null &&
+        (latestVersionCode != null || latestVersionName != null || resolvedDownloadUrl.isNotBlank())
+    val fallbackMessage = when {
+        isUpdateAvailable -> "发现新版本，前往下载页安装即可。"
+        isInstallAvailable -> missingInstallMessage
+        else -> "当前已是最新版本。"
+    }
+    val summaryMessage = when {
+        isUpdateAvailable -> "发现新版本 ${latestVersionName ?: latestVersionCode}"
+        isInstallAvailable -> "检测到可下载版本 ${latestVersionName ?: latestVersionCode ?: ""}".trim()
+        else -> "当前已是最新版本。"
+    }
+    return AppUpdateUiState(
+        isChecking = false,
+        currentVersionName = currentVersionName,
+        currentVersionCode = currentVersionCode,
+        latestVersionName = latestVersionName,
+        latestVersionCode = latestVersionCode,
+        fileName = release.fileName.ifBlank { null },
+        downloadUrl = resolvedDownloadUrl,
+        directDownloadUrl = release.directDownloadUrl.ifBlank { null },
+        updateMessage = release.updateMessage.ifBlank { fallbackMessage },
+        publishedAt = release.publishedAt.ifBlank { null },
+        forceUpdate = release.forceUpdate,
+        message = summaryMessage,
+        error = null
+    )
+}
+
+private fun parseForceUpdateFlag(
+    explicitValue: String?,
+    updateMessage: String,
+    changelog: String
+): Boolean {
+    val normalizedExplicit = explicitValue
+        ?.trim()
+        ?.lowercase()
+        .orEmpty()
+    if (normalizedExplicit in setOf("1", "true", "yes", "y", "on")) {
+        return true
+    }
+    val combinedText = buildString {
+        append(updateMessage.lowercase())
+        if (changelog.isNotBlank()) {
+            append('\n')
+            append(changelog.lowercase())
+        }
+    }
+    val forceMarkers = listOf(
+        "[force]",
+        "#force",
+        "force=true",
+        "强更",
+        "强制更新",
+        "必须更新"
+    )
+    return forceMarkers.any { marker -> marker in combinedText }
+}
+
+const val MURONG_EXTENSION_PACKAGE_NAME = "cc.rl1.murong.terminalextension"

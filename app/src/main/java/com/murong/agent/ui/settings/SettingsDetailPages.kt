@@ -789,26 +789,44 @@ private fun backgroundModeLabel(mode: MurongBackgroundMode): String {
 }
 
 @Composable
-fun AboutPage(settingsVm: SettingsViewModel = hiltViewModel()) {
+fun AboutPage(
+    settingsVm: SettingsViewModel = hiltViewModel(),
+    onDownloadAppUpdate: ((AppUpdateUiState) -> Unit)? = null,
+    onDownloadExtensionUpdate: ((AppUpdateUiState) -> Unit)? = null
+) {
     val context = LocalContext.current
     val accent = rememberMurongAccentColor()
     val uriHandler = LocalUriHandler.current
     val settingsConfig by settingsVm.config.collectAsState()
     val appUpdateState by settingsVm.appUpdateState.collectAsState()
+    val extensionUpdateState by settingsVm.extensionUpdateState.collectAsState()
     val packageInfo = remember(context) {
         runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0)
+        }.getOrNull()
+    }
+    val extensionPackageInfo = remember(context) {
+        runCatching {
+            context.packageManager.getPackageInfo(MURONG_EXTENSION_PACKAGE_NAME, 0)
         }.getOrNull()
     }
     val versionName = packageInfo?.versionName ?: "0.9.0-preview"
     val versionCode = remember(packageInfo) {
         packageInfo?.let(::resolvePackageVersionCode) ?: 0
     }
-    LaunchedEffect(versionCode, versionName) {
+    val extensionVersionName = extensionPackageInfo?.versionName ?: "未安装"
+    val extensionVersionCode = remember(extensionPackageInfo) {
+        extensionPackageInfo?.let(::resolvePackageVersionCode)
+    }
+    val isAppVersionSkipped = settingsConfig.isAppUpdateSkipped(appUpdateState.latestVersionCode)
+    val isExtensionVersionIgnored = settingsConfig.isExtensionUpdateIgnored(extensionUpdateState.latestVersionCode)
+    LaunchedEffect(versionCode, versionName, extensionVersionCode, extensionVersionName) {
         if (versionCode > 0) {
-            settingsVm.checkAppUpdate(
-                currentVersionCode = versionCode,
-                currentVersionName = versionName
+            settingsVm.checkAllUpdates(
+                appVersionCode = versionCode,
+                appVersionName = versionName,
+                extensionVersionCode = extensionVersionCode,
+                extensionVersionName = extensionVersionName.takeIf { extensionPackageInfo != null }
             )
         }
     }
@@ -923,6 +941,21 @@ fun AboutPage(settingsVm: SettingsViewModel = hiltViewModel()) {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             }
                         )
+                        if (appUpdateState.forceUpdate && appUpdateState.isInstallOrUpdateAvailable) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "该版本为强制更新版本，不能跳过提醒。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        } else if (isAppVersionSkipped && appUpdateState.isInstallOrUpdateAvailable) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "当前版本已被跳过，后续自动弹窗不会再提醒这一版。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         appUpdateState.publishedAt?.takeIf { it.isNotBlank() }?.let { publishedAt ->
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
@@ -940,9 +973,11 @@ fun AboutPage(settingsVm: SettingsViewModel = hiltViewModel()) {
                                 text = if (appUpdateState.isChecking) "检查中..." else "重新检查",
                                 onClick = {
                                     if (versionCode > 0) {
-                                        settingsVm.checkAppUpdate(
-                                            currentVersionCode = versionCode,
-                                            currentVersionName = versionName
+                                        settingsVm.checkAllUpdates(
+                                            appVersionCode = versionCode,
+                                            appVersionName = versionName,
+                                            extensionVersionCode = extensionVersionCode,
+                                            extensionVersionName = extensionVersionName.takeIf { extensionPackageInfo != null }
                                         )
                                     }
                                 },
@@ -952,12 +987,157 @@ fun AboutPage(settingsVm: SettingsViewModel = hiltViewModel()) {
                             MurongOutlinedActionButton(
                                 text = if (appUpdateState.isUpdateAvailable) "下载新版本" else "打开下载页",
                                 onClick = {
-                                    uriHandler.openUri(
-                                        appUpdateState.downloadUrl
-                                            ?: settingsConfig.getMurongDownloadsPageUrl()
-                                    )
+                                    if (appUpdateState.isInstallOrUpdateAvailable) {
+                                        onDownloadAppUpdate?.invoke(appUpdateState) ?: uriHandler.openUri(
+                                            appUpdateState.preferredDownloadUrl
+                                                ?: settingsConfig.getMurongDownloadsPageUrl()
+                                        )
+                                    } else {
+                                        uriHandler.openUri(
+                                            appUpdateState.downloadUrl
+                                                ?: settingsConfig.getMurongDownloadsPageUrl()
+                                        )
+                                    }
                                 },
                                 modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (appUpdateState.isInstallOrUpdateAvailable &&
+                            appUpdateState.latestVersionCode != null &&
+                            !appUpdateState.forceUpdate
+                        ) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            MurongOutlinedActionButton(
+                                text = if (isAppVersionSkipped) "恢复提醒" else "跳过此版本",
+                                onClick = {
+                                    if (isAppVersionSkipped) {
+                                        settingsVm.clearSkippedAppUpdateVersion()
+                                    } else {
+                                        settingsVm.skipAppUpdateVersion(appUpdateState.latestVersionCode)
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    MurongGlassSurface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.large,
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp)
+                    ) {
+                        Text(
+                            text = "终端扩展包",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = accent
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = when {
+                                extensionUpdateState.isChecking -> "正在检查扩展包版本..."
+                                extensionPackageInfo == null &&
+                                    extensionUpdateState.isInstallOrUpdateAvailable -> {
+                                    "检测到可安装扩展包"
+                                }
+                                extensionPackageInfo == null -> "当前未安装扩展包"
+                                !extensionUpdateState.latestVersionName.isNullOrBlank() ->
+                                    "最新版本 ${extensionUpdateState.latestVersionName}"
+                                extensionUpdateState.latestVersionCode != null ->
+                                    "最新版本 code ${extensionUpdateState.latestVersionCode}"
+                                else -> "暂未获取到扩展包远端版本"
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = buildString {
+                                append("当前状态：")
+                                append(extensionVersionName)
+                                extensionVersionCode?.let { append(" (code $it)") }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        val extensionStatusText = extensionUpdateState.error
+                            ?: extensionUpdateState.updateMessage
+                            ?: extensionUpdateState.message
+                            ?: "通过 MurongAgent 后端检查扩展包版本。"
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = extensionStatusText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (extensionUpdateState.error != null) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                        if (isExtensionVersionIgnored && extensionUpdateState.isInstallOrUpdateAvailable) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "当前扩展包版本已忽略，自动弹窗不会再提醒这一版。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        extensionUpdateState.publishedAt?.takeIf { it.isNotBlank() }?.let { publishedAt ->
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "发布时间：$publishedAt",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            MurongOutlinedActionButton(
+                                text = if (extensionUpdateState.isChecking) "检查中..." else "重新检查",
+                                onClick = {
+                                    settingsVm.checkExtensionUpdate(
+                                        currentVersionCode = extensionVersionCode,
+                                        currentVersionName = extensionVersionName.takeIf { extensionPackageInfo != null }
+                                    )
+                                },
+                                modifier = Modifier.weight(1f),
+                                enabled = !extensionUpdateState.isChecking
+                            )
+                            MurongOutlinedActionButton(
+                                text = if (extensionUpdateState.isInstallOrUpdateAvailable) "下载扩展包" else "打开下载页",
+                                onClick = {
+                                    if (extensionUpdateState.isInstallOrUpdateAvailable) {
+                                        onDownloadExtensionUpdate?.invoke(extensionUpdateState) ?: uriHandler.openUri(
+                                            extensionUpdateState.preferredDownloadUrl
+                                                ?: settingsConfig.getMurongDownloadsPageUrl()
+                                        )
+                                    } else {
+                                        uriHandler.openUri(
+                                            extensionUpdateState.downloadUrl
+                                                ?: settingsConfig.getMurongDownloadsPageUrl()
+                                        )
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (extensionUpdateState.isInstallOrUpdateAvailable &&
+                            extensionUpdateState.latestVersionCode != null
+                        ) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            MurongOutlinedActionButton(
+                                text = if (isExtensionVersionIgnored) "取消忽略" else "忽略此版本",
+                                onClick = {
+                                    if (isExtensionVersionIgnored) {
+                                        settingsVm.clearIgnoredExtensionUpdateVersion()
+                                    } else {
+                                        settingsVm.ignoreExtensionUpdateVersion(extensionUpdateState.latestVersionCode)
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
                             )
                         }
                     }
@@ -972,6 +1152,16 @@ fun AboutPage(settingsVm: SettingsViewModel = hiltViewModel()) {
                     AboutInfoRow(
                         "更新通道",
                         if (appUpdateState.isUpdateAvailable) "stable · 有新版本" else "stable"
+                    )
+                    AboutInfoRow(
+                        "扩展包",
+                        when {
+                            extensionPackageInfo == null &&
+                                extensionUpdateState.isInstallOrUpdateAvailable -> "未安装 · 可下载"
+                            extensionPackageInfo == null -> "未安装"
+                            extensionUpdateState.isUpdateAvailable -> "已安装 · 有新版本"
+                            else -> "已安装"
+                        }
                     )
                     AboutInfoRow("引擎", "Murong Agent Core")
                     AboutInfoRow("设计方向", "现代玻璃 / 桌面端式信息密度")

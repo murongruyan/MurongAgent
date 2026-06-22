@@ -1,8 +1,12 @@
 package com.murong.agent.ui
 
+import android.app.DownloadManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.ClipData
+import android.content.IntentFilter
+import android.content.pm.PackageInfo
 import android.os.Environment
 import android.os.Bundle
 import android.provider.OpenableColumns
@@ -52,6 +56,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import dagger.hilt.android.AndroidEntryPoint
 import com.murong.agent.core.config.WorkflowExecutionMode
@@ -72,10 +77,16 @@ import com.murong.agent.ui.project.ProjectEditorMenuAction
 import com.murong.agent.ui.project.ProjectGitHubRepoRef
 import com.murong.agent.ui.project.ProjectSecondaryHostBridgeState
 import com.murong.agent.ui.project.ProjectScreen
+import com.murong.agent.ui.settings.AppUpdateUiState
 import com.murong.agent.ui.settings.AboutPage
+import com.murong.agent.ui.settings.MURONG_EXTENSION_PACKAGE_NAME
 import com.murong.agent.ui.settings.SettingsScreen
 import com.murong.agent.ui.settings.ThemeSettingsPage
 import com.murong.agent.ui.settings.SettingsViewModel
+import com.murong.agent.ui.settings.PendingApkInstallDownload
+import com.murong.agent.ui.settings.enqueueApkInstallDownload
+import com.murong.agent.ui.settings.openDownloadedApkInstaller
+import com.murong.agent.ui.settings.queryDownloadFailureReason
 import com.murong.agent.ui.tools.ToolsScreen
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -169,6 +180,8 @@ fun MainScreen() {
     val chatConfig by chatVm.config.collectAsState()
     val chatSessions by chatVm.sessions.collectAsState()
     val settingsConfig by settingsVm.config.collectAsState()
+    val appUpdateState by settingsVm.appUpdateState.collectAsState()
+    val extensionUpdateState by settingsVm.extensionUpdateState.collectAsState()
     val rootStatus by settingsVm.rootStatus.collectAsState()
     val isCheckingRoot by settingsVm.isCheckingRoot.collectAsState()
     val settingsSessions by settingsVm.sessions.collectAsState()
@@ -194,10 +207,31 @@ fun MainScreen() {
     }
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
+    val hostPackageInfo = remember(context) {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0)
+        }.getOrNull()
+    }
+    val extensionPackageInfo = remember(context) {
+        runCatching {
+            context.packageManager.getPackageInfo(MURONG_EXTENSION_PACKAGE_NAME, 0)
+        }.getOrNull()
+    }
+    val hostVersionName = hostPackageInfo?.versionName ?: "0.9.0-preview"
+    val hostVersionCode = remember(hostPackageInfo) {
+        hostPackageInfo?.let(::resolvePackageVersionCode) ?: 0
+    }
+    val extensionVersionName = extensionPackageInfo?.versionName ?: "未安装"
+    val extensionVersionCode = remember(extensionPackageInfo) {
+        extensionPackageInfo?.let(::resolvePackageVersionCode)
+    }
+    val pendingApkInstallDownloads = remember { mutableStateMapOf<Long, PendingApkInstallDownload>() }
     var overlayVisibilityState by remember { mutableStateOf(MainScreenOverlayVisibilityState()) }
     var isChatSessionPanelVisible by rememberSaveable { mutableStateOf(false) }
     var chatSessionPanelBackProgress by remember { mutableFloatStateOf(0f) }
     var dialogState by remember { mutableStateOf(MainScreenDialogState()) }
+    var hasAutoCheckedUpdates by rememberSaveable { mutableStateOf(false) }
+    var dismissedUpdateDialogKey by rememberSaveable { mutableStateOf<String?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
     val uiController = LocalMurongUiController.current
     val visibleTopLevelPage = pagerState.currentPage.coerceIn(0, shellScreens.lastIndex)
@@ -220,6 +254,85 @@ fun MainScreen() {
     val showExportDialog = dialogState.showExportDialog
     val exportFormat = dialogState.exportFormat
     val pendingExportData = dialogState.pendingExportData
+    val shouldShowAppUpdateEntry = appUpdateState.isInstallOrUpdateAvailable &&
+        (appUpdateState.forceUpdate || !settingsConfig.isAppUpdateSkipped(appUpdateState.latestVersionCode))
+    val shouldShowExtensionUpdateEntry = extensionUpdateState.isInstallOrUpdateAvailable &&
+        !settingsConfig.isExtensionUpdateIgnored(extensionUpdateState.latestVersionCode)
+    val isForceUpdateBlockingDialog = shouldShowAppUpdateEntry && appUpdateState.forceUpdate
+    val updateDialogKey = remember(
+        appUpdateState,
+        extensionUpdateState,
+        shouldShowAppUpdateEntry,
+        shouldShowExtensionUpdateEntry
+    ) {
+        buildString {
+            if (shouldShowAppUpdateEntry) {
+                append("app:")
+                append(appUpdateState.currentVersionCode ?: -1)
+                append("->")
+                append(appUpdateState.latestVersionCode ?: -1)
+                append(":")
+                append(appUpdateState.forceUpdate)
+            }
+            if (shouldShowExtensionUpdateEntry) {
+                if (isNotEmpty()) append("|")
+                append("extension:")
+                append(extensionUpdateState.currentVersionCode ?: -1)
+                append("->")
+                append(extensionUpdateState.latestVersionCode ?: -1)
+            }
+        }
+    }
+    val shouldShowUpdateDialog = hasAutoCheckedUpdates &&
+        !appUpdateState.isChecking &&
+        !extensionUpdateState.isChecking &&
+        updateDialogKey.isNotBlank() &&
+        (isForceUpdateBlockingDialog || dismissedUpdateDialogKey != updateDialogKey) &&
+        (shouldShowAppUpdateEntry || shouldShowExtensionUpdateEntry)
+
+    fun enqueueUpdateInstall(
+        state: AppUpdateUiState,
+        title: String
+    ) {
+        val targetUrl = state.preferredDownloadUrl
+            ?: state.downloadUrl
+            ?: settingsConfig.getMurongDownloadsPageUrl()
+        val targetUri = Uri.parse(targetUrl)
+        val canUseDownloadManager = targetUri.scheme.equals("http", ignoreCase = true) ||
+            targetUri.scheme.equals("https", ignoreCase = true)
+        if (!canUseDownloadManager) {
+            runCatching { uriHandler.openUri(targetUrl) }
+            return
+        }
+        val fallbackFileName = buildString {
+            append(title.replace(Regex("[^A-Za-z0-9._-]"), "-"))
+            append("-")
+            append(state.latestVersionName ?: state.latestVersionCode ?: "latest")
+            append(".apk")
+        }
+        runCatching {
+            enqueueApkInstallDownload(
+                context = context,
+                title = title,
+                downloadUrl = targetUrl,
+                fileName = state.fileName ?: fallbackFileName
+            )
+        }.onSuccess { pendingDownload ->
+            pendingApkInstallDownloads[pendingDownload.downloadId] = pendingDownload
+            scope.launch {
+                snackbarHostState.showSnackbar("${pendingDownload.title} 开始下载，完成后会自动拉起安装")
+            }
+        }.onFailure { error ->
+            val opened = runCatching {
+                uriHandler.openUri(targetUrl)
+            }.isSuccess
+            if (!opened) {
+                scope.launch {
+                    snackbarHostState.showSnackbar(error.message ?: "启动下载失败")
+                }
+            }
+        }
+    }
 
     fun dispatchOverlayVisibilityAction(action: MainScreenOverlayVisibilityAction) {
         overlayVisibilityState = reduceMainScreenOverlayVisibilityState(
@@ -441,6 +554,53 @@ fun MainScreen() {
     LaunchedEffect(Unit) {
         MurongTransientMessageBus.messages.collect { message ->
             snackbarHostState.showSnackbar(message)
+        }
+    }
+
+    LaunchedEffect(hostVersionCode, hostVersionName, extensionVersionCode, extensionVersionName) {
+        if (hasAutoCheckedUpdates || hostVersionCode <= 0) {
+            return@LaunchedEffect
+        }
+        hasAutoCheckedUpdates = true
+        settingsVm.checkAllUpdates(
+            appVersionCode = hostVersionCode,
+            appVersionName = hostVersionName,
+            extensionVersionCode = extensionVersionCode,
+            extensionVersionName = extensionVersionName.takeIf { extensionPackageInfo != null }
+        )
+    }
+
+    DisposableEffect(context) {
+        val appContext = context.applicationContext
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(receiverContext: Context?, intent: Intent?) {
+                if (intent?.action != DownloadManager.ACTION_DOWNLOAD_COMPLETE) return
+                val downloadId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
+                if (downloadId <= 0L) return
+                val pendingDownload = pendingApkInstallDownloads.remove(downloadId) ?: return
+                val installResult = openDownloadedApkInstaller(appContext, downloadId)
+                if (installResult.isSuccess) {
+                    scope.launch {
+                        snackbarHostState.showSnackbar("${pendingDownload.title} 下载完成，已拉起安装")
+                    }
+                } else {
+                    val reason = queryDownloadFailureReason(appContext, downloadId)
+                        ?: installResult.exceptionOrNull()?.message
+                        ?: "安装包下载完成，但拉起安装失败"
+                    scope.launch {
+                        snackbarHostState.showSnackbar(reason)
+                    }
+                }
+            }
+        }
+        ContextCompat.registerReceiver(
+            appContext,
+            receiver,
+            IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        onDispose {
+            runCatching { appContext.unregisterReceiver(receiver) }
         }
     }
 
@@ -1151,7 +1311,14 @@ fun MainScreen() {
                         when (settingsSubpage) {
                             SettingsSubpage.Main -> SettingsMainPage()
                             SettingsSubpage.Theme -> ThemeSettingsPage()
-                            SettingsSubpage.About -> AboutPage()
+                            SettingsSubpage.About -> AboutPage(
+                                onDownloadAppUpdate = { updateState ->
+                                    enqueueUpdateInstall(updateState, "Murong Agent")
+                                },
+                                onDownloadExtensionUpdate = { updateState ->
+                                    enqueueUpdateInstall(updateState, "Murong Terminal Extension")
+                                }
+                            )
                         }
                     }
 
@@ -1850,14 +2017,43 @@ fun MainScreen() {
 
         if (visibleScreen !is Screen.Tools) {
             chatState.pendingApproval?.let { pendingApproval ->
-            ApprovalDialog(
-                approval = pendingApproval,
-                onApprove = { chatVm.approvePendingTool() },
-                onReject = { chatVm.rejectPendingTool() }
-            )
+                ApprovalDialog(
+                    approval = pendingApproval,
+                    onApprove = { chatVm.approvePendingTool() },
+                    onReject = { chatVm.rejectPendingTool() }
+                )
             }
+        }
+
+        if (shouldShowUpdateDialog) {
+            MainScreenUpdateDialog(
+                appUpdateState = appUpdateState,
+                extensionUpdateState = extensionUpdateState,
+                onDismissRequest = {
+                    if (!isForceUpdateBlockingDialog) {
+                        dismissedUpdateDialogKey = updateDialogKey
+                    }
+                },
+                showAppUpdateEntry = shouldShowAppUpdateEntry,
+                showExtensionUpdateEntry = shouldShowExtensionUpdateEntry,
+                forceDismissBlocked = isForceUpdateBlockingDialog,
+                onDownloadAppUpdate = {
+                    enqueueUpdateInstall(appUpdateState, "Murong Agent")
+                },
+                onSkipAppVersion = {
+                    settingsVm.skipAppUpdateVersion(appUpdateState.latestVersionCode)
+                    dismissedUpdateDialogKey = updateDialogKey
+                },
+                onDownloadExtensionUpdate = {
+                    enqueueUpdateInstall(extensionUpdateState, "Murong Terminal Extension")
+                },
+                onIgnoreExtensionVersion = {
+                    settingsVm.ignoreExtensionUpdateVersion(extensionUpdateState.latestVersionCode)
+                    dismissedUpdateDialogKey = updateDialogKey
+                }
+            )
+        }
     }
-}
 
 @Composable
 private fun MainScreenSnackbarHost(
@@ -1893,6 +2089,189 @@ private fun MainScreenSnackbarHost(
 private fun copyTextToClipboard(context: Context, text: String) {
     val clipboard = context.getSystemService(android.content.ClipboardManager::class.java) ?: return
     clipboard.setPrimaryClip(ClipData.newPlainText(null, text))
+}
+
+@Composable
+private fun MainScreenUpdateDialog(
+    appUpdateState: AppUpdateUiState,
+    extensionUpdateState: AppUpdateUiState,
+    showAppUpdateEntry: Boolean,
+    showExtensionUpdateEntry: Boolean,
+    forceDismissBlocked: Boolean,
+    onDismissRequest: () -> Unit,
+    onDownloadAppUpdate: () -> Unit,
+    onSkipAppVersion: () -> Unit,
+    onDownloadExtensionUpdate: () -> Unit,
+    onIgnoreExtensionVersion: () -> Unit
+) {
+    MurongDialog(onDismissRequest = onDismissRequest) {
+        MurongPopupSurface(
+            shape = RoundedCornerShape(28.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "发现可用更新",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "已自动检查主程序和终端扩展包，有可下载版本时会在这里直接提示。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (showAppUpdateEntry) {
+                    UpdateDialogEntryCard(
+                        title = "主程序",
+                        state = appUpdateState,
+                        actionLabel = "下载主程序",
+                        onPrimaryAction = onDownloadAppUpdate,
+                        secondaryActionLabel = if (appUpdateState.forceUpdate) null else "跳过此版本",
+                        onSecondaryAction = if (appUpdateState.forceUpdate) {
+                            null
+                        } else {
+                            onSkipAppVersion
+                        }
+                    )
+                }
+                if (showExtensionUpdateEntry) {
+                    UpdateDialogEntryCard(
+                        title = "终端扩展包",
+                        state = extensionUpdateState,
+                        actionLabel = if (extensionUpdateState.currentVersionCode == null) {
+                            "下载扩展包"
+                        } else {
+                            "更新扩展包"
+                        },
+                        onPrimaryAction = onDownloadExtensionUpdate,
+                        secondaryActionLabel = "忽略此版本",
+                        onSecondaryAction = onIgnoreExtensionVersion
+                    )
+                }
+                if (forceDismissBlocked && showAppUpdateEntry) {
+                    Text(
+                        text = "该版本标记为强制更新，当前不能跳过提醒。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(onClick = onDismissRequest) {
+                            Text("稍后再说")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateDialogEntryCard(
+    title: String,
+    state: AppUpdateUiState,
+    actionLabel: String,
+    onPrimaryAction: () -> Unit,
+    secondaryActionLabel: String? = null,
+    onSecondaryAction: (() -> Unit)? = null
+) {
+    MurongGlassSurface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        contentPadding = PaddingValues(14.dp)
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.SemiBold
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = buildString {
+                append("当前：")
+                append(state.currentVersionName ?: "未安装")
+                state.currentVersionCode?.let { append(" (code $it)") }
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = buildString {
+                append("远端：")
+                append(state.latestVersionName ?: "未知版本")
+                state.latestVersionCode?.let { append(" (code $it)") }
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        val description = state.updateMessage ?: state.message ?: "已检测到可下载版本。"
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = description,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (state.forceUpdate) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "更新策略：强制更新",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+        state.publishedAt?.takeIf { it.isNotBlank() }?.let { publishedAt ->
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "发布时间：$publishedAt",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        if (secondaryActionLabel != null && onSecondaryAction != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                MurongOutlinedActionButton(
+                    text = actionLabel,
+                    onClick = onPrimaryAction,
+                    modifier = Modifier.weight(1f)
+                )
+                MurongOutlinedActionButton(
+                    text = secondaryActionLabel,
+                    onClick = onSecondaryAction,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        } else {
+            MurongOutlinedActionButton(
+                text = actionLabel,
+                onClick = onPrimaryAction,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
+private fun resolvePackageVersionCode(packageInfo: PackageInfo): Int {
+    return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+        packageInfo.longVersionCode.toInt()
+    } else {
+        @Suppress("DEPRECATION")
+        packageInfo.versionCode
+    }
 }
 
 @Composable

@@ -89,6 +89,8 @@ data class ProviderConfig(
     val githubClientId: String = "", val githubClientSecret: String = "",
     val githubBackendSessionToken: String = "", val githubViewerLogin: String = "",
     val githubViewerName: String = "", val githubViewerAvatarUrl: String = "",
+    val skippedAppUpdateVersionCode: Int? = null,
+    val ignoredExtensionUpdateVersionCode: Int? = null,
     val systemPrompt: String = """
         You are Murong Agent, a coding assistant running on an Android device with root access. You have shell access and file system access.
         Match the user's language by default.
@@ -269,6 +271,16 @@ data class ProviderConfig(
     fun getMurongDownloadsPageUrl(): String = MURONG_DOWNLOADS_PAGE_URL
     fun getMurongAppReleaseArtifactKey(): String = MURONG_APP_RELEASE_ARTIFACT_KEY
     fun getMurongExtensionReleaseArtifactKey(): String = MURONG_EXTENSION_RELEASE_ARTIFACT_KEY
+    fun isAppUpdateSkipped(versionCode: Int?): Boolean {
+        return versionCode != null &&
+            skippedAppUpdateVersionCode != null &&
+            versionCode == skippedAppUpdateVersionCode
+    }
+    fun isExtensionUpdateIgnored(versionCode: Int?): Boolean {
+        return versionCode != null &&
+            ignoredExtensionUpdateVersionCode != null &&
+            versionCode == ignoredExtensionUpdateVersionCode
+    }
     fun getNormalizedWebSearchBackendUrl(): String? = normalizeBaseUrl(webSearchSearxngBaseUrl)
     fun getTrimmedWebSearchApiKey(): String = webSearchBingApiKey.trim()
     fun isGitHubSignedIn(): Boolean = githubBackendSessionToken.isNotBlank() && githubToken.isNotBlank()
