@@ -23,7 +23,7 @@ on:
         description: "Release 标题，默认 MurongAgent <version> (<code>)"
         required: false
       sync_to_server:
-        description: "是否同步上传到服务器并回写后端版本信息"
+        description: "是否通过后端 API 上传主程序并回写后端版本信息"
         required: false
         default: true
         type: boolean
@@ -156,11 +156,9 @@ jobs:
           set -euo pipefail
           APK_SHA256="$(sha256sum "dist/${APK_FILE}" | awk '{print $1}')"
           APK_SIZE_BYTES="$(stat -c%s "dist/${APK_FILE}")"
-          DOWNLOAD_URL="https://murongagent.rl1.cc/downloads/app/${APK_FILE}"
           {
             echo "APK_SHA256=${APK_SHA256}"
             echo "APK_SIZE_BYTES=${APK_SIZE_BYTES}"
-            echo "DOWNLOAD_URL=${DOWNLOAD_URL}"
           } >> "${GITHUB_ENV}"
 
       - name: Upload APK
@@ -182,62 +180,61 @@ jobs:
           replacesArtifacts: true
           tag: ${{ env.RELEASE_TAG }}
 
-      - name: Prepare Deploy SSH
+      - name: Upload APK To Murong Backend
         if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
         shell: bash
         env:
-          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
-          DEPLOY_KEY: ${{ secrets.MURONG_AGENT_DEPLOY_KEY }}
+          RELEASES_API_URL: https://murongagent.rl1.cc/api/releases.php
+          RELEASES_ADMIN_TOKEN: ${{ secrets.MURONG_AGENT_RELEASES_ADMIN_TOKEN }}
         run: |
           set -euo pipefail
-          mkdir -p "${HOME}/.ssh"
-          chmod 700 "${HOME}/.ssh"
-          printf '%s\n' "${DEPLOY_KEY}" > "${HOME}/.ssh/id_ed25519"
-          chmod 600 "${HOME}/.ssh/id_ed25519"
-          touch "${HOME}/.ssh/known_hosts"
-          ssh-keyscan -p "${DEPLOY_PORT}" -H "${DEPLOY_HOST}" >> "${HOME}/.ssh/known_hosts"
-          chmod 644 "${HOME}/.ssh/known_hosts"
+          if [[ -z "${RELEASES_ADMIN_TOKEN:-}" ]]; then
+            echo "Missing secret: MURONG_AGENT_RELEASES_ADMIN_TOKEN" >&2
+            exit 1
+          fi
+          RESPONSE_FILE="$(mktemp)"
+          HTTP_STATUS="$(curl --silent --show-error \
+            --output "${RESPONSE_FILE}" \
+            --write-out "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer ${RELEASES_ADMIN_TOKEN}" \
+            -H "Accept: application/json" \
+            -F "token=${RELEASES_ADMIN_TOKEN}" \
+            -F "artifact=murongagent-app" \
+            -F "apk_file=@dist/${APK_FILE};type=application/vnd.android.package-archive" \
+            -F "target_name=${APK_FILE}" \
+            -F "version=${APP_VERSION}" \
+            -F "version_code=${APP_VERSION_CODE}" \
+            "${RELEASES_API_URL}?action=upload")"
+          RESPONSE="$(cat "${RESPONSE_FILE}")"
+          rm -f "${RESPONSE_FILE}"
+          if [[ "${HTTP_STATUS}" != "200" && "${HTTP_STATUS}" != "201" ]]; then
+            echo "Backend upload failed with HTTP ${HTTP_STATUS}" >&2
+            echo "${RESPONSE}" >&2
+            exit 1
+          fi
+          UPLOAD_RESPONSE="${RESPONSE}" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
 
-      - name: Ensure Remote App Downloads Directory
-        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
-        shell: bash
-        env:
-          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
-          DEPLOY_USERNAME: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
-          DEPLOY_ROOT: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}
-        run: |
-          set -euo pipefail
-          ssh -p "${DEPLOY_PORT}" "${DEPLOY_USERNAME}@${DEPLOY_HOST}" \
-            "mkdir -p '${DEPLOY_ROOT}/app' '${DEPLOY_ROOT}/tmp/app'"
-
-      - name: Upload APK To Murong Site Temp
-        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
-        shell: bash
-        env:
-          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
-          DEPLOY_USERNAME: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
-          DEPLOY_ROOT: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}
-        run: |
-          set -euo pipefail
-          scp -P "${DEPLOY_PORT}" \
-            "dist/${APK_FILE}" \
-            "${DEPLOY_USERNAME}@${DEPLOY_HOST}:${DEPLOY_ROOT}/tmp/app/${APK_FILE}.uploading"
-
-      - name: Move APK Into Final Downloads Path
-        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
-        shell: bash
-        env:
-          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
-          DEPLOY_USERNAME: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
-          DEPLOY_ROOT: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}
-        run: |
-          set -euo pipefail
-          ssh -p "${DEPLOY_PORT}" "${DEPLOY_USERNAME}@${DEPLOY_HOST}" \
-            "mv -f '${DEPLOY_ROOT}/tmp/app/${APK_FILE}.uploading' '${DEPLOY_ROOT}/app/${APK_FILE}'"
+          response = json.loads(os.environ["UPLOAD_RESPONSE"])
+          if not response.get("success"):
+              raise SystemExit(response.get("message", "upload failed"))
+          data = response.get("data") or {}
+          download_url = data.get("downloadUrl", "").strip()
+          if not download_url:
+              raise SystemExit("upload response missing downloadUrl")
+          env_path = Path(os.environ["GITHUB_ENV"])
+          with env_path.open("a", encoding="utf-8") as handle:
+              handle.write(f"DOWNLOAD_URL={download_url}\n")
+              if data.get("fileName"):
+                  handle.write(f"APK_FILE={data['fileName']}\n")
+              if data.get("checksumSha256"):
+                  handle.write(f"APK_SHA256={data['checksumSha256']}\n")
+              if data.get("fileSize") is not None:
+                  handle.write(f"APK_SIZE_BYTES={int(data['fileSize'])}\n")
+          PY
 
       - name: Publish Release Metadata To Murong Backend
         if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
@@ -258,6 +255,7 @@ jobs:
           import os
 
           print(json.dumps({
+              "token": os.environ["RELEASES_ADMIN_TOKEN"],
               "artifactKey": "murongagent-app",
               "channel": "stable",
               "versionName": os.environ["APP_VERSION"],
@@ -273,10 +271,20 @@ jobs:
           PY
           )"
 
-          curl --fail --silent --show-error \
+          RESPONSE_FILE="$(mktemp)"
+          HTTP_STATUS="$(curl --silent --show-error \
+            --output "${RESPONSE_FILE}" \
+            --write-out "%{http_code}" \
             -X POST \
             -H "Authorization: Bearer ${RELEASES_ADMIN_TOKEN}" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json" \
             --data "${PAYLOAD}" \
-            "${RELEASES_API_URL}?action=create"
+            "${RELEASES_API_URL}?action=create")"
+          RESPONSE="$(cat "${RESPONSE_FILE}")"
+          rm -f "${RESPONSE_FILE}"
+          if [[ "${HTTP_STATUS}" != "200" && "${HTTP_STATUS}" != "201" ]]; then
+            echo "Backend metadata publish failed with HTTP ${HTTP_STATUS}" >&2
+            echo "${RESPONSE}" >&2
+            exit 1
+          fi
