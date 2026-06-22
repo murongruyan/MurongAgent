@@ -182,45 +182,62 @@ jobs:
           replacesArtifacts: true
           tag: ${{ env.RELEASE_TAG }}
 
+      - name: Prepare Deploy SSH
+        if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
+          DEPLOY_KEY: ${{ secrets.MURONG_AGENT_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${HOME}/.ssh"
+          chmod 700 "${HOME}/.ssh"
+          printf '%s\n' "${DEPLOY_KEY}" > "${HOME}/.ssh/id_ed25519"
+          chmod 600 "${HOME}/.ssh/id_ed25519"
+          touch "${HOME}/.ssh/known_hosts"
+          ssh-keyscan -p "${DEPLOY_PORT}" -H "${DEPLOY_HOST}" >> "${HOME}/.ssh/known_hosts"
+          chmod 644 "${HOME}/.ssh/known_hosts"
+
       - name: Ensure Remote App Downloads Directory
         if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
-        uses: appleboy/ssh-action@v1.2.2
-        with:
-          host: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
-          username: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
-          key: ${{ secrets.MURONG_AGENT_DEPLOY_KEY }}
-          port: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
-          script: |
-            set -e
-            mkdir -p "${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}/app"
-            mkdir -p "${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}/tmp/app"
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
+          DEPLOY_USERNAME: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
+          DEPLOY_ROOT: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}
+        run: |
+          set -euo pipefail
+          ssh -p "${DEPLOY_PORT}" "${DEPLOY_USERNAME}@${DEPLOY_HOST}" \
+            "mkdir -p '${DEPLOY_ROOT}/app' '${DEPLOY_ROOT}/tmp/app'"
 
       - name: Upload APK To Murong Site Temp
         if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
-          username: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
-          key: ${{ secrets.MURONG_AGENT_DEPLOY_KEY }}
-          port: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
-          source: dist/${{ env.APK_FILE }}
-          target: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}/tmp/app/
-          overwrite: true
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
+          DEPLOY_USERNAME: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
+          DEPLOY_ROOT: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}
+        run: |
+          set -euo pipefail
+          scp -P "${DEPLOY_PORT}" \
+            "dist/${APK_FILE}" \
+            "${DEPLOY_USERNAME}@${DEPLOY_HOST}:${DEPLOY_ROOT}/tmp/app/${APK_FILE}.uploading"
 
       - name: Move APK Into Final Downloads Path
         if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
-        uses: appleboy/ssh-action@v1.2.2
-        with:
-          host: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
-          username: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
-          key: ${{ secrets.MURONG_AGENT_DEPLOY_KEY }}
-          port: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
-          script: |
-            set -e
-            ROOT="${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}"
-            APK_FILE="${{ env.APK_FILE }}"
-            cp -f "${ROOT}/tmp/app/dist/${APK_FILE}" "${ROOT}/app/${APK_FILE}"
-            rm -rf "${ROOT}/tmp/app/dist"
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
+          DEPLOY_USERNAME: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
+          DEPLOY_ROOT: ${{ secrets.MURONG_AGENT_DOWNLOADS_ROOT }}
+        run: |
+          set -euo pipefail
+          ssh -p "${DEPLOY_PORT}" "${DEPLOY_USERNAME}@${DEPLOY_HOST}" \
+            "mv -f '${DEPLOY_ROOT}/tmp/app/${APK_FILE}.uploading' '${DEPLOY_ROOT}/app/${APK_FILE}'"
 
       - name: Publish Release Metadata To Murong Backend
         if: github.event_name == 'workflow_dispatch' && inputs.sync_to_server
