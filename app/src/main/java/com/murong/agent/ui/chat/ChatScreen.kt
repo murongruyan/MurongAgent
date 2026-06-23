@@ -3071,13 +3071,13 @@ private fun MessageBubble(
                                 color = mutedTextColor,
                                 fontSize = 14.sp
                             )
-                        } else {
-                            Text(
-                                text = "(空回复)",
-                                color = mutedTextColor,
-                                fontSize = 14.sp
-                            )
                         }
+                    } else if (!msg.isStreaming) {
+                        Text(
+                            text = "(空回复)",
+                            color = mutedTextColor,
+                            fontSize = 14.sp
+                        )
                     }
                 }
 
