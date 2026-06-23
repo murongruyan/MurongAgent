@@ -3963,6 +3963,13 @@ class ChatSessionManager(
             )
         )
         registry.register(
+            TaskRepoSearchReplaceTool(
+                repositoryProvider = ::currentRemoteTaskRepositoryTarget,
+                githubTokenProvider = { config.githubToken },
+                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+            )
+        )
+        registry.register(
             TaskRepoUpdateFileTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
                 githubTokenProvider = { config.githubToken },
@@ -5724,8 +5731,9 @@ class ChatSessionManager(
                 )
                 appendLine("When the user asks about this repository, prefer enabled GitHub/MCP remote tools instead of assuming local file access.")
                 appendLine("Do not substitute similarly named local directories for this remote repository unless the user explicitly switches back to a local project.")
-                appendLine("For the current task repository, prefer tool aliases task_repo_list_dir, task_repo_list_branches, task_repo_create_branch, task_repo_create_pr, task_repo_close_pr, task_repo_delete_branch, task_repo_search_code, task_repo_read_file, task_repo_update_file, task_repo_delete_file, and task_repo_commit_files before generic mcp_* tools.")
+                appendLine("For the current task repository, prefer tool aliases task_repo_list_dir, task_repo_list_branches, task_repo_create_branch, task_repo_create_pr, task_repo_close_pr, task_repo_delete_branch, task_repo_search_code, task_repo_read_file, task_repo_search_replace, task_repo_update_file, task_repo_delete_file, and task_repo_commit_files before generic mcp_* tools.")
                 appendLine("If the exact remote path is still unclear, use task_repo_list_dir first to browse the repository structure before reading or editing files.")
+                appendLine("If the edit is a small, exact replacement in one remote file, prefer task_repo_search_replace before task_repo_update_file.")
                 appendLine("If branch names are unclear before writing or batch committing, use task_repo_list_branches first.")
                 appendLine("If the user wants to isolate changes before editing, use task_repo_create_branch first and then commit to that branch.")
                 appendLine("If the user wants to open a Pull Request after remote changes are committed, use task_repo_create_pr.")

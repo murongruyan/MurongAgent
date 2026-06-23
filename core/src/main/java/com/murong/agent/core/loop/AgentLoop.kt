@@ -256,6 +256,17 @@ class AgentLoop(
                         name = tc.function.name
                     )
                 )
+
+                if (shouldStopAfterHighRiskRemoteWriteFailure(tc.function.name, result.output)) {
+                    onEvent(
+                        AgentEvent.Error(
+                            buildHighRiskRemoteWriteStopMessage(tc.function.name, preferredSummaryLanguage)
+                        )
+                    )
+                    onEvent(AgentEvent.Done)
+                    state = AgentState.ERROR
+                    return
+                }
             }
 
             state = AgentState.THINKING
@@ -506,6 +517,29 @@ class AgentLoop(
         return Character.UnicodeScript.of(char.code) == Character.UnicodeScript.HAN
     }
 
+    private fun shouldStopAfterHighRiskRemoteWriteFailure(
+        toolName: String,
+        output: String
+    ): Boolean {
+        if (toolName !in HIGH_RISK_REMOTE_WRITE_TOOL_NAMES) return false
+        if (!output.contains("Error", ignoreCase = true) && !output.contains("失败")) return false
+        return HIGH_RISK_REMOTE_WRITE_FAILURE_MARKERS.any { marker ->
+            output.contains(marker, ignoreCase = true)
+        }
+    }
+
+    private fun buildHighRiskRemoteWriteStopMessage(
+        toolName: String,
+        language: SummaryLanguage
+    ): String {
+        return when (language) {
+            SummaryLanguage.CHINESE ->
+                "检测到高风险远端写入工具 `$toolName` 出现写后校验异常，已停止继续自动重试，避免把远端文件越写越坏。请先检查工具结果和目标文件状态，再决定是否继续。"
+            SummaryLanguage.ENGLISH ->
+                "A high-risk remote write tool `$toolName` failed post-write verification. Automatic retries have been stopped to avoid further corrupting the remote file. Please inspect the tool result and remote file state before continuing."
+        }
+    }
+
     private data class CompletedToolRun(
         val toolName: String,
         val arguments: String,
@@ -515,5 +549,22 @@ class AgentLoop(
     private enum class SummaryLanguage {
         CHINESE,
         ENGLISH
+    }
+
+    private companion object {
+        val HIGH_RISK_REMOTE_WRITE_TOOL_NAMES = setOf(
+            "task_repo_search_replace",
+            "task_repo_update_file",
+            "task_repo_commit_files"
+        )
+
+        val HIGH_RISK_REMOTE_WRITE_FAILURE_MARKERS = listOf(
+            "写后校验失败",
+            "未通过校验",
+            "内容与预期不一致",
+            "无法重新读取远端文件",
+            "expectedLength=",
+            "actualLength="
+        )
     }
 }
