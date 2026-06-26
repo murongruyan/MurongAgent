@@ -14,14 +14,36 @@ import com.murong.agent.core.config.ProjectWorkflowType
 import com.murong.agent.core.config.ProjectWorkflowRiskLevel
 import com.murong.agent.core.config.ProjectToolPreferences
 import com.murong.agent.core.config.ProviderConfig
+import com.murong.agent.core.config.ActiveProjectScopeResolution
+import com.murong.agent.core.config.RestoredProjectConfigSnapshot
+import com.murong.agent.core.config.SessionProjectConfig
 import com.murong.agent.core.config.SkillRunAs
 import com.murong.agent.core.config.WorkflowFailureFallbackContext
 import com.murong.agent.core.config.WorkflowFailureFallbackSource
 import com.murong.agent.core.config.WorkflowFailureType
 import com.murong.agent.core.config.WorkflowFailureFallbackMode
+import com.murong.agent.core.config.applyProjectConfigUpdate
+import com.murong.agent.core.config.buildSessionProjectConfig
+import com.murong.agent.core.config.persistProjectScopeConfig
+import com.murong.agent.core.config.preparePersistedProjectConfig
+import com.murong.agent.core.config.restorePersistedProjectConfig
+import com.murong.agent.core.config.resolveActiveProjectScope
+import com.murong.agent.core.config.resolveProjectScopeConfig
+import com.murong.agent.core.config.resolveSessionConfig
+import com.murong.agent.core.config.toPersistedSessionProjectConfigProjection
+import com.murong.agent.core.config.toPersistedSessionProjectConfigSeed
+import com.murong.agent.core.config.toLegacySessionProjectConfig
+import com.murong.agent.core.doctor.buildDoctorReport
+import com.murong.agent.core.doctor.PendingCrashStore
+import com.murong.agent.core.doctor.SensitiveDataSanitizer
+import com.murong.agent.core.config.toPersistedRepoScopedProjectConfigMap
+import com.murong.agent.core.config.toSessionProjectConfig
+import com.murong.agent.core.memory.MemoryScope
+import com.murong.agent.core.memory.PersistedMemoryStore
 import com.murong.agent.core.mcp.McpRegistry
 import com.murong.agent.core.mcp.McpServerConfig
 import com.murong.agent.core.mcp.McpTransportType
+import com.murong.agent.core.skill.PersistedSkillStore
 import com.murong.agent.core.provider.ChatRequest
 import com.murong.agent.core.provider.ChatMessage
 import com.murong.agent.core.provider.Usage
@@ -39,9 +61,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -50,6 +75,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -185,8 +211,30 @@ data class ConversationCheckpointUi(
     val messageIndex: Int,
     val createdAt: Long = System.currentTimeMillis(),
     val summary: String,
-    val changedFiles: List<String> = emptyList()
+    val changedFiles: List<String> = emptyList(),
+    val kind: ConversationCheckpointKind = ConversationCheckpointKind.FILE_TURN,
+    val scope: ConversationCheckpointScope = ConversationCheckpointScope.CODE,
+    val source: ConversationCheckpointSource = ConversationCheckpointSource.TOOL_EXECUTION,
+    val toolNames: List<String> = emptyList(),
+    val promptSnapshot: ConversationCheckpointPromptSnapshotUi? = null
 )
+
+enum class ConversationCheckpointKind {
+    FILE_TURN,
+    ROLLBACK
+}
+
+enum class ConversationCheckpointScope {
+    CODE,
+    CONVERSATION,
+    BOTH
+}
+
+enum class ConversationCheckpointSource {
+    TOOL_EXECUTION,
+    ROLLBACK,
+    LEGACY_EMBEDDED
+}
 
 data class FileMentionUi(
     val path: String,
@@ -208,11 +256,39 @@ data class ProjectKnowledgeSnapshotMutationResult(
     val message: String
 )
 
-data class RepoScopedProjectConfigUi(
-    val projectRules: List<GlobalRule> = emptyList(),
-    val projectMemories: List<GlobalMemory> = emptyList(),
-    val projectSkills: List<GlobalSkill> = emptyList(),
-    val projectToolPreferences: ProjectToolPreferences? = null
+data class ArchivedMemoryCandidateMutationResult(
+    val success: Boolean,
+    val message: String,
+    val status: ArchivedMemoryCandidateStatus? = null,
+    val resolutionSource: ArchivedMemoryCandidateResolutionSource? = null,
+    val resolutionSummary: String? = null,
+    val scope: ArchivedMemoryCandidateScope? = null,
+    val memoryId: String? = null,
+    val deduplicated: Boolean = false
+)
+
+internal data class ArchivedMemoryCandidateResolutionTelemetry(
+    val source: ArchivedMemoryCandidateResolutionSource,
+    val summary: String
+)
+
+enum class MemoryUpdateSuggestionStatusUi {
+    PENDING,
+    APPLIED
+}
+
+data class MemoryUpdateSuggestionUi(
+    val id: String = "mem-suggest-${UUID.randomUUID()}",
+    val title: String,
+    val content: String,
+    val scope: String,
+    val reason: String,
+    val sourceKind: String,
+    val sourceUserMessageId: Long? = null,
+    val sourceAssistantMessageId: Long? = null,
+    val linkedMemoryId: String? = null,
+    val status: MemoryUpdateSuggestionStatusUi = MemoryUpdateSuggestionStatusUi.PENDING,
+    val createdAt: Long = System.currentTimeMillis()
 )
 
 enum class WorkflowPlanStatusUi {
@@ -221,6 +297,35 @@ enum class WorkflowPlanStatusUi {
     BLOCKED,
     COMPLETED
 }
+
+data class WorkflowStepSignOffUi(
+    val stepIndex: Int,
+    val step: String,
+    val reportedStep: String,
+    val resultSummary: String,
+    val matchedEvidenceCount: Int,
+    val totalEvidenceCount: Int,
+    val matchedToolNames: List<String> = emptyList(),
+    val matchedSessionHistorySessionIds: List<String> = emptyList(),
+    val matchedSessionHistoryMessageReferences: List<String> = emptyList(),
+    val signedOffAt: Long = System.currentTimeMillis()
+)
+
+data class SessionHistoryReferenceClueUi(
+    val queries: List<String> = emptyList(),
+    val sessionIds: List<String> = emptyList(),
+    val messageReferences: List<String> = emptyList(),
+    val snippets: List<String> = emptyList(),
+    val excerptWindows: List<String> = emptyList()
+)
+
+data class SkillUsageClueUi(
+    val skillTitles: List<String> = emptyList(),
+    val queries: List<String> = emptyList(),
+    val tasks: List<String> = emptyList(),
+    val runModes: List<String> = emptyList(),
+    val delegatedSkillTitles: List<String> = emptyList()
+)
 
 data class WorkflowPlanUi(
     val id: String = UUID.randomUUID().toString(),
@@ -233,6 +338,8 @@ data class WorkflowPlanUi(
     val nextStepHint: String = "",
     val status: WorkflowPlanStatusUi = WorkflowPlanStatusUi.READY,
     val mentionedFiles: List<FileMentionUi> = emptyList(),
+    val stepSignOffs: List<WorkflowStepSignOffUi> = emptyList(),
+    val recentSessionHistoryClue: SessionHistoryReferenceClueUi? = null,
     val rawPlan: String = "",
     val createdAt: Long = System.currentTimeMillis()
 )
@@ -252,6 +359,7 @@ data class ClarificationRequestUi(
     val turnIndex: Int = 1,
     val maxTurns: Int = MAX_CLARIFICATION_TURNS,
     val source: ClarificationSource = ClarificationSource.MANUAL,
+    val recentSessionHistoryClue: SessionHistoryReferenceClueUi? = null,
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -283,7 +391,17 @@ data class PendingAskRequestUi(
     val id: String = UUID.randomUUID().toString(),
     val title: String = "需要确认",
     val questions: List<AskQuestionUi>,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val recentSessionHistoryClue: SessionHistoryReferenceClueUi? = null,
+    val isReplayOnly: Boolean = false,
+    val replayNotice: String? = null
+)
+
+data class ConversationCheckpointPromptSnapshotUi(
+    val pendingAskRequest: PendingAskRequestUi? = null,
+    val pendingWorkflowPlan: WorkflowPlanUi? = null,
+    val canonicalWorkflowPlan: WorkflowPlanUi? = null,
+    val pendingClarificationRequest: ClarificationRequestUi? = null
 )
 
 enum class AutoRouteAction {
@@ -317,8 +435,14 @@ data class FileChangeRecordUi(
 data class ErrorRecordUi(
     val id: String = UUID.randomUUID().toString(),
     val message: String,
+    val kind: ErrorRecordKind = ErrorRecordKind.GENERAL,
     val timestamp: Long = System.currentTimeMillis()
 )
+
+enum class ErrorRecordKind {
+    GENERAL,
+    FINAL_READINESS
+}
 
 data class ToolCallRecordUi(
     val id: String = UUID.randomUUID().toString(),
@@ -326,6 +450,18 @@ data class ToolCallRecordUi(
     val args: String,
     val result: String? = null,
     val isSuccess: Boolean = true,
+    val stepSignOffReceipt: StepSignOffReceipt? = null,
+    val structuredPayload: ToolStructuredPayload? = null,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+data class CheckpointRecoveryRecordUi(
+    val id: String = UUID.randomUUID().toString(),
+    val checkpointId: String,
+    val checkpointSummary: String,
+    val scope: ConversationCheckpointScope,
+    val restoredFileCount: Int = 0,
+    val targetMessageIndex: Int,
     val timestamp: Long = System.currentTimeMillis()
 )
 
@@ -368,6 +504,447 @@ data class InheritedApprovalScopeUi(
     val sourceSessionTitle: String,
     val sourceUpdatedAt: Long
 )
+
+data class ApprovalScopeTelemetrySummary(
+    val currentApprovalCount: Int,
+    val inheritedApprovalCount: Int,
+    val recentApprovalCount: Int,
+    val recentInvalidationCount: Int
+)
+
+data class ApprovalPosturePendingSummaryTelemetry(
+    val parts: List<String>,
+    val emphasized: Boolean
+)
+
+enum class ApprovalPostureStatusKind {
+    REPLAY_ONLY_PENDING_APPROVAL,
+    PENDING_APPROVAL,
+    RECENT_INVALIDATION,
+    REUSABLE_SCOPES,
+    IDLE
+}
+
+data class ApprovalPostureTelemetry(
+    val statusKind: ApprovalPostureStatusKind,
+    val hasPendingApproval: Boolean,
+    val pendingApprovalIsReplayOnly: Boolean,
+    val hasReusableScopes: Boolean,
+    val hasRecentInvalidations: Boolean,
+    val scopeSummary: ApprovalScopeTelemetrySummary,
+    val pendingSummary: ApprovalPosturePendingSummaryTelemetry? = null,
+    val replayNotice: String? = null
+)
+
+data class ApprovalRecentDecisionTelemetry(
+    val toolName: String,
+    val decision: String,
+    val summary: String? = null,
+    val explanationLabel: String? = null,
+    val scopeSummary: String? = null
+)
+
+data class ApprovalCardTelemetry(
+    val hasPendingApproval: Boolean,
+    val pendingToolName: String? = null,
+    val pendingSummary: String? = null,
+    val pendingApprovalIsReplayOnly: Boolean = false,
+    val replayNotice: String? = null,
+    val recentApprovals: List<ApprovalRecentDecisionTelemetry> = emptyList()
+)
+
+data class PendingApprovalRowTelemetry(
+    val label: String,
+    val value: String
+)
+
+data class PendingApprovalDetailTelemetry(
+    val headline: String,
+    val supportText: String?,
+    val rows: List<PendingApprovalRowTelemetry> = emptyList(),
+    val rawArgsLabel: String,
+    val approveLabel: String,
+    val rejectLabel: String
+)
+
+data class PendingApprovalHostTelemetry(
+    val toolName: String,
+    val riskLevel: ApprovalRiskLevel,
+    val rawArgs: String,
+    val approveEnabled: Boolean,
+    val replayNotice: String? = null,
+    val explanationLabel: String? = null,
+    val explanationDetail: String? = null,
+    val detailTelemetry: PendingApprovalDetailTelemetry
+)
+
+enum class ProjectApprovalItemKind {
+    CURRENT_SCOPE,
+    INHERITED_SCOPE,
+    TREND,
+    INVALIDATION
+}
+
+data class ProjectApprovalHistoryTelemetry(
+    val analyzedSessionCount: Int,
+    val sessionsWithApprovedScopes: Int,
+    val distinctScopeCount: Int
+)
+
+data class ProjectApprovalItemTelemetry(
+    val kind: ProjectApprovalItemKind,
+    val summary: String,
+    val sourceLabel: String? = null,
+    val sourceDetail: String? = null,
+    val policyLabel: String? = null,
+    val policyDetail: String? = null,
+    val sourceSessionTitle: String? = null,
+    val sessionCount: Int? = null,
+    val directSessionCount: Int? = null,
+    val importedSessionCount: Int? = null,
+    val autoInheritedSessionCount: Int? = null,
+    val reasonLabel: String? = null,
+    val reasonDetail: String? = null
+)
+
+data class ProjectApprovalCardTelemetry(
+    val history: ProjectApprovalHistoryTelemetry? = null,
+    val items: List<ProjectApprovalItemTelemetry> = emptyList()
+)
+
+data class ApprovalRuntimeTelemetry(
+    val postureTelemetry: ApprovalPostureTelemetry,
+    val approvalCardTelemetry: ApprovalCardTelemetry,
+    val pendingApprovalHostTelemetry: PendingApprovalHostTelemetry? = null,
+    val projectApprovalCardTelemetry: ProjectApprovalCardTelemetry
+)
+
+fun resolveApprovalScopeTelemetrySummary(
+    recentApprovals: List<ApprovalRecordUi>,
+    approvedApprovalScopes: List<ApprovedApprovalScopeUi>,
+    inheritedApprovalScopes: List<InheritedApprovalScopeUi>,
+    recentInvalidations: List<ApprovalInvalidationRecordUi>
+): ApprovalScopeTelemetrySummary {
+    return ApprovalScopeTelemetrySummary(
+        currentApprovalCount = approvedApprovalScopes.size,
+        inheritedApprovalCount = inheritedApprovalScopes.size,
+        recentApprovalCount = recentApprovals.size,
+        recentInvalidationCount = recentInvalidations.size
+    )
+}
+
+fun resolveApprovalPostureTelemetry(
+    pendingApproval: PendingApprovalUi?,
+    recentApprovals: List<ApprovalRecordUi>,
+    approvedApprovalScopes: List<ApprovedApprovalScopeUi>,
+    inheritedApprovalScopes: List<InheritedApprovalScopeUi>,
+    recentInvalidations: List<ApprovalInvalidationRecordUi>
+): ApprovalPostureTelemetry {
+    val hasPendingApproval = pendingApproval != null
+    val pendingApprovalIsReplayOnly = pendingApproval?.isReplayOnly == true
+    val hasReusableScopes = approvedApprovalScopes.isNotEmpty() || inheritedApprovalScopes.isNotEmpty()
+    val hasRecentInvalidations = recentInvalidations.isNotEmpty()
+    val statusKind = when {
+        pendingApprovalIsReplayOnly -> ApprovalPostureStatusKind.REPLAY_ONLY_PENDING_APPROVAL
+        hasPendingApproval -> ApprovalPostureStatusKind.PENDING_APPROVAL
+        hasRecentInvalidations -> ApprovalPostureStatusKind.RECENT_INVALIDATION
+        hasReusableScopes -> ApprovalPostureStatusKind.REUSABLE_SCOPES
+        else -> ApprovalPostureStatusKind.IDLE
+    }
+    return ApprovalPostureTelemetry(
+        statusKind = statusKind,
+        hasPendingApproval = hasPendingApproval,
+        pendingApprovalIsReplayOnly = pendingApprovalIsReplayOnly,
+        hasReusableScopes = hasReusableScopes,
+        hasRecentInvalidations = hasRecentInvalidations,
+        scopeSummary = resolveApprovalScopeTelemetrySummary(
+            recentApprovals = recentApprovals,
+            approvedApprovalScopes = approvedApprovalScopes,
+            inheritedApprovalScopes = inheritedApprovalScopes,
+            recentInvalidations = recentInvalidations
+        ),
+        pendingSummary = pendingApproval?.let(::buildApprovalPosturePendingSummaryTelemetry),
+        replayNotice = pendingApproval?.let(::resolveReplayOnlyApprovalNotice)
+    )
+}
+
+private fun buildApprovalPosturePendingSummaryTelemetry(
+    pendingApproval: PendingApprovalUi
+): ApprovalPosturePendingSummaryTelemetry {
+    return ApprovalPosturePendingSummaryTelemetry(
+        parts = buildList {
+            pendingApproval.toolName.trim()
+                .takeIf { it.isNotBlank() }
+                ?.let(::add)
+            pendingApproval.summary.trim()
+                .takeIf { it.isNotBlank() }
+                ?.let(::add)
+        },
+        emphasized = true
+    )
+}
+
+fun resolveApprovalRuntimeTelemetry(
+    pendingApproval: PendingApprovalUi?,
+    recentApprovals: List<ApprovalRecordUi>,
+    approvedApprovalScopes: List<ApprovedApprovalScopeUi>,
+    inheritedApprovalScopes: List<InheritedApprovalScopeUi>,
+    recentInvalidations: List<ApprovalInvalidationRecordUi>,
+    projectApprovalHistory: ProjectApprovalHistoryUi?
+): ApprovalRuntimeTelemetry {
+    return ApprovalRuntimeTelemetry(
+        postureTelemetry = resolveApprovalPostureTelemetry(
+            pendingApproval = pendingApproval,
+            recentApprovals = recentApprovals,
+            approvedApprovalScopes = approvedApprovalScopes,
+            inheritedApprovalScopes = inheritedApprovalScopes,
+            recentInvalidations = recentInvalidations
+        ),
+        approvalCardTelemetry = resolveApprovalCardTelemetry(
+            pendingApproval = pendingApproval,
+            recentApprovals = recentApprovals
+        ),
+        pendingApprovalHostTelemetry = pendingApproval?.let(::resolvePendingApprovalHostTelemetry),
+        projectApprovalCardTelemetry = resolveProjectApprovalCardTelemetry(
+            recentApprovalInvalidations = recentInvalidations,
+            approvedApprovalScopes = approvedApprovalScopes,
+            projectApprovalHistory = projectApprovalHistory,
+            inheritedApprovalScopes = inheritedApprovalScopes
+        )
+    )
+}
+
+fun resolveApprovalCardTelemetry(
+    pendingApproval: PendingApprovalUi?,
+    recentApprovals: List<ApprovalRecordUi>
+): ApprovalCardTelemetry {
+    return ApprovalCardTelemetry(
+        hasPendingApproval = pendingApproval != null,
+        pendingToolName = pendingApproval?.toolName
+            ?.trim()
+            ?.takeIf { it.isNotBlank() },
+        pendingSummary = pendingApproval?.summary
+            ?.trim()
+            ?.takeIf { it.isNotBlank() },
+        pendingApprovalIsReplayOnly = pendingApproval?.isReplayOnly == true,
+        replayNotice = pendingApproval?.let(::resolveReplayOnlyApprovalNotice),
+        recentApprovals = recentApprovals.take(3).map { approval ->
+            ApprovalRecentDecisionTelemetry(
+                toolName = approval.toolName,
+                decision = approval.decision,
+                summary = approval.summary
+                    .trim()
+                    .takeIf { it.isNotBlank() },
+                explanationLabel = approval.explanationLabel
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() },
+                scopeSummary = approval.scopeSummary
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+            )
+        }
+    )
+}
+
+fun resolvePendingApprovalDetailTelemetry(
+    pendingApproval: PendingApprovalUi
+): PendingApprovalDetailTelemetry {
+    if (pendingApproval.isReplayOnly) {
+        return PendingApprovalDetailTelemetry(
+            headline = pendingApproval.summary,
+            supportText = resolveReplayOnlyApprovalNotice(pendingApproval),
+            rows = emptyList(),
+            rawArgsLabel = "原始参数",
+            approveLabel = "无法继续",
+            rejectLabel = "关闭"
+        )
+    }
+    if (!pendingApproval.isGitHubPendingApproval()) {
+        return PendingApprovalDetailTelemetry(
+            headline = pendingApproval.summary,
+            supportText = pendingApproval.detail.trim().takeIf { it.isNotBlank() },
+            rows = emptyList(),
+            rawArgsLabel = "参数",
+            approveLabel = "允许",
+            rejectLabel = "拒绝"
+        )
+    }
+
+    val normalizedToolName = pendingApproval.toolName.removePrefix("mcp_")
+    val argsObject = parsePendingApprovalArgs(pendingApproval.rawArgs)
+    val actionLabel = gitHubActionLabel(normalizedToolName)
+    val owner = argsObject?.get("owner")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+    val repo = argsObject?.get("repo")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+    val repoName = argsObject?.get("name")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+    val branch = argsObject?.get("branch")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+    val path = argsObject?.get("path")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+    val issueNumber = argsObject?.get("issue_number")?.jsonPrimitive?.intOrNull
+    val pullNumber = argsObject?.get("pull_number")?.jsonPrimitive?.intOrNull
+
+    val rows = buildList {
+        add(PendingApprovalRowTelemetry(label = "操作", value = actionLabel))
+        when {
+            owner.isNotBlank() && repo.isNotBlank() ->
+                add(PendingApprovalRowTelemetry(label = "仓库", value = "$owner/$repo"))
+            owner.isNotBlank() ->
+                add(PendingApprovalRowTelemetry(label = "所有者", value = owner))
+        }
+        if (repoName.isNotBlank() && repo.isBlank()) {
+            add(PendingApprovalRowTelemetry(label = "仓库名", value = repoName))
+        }
+        if (branch.isNotBlank()) {
+            add(PendingApprovalRowTelemetry(label = "分支", value = branch))
+        }
+        if (path.isNotBlank()) {
+            add(PendingApprovalRowTelemetry(label = "文件", value = path))
+        }
+        if (pullNumber != null) {
+            add(PendingApprovalRowTelemetry(label = "Pull Request", value = "#$pullNumber"))
+        }
+        if (issueNumber != null) {
+            add(PendingApprovalRowTelemetry(label = "Issue", value = "#$issueNumber"))
+        }
+    }
+
+    return PendingApprovalDetailTelemetry(
+        headline = "GitHub 远端写操作",
+        supportText = "批准后才会真正修改远端 GitHub 资源；当前展示的是本次要操作的目标。",
+        rows = rows,
+        rawArgsLabel = "原始参数 (JSON)",
+        approveLabel = "允许写入 GitHub",
+        rejectLabel = "拒绝远端修改"
+    )
+}
+
+fun resolvePendingApprovalHostTelemetry(
+    pendingApproval: PendingApprovalUi
+): PendingApprovalHostTelemetry {
+    return PendingApprovalHostTelemetry(
+        toolName = pendingApproval.toolName.trim().takeIf { it.isNotBlank() } ?: pendingApproval.toolName,
+        riskLevel = pendingApproval.riskLevel,
+        rawArgs = pendingApproval.rawArgs,
+        approveEnabled = !pendingApproval.isReplayOnly,
+        replayNotice = resolveReplayOnlyApprovalNotice(pendingApproval),
+        explanationLabel = pendingApproval.explanationLabel
+            ?.trim()
+            ?.takeIf { it.isNotBlank() },
+        explanationDetail = pendingApproval.explanationDetail
+            ?.trim()
+            ?.takeIf { it.isNotBlank() },
+        detailTelemetry = resolvePendingApprovalDetailTelemetry(pendingApproval)
+    )
+}
+
+private fun resolveReplayOnlyApprovalNotice(
+    pendingApproval: PendingApprovalUi
+): String? {
+    val replayNotice = pendingApproval.replayNotice
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+    if (replayNotice != null) {
+        return replayNotice
+    }
+    return if (pendingApproval.isReplayOnly) {
+        REPLAY_ONLY_APPROVAL_NOTICE
+    } else {
+        null
+    }
+}
+
+fun resolveProjectApprovalCardTelemetry(
+    recentApprovalInvalidations: List<ApprovalInvalidationRecordUi>,
+    approvedApprovalScopes: List<ApprovedApprovalScopeUi>,
+    projectApprovalHistory: ProjectApprovalHistoryUi?,
+    inheritedApprovalScopes: List<InheritedApprovalScopeUi>
+): ProjectApprovalCardTelemetry {
+    val items = buildList {
+        approvedApprovalScopes.take(2).forEach { scope ->
+            add(
+                ProjectApprovalItemTelemetry(
+                    kind = ProjectApprovalItemKind.CURRENT_SCOPE,
+                    summary = scope.summary,
+                    sourceLabel = scope.sourceLabel,
+                    sourceDetail = scope.sourceDetail
+                )
+            )
+        }
+        inheritedApprovalScopes.take(2).forEach { scope ->
+            add(
+                ProjectApprovalItemTelemetry(
+                    kind = ProjectApprovalItemKind.INHERITED_SCOPE,
+                    summary = scope.summary,
+                    policyLabel = scope.policyLabel,
+                    policyDetail = scope.policyDetail,
+                    sourceSessionTitle = scope.sourceSessionTitle
+                )
+            )
+        }
+        projectApprovalHistory?.scopeTrends.orEmpty().take(2).forEach { trend ->
+            add(
+                ProjectApprovalItemTelemetry(
+                    kind = ProjectApprovalItemKind.TREND,
+                    summary = trend.summary,
+                    policyLabel = trend.policyLabel,
+                    policyDetail = trend.policyDetail,
+                    sessionCount = trend.sessionCount,
+                    directSessionCount = trend.directSessionCount,
+                    importedSessionCount = trend.importedSessionCount,
+                    autoInheritedSessionCount = trend.autoInheritedSessionCount
+                )
+            )
+        }
+        recentApprovalInvalidations.take(2).forEach { record ->
+            add(
+                ProjectApprovalItemTelemetry(
+                    kind = ProjectApprovalItemKind.INVALIDATION,
+                    summary = record.summary,
+                    sourceLabel = record.sourceLabel,
+                    sourceDetail = record.sourceDetail,
+                    reasonLabel = record.reasonLabel,
+                    reasonDetail = record.reasonDetail
+                )
+            )
+        }
+    }
+    return ProjectApprovalCardTelemetry(
+        history = projectApprovalHistory?.let { history ->
+            ProjectApprovalHistoryTelemetry(
+                analyzedSessionCount = history.analyzedSessionCount,
+                sessionsWithApprovedScopes = history.sessionsWithApprovedScopes,
+                distinctScopeCount = history.distinctScopeCount
+            )
+        },
+        items = items
+    )
+}
+
+private fun PendingApprovalUi.isGitHubPendingApproval(): Boolean {
+    return toolName.contains("github", ignoreCase = true) ||
+        summary.contains("GitHub", ignoreCase = true) ||
+        detail.contains("MCP/GitHub", ignoreCase = true)
+}
+
+private fun parsePendingApprovalArgs(rawArgs: String) = runCatching {
+    Json.parseToJsonElement(rawArgs).jsonObject
+}.getOrNull()
+
+private fun gitHubActionLabel(toolName: String): String {
+    return when (toolName.lowercase()) {
+        "create_repository" -> "创建仓库"
+        "create_branch" -> "创建分支"
+        "create_issue" -> "创建 Issue"
+        "create_pull_request" -> "创建 Pull Request"
+        "create_pull_request_review" -> "提交 Pull Request Review"
+        "create_or_update_file" -> "写入远端文件"
+        "push_files" -> "批量推送文件"
+        "update_issue" -> "更新 Issue"
+        "add_issue_comment" -> "添加 Issue 评论"
+        "merge_pull_request" -> "合并 Pull Request"
+        "update_pull_request_branch" -> "更新 Pull Request 分支"
+        "fork_repository" -> "Fork 仓库"
+        else -> "执行 GitHub 写操作"
+    }
+}
 
 data class ProjectApprovalHistoryUi(
     val analyzedSessionCount: Int = 0,
@@ -451,6 +1028,7 @@ data class SessionState(
     val messages: List<ChatMessageUi> = emptyList(),
     val subagentRuns: List<SubagentRunUi> = emptyList(),
     val subagentBatches: List<SubagentBatchUi> = emptyList(),
+    val backgroundJobs: List<BackgroundJobUi> = emptyList(),
     val isProcessing: Boolean = false,
     val error: String? = null,
     val sessionId: String = "",
@@ -468,7 +1046,7 @@ data class SessionState(
     val projectKnowledgePaths: List<String> = emptyList(),
     val projectKnowledgeSnapshots: List<ProjectKnowledgeSnapshotUi> = emptyList(),
     val projectToolPreferences: ProjectToolPreferences? = null,
-    val repoScopedConfigs: Map<String, RepoScopedProjectConfigUi> = emptyMap(),
+    val repoScopedConfigs: Map<String, SessionProjectConfig> = emptyMap(),
     val usageSummary: UsageSummarySnapshot = UsageSummarySnapshot(),
     val compressionSnapshot: ContextCompressionUi? = null,
     val compressionSnapshots: List<ContextCompressionUi> = emptyList(),
@@ -476,7 +1054,10 @@ data class SessionState(
     val fileChanges: List<FileChangeRecordUi> = emptyList(),
     val recentErrors: List<ErrorRecordUi> = emptyList(),
     val recentToolCalls: List<ToolCallRecordUi> = emptyList(),
+    val recentMemoryUpdateSuggestions: List<MemoryUpdateSuggestionUi> = emptyList(),
+    val recentFinalReadinessAudits: List<FinalReadinessAuditRecord> = emptyList(),
     val recentApprovals: List<ApprovalRecordUi> = emptyList(),
+    val recentRecoveryRecords: List<CheckpointRecoveryRecordUi> = emptyList(),
     val recentApprovalInvalidations: List<ApprovalInvalidationRecordUi> = emptyList(),
     val approvedApprovalScopes: List<ApprovedApprovalScopeUi> = emptyList(),
     val projectApprovalHistory: ProjectApprovalHistoryUi? = null,
@@ -484,13 +1065,36 @@ data class SessionState(
     val pendingApproval: PendingApprovalUi? = null,
     val pendingAskRequest: PendingAskRequestUi? = null,
     val pendingWorkflowPlan: WorkflowPlanUi? = null,
+    val canonicalWorkflowPlan: WorkflowPlanUi? = null,
     val workflowPlanningInProgress: Boolean = false,
     val pendingClarificationRequest: ClarificationRequestUi? = null,
     val clarificationInProgress: Boolean = false,
     val autoRoutingInProgress: Boolean = false,
     val lastAutoRouteDecision: AutoRouteDecisionUi? = null,
-    val lastWorkflowFallback: WorkflowFallbackUi? = null
-)
+    val lastWorkflowFallback: WorkflowFallbackUi? = null,
+    val lastFinalReadinessReceipt: FinalReadinessReceipt? = null
+) {
+    val recentSessionHistoryClue: SessionHistoryReferenceClueUi?
+        get() = mergeSessionHistoryReferenceClues(
+            pendingAskRequest?.recentSessionHistoryClue,
+            pendingWorkflowPlan?.recentSessionHistoryClue,
+            pendingClarificationRequest?.recentSessionHistoryClue,
+            canonicalWorkflowPlan?.recentSessionHistoryClue,
+            buildRecentSessionHistoryReferenceClue(recentToolCalls)
+        )
+
+    val recentSessionHistoryContext: String?
+        get() = buildSessionHistoryReferenceContext(recentSessionHistoryClue)
+
+    val recentSkillUsageClue: SkillUsageClueUi?
+        get() = buildRecentSkillUsageClue(recentToolCalls)
+
+    val recentSkillUsageContext: String?
+        get() = buildSkillUsageContext(recentSkillUsageClue)
+
+    val recentPendingMemoryUpdateSuggestionContext: String?
+        get() = buildMemoryUpdateSuggestionContext(recentMemoryUpdateSuggestions)
+}
 
 data class PendingApprovalUi(
     val toolName: String,
@@ -499,7 +1103,9 @@ data class PendingApprovalUi(
     val rawArgs: String,
     val riskLevel: ApprovalRiskLevel,
     val explanationLabel: String? = null,
-    val explanationDetail: String? = null
+    val explanationDetail: String? = null,
+    val isReplayOnly: Boolean = false,
+    val replayNotice: String? = null
 )
 
 enum class ConversationExportFormat(
@@ -508,7 +1114,8 @@ enum class ConversationExportFormat(
     val label: String
 ) {
     MARKDOWN("md", "text/markdown", "Markdown"),
-    JSON("json", "application/json", "JSON")
+    JSON("json", "application/json", "JSON"),
+    DOCTOR("md", "text/markdown", "Doctor Report")
 }
 
 data class ConversationExportData(
@@ -552,17 +1159,892 @@ fun estimateContextCompressionPreview(state: SessionState): ContextCompressionPr
     )
 }
 
+internal fun hasPersistableSessionContent(state: SessionState): Boolean {
+    return state.messages.isNotEmpty() ||
+        !state.sessionGoal.isNullOrBlank() ||
+        !state.projectPath.isNullOrBlank() ||
+        !state.remoteTaskRepositoryOwner.isNullOrBlank() ||
+        !state.remoteTaskRepositoryName.isNullOrBlank() ||
+        state.projectRules.isNotEmpty() ||
+        state.projectMemories.isNotEmpty() ||
+        state.projectSkills.isNotEmpty() ||
+        state.projectKnowledgePaths.isNotEmpty() ||
+        state.projectToolPreferences != null ||
+        state.repoScopedConfigs.isNotEmpty() ||
+        state.pendingApproval != null ||
+        state.pendingAskRequest != null ||
+        state.pendingWorkflowPlan != null ||
+        state.pendingClarificationRequest != null ||
+        state.lastAutoRouteDecision != null ||
+        state.lastWorkflowFallback != null ||
+        state.subagentRuns.isNotEmpty() ||
+        state.backgroundJobs.isNotEmpty() ||
+        state.compressionSnapshot != null ||
+        state.compressionSnapshots.isNotEmpty() ||
+        state.checkpoints.isNotEmpty() ||
+        state.fileChanges.isNotEmpty() ||
+        state.recentErrors.isNotEmpty() ||
+        state.recentToolCalls.isNotEmpty() ||
+        state.recentFinalReadinessAudits.isNotEmpty() ||
+        state.recentApprovals.isNotEmpty() ||
+        state.recentRecoveryRecords.isNotEmpty()
+}
+
+internal fun canExportSession(
+    state: SessionState,
+    format: ConversationExportFormat
+): Boolean {
+    return format == ConversationExportFormat.DOCTOR || hasPersistableSessionContent(state)
+}
+
+internal fun isFinalReadinessErrorRecord(record: ErrorRecordUi): Boolean {
+    return record.kind == ErrorRecordKind.FINAL_READINESS ||
+        record.message.contains("最终收口") ||
+        record.message.contains("Final Readiness", ignoreCase = true)
+}
+
+internal fun clearRecoveredFinalReadinessState(
+    state: SessionState,
+    audit: FinalReadinessAuditRecord
+): SessionState {
+    if (audit.result != FinalReadinessAuditResult.ALLOWED || !audit.recovered) {
+        return state
+    }
+    return state.copy(
+        recentErrors = state.recentErrors.filterNot(::isFinalReadinessErrorRecord),
+        lastFinalReadinessReceipt = null
+    )
+}
+
+internal fun normalizeRecoveredFinalReadinessState(state: SessionState): SessionState {
+    val latestAudit = state.recentFinalReadinessAudits.firstOrNull() ?: return state
+    return clearRecoveredFinalReadinessState(state, latestAudit)
+}
+
+internal data class TurnCheckpointCaptureState(
+    val checkpointId: String? = null,
+    val nextRecordOrdinal: Int = 0,
+    val toolNames: Set<String> = emptySet(),
+    val changedFiles: List<String> = emptyList(),
+    val beforeContentByPath: Map<String, String?> = emptyMap()
+)
+
+internal data class TurnCheckpointCaptureUpdate(
+    val nextState: TurnCheckpointCaptureState,
+    val records: List<FileChangeRecordUi>,
+    val checkpoint: ConversationCheckpointUi
+)
+
+internal fun captureTurnCheckpointFileChanges(
+    captureState: TurnCheckpointCaptureState,
+    toolName: String,
+    fileChanges: List<ToolFileChange>,
+    existingCheckpoint: ConversationCheckpointUi?,
+    messageIndex: Int,
+    checkpointIdFactory: () -> String
+): TurnCheckpointCaptureUpdate? {
+    if (fileChanges.isEmpty()) return null
+    val checkpointId = captureState.checkpointId ?: checkpointIdFactory()
+    val nextBeforeContentByPath = captureState.beforeContentByPath.toMutableMap()
+    val records = fileChanges.mapIndexed { index, change ->
+        val baselineBeforeContent = nextBeforeContentByPath.getOrPut(change.path) { change.beforeContent }
+        FileChangeRecordUi(
+            id = "$checkpointId-${captureState.nextRecordOrdinal + index}",
+            path = change.path,
+            operation = change.operation,
+            beforeContent = baselineBeforeContent,
+            afterContent = change.afterContent,
+            diffPreview = change.diffPreview,
+            changedAt = change.changedAt,
+            checkpointId = checkpointId
+        )
+    }
+    val nextChangedFiles = LinkedHashSet(captureState.changedFiles).apply {
+        fileChanges.forEach { add(it.path) }
+    }.toList()
+    val nextToolNames = LinkedHashSet(captureState.toolNames).apply { add(toolName) }
+    val checkpoint = ConversationCheckpointUi(
+        id = checkpointId,
+        messageIndex = messageIndex,
+        createdAt = maxOf(
+            existingCheckpoint?.createdAt ?: 0L,
+            records.maxOfOrNull { it.changedAt } ?: System.currentTimeMillis()
+        ),
+        summary = buildCheckpointSummary(nextToolNames, nextChangedFiles),
+        changedFiles = nextChangedFiles,
+        kind = ConversationCheckpointKind.FILE_TURN,
+        scope = ConversationCheckpointScope.CODE,
+        source = ConversationCheckpointSource.TOOL_EXECUTION,
+        toolNames = nextToolNames.toList()
+    )
+    return TurnCheckpointCaptureUpdate(
+        nextState = TurnCheckpointCaptureState(
+            checkpointId = checkpointId,
+            nextRecordOrdinal = captureState.nextRecordOrdinal + records.size,
+            toolNames = nextToolNames,
+            changedFiles = nextChangedFiles,
+            beforeContentByPath = nextBeforeContentByPath
+        ),
+        records = records,
+        checkpoint = checkpoint
+    )
+}
+
+internal fun upsertCheckpointHistory(
+    checkpoints: List<ConversationCheckpointUi>,
+    checkpoint: ConversationCheckpointUi,
+    maxSize: Int
+): List<ConversationCheckpointUi> {
+    return (listOf(checkpoint) + checkpoints.filterNot { it.id == checkpoint.id })
+        .sortedByDescending { it.createdAt }
+        .take(maxSize)
+}
+
+internal fun resolveCheckpointRollbackRecords(
+    records: List<FileChangeRecordUi>
+): List<FileChangeRecordUi> {
+    return records.sortedByDescending { it.changedAt }
+}
+
+internal fun buildCheckpointSummary(
+    toolNames: Set<String>,
+    changedFiles: List<String>
+): String {
+    val paths = changedFiles.map { it.substringAfterLast('/').substringAfterLast('\\') }
+    val toolLabel = when (toolNames.size) {
+        0 -> "工具"
+        1 -> toolNames.first()
+        else -> "${toolNames.joinToString("/")} 等"
+    }
+    return "$toolLabel 修改了 ${changedFiles.size} 个文件: ${paths.take(3).joinToString("、")}" +
+        if (paths.size > 3) " 等" else ""
+}
+
+internal fun formatCheckpointScopeLabel(scope: ConversationCheckpointScope): String {
+    return when (scope) {
+        ConversationCheckpointScope.CODE -> "代码恢复"
+        ConversationCheckpointScope.CONVERSATION -> "对话恢复"
+        ConversationCheckpointScope.BOTH -> "代码/对话"
+    }
+}
+
+internal data class CheckpointRecoveryPlan(
+    val targetExclusiveIndex: Int,
+    val checkpointRecords: List<FileChangeRecordUi>,
+    val futureRecords: List<FileChangeRecordUi>
+)
+
+internal fun formatCheckpointRecoveryScopeMessage(
+    checkpointScope: ConversationCheckpointScope,
+    requestedScope: ConversationCheckpointScope
+): String {
+    return when (requestedScope) {
+        ConversationCheckpointScope.CODE ->
+            "该检查点只有对话可恢复，不能回滚代码"
+
+        ConversationCheckpointScope.CONVERSATION ->
+            "该检查点只有代码可恢复，不能恢复对话"
+
+        ConversationCheckpointScope.BOTH ->
+            "该检查点只支持 ${formatCheckpointScopeLabel(checkpointScope)}，不能同时恢复代码和对话"
+    }
+}
+
+internal fun collectFutureCheckpointRollbackRecords(
+    state: SessionState,
+    targetExclusiveIndex: Int
+): List<FileChangeRecordUi> {
+    val checkpointsToRollback = state.checkpoints
+        .filter { it.messageIndex >= targetExclusiveIndex }
+        .sortedByDescending { it.createdAt }
+    return checkpointsToRollback.flatMap { checkpoint ->
+        state.fileChanges
+            .filter { it.checkpointId == checkpoint.id }
+            .sortedByDescending { it.changedAt }
+    }
+}
+
+internal fun resolveCheckpointRecoveryPlan(
+    state: SessionState,
+    checkpoint: ConversationCheckpointUi,
+    requestedScope: ConversationCheckpointScope
+): CheckpointRecoveryPlan {
+    val scopeSupported = when (requestedScope) {
+        ConversationCheckpointScope.CODE ->
+            checkpoint.scope == ConversationCheckpointScope.CODE ||
+                checkpoint.scope == ConversationCheckpointScope.BOTH
+
+        ConversationCheckpointScope.CONVERSATION ->
+            checkpoint.scope == ConversationCheckpointScope.CONVERSATION ||
+                checkpoint.scope == ConversationCheckpointScope.BOTH
+
+        ConversationCheckpointScope.BOTH ->
+            checkpoint.scope == ConversationCheckpointScope.BOTH
+    }
+    require(scopeSupported) {
+        formatCheckpointRecoveryScopeMessage(
+            checkpointScope = checkpoint.scope,
+            requestedScope = requestedScope
+        )
+    }
+
+    val targetExclusiveIndex = (checkpoint.messageIndex + 1).coerceIn(0, state.messages.size)
+    val checkpointRecords = resolveCheckpointRollbackRecords(
+        state.fileChanges.filter { it.checkpointId == checkpoint.id }
+    )
+    val futureRecords = collectFutureCheckpointRollbackRecords(
+        state = state,
+        targetExclusiveIndex = targetExclusiveIndex
+    )
+
+    when (requestedScope) {
+        ConversationCheckpointScope.CODE ->
+            require(checkpointRecords.isNotEmpty()) { "该检查点没有可回滚的代码修改" }
+
+        ConversationCheckpointScope.CONVERSATION ->
+            require(
+                targetExclusiveIndex < state.messages.size ||
+                    hasCheckpointPromptSnapshotDifference(state, checkpoint)
+            ) {
+                "该检查点已经是当前对话边界，无需恢复"
+            }
+
+        ConversationCheckpointScope.BOTH ->
+            require(
+                targetExclusiveIndex < state.messages.size ||
+                    futureRecords.isNotEmpty() ||
+                    hasCheckpointPromptSnapshotDifference(state, checkpoint)
+            ) {
+                "该检查点之后没有新的对话或文件变更，无需恢复"
+            }
+    }
+
+    return CheckpointRecoveryPlan(
+        targetExclusiveIndex = targetExclusiveIndex,
+        checkpointRecords = checkpointRecords,
+        futureRecords = futureRecords
+    )
+}
+
+internal fun buildCheckpointRecoverySummary(
+    checkpoint: ConversationCheckpointUi,
+    restoredScope: ConversationCheckpointScope,
+    recentSessionHistoryClue: SessionHistoryReferenceClueUi? = null
+): String {
+    val summary = when (restoredScope) {
+        ConversationCheckpointScope.CODE -> "回滚代码: ${checkpoint.summary}"
+        ConversationCheckpointScope.CONVERSATION -> "恢复对话: ${checkpoint.summary}"
+        ConversationCheckpointScope.BOTH -> "恢复代码/对话: ${checkpoint.summary}"
+    }
+    val historySuffix = buildSessionHistoryReferenceInlineSuffix(recentSessionHistoryClue)
+    return historySuffix?.let { "$summary（$it）" } ?: summary
+}
+
+internal fun buildCheckpointRecoverySystemMessage(
+    checkpoint: ConversationCheckpointUi,
+    restoredScope: ConversationCheckpointScope,
+    recentSessionHistoryClue: SessionHistoryReferenceClueUi? = null
+): String {
+    val message = when (restoredScope) {
+        ConversationCheckpointScope.CODE -> "已按检查点回滚代码：${checkpoint.summary}"
+        ConversationCheckpointScope.CONVERSATION -> "已按检查点恢复对话：${checkpoint.summary}"
+        ConversationCheckpointScope.BOTH -> "已按检查点恢复代码与对话：${checkpoint.summary}"
+    }
+    val historySuffix = buildSessionHistoryReferenceInlineSuffix(recentSessionHistoryClue)
+    return historySuffix?.let { "$message（$it）" } ?: message
+}
+
+internal fun buildCheckpointRecoveryEvent(
+    rollbackCheckpointId: String,
+    checkpoint: ConversationCheckpointUi,
+    restoredScope: ConversationCheckpointScope,
+    messageIndex: Int,
+    createdAt: Long,
+    changedFiles: List<String>,
+    recentSessionHistoryClue: SessionHistoryReferenceClueUi? = null
+): ConversationCheckpointUi {
+    return ConversationCheckpointUi(
+        id = rollbackCheckpointId,
+        messageIndex = messageIndex,
+        createdAt = createdAt,
+        summary = buildCheckpointRecoverySummary(
+            checkpoint = checkpoint,
+            restoredScope = restoredScope,
+            recentSessionHistoryClue = recentSessionHistoryClue
+        ),
+        changedFiles = changedFiles,
+        kind = ConversationCheckpointKind.ROLLBACK,
+        scope = restoredScope,
+        source = ConversationCheckpointSource.ROLLBACK,
+        toolNames = listOf("rollback")
+    )
+}
+
+internal fun buildCheckpointRecoveryRecord(
+    checkpoint: ConversationCheckpointUi,
+    restoredScope: ConversationCheckpointScope,
+    restoredFileCount: Int,
+    recentSessionHistoryClue: SessionHistoryReferenceClueUi? = null,
+    timestamp: Long = System.currentTimeMillis()
+): CheckpointRecoveryRecordUi {
+    return CheckpointRecoveryRecordUi(
+        checkpointId = checkpoint.id,
+        checkpointSummary = buildCheckpointRecoverySummary(
+            checkpoint = checkpoint,
+            restoredScope = restoredScope,
+            recentSessionHistoryClue = recentSessionHistoryClue
+        ),
+        scope = restoredScope,
+        restoredFileCount = restoredFileCount,
+        targetMessageIndex = checkpoint.messageIndex,
+        timestamp = timestamp
+    )
+}
+
+internal data class ConversationRollbackProjection(
+    val messages: List<ChatMessageUi>,
+    val subagentRuns: List<SubagentRunUi>,
+    val subagentBatches: List<SubagentBatchUi>,
+    val compressionSnapshot: ContextCompressionUi?,
+    val compressionSnapshots: List<ContextCompressionUi>,
+    val checkpoints: List<ConversationCheckpointUi>,
+    val fileChanges: List<FileChangeRecordUi>,
+    val pendingAskRequest: PendingAskRequestUi?,
+    val pendingWorkflowPlan: WorkflowPlanUi?,
+    val canonicalWorkflowPlan: WorkflowPlanUi?,
+    val pendingClarificationRequest: ClarificationRequestUi?,
+    val workflowPlanningInProgress: Boolean = false,
+    val clarificationInProgress: Boolean = false
+)
+
+internal fun resolveCompressionSnapshotsAfterRollback(
+    snapshots: List<ContextCompressionUi>,
+    targetExclusiveIndex: Int
+): List<ContextCompressionUi> {
+    val remaining = snapshots
+        .filter { it.sourceEndMessageIndex < targetExclusiveIndex }
+        .sortedBy { it.version }
+    val reactivatedId = remaining.maxByOrNull { it.version }?.id
+    return remaining.map { snapshot ->
+        snapshot.copy(active = snapshot.id == reactivatedId)
+    }
+}
+
+internal fun projectConversationRollbackState(
+    state: SessionState,
+    targetExclusiveIndex: Int,
+    targetCheckpoint: ConversationCheckpointUi? = null
+): ConversationRollbackProjection {
+    require(targetExclusiveIndex in 0..state.messages.size) {
+        "无效的回退目标位置: $targetExclusiveIndex"
+    }
+    val keptMessages = state.messages.take(targetExclusiveIndex)
+    val effectiveTargetCheckpoint = targetCheckpoint ?: state.checkpoints
+        .filter { it.messageIndex < targetExclusiveIndex }
+        .maxByOrNull { it.createdAt }
+    val keptCheckpoints = state.checkpoints
+        .filter { checkpoint ->
+            when {
+                effectiveTargetCheckpoint == null -> checkpoint.messageIndex < targetExclusiveIndex
+                checkpoint.messageIndex < effectiveTargetCheckpoint.messageIndex -> true
+                checkpoint.messageIndex > effectiveTargetCheckpoint.messageIndex -> false
+                checkpoint.createdAt < effectiveTargetCheckpoint.createdAt -> true
+                checkpoint.createdAt > effectiveTargetCheckpoint.createdAt -> false
+                else -> checkpoint.id == effectiveTargetCheckpoint.id
+            }
+        }
+        .sortedByDescending { it.createdAt }
+    val keptCheckpointIds = keptCheckpoints.map { it.id }.toSet()
+    val keptFileChanges = state.fileChanges.filter { change ->
+        change.checkpointId == null || change.checkpointId in keptCheckpointIds
+    }
+    val keptCompressionSnapshots = resolveCompressionSnapshotsAfterRollback(
+        snapshots = state.compressionSnapshots,
+        targetExclusiveIndex = targetExclusiveIndex
+    )
+    val currentCompressionSnapshot = keptCompressionSnapshots.firstOrNull { it.active }
+    val keptSubagentRunIds = keptMessages.mapNotNull { it.subagentRunId }.toSet()
+    val keptSubagentBatchIds = keptMessages.mapNotNull { it.subagentBatchId }.toSet()
+    val promptSnapshot = effectiveTargetCheckpoint?.promptSnapshot
+    return ConversationRollbackProjection(
+        messages = keptMessages,
+        subagentRuns = state.subagentRuns.filter { it.runId in keptSubagentRunIds },
+        subagentBatches = state.subagentBatches.filter { it.batchId in keptSubagentBatchIds },
+        compressionSnapshot = currentCompressionSnapshot,
+        compressionSnapshots = keptCompressionSnapshots,
+        checkpoints = keptCheckpoints,
+        fileChanges = keptFileChanges,
+        pendingAskRequest = markPendingAskReplayOnly(
+            request = promptSnapshot?.pendingAskRequest,
+            recentSessionHistoryClue = state.recentSessionHistoryClue
+        ),
+        pendingWorkflowPlan = promptSnapshot?.pendingWorkflowPlan,
+        canonicalWorkflowPlan = promptSnapshot?.canonicalWorkflowPlan,
+        pendingClarificationRequest = promptSnapshot?.pendingClarificationRequest,
+        workflowPlanningInProgress = false,
+        clarificationInProgress = false
+    )
+}
+
+internal fun buildConversationCheckpointPromptSnapshot(
+    state: SessionState
+): ConversationCheckpointPromptSnapshotUi? {
+    val normalizedAskRequest = state.pendingAskRequest?.copy(
+        isReplayOnly = false,
+        replayNotice = null
+    )
+    if (
+        normalizedAskRequest == null &&
+        state.pendingWorkflowPlan == null &&
+        state.canonicalWorkflowPlan == null &&
+        state.pendingClarificationRequest == null
+    ) {
+        return null
+    }
+    return ConversationCheckpointPromptSnapshotUi(
+        pendingAskRequest = normalizedAskRequest,
+        pendingWorkflowPlan = state.pendingWorkflowPlan,
+        canonicalWorkflowPlan = state.canonicalWorkflowPlan,
+        pendingClarificationRequest = state.pendingClarificationRequest
+    )
+}
+
+internal fun hasCheckpointPromptSnapshotDifference(
+    state: SessionState,
+    checkpoint: ConversationCheckpointUi
+): Boolean {
+    return buildConversationCheckpointPromptSnapshot(state) != checkpoint.promptSnapshot
+}
+
+internal fun buildConversationCheckpointSummary(
+    messages: List<ChatMessageUi>,
+    messageIndex: Int
+): String {
+    val preview = messages
+        .take((messageIndex + 1).coerceAtMost(messages.size))
+        .asReversed()
+        .firstOrNull { it.role == "assistant" && it.content.isNotBlank() }
+        ?.content
+        ?.replace('\n', ' ')
+        ?.replace(Regex("\\s+"), " ")
+        ?.trim()
+        ?.take(24)
+    return if (preview.isNullOrBlank()) {
+        "对话推进检查点"
+    } else {
+        "对话推进: $preview"
+    }
+}
+
+internal fun finalizeTurnCheckpoint(
+    captureState: TurnCheckpointCaptureState,
+    checkpoints: List<ConversationCheckpointUi>,
+    messages: List<ChatMessageUi>,
+    checkpointIdFactory: () -> String
+): ConversationCheckpointUi? {
+    val finalMessageIndex = messages.lastIndex
+    if (finalMessageIndex < 0) return null
+    val existingCheckpoint = captureState.checkpointId?.let { checkpointId ->
+        checkpoints.firstOrNull { it.id == checkpointId }
+    }
+    return if (existingCheckpoint != null) {
+        existingCheckpoint.copy(
+            messageIndex = finalMessageIndex,
+            scope = ConversationCheckpointScope.BOTH
+        )
+    } else {
+        ConversationCheckpointUi(
+            id = checkpointIdFactory(),
+            messageIndex = finalMessageIndex,
+            createdAt = messages.lastOrNull()?.timestamp ?: System.currentTimeMillis(),
+            summary = buildConversationCheckpointSummary(messages, finalMessageIndex),
+            kind = ConversationCheckpointKind.FILE_TURN,
+            scope = ConversationCheckpointScope.CONVERSATION,
+            source = ConversationCheckpointSource.TOOL_EXECUTION
+        )
+    }
+}
+
+internal fun buildFinalReadinessContinuationContext(
+    audits: List<FinalReadinessAuditRecord>,
+    recentSessionHistoryClue: SessionHistoryReferenceClueUi? = null
+): String? {
+    val canonicalAudits = audits.filter {
+        it.receiptKind == FinalReadinessReceiptKind.INCOMPLETE_CANONICAL_WORKFLOW
+    }
+    val summary = buildLatestFinalReadinessAuditSummary(canonicalAudits) ?: return null
+    val historyReferenceSummary = buildSessionHistoryReferenceContext(
+        mergeSessionHistoryReferenceClues(
+            buildLatestFinalReadinessHistoryReferenceClue(canonicalAudits),
+            recentSessionHistoryClue
+        )
+    )
+    return buildString {
+        append("最近一次最终收口状态：")
+        append(summary)
+        append("。")
+        historyReferenceSummary?.let {
+            append(it)
+        }
+        append("继续执行时请保持 `complete_step` 与计划签收闭环，避免再次在最终收口被阻塞。")
+    }
+}
+
+internal fun buildLatestFinalReadinessHistoryReferenceClue(
+    audits: List<FinalReadinessAuditRecord>
+): SessionHistoryReferenceClueUi? {
+    val latestAudit = audits.firstOrNull()
+        ?.takeIf { audit -> audit.result == FinalReadinessAuditResult.BLOCKED || audit.recovered }
+        ?: return null
+    val sessionIds = latestAudit.latestSignedOffSessionHistorySessionIds.distinct()
+    val messageReferences = latestAudit.latestSignedOffSessionHistoryMessageReferences.distinct()
+    if (sessionIds.isEmpty() && messageReferences.isEmpty()) return null
+    return SessionHistoryReferenceClueUi(
+        sessionIds = sessionIds,
+        messageReferences = messageReferences
+    )
+}
+
+internal fun buildRecentSessionHistoryReferenceContext(
+    recentToolCalls: List<ToolCallRecordUi>
+): String? {
+    return buildSessionHistoryReferenceContext(
+        buildRecentSessionHistoryReferenceClue(recentToolCalls)
+    )
+}
+
+internal fun buildRecentSessionHistoryReferenceClue(
+    recentToolCalls: List<ToolCallRecordUi>
+): SessionHistoryReferenceClueUi? {
+    val recentHistoryPayloads = recentToolCalls.asSequence()
+        .filter { it.isSuccess }
+        .mapNotNull { it.structuredPayload?.sessionHistory }
+        .take(5)
+        .toList()
+    if (recentHistoryPayloads.isEmpty()) return null
+    val queries = recentHistoryPayloads.mapNotNull { payload ->
+        payload.query?.trim()?.takeIf { it.isNotBlank() }
+    }.distinct()
+    val sessionIds = recentHistoryPayloads.flatMap { it.sessionIds }.distinct()
+    val messageReferences = recentHistoryPayloads.flatMap { it.messageReferences }.distinct()
+    val snippets = recentHistoryPayloads.flatMap { it.snippets }.distinct()
+    val excerptWindows = recentHistoryPayloads.flatMap { it.excerptWindows }.distinct()
+    if (
+        queries.isEmpty() &&
+        sessionIds.isEmpty() &&
+        messageReferences.isEmpty() &&
+        snippets.isEmpty() &&
+        excerptWindows.isEmpty()
+    ) {
+        return null
+    }
+    return SessionHistoryReferenceClueUi(
+        queries = queries,
+        sessionIds = sessionIds,
+        messageReferences = messageReferences,
+        snippets = snippets,
+        excerptWindows = excerptWindows
+    )
+}
+
+internal fun buildRecentSkillUsageClue(
+    recentToolCalls: List<ToolCallRecordUi>
+): SkillUsageClueUi? {
+    val recentSkillPayloads = recentToolCalls.asSequence()
+        .filter { it.isSuccess }
+        .mapNotNull { it.structuredPayload?.skill }
+        .take(5)
+        .toList()
+    if (recentSkillPayloads.isEmpty()) return null
+    val skillTitles = recentSkillPayloads.mapNotNull { payload ->
+        payload.skillTitle?.trim()?.takeIf { it.isNotBlank() }
+    }.distinct()
+    val queries = recentSkillPayloads.mapNotNull { payload ->
+        payload.query?.trim()?.takeIf { it.isNotBlank() }
+    }.distinct()
+    val tasks = recentSkillPayloads.mapNotNull { payload ->
+        payload.task?.trim()?.takeIf { it.isNotBlank() }
+    }.distinct()
+    val runModes = recentSkillPayloads.mapNotNull { payload ->
+        payload.runAs?.trim()?.takeIf { it.isNotBlank() }
+    }.distinct()
+    val delegatedSkillTitles = recentSkillPayloads
+        .filter { it.delegatedToSubagent }
+        .mapNotNull { payload ->
+            payload.skillTitle?.trim()?.takeIf { it.isNotBlank() }
+        }
+        .distinct()
+    if (
+        skillTitles.isEmpty() &&
+        queries.isEmpty() &&
+        tasks.isEmpty() &&
+        runModes.isEmpty() &&
+        delegatedSkillTitles.isEmpty()
+    ) {
+        return null
+    }
+    return SkillUsageClueUi(
+        skillTitles = skillTitles,
+        queries = queries,
+        tasks = tasks,
+        runModes = runModes,
+        delegatedSkillTitles = delegatedSkillTitles
+    )
+}
+
+internal fun buildSkillUsageContext(
+    clue: SkillUsageClueUi?
+): String? {
+    clue ?: return null
+    if (
+        clue.skillTitles.isEmpty() &&
+        clue.queries.isEmpty() &&
+        clue.tasks.isEmpty() &&
+        clue.runModes.isEmpty() &&
+        clue.delegatedSkillTitles.isEmpty()
+    ) {
+        return null
+    }
+    return buildString {
+        append("最近已调用过 Skill 能力：")
+        val segments = buildList {
+            if (clue.skillTitles.isNotEmpty()) {
+                add("最近 Skill：${clue.skillTitles.toSessionHistoryReferencePreviewList()}")
+            }
+            if (clue.tasks.isNotEmpty()) {
+                add("最近 Skill 任务：${clue.tasks.toSessionHistoryReferencePreviewList()}")
+            }
+            if (clue.runModes.isNotEmpty()) {
+                add("执行模式：${clue.runModes.toSessionHistoryReferencePreviewList()}")
+            }
+            if (clue.delegatedSkillTitles.isNotEmpty()) {
+                add("已委派子代理：${clue.delegatedSkillTitles.toSessionHistoryReferencePreviewList()}")
+            }
+            if (clue.queries.isNotEmpty()) {
+                add("原始匹配查询：${clue.queries.toSessionHistoryReferencePreviewList()}")
+            }
+        }
+        append(segments.joinToString("；"))
+        append("。如当前请求仍沿同一能力推进，优先复用这些 Skill，而不是重复检索或改换执行模式。")
+    }
+}
+
+internal fun mergeSessionHistoryReferenceClues(
+    vararg clues: SessionHistoryReferenceClueUi?
+): SessionHistoryReferenceClueUi? {
+    val mergedClues = clues.filterNotNull()
+    if (mergedClues.isEmpty()) return null
+    val queries = mergedClues.flatMap { it.queries }.distinct()
+    val sessionIds = mergedClues.flatMap { it.sessionIds }.distinct()
+    val messageReferences = mergedClues.flatMap { it.messageReferences }.distinct()
+    val snippets = mergedClues.flatMap { it.snippets }.distinct()
+    val excerptWindows = mergedClues.flatMap { it.excerptWindows }.distinct()
+    if (
+        queries.isEmpty() &&
+        sessionIds.isEmpty() &&
+        messageReferences.isEmpty() &&
+        snippets.isEmpty() &&
+        excerptWindows.isEmpty()
+    ) {
+        return null
+    }
+    return SessionHistoryReferenceClueUi(
+        queries = queries,
+        sessionIds = sessionIds,
+        messageReferences = messageReferences,
+        snippets = snippets,
+        excerptWindows = excerptWindows
+    )
+}
+
+internal fun buildSessionHistoryReferenceContext(
+    clue: SessionHistoryReferenceClueUi?
+): String? {
+    clue ?: return null
+    if (
+        clue.queries.isEmpty() &&
+        clue.sessionIds.isEmpty() &&
+        clue.messageReferences.isEmpty() &&
+        clue.snippets.isEmpty() &&
+        clue.excerptWindows.isEmpty()
+    ) {
+        return null
+    }
+    return buildString {
+        append("最近已引用过会话历史检索结果：")
+        val segments = buildList {
+            if (clue.queries.isNotEmpty()) {
+                add("最近查询：${clue.queries.toSessionHistoryReferencePreviewList()}")
+            }
+            if (clue.sessionIds.isNotEmpty()) {
+                add("最近命中的历史会话：${clue.sessionIds.toSessionHistoryReferencePreviewList()}")
+            }
+            if (clue.messageReferences.isNotEmpty()) {
+                add("最近命中的历史消息：${clue.messageReferences.toSessionHistoryReferencePreviewList()}")
+            }
+            if (clue.snippets.isNotEmpty()) {
+                add("最近历史线索摘要：${clue.snippets.toSessionHistoryReferencePreviewList()}")
+            }
+            if (clue.excerptWindows.isNotEmpty()) {
+                add("最近摘录窗口：${clue.excerptWindows.toSessionHistoryReferencePreviewList()}")
+            }
+        }
+        append(segments.joinToString("；"))
+        append("。如需继续沿这些历史线索推进，优先复用已有 `session_id/message_reference`，避免重复全文搜索。")
+    }
+}
+
+internal fun buildSessionHistoryReferenceInlineSuffix(
+    clue: SessionHistoryReferenceClueUi?
+): String? {
+    clue ?: return null
+    val segments = buildList {
+        if (clue.queries.isNotEmpty()) {
+            add("查询 ${clue.queries.toSessionHistoryReferencePreviewList()}")
+        }
+        if (clue.messageReferences.isNotEmpty()) {
+            add("消息 ${clue.messageReferences.toSessionHistoryReferencePreviewList()}")
+        } else if (clue.sessionIds.isNotEmpty()) {
+            add("会话 ${clue.sessionIds.toSessionHistoryReferencePreviewList()}")
+        }
+        if (clue.snippets.isNotEmpty()) {
+            add("摘要 ${clue.snippets.toSessionHistoryReferencePreviewList()}")
+        }
+    }.take(2)
+    return segments.takeIf { it.isNotEmpty() }
+        ?.joinToString("；", prefix = "沿用历史线索：")
+}
+
+internal fun buildTurnScopedAuxiliaryUserContext(
+    recentToolCalls: List<ToolCallRecordUi>,
+    mentionedFilesContext: String?,
+    extraContext: String? = null
+): String? {
+    return buildTurnScopedAuxiliaryUserContext(
+        recentSessionHistoryClue = buildRecentSessionHistoryReferenceClue(recentToolCalls),
+        mentionedFilesContext = mentionedFilesContext,
+        extraContext = extraContext
+    )
+}
+
+internal fun buildTurnScopedAuxiliaryUserContext(
+    recentSessionHistoryClue: SessionHistoryReferenceClueUi?,
+    mentionedFilesContext: String?,
+    extraContext: String? = null
+): String? {
+    return listOfNotNull(
+        buildSessionHistoryReferenceContext(recentSessionHistoryClue),
+        mentionedFilesContext?.trim()?.takeIf { it.isNotBlank() },
+        extraContext?.trim()?.takeIf { it.isNotBlank() }
+    ).takeIf { it.isNotEmpty() }?.joinToString("\n\n")
+}
+
+internal fun buildControllerSessionHistoryContext(
+    state: SessionState,
+    localClue: SessionHistoryReferenceClueUi? = null
+): String? {
+    return buildSessionHistoryReferenceContext(
+        mergeSessionHistoryReferenceClues(
+            state.recentSessionHistoryClue,
+            localClue
+        )
+    )
+}
+
+internal fun buildStateAwarePendingAskRequest(
+    request: PendingAskRequestUi,
+    state: SessionState,
+    recentSessionHistoryClue: SessionHistoryReferenceClueUi? = null
+): PendingAskRequestUi {
+    return request.copy(
+        recentSessionHistoryClue = mergeSessionHistoryReferenceClues(
+            state.recentSessionHistoryClue,
+            request.recentSessionHistoryClue,
+            recentSessionHistoryClue
+        )
+    )
+}
+
+internal fun buildDefaultLocalFallbackClarificationQuestion(
+    goal: String,
+    previousAnswers: List<ClarificationAnswerUi>
+): String {
+    return when {
+        previousAnswers.isNotEmpty() ->
+            "为了继续准确执行，请再补充目前最关键的限制条件、优先级或预期结果。"
+        goal.isNotBlank() ->
+            "为了避免做错，请先补充这个任务最关键的限制条件、目标范围或预期结果。"
+        else ->
+            "为了继续准确执行，请先补充当前任务最关键的限制条件或预期结果。"
+    }
+}
+
+internal fun buildStateAwareLocalFallbackClarificationRequest(
+    goal: String,
+    mentionedFiles: List<FileMentionUi>,
+    previousAnswers: List<ClarificationAnswerUi>,
+    turnIndex: Int,
+    maxTurns: Int,
+    source: ClarificationSource,
+    state: SessionState,
+    recentSessionHistoryClue: SessionHistoryReferenceClueUi? = null
+): ClarificationRequestUi {
+    return ClarificationRequestUi(
+        goal = goal,
+        question = buildDefaultLocalFallbackClarificationQuestion(
+            goal = goal,
+            previousAnswers = previousAnswers
+        ),
+        mentionedFiles = mentionedFiles.distinctBy { it.path },
+        previousAnswers = previousAnswers,
+        turnIndex = turnIndex,
+        maxTurns = maxTurns,
+        source = source,
+        recentSessionHistoryClue = mergeSessionHistoryReferenceClues(
+            state.recentSessionHistoryClue,
+            recentSessionHistoryClue
+        )
+    )
+}
+
+private fun List<String>.toSessionHistoryReferencePreviewList(limit: Int = 3): String {
+    val preview = take(limit)
+    val remainingCount = (size - preview.size).coerceAtLeast(0)
+    return buildString {
+        append(preview.joinToString("、"))
+        if (remainingCount > 0) {
+            append(" 等 ")
+            append(size)
+            append(" 条")
+        }
+    }
+}
+
 /**
  * 会话管理器——管理对话生命周期 + 持久化 + MCP
  */
 class ChatSessionManager(
     private val context: Context,
     private val configRepository: ConfigRepository,
-    private val mcpRegistry: McpRegistry? = null
+    private val mcpRegistry: McpRegistry? = null,
+    private val hookBus: HookBusRunner = HookBusRunner()
 ) {
     private companion object {
         val SUBAGENT_TERMINAL_STATUSES = setOf("completed", "failed", "cancelled", "rejected")
         val SUBAGENT_ACTIVE_STATUSES = setOf("pending_approval", "queued", "running", "summarizing", "cancelling")
+        val READ_ONLY_FILE_OPERATIONS = setOf("read", "list", "exists")
+        val WRITE_LIKE_FILE_OPERATIONS = setOf("write", "delete", "chmod")
+        val READ_ONLY_PLAN_MODE_BLOCKED_TOOL_NAMES = setOf(
+            "task_repo_create_branch",
+            "task_repo_create_pr",
+            "task_repo_close_pr",
+            "task_repo_delete_branch",
+            "task_repo_search_replace",
+            "task_repo_apply_patch",
+            "task_repo_update_file",
+            "task_repo_delete_file",
+            "task_repo_commit_files"
+        )
         val AUTO_COMPLEXITY_KEYWORDS = listOf(
             "自动", "下载", "接入", "集成", "重构", "架构", "规划", "计划", "迁移",
             "批量", "排查", "调试", "分析", "审查", "搜索", "联网", "修复", "实现",
@@ -578,11 +2060,6 @@ class ChatSessionManager(
         )
     }
 
-    private data class PendingSubagentExecution(
-        val runId: String,
-        val execute: suspend () -> Unit
-    )
-
     private data class ToolHistoryPruningPlan(
         val keptIndices: Set<Int>,
         val removedMessages: List<ChatMessageUi>
@@ -590,6 +2067,10 @@ class ChatSessionManager(
 
     private val _state = MutableStateFlow(SessionState())
     val state: StateFlow<SessionState> = _state.asStateFlow()
+    private val _pendingPromptReplayNotices = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val pendingPromptReplayNotices: SharedFlow<String> = _pendingPromptReplayNotices.asSharedFlow()
+    private val _sessionLifecycleNotices = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val sessionLifecycleNotices: SharedFlow<String> = _sessionLifecycleNotices.asSharedFlow()
 
     private val conversationStore = ConversationStore(context)
     private var messageCounter = 0L
@@ -597,18 +2078,18 @@ class ChatSessionManager(
     private var currentStreamingId: Long? = null
     private var currentSessionId: String = ""
     private var lastSessionConfig: ProviderConfig = ProviderConfig()
+    private var currentTurnCheckpointCaptureState: TurnCheckpointCaptureState = TurnCheckpointCaptureState()
     private var pendingApprovalDecision: CompletableDeferred<Boolean>? = null
     private var pendingAskDecision: CompletableDeferred<List<AskAnswerUi>?>? = null
     private var processingCancelledByUser: Boolean = false
     private val approvedApprovalScopes = mutableListOf<PersistedApprovedApprovalScope>()
     private val cancelledSubagentRunIds = mutableSetOf<String>()
     private val subagentExecutionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val backgroundJobScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sessionPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val streamingAggregationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val subagentExecutionLock = Any()
-    private val runningSubagentExecutionSlots = mutableMapOf<Int, String>()
-    private val pendingSubagentExecutions = mutableListOf<PendingSubagentExecution>()
     private val maxConcurrentSubagentExecutions = 2
+    private val maxConcurrentBackgroundJobs = 2
     private val pendingStreamingLock = Any()
     private val pendingStreamingContent = StringBuilder()
     private val pendingStreamingReasoning = StringBuilder()
@@ -618,20 +2099,75 @@ class ChatSessionManager(
     private var cachedCurrentPersistedSession: PersistedSession? = null
     @Volatile
     private var pendingStreamingMessageId: Long? = null
+    private var subagentSchedulerJobs: List<BackgroundJobUi> = emptyList()
+    private val backgroundJobsManager = SessionBackgroundJobsManager(
+        scope = backgroundJobScope,
+        maxConcurrentJobs = maxConcurrentBackgroundJobs,
+        currentJobsProvider = { _state.value.backgroundJobs },
+        onJobsUpdated = { jobs ->
+            _state.value = _state.value.copy(backgroundJobs = jobs)
+        },
+        onPersistRequested = ::saveCurrentSession,
+        onJobCompleted = ::appendBackgroundJobCompletionNotice
+    )
+    private val subagentBackgroundJobsManager = SessionBackgroundJobsManager(
+        scope = subagentExecutionScope,
+        maxConcurrentJobs = maxConcurrentSubagentExecutions,
+        currentJobsProvider = { subagentSchedulerJobs },
+        onJobsUpdated = { jobs ->
+            subagentSchedulerJobs = jobs
+            refreshBackgroundExecutionState(jobs)
+        },
+        onPersistRequested = ::saveCurrentSession,
+        onJobCompleted = { completedJob ->
+            subagentSchedulerJobs = subagentSchedulerJobs.filterNot { it.jobId == completedJob.jobId }
+            refreshBackgroundExecutionState(subagentSchedulerJobs)
+        }
+    )
+    @Volatile
+    private var pendingPromptCacheShape: PromptCacheShape? = null
     @Volatile
     private var streamingFlushJob: Job? = null
 
-    private fun recordError(message: String) {
-        val record = ErrorRecordUi(message = message)
+    private fun recordError(
+        message: String,
+        kind: ErrorRecordKind = ErrorRecordKind.GENERAL
+    ) {
+        val record = applyErrorRecordedHook(
+            message = message,
+            kind = kind,
+            hookBus = hookBus
+        )
         _state.value = _state.value.copy(
             recentErrors = (listOf(record) + _state.value.recentErrors).take(30)
         )
     }
 
-    private fun recordToolCall(toolName: String, args: String, result: String? = null, isSuccess: Boolean = true) {
-        val record = ToolCallRecordUi(toolName = toolName, args = args, result = result, isSuccess = isSuccess)
+    private fun recordToolCall(
+        toolName: String,
+        args: String,
+        result: String? = null,
+        isSuccess: Boolean = true,
+        stepSignOffReceipt: StepSignOffReceipt? = null,
+        structuredPayload: ToolStructuredPayload? = null
+    ) {
+        val record = ToolCallRecordUi(
+            toolName = toolName,
+            args = args,
+            result = result,
+            isSuccess = isSuccess,
+            stepSignOffReceipt = stepSignOffReceipt,
+            structuredPayload = structuredPayload
+        )
         _state.value = _state.value.copy(
             recentToolCalls = (listOf(record) + _state.value.recentToolCalls).take(50)
+        )
+    }
+
+    private fun recordFinalReadinessAudit(audit: FinalReadinessAuditRecord) {
+        val clearedState = clearRecoveredFinalReadinessState(_state.value, audit)
+        _state.value = clearedState.copy(
+            recentFinalReadinessAudits = (listOf(audit) + clearedState.recentFinalReadinessAudits).take(20)
         )
     }
 
@@ -643,16 +2179,168 @@ class ChatSessionManager(
         explanationLabel: String? = null,
         explanationDetail: String? = null
     ) {
-        val record = ApprovalRecordUi(
+        val updated = applyApprovalResolvedHook(
             toolName = toolName,
             summary = summary,
             decision = decision,
             scopeSummary = scopeSummary,
             explanationLabel = explanationLabel,
-            explanationDetail = explanationDetail
+            explanationDetail = explanationDetail,
+            hookBus = hookBus
+        )
+        val record = ApprovalRecordUi(
+            toolName = updated.toolName,
+            summary = updated.summary,
+            decision = updated.decision,
+            scopeSummary = updated.scopeSummary,
+            explanationLabel = updated.explanationLabel,
+            explanationDetail = updated.explanationDetail
         )
         _state.value = _state.value.copy(
             recentApprovals = (listOf(record) + _state.value.recentApprovals).take(30)
+        )
+    }
+
+    private fun emitSessionLifecycleNotice(
+        notice: String,
+        source: String
+    ) {
+        val lifecycleNotice = applySessionLifecycleNoticeHook(
+            sessionId = currentSessionId,
+            notice = notice,
+            source = source,
+            hookBus = hookBus
+        )
+        emitNotification(
+            channel = "session_lifecycle",
+            message = lifecycleNotice,
+            source = source
+        )
+    }
+
+    private suspend fun connectMcpServersWithHook(
+        configs: List<McpServerConfig>,
+        trigger: String
+    ) {
+        val registry = mcpRegistry ?: return
+        try {
+            registry.connectAll(configs)
+        } finally {
+            applyMcpConnectionStatusHook(
+                trigger = trigger,
+                attemptedServerNames = configs.filter { it.enabled }.map { it.name }.sorted(),
+                statuses = registry.getServerStatuses(),
+                hookBus = hookBus
+            )
+        }
+    }
+
+    private fun emitMcpConnectionStatusSnapshot(trigger: String) {
+        val registry = mcpRegistry ?: return
+        val configs = registry.loadConfigs()
+        applyMcpConnectionStatusHook(
+            trigger = trigger,
+            attemptedServerNames = configs.filter { it.enabled }.map { it.name }.sorted(),
+            statuses = registry.getServerStatuses(),
+            hookBus = hookBus
+        )
+    }
+
+    private fun emitNotification(
+        channel: String,
+        message: String,
+        source: String
+    ) {
+        val updatedMessage = applyNotificationHook(
+            sessionId = currentSessionId,
+            channel = channel,
+            message = message,
+            source = source,
+            hookBus = hookBus
+        )
+        when (channel) {
+            "session_lifecycle" -> _sessionLifecycleNotices.tryEmit(updatedMessage)
+            "pending_prompt_replay" -> _pendingPromptReplayNotices.tryEmit(updatedMessage)
+        }
+    }
+
+    private fun emitSessionTransition(
+        sessionId: String,
+        phase: SessionTransitionPhase,
+        trigger: String,
+        counterpartSessionId: String?,
+        sessionTitle: String?,
+        projectPath: String?
+    ) {
+        if (sessionId.isBlank()) return
+        applySessionTransitionHook(
+            sessionId = sessionId,
+            phase = phase,
+            trigger = trigger,
+            counterpartSessionId = counterpartSessionId,
+            sessionTitle = sessionTitle,
+            projectPath = projectPath,
+            hookBus = hookBus
+        )
+    }
+
+    private fun appendSystemMessage(
+        content: String,
+        source: String
+    ) {
+        val messageId = nextId()
+        appendMessage(
+            ChatMessageUi(
+                id = messageId,
+                role = "system",
+                content = applySystemMessageHook(
+                    sessionId = currentSessionId,
+                    messageId = messageId,
+                    content = content,
+                    source = source,
+                    hookBus = hookBus
+                )
+            )
+        )
+    }
+
+    private fun recordCheckpointRecovery(record: CheckpointRecoveryRecordUi) {
+        _state.value = _state.value.copy(
+            recentRecoveryRecords = (listOf(record) + _state.value.recentRecoveryRecords).take(30)
+        )
+    }
+
+    private fun recordConversationPromptCheckpoint(
+        summary: String,
+        createdAt: Long = System.currentTimeMillis()
+    ) {
+        val currentState = _state.value
+        val checkpoint = ConversationCheckpointUi(
+            id = "chk-$createdAt",
+            messageIndex = currentState.messages.lastIndex,
+            createdAt = createdAt,
+            summary = summary,
+            kind = ConversationCheckpointKind.FILE_TURN,
+            scope = ConversationCheckpointScope.CONVERSATION,
+            source = ConversationCheckpointSource.TOOL_EXECUTION,
+            promptSnapshot = buildConversationCheckpointPromptSnapshot(currentState)
+        )
+        _state.value = currentState.copy(
+            checkpoints = upsertCheckpointHistory(
+                checkpoints = currentState.checkpoints,
+                checkpoint = checkpoint,
+                maxSize = MAX_CHECKPOINT_HISTORY
+            )
+        )
+    }
+
+    private fun recordClarificationPromptCheckpoint(
+        request: ClarificationRequestUi,
+        summary: String = "交互状态: 等待澄清回答"
+    ) {
+        recordConversationPromptCheckpoint(
+            summary = summary,
+            createdAt = request.createdAt
         )
     }
 
@@ -679,74 +2367,64 @@ class ChatSessionManager(
         return path?.trim()?.trimEnd('/', '\\')?.takeIf { it.isNotBlank() }
     }
 
-    private fun buildRepoScopedProjectConfig(
-        rules: List<GlobalRule>,
-        memories: List<GlobalMemory>,
-        skills: List<GlobalSkill>,
-        preferences: ProjectToolPreferences?
-    ): RepoScopedProjectConfigUi {
-        return RepoScopedProjectConfigUi(
-            projectRules = rules,
-            projectMemories = memories,
-            projectSkills = skills,
-            projectToolPreferences = preferences
+    private fun SessionState.matchesActiveProjectConfig(
+        activeProjectScope: ActiveProjectScopeResolution
+    ): Boolean {
+        return activeProjectScopePath == activeProjectScope.activeScopePath &&
+            projectRules == activeProjectScope.activeProjectConfig.projectRules &&
+            projectMemories == activeProjectScope.activeProjectConfig.projectMemories &&
+            projectSkills == activeProjectScope.activeProjectConfig.projectSkills &&
+            projectToolPreferences == activeProjectScope.activeProjectConfig.projectToolPreferences
+    }
+
+    private fun SessionState.copyWithProjectConfig(
+        activeProjectScopePath: String?,
+        projectConfig: SessionProjectConfig,
+        repoScopedConfigs: Map<String, SessionProjectConfig> = this.repoScopedProjectConfigMap()
+    ): SessionState {
+        return copy(
+            activeProjectScopePath = activeProjectScopePath,
+            projectRules = projectConfig.projectRules,
+            projectMemories = projectConfig.projectMemories,
+            projectSkills = projectConfig.projectSkills,
+            projectToolPreferences = projectConfig.projectToolPreferences,
+            repoScopedConfigs = repoScopedConfigs
         )
     }
 
-    private fun normalizeRepoScopedConfigs(
-        configs: Map<String, RepoScopedProjectConfigUi>
-    ): Map<String, RepoScopedProjectConfigUi> {
-        return configs.entries
-            .mapNotNull { (path, config) ->
-                normalizeProjectPath(path)?.let { normalizedPath ->
-                    normalizedPath to config
-                }
-            }
-            .associate { it }
+    private fun SessionState.copyWithRepoScopedProjectConfigs(
+        repoScopedConfigs: Map<String, SessionProjectConfig>
+    ): SessionState {
+        return copy(repoScopedConfigs = repoScopedConfigs)
     }
 
-    private fun restoreRepoScopedConfigs(session: PersistedSession): Map<String, RepoScopedProjectConfigUi> {
-        val restored = session.repoScopedConfigs.entries
-            .mapNotNull { (path, config) ->
-                normalizeProjectPath(path)?.let { normalizedPath ->
-                    normalizedPath to RepoScopedProjectConfigUi(
-                        projectRules = config.projectRules,
-                        projectMemories = config.projectMemories,
-                        projectSkills = config.projectSkills,
-                        projectToolPreferences = config.projectToolPreferences
-                    )
-                }
-            }
-            .associate { it }
-            .toMutableMap()
-        val legacyScope = normalizeProjectPath(session.projectPath)
-        if (legacyScope != null && restored[legacyScope] == null) {
-            restored[legacyScope] = buildRepoScopedProjectConfig(
-                rules = session.projectRules,
-                memories = session.projectMemories,
-                skills = session.projectSkills,
-                preferences = session.projectToolPreferences
-            )
-        }
-        return restored
+    private fun SessionState.repoScopedProjectConfigMap(): Map<String, SessionProjectConfig> {
+        return repoScopedConfigs
     }
 
-    private fun resolveRepoScopedProjectConfig(
-        scopePath: String?,
-        repoScopedConfigs: Map<String, RepoScopedProjectConfigUi>,
-        fallbackRules: List<GlobalRule>,
-        fallbackMemories: List<GlobalMemory>,
-        fallbackSkills: List<GlobalSkill>,
-        fallbackPreferences: ProjectToolPreferences?
-    ): RepoScopedProjectConfigUi {
-        val normalizedScope = normalizeProjectPath(scopePath)
-        return normalizedScope?.let(repoScopedConfigs::get)
-            ?: buildRepoScopedProjectConfig(
-                rules = fallbackRules,
-                memories = fallbackMemories,
-                skills = fallbackSkills,
-                preferences = fallbackPreferences
-            )
+    private fun SessionState.normalizedRepoScopedProjectConfigMap(): Map<String, SessionProjectConfig> {
+        return normalizeSessionProjectConfigs(
+            configs = repoScopedConfigs,
+            normalizePath = ::normalizeProjectPath
+        )
+    }
+
+    private fun SessionState.copyWithRestoredProjectConfig(
+        restoredProjectConfig: RestoredProjectConfigSnapshot
+    ): SessionState {
+        return copyWithProjectConfig(
+            activeProjectScopePath = restoredProjectConfig.activeProjectScope.activeScopePath,
+            projectConfig = restoredProjectConfig.activeProjectScope.activeProjectConfig,
+            repoScopedConfigs = restoredProjectConfig.repoScopedConfigs
+        )
+    }
+
+    private fun SessionState.resolveProjectConfig(scopePath: String?): SessionProjectConfig {
+        return resolveProjectScopeConfig(
+            scopePath = normalizeProjectPath(scopePath),
+            repoScopedConfigs = repoScopedProjectConfigMap(),
+            fallbackProjectConfig = toSessionProjectConfig()
+        )
     }
 
     private fun activeProjectScopePath(
@@ -786,6 +2464,7 @@ class ChatSessionManager(
                     "subagent:cap:file_write_general" -> add("subagent:cap:file_write_general")
                     "subagent:cap:file_write_code" -> add("subagent:cap:file_write_code")
                     "subagent:cap:code_edit", "subagent:cap:code_edit_apply" -> add("subagent:cap:code_edit_apply")
+                    "subagent:cap:task_repo_write" -> add("subagent:cap:task_repo_write")
                     "subagent:cap:shell", "subagent:cap:shell_exec" -> add("subagent:cap:shell_exec")
                 }
             }
@@ -796,6 +2475,7 @@ class ChatSessionManager(
         "subagent:cap:file_write_general" -> "通用文件写入"
         "subagent:cap:file_write_code" -> "代码文件写入"
         "subagent:cap:code_edit_apply" -> "代码编辑"
+        "subagent:cap:task_repo_write" -> "远端任务仓库写入"
         "subagent:cap:shell_exec" -> "Shell 执行"
         "mcp:github:write" -> "GitHub 写操作"
         else -> null
@@ -816,6 +2496,11 @@ class ChatSessionManager(
             label = "可自动继承",
             detail = "代码编辑类授权在同项目下可按保守边界自动继承。",
             autoInheritable = true
+        )
+        "subagent:cap:task_repo_write" -> ApprovalScopePolicyUi(
+            label = "需手动导入",
+            detail = "远端任务仓库写入会修改 GitHub 任务仓库内容，默认需要单独确认，不自动继承。",
+            autoInheritable = false
         )
         "mcp:github:write" -> ApprovalScopePolicyUi(
             label = "需手动导入",
@@ -1357,34 +3042,59 @@ class ChatSessionManager(
         clearApprovedApprovalScopes()
         _state.value = _state.value.copy(sessionId = currentSessionId)
         syncApprovedApprovalScopesState()
+        emitSessionTransition(
+            sessionId = currentSessionId,
+            phase = SessionTransitionPhase.STARTED,
+            trigger = "init_session",
+            counterpartSessionId = null,
+            sessionTitle = _state.value.sessionTitle,
+            projectPath = _state.value.projectPath
+        )
     }
 
     /**
      * 加载已有会话
      */
     fun loadSession(sessionId: String): Boolean {
+        if (!ensureSessionLifecycleAllowed(SessionLifecycleAction.LOAD_SESSION)) return false
         val session = conversationStore.loadSession(sessionId) ?: return false
-        val restoredRepoScopedConfigs = restoreRepoScopedConfigs(session)
+        val previousState = _state.value
+        val previousSessionId = currentSessionId
+        val restoredProjectSeed = session.toPersistedSessionProjectConfigSeed()
         val resolvedScopePath = activeProjectScopePath(
             activeScopePath = session.activeProjectScopePath,
             projectPath = session.projectPath
         )
-        val activeRepoConfig = resolveRepoScopedProjectConfig(
-            scopePath = resolvedScopePath,
-            repoScopedConfigs = restoredRepoScopedConfigs,
-            fallbackRules = session.projectRules,
-            fallbackMemories = session.projectMemories,
-            fallbackSkills = session.projectSkills,
-            fallbackPreferences = session.projectToolPreferences
+        val restoredProjectConfig = restorePersistedProjectConfig(
+            workspaceScopePath = normalizeProjectPath(session.projectPath),
+            activeScopePath = resolvedScopePath,
+            legacyProjectConfig = restoredProjectSeed.legacyProjectConfig,
+            repoScopedConfigs = restoredProjectSeed.repoScopedConfigs
         )
         val restoredCompressionSnapshots = conversationStore.restoreCompressionSnapshots(
             snapshots = session.compressionSnapshots,
             fallbackSnapshot = session.compressionSnapshot
         )
+        val restoredAt = System.currentTimeMillis()
+        val restoredSubagentRuns = conversationStore.restoreSubagentRuns(session.subagentRuns)
+            .map { run -> normalizeRestoredSubagentRun(run, restoredAt) }
+        val restoredSubagentBatches = conversationStore.restoreSubagentBatches(session.subagentBatches)
+            .map { batch -> normalizeRestoredSubagentBatch(batch, restoredAt) }
+        val restoredBackgroundJobs = conversationStore.restoreBackgroundJobs(session.backgroundJobs)
+            .map { job -> normalizeRestoredBackgroundJob(job, restoredAt) }
+        val interruptedSubagentRunIds = restoredSubagentRuns
+            .filter { run ->
+                run.status == "cancelled" &&
+                    run.statusMessage == RESTORED_SUBAGENT_INTERRUPTED_MESSAGE
+            }
+            .map { it.runId }
         val currentCompressionSnapshot = restoredCompressionSnapshots
             .lastOrNull { it.active }
             ?: restoredCompressionSnapshots.lastOrNull()
         resetPendingStreamingUpdates()
+        subagentSchedulerJobs = emptyList()
+        pendingApprovalDecision = null
+        pendingAskDecision = null
         currentSessionId = session.id
         cachedCurrentPersistedSession = session
         restoreApprovedApprovalScopes(
@@ -1394,10 +3104,11 @@ class ChatSessionManager(
             )
         )
         messageCounter = session.messages.maxOfOrNull { it.id } ?: 0
-        _state.value = SessionState(
+        val restoredState = SessionState(
             messages = conversationStore.restoreMessages(session.messages),
-            subagentRuns = conversationStore.restoreSubagentRuns(session.subagentRuns),
-            subagentBatches = conversationStore.restoreSubagentBatches(session.subagentBatches),
+            subagentRuns = restoredSubagentRuns,
+            subagentBatches = restoredSubagentBatches,
+            backgroundJobs = restoredBackgroundJobs,
             sessionId = session.id,
             sessionTitle = session.title,
             sessionGoal = session.sessionGoal,
@@ -1406,10 +3117,6 @@ class ChatSessionManager(
             remoteTaskRepositoryName = session.remoteTaskRepositoryName,
             remoteTaskRepositoryLabel = session.remoteTaskRepositoryLabel,
             remoteTaskRepositoryEditable = session.remoteTaskRepositoryEditable,
-            activeProjectScopePath = resolvedScopePath,
-            projectRules = activeRepoConfig.projectRules,
-            projectMemories = activeRepoConfig.projectMemories,
-            projectSkills = activeRepoConfig.projectSkills,
             projectKnowledgePaths = session.projectKnowledgePaths,
             projectKnowledgeSnapshots = session.projectKnowledgeSnapshots.map { snapshot ->
                 ProjectKnowledgeSnapshotUi(
@@ -1421,8 +3128,6 @@ class ChatSessionManager(
                     lastAppliedAt = snapshot.lastAppliedAt
                 )
             },
-            projectToolPreferences = activeRepoConfig.projectToolPreferences,
-            repoScopedConfigs = restoredRepoScopedConfigs,
             usageSummary = session.usageSummary,
             compressionSnapshot = currentCompressionSnapshot,
             compressionSnapshots = restoredCompressionSnapshots,
@@ -1430,62 +3135,31 @@ class ChatSessionManager(
             fileChanges = conversationStore.restoreFileChanges(session.fileChanges),
             recentErrors = conversationStore.restoreErrorRecords(session.recentErrors),
             recentToolCalls = conversationStore.restoreToolCallRecords(session.recentToolCalls),
+            recentMemoryUpdateSuggestions = conversationStore.restoreMemoryUpdateSuggestions(
+                session.recentMemoryUpdateSuggestions
+            ),
+            recentFinalReadinessAudits = conversationStore.restoreFinalReadinessAuditRecords(
+                session.recentFinalReadinessAudits
+            ),
             recentApprovals = conversationStore.restoreApprovalRecords(session.recentApprovals),
+            recentRecoveryRecords = conversationStore.restoreCheckpointRecoveryRecords(
+                session.recentRecoveryRecords
+            ),
             recentApprovalInvalidations = conversationStore.restoreApprovalInvalidationRecords(
                 session.recentApprovalInvalidations
             ),
             approvedApprovalScopes = approvedApprovalScopes
                 .map(::buildApprovedApprovalScopeUi)
                 .sortedBy { it.capabilities.size },
-            pendingWorkflowPlan = session.pendingWorkflowPlan?.let { persisted ->
-                normalizeWorkflowPlan(
-                    WorkflowPlanUi(
-                        id = persisted.id,
-                        goal = persisted.goal,
-                        summary = persisted.summary,
-                        steps = persisted.steps,
-                        stageLabels = persisted.stageLabels,
-                        currentStageIndex = persisted.currentStageIndex,
-                        currentStepIndex = persisted.currentStepIndex,
-                        nextStepHint = persisted.nextStepHint,
-                        status = persisted.status.toWorkflowPlanStatusUi(),
-                        mentionedFiles = persisted.mentionedFiles.map { mention ->
-                            FileMentionUi(
-                                path = mention.path,
-                                displayPath = mention.displayPath,
-                                inlineContent = mention.inlineContent
-                            )
-                        },
-                        rawPlan = persisted.rawPlan,
-                        createdAt = persisted.createdAt
-                    )
-                )
-            },
-            pendingClarificationRequest = session.pendingClarificationRequest?.let { persisted ->
-                ClarificationRequestUi(
-                    id = persisted.id,
-                    goal = persisted.goal,
-                    question = persisted.question,
-                    mentionedFiles = persisted.mentionedFiles.map { mention ->
-                        FileMentionUi(
-                            path = mention.path,
-                            displayPath = mention.displayPath,
-                            inlineContent = mention.inlineContent
-                        )
-                    },
-                    previousAnswers = persisted.previousAnswers.map { answer ->
-                        ClarificationAnswerUi(
-                            question = answer.question,
-                            answer = answer.answer,
-                            answeredAt = answer.answeredAt
-                        )
-                    },
-                    turnIndex = persisted.turnIndex,
-                    maxTurns = persisted.maxTurns,
-                    source = persisted.source.toClarificationSource(),
-                    createdAt = persisted.createdAt
-                )
-            },
+            pendingApproval = conversationStore.restorePendingApproval(session.pendingApproval),
+            pendingAskRequest = conversationStore.restorePendingAskRequest(session.pendingAskRequest),
+            pendingWorkflowPlan = conversationStore.restoreWorkflowPlan(session.pendingWorkflowPlan)
+                ?.let(::normalizeWorkflowPlan),
+            canonicalWorkflowPlan = conversationStore.restoreWorkflowPlan(session.canonicalWorkflowPlan)
+                ?.let(::normalizeWorkflowPlan),
+            pendingClarificationRequest = conversationStore.restoreClarificationRequest(
+                session.pendingClarificationRequest
+            ),
             lastAutoRouteDecision = session.lastAutoRouteDecision?.let { persisted ->
                 AutoRouteDecisionUi(
                     action = when (persisted.action.uppercase()) {
@@ -1502,9 +3176,68 @@ class ChatSessionManager(
                     message = persisted.message,
                     createdAt = persisted.createdAt
                 )
-            }
+            },
+            lastFinalReadinessReceipt = conversationStore.restoreFinalReadinessReceipt(
+                session.lastFinalReadinessReceipt
+            )
+        ).copyWithRestoredProjectConfig(restoredProjectConfig)
+        _state.value = applyParallelBatchWorkflowProgressTransition(
+            normalizeRestoredTurnOrchestratorState(
+                normalizeRecoveredFinalReadinessState(restoredState)
+            )
         )
+        val restoredRecentSessionHistoryClue = _state.value.recentSessionHistoryClue
+        _state.value = _state.value.copy(
+            pendingApproval = markPendingApprovalReplayOnly(
+                pending = _state.value.pendingApproval,
+                recentSessionHistoryClue = restoredRecentSessionHistoryClue
+            ),
+            pendingAskRequest = markPendingAskReplayOnly(
+                request = _state.value.pendingAskRequest,
+                recentSessionHistoryClue = restoredRecentSessionHistoryClue
+            )
+        )
+        interruptedSubagentRunIds.forEach { runId ->
+            updateSubagentMessage(runId, "子代理因会话恢复已中断")
+        }
+        restoredSubagentBatches
+            .map { it.batchId }
+            .distinct()
+            .forEach(::refreshSubagentBatchState)
         syncApprovedApprovalScopesState()
+        if (previousSessionId != session.id) {
+            emitSessionTransition(
+                sessionId = previousSessionId,
+                phase = SessionTransitionPhase.STOPPED,
+                trigger = "load_session",
+                counterpartSessionId = session.id,
+                sessionTitle = previousState.sessionTitle,
+                projectPath = previousState.projectPath
+            )
+            emitSessionTransition(
+                sessionId = session.id,
+                phase = SessionTransitionPhase.STARTED,
+                trigger = "load_session",
+                counterpartSessionId = previousSessionId,
+                sessionTitle = _state.value.sessionTitle,
+                projectPath = _state.value.projectPath
+            )
+        }
+        return true
+    }
+
+    fun replayPendingPrompts(): Boolean {
+        val state = _state.value
+        val hasReplayOnlyPrompt =
+            state.pendingApproval?.isReplayOnly == true ||
+                state.pendingAskRequest?.isReplayOnly == true
+        if (!hasReplayOnlyPrompt) return false
+        val notice = buildSessionRestoreReplayNotice(state) ?: return false
+        emitNotification(
+            channel = "pending_prompt_replay",
+            message = notice,
+            source = "session_restore_replay"
+        )
         return true
     }
 
@@ -1512,32 +3245,29 @@ class ChatSessionManager(
      * 新建会话
      */
     fun newSession() {
-        // 先保存当前会话
-        saveCurrentSession()
-        resetPendingStreamingUpdates()
-        currentSessionId = UUID.randomUUID().toString().take(8)
-        cachedCurrentPersistedSession = null
-        clearApprovedApprovalScopes()
-        messageCounter = 0
-        _state.value = SessionState(sessionId = currentSessionId)
-        syncApprovedApprovalScopesState()
+        if (!ensureSessionLifecycleAllowed(SessionLifecycleAction.NEW_SESSION)) return
+        replaceCurrentSessionWithBlank(
+            savePrevious = true,
+            trigger = "new_session"
+        )
     }
 
     fun startTask(projectPath: String) {
+        if (!ensureSessionLifecycleAllowed(SessionLifecycleAction.START_TASK)) return
+        val previousState = _state.value
+        val previousSessionId = currentSessionId
         val normalizedPath = projectPath.trim().removeSuffix("/")
         val inheritedProjectSession = findLatestProjectSession(normalizedPath)
-        val inheritedRepoScopedConfigs = inheritedProjectSession?.let(::restoreRepoScopedConfigs).orEmpty()
+        val inheritedProjectSeed = inheritedProjectSession?.toPersistedSessionProjectConfigSeed()
         val resolvedScopePath = activeProjectScopePath(
             activeScopePath = inheritedProjectSession?.activeProjectScopePath,
             projectPath = normalizedPath
         )
-        val activeRepoConfig = resolveRepoScopedProjectConfig(
-            scopePath = resolvedScopePath,
-            repoScopedConfigs = inheritedRepoScopedConfigs,
-            fallbackRules = inheritedProjectSession?.projectRules.orEmpty(),
-            fallbackMemories = inheritedProjectSession?.projectMemories.orEmpty(),
-            fallbackSkills = inheritedProjectSession?.projectSkills.orEmpty(),
-            fallbackPreferences = inheritedProjectSession?.projectToolPreferences
+        val restoredProjectConfig = restorePersistedProjectConfig(
+            workspaceScopePath = normalizeProjectPath(normalizedPath),
+            activeScopePath = resolvedScopePath,
+            legacyProjectConfig = inheritedProjectSeed?.legacyProjectConfig ?: buildSessionProjectConfig(),
+            repoScopedConfigs = inheritedProjectSeed?.repoScopedConfigs.orEmpty()
         )
         saveCurrentSession()
         currentSessionId = UUID.randomUUID().toString().take(8)
@@ -1548,10 +3278,6 @@ class ChatSessionManager(
             sessionId = currentSessionId,
             sessionTitle = buildTaskTitle(normalizedPath),
             projectPath = normalizedPath,
-            activeProjectScopePath = resolvedScopePath,
-            projectRules = activeRepoConfig.projectRules,
-            projectMemories = activeRepoConfig.projectMemories,
-            projectSkills = activeRepoConfig.projectSkills,
             projectKnowledgePaths = inheritedProjectSession?.projectKnowledgePaths.orEmpty(),
             projectKnowledgeSnapshots = inheritedProjectSession?.projectKnowledgeSnapshots.orEmpty().map { snapshot ->
                 ProjectKnowledgeSnapshotUi(
@@ -1562,29 +3288,41 @@ class ChatSessionManager(
                     updatedAt = snapshot.updatedAt,
                     lastAppliedAt = snapshot.lastAppliedAt
                 )
-            },
-            projectToolPreferences = activeRepoConfig.projectToolPreferences,
-            repoScopedConfigs = inheritedRepoScopedConfigs
-        )
+            }
+        ).copyWithRestoredProjectConfig(restoredProjectConfig)
         syncApprovedApprovalScopesState()
+        emitSessionTransition(
+            sessionId = previousSessionId,
+            phase = SessionTransitionPhase.STOPPED,
+            trigger = "start_task",
+            counterpartSessionId = currentSessionId,
+            sessionTitle = previousState.sessionTitle,
+            projectPath = previousState.projectPath
+        )
+        emitSessionTransition(
+            sessionId = currentSessionId,
+            phase = SessionTransitionPhase.STARTED,
+            trigger = "start_task",
+            counterpartSessionId = previousSessionId,
+            sessionTitle = _state.value.sessionTitle,
+            projectPath = _state.value.projectPath
+        )
     }
 
     fun updateCurrentTask(projectPath: String) {
         val normalizedPath = projectPath.trim().removeSuffix("/")
         if (normalizedPath.isBlank()) return
         val inheritedProjectSession = findLatestProjectSession(normalizedPath)
-        val inheritedRepoScopedConfigs = inheritedProjectSession?.let(::restoreRepoScopedConfigs).orEmpty()
+        val inheritedProjectSeed = inheritedProjectSession?.toPersistedSessionProjectConfigSeed()
         val resolvedScopePath = activeProjectScopePath(
             activeScopePath = inheritedProjectSession?.activeProjectScopePath,
             projectPath = normalizedPath
         )
-        val activeRepoConfig = resolveRepoScopedProjectConfig(
-            scopePath = resolvedScopePath,
-            repoScopedConfigs = inheritedRepoScopedConfigs,
-            fallbackRules = inheritedProjectSession?.projectRules.orEmpty(),
-            fallbackMemories = inheritedProjectSession?.projectMemories.orEmpty(),
-            fallbackSkills = inheritedProjectSession?.projectSkills.orEmpty(),
-            fallbackPreferences = inheritedProjectSession?.projectToolPreferences
+        val restoredProjectConfig = restorePersistedProjectConfig(
+            workspaceScopePath = normalizeProjectPath(normalizedPath),
+            activeScopePath = resolvedScopePath,
+            legacyProjectConfig = inheritedProjectSeed?.legacyProjectConfig ?: buildSessionProjectConfig(),
+            repoScopedConfigs = inheritedProjectSeed?.repoScopedConfigs.orEmpty()
         )
         val current = _state.value
         val previousAutoTitle = current.projectPath?.let(::buildTaskTitle)
@@ -1595,10 +3333,6 @@ class ChatSessionManager(
         _state.value = _state.value.copy(
             sessionTitle = if (shouldUpdateTitle) buildTaskTitle(normalizedPath) else current.sessionTitle,
             projectPath = normalizedPath,
-            activeProjectScopePath = resolvedScopePath,
-            projectRules = activeRepoConfig.projectRules,
-            projectMemories = activeRepoConfig.projectMemories,
-            projectSkills = activeRepoConfig.projectSkills,
             projectKnowledgePaths = inheritedProjectSession?.projectKnowledgePaths.orEmpty(),
             projectKnowledgeSnapshots = inheritedProjectSession?.projectKnowledgeSnapshots.orEmpty().map { snapshot ->
                 ProjectKnowledgeSnapshotUi(
@@ -1609,10 +3343,8 @@ class ChatSessionManager(
                     updatedAt = snapshot.updatedAt,
                     lastAppliedAt = snapshot.lastAppliedAt
                 )
-            },
-            projectToolPreferences = activeRepoConfig.projectToolPreferences,
-            repoScopedConfigs = inheritedRepoScopedConfigs
-        )
+            }
+        ).copyWithRestoredProjectConfig(restoredProjectConfig)
         saveCurrentSession()
         syncApprovedApprovalScopesState()
     }
@@ -1669,29 +3401,17 @@ class ChatSessionManager(
             activeScopePath = scopePath,
             projectPath = current.projectPath
         )
-        val activeRepoConfig = resolveRepoScopedProjectConfig(
-            scopePath = resolvedScopePath,
-            repoScopedConfigs = current.repoScopedConfigs,
-            fallbackRules = current.projectRules,
-            fallbackMemories = current.projectMemories,
-            fallbackSkills = current.projectSkills,
-            fallbackPreferences = current.projectToolPreferences
+        val activeProjectScope = resolveActiveProjectScope(
+            activeScopePath = resolvedScopePath,
+            repoScopedConfigs = current.repoScopedProjectConfigMap(),
+            fallbackProjectConfig = current.toSessionProjectConfig()
         )
-        if (
-            current.activeProjectScopePath == resolvedScopePath &&
-            current.projectRules == activeRepoConfig.projectRules &&
-            current.projectMemories == activeRepoConfig.projectMemories &&
-            current.projectSkills == activeRepoConfig.projectSkills &&
-            current.projectToolPreferences == activeRepoConfig.projectToolPreferences
-        ) {
+        if (current.matchesActiveProjectConfig(activeProjectScope)) {
             return
         }
-        _state.value = current.copy(
-            activeProjectScopePath = resolvedScopePath,
-            projectRules = activeRepoConfig.projectRules,
-            projectMemories = activeRepoConfig.projectMemories,
-            projectSkills = activeRepoConfig.projectSkills,
-            projectToolPreferences = activeRepoConfig.projectToolPreferences
+        _state.value = current.copyWithProjectConfig(
+            activeProjectScopePath = activeProjectScope.activeScopePath,
+            projectConfig = activeProjectScope.activeProjectConfig
         )
         saveCurrentSession()
     }
@@ -1701,16 +3421,116 @@ class ChatSessionManager(
      */
     fun listSessions(): List<SessionSummary> = conversationStore.listSessions()
 
+    fun listArchivedSessions(): List<ArchivedSessionSummary> = conversationStore.listArchivedSessions()
+
+    fun loadArchivedSessionSummary(sessionId: String): ArchivedSessionSummary? =
+        conversationStore.loadArchivedSessionSummary(sessionId)
+
+    fun listArchivedMemoryCandidates(limit: Int = 20): List<ArchivedMemoryCandidate> =
+        conversationStore.listArchivedMemoryCandidates(limit)
+
+    fun dismissArchivedMemoryCandidate(
+        sessionId: String,
+        reason: String? = null
+    ): ArchivedMemoryCandidateMutationResult {
+        val resolutionSummary = reason?.trim()?.takeIf { it.isNotBlank() } ?: "已关闭归档记忆候选。"
+        if (!conversationStore.markArchivedMemoryCandidateDismissed(
+                sessionId,
+                dismissedReason = reason,
+                resolutionSummary = resolutionSummary
+            )
+        ) {
+            return ArchivedMemoryCandidateMutationResult(
+                success = false,
+                message = "未找到待关闭的归档记忆候选。"
+            )
+        }
+        return ArchivedMemoryCandidateMutationResult(
+            success = true,
+            message = "已关闭归档记忆候选。",
+            status = ArchivedMemoryCandidateStatus.DISMISSED,
+            resolutionSource = ArchivedMemoryCandidateResolutionSource.USER_ACTION,
+            resolutionSummary = resolutionSummary
+        )
+    }
+
+    fun consumeArchivedMemoryCandidate(
+        sessionId: String,
+        reason: String? = null
+    ): ArchivedMemoryCandidateMutationResult {
+        val resolutionSummary = reason?.trim()?.takeIf { it.isNotBlank() } ?: "已将归档记忆候选标记为已处理。"
+        if (!conversationStore.markArchivedMemoryCandidateConsumed(
+                sessionId,
+                consumedReason = reason,
+                resolutionSummary = resolutionSummary
+            )
+        ) {
+            return ArchivedMemoryCandidateMutationResult(
+                success = false,
+                message = "未找到待处理的归档记忆候选。"
+            )
+        }
+        return ArchivedMemoryCandidateMutationResult(
+            success = true,
+            message = "已将归档记忆候选标记为已处理。",
+            status = ArchivedMemoryCandidateStatus.CONSUMED,
+            resolutionSource = ArchivedMemoryCandidateResolutionSource.USER_ACTION,
+            resolutionSummary = resolutionSummary
+        )
+    }
+
+    suspend fun acceptArchivedMemoryCandidate(
+        sessionId: String,
+        scope: ArchivedMemoryCandidateScope? = null
+    ): ArchivedMemoryCandidateMutationResult {
+        val candidate = conversationStore.loadArchivedMemoryCandidate(sessionId)
+            ?: return ArchivedMemoryCandidateMutationResult(
+                success = false,
+                message = "未找到待接受的归档记忆候选。"
+            )
+        return when (scope ?: candidate.suggestedScope) {
+            ArchivedMemoryCandidateScope.PROJECT ->
+                acceptArchivedMemoryCandidateAsProjectMemory(candidate)
+            ArchivedMemoryCandidateScope.GLOBAL ->
+                acceptArchivedMemoryCandidateAsGlobalMemory(candidate)
+        }
+    }
+
     /**
      * 删除会话
      */
-    fun deleteSession(sessionId: String) {
+    fun deleteSession(sessionId: String): Boolean {
+        if (!ensureSessionLifecycleAllowed(SessionLifecycleAction.DELETE_SESSION)) return false
+        val stateBeforeDeletion = _state.value
+        val deletingCurrentSession = sessionId == currentSessionId
+        if (deletingCurrentSession) {
+            latestPersistJob?.cancel()
+            latestPersistJob = null
+        }
         conversationStore.deleteSession(sessionId)
-        if (sessionId == currentSessionId) {
-            newSession()
+        if (cachedCurrentPersistedSession?.id == sessionId) {
+            cachedCurrentPersistedSession = null
+        }
+        if (deletingCurrentSession) {
+            replaceCurrentSessionWithBlank(
+                savePrevious = false,
+                trigger = "delete_current_session"
+            )
         } else {
             syncApprovedApprovalScopesState()
         }
+        emitSessionLifecycleNotice(
+            notice = buildSessionDeletionNotice(
+                deletedCurrentSession = deletingCurrentSession,
+                recentSessionHistoryClue = stateBeforeDeletion.recentSessionHistoryClue
+            ),
+            source = if (deletingCurrentSession) {
+                "delete-current-session"
+            } else {
+                "delete-background-session"
+            }
+        )
+        return true
     }
 
     fun updateProjectConfig(
@@ -1722,33 +3542,189 @@ class ChatSessionManager(
         val current = _state.value
         val normalizedScope = normalizeProjectPath(scopePath)
         val workspaceScope = normalizeProjectPath(current.projectPath)
-        val updatedRepoScopedConfigs = if (normalizedScope != null) {
-            val currentScopedConfig = resolveRepoScopedProjectConfig(
-                scopePath = normalizedScope,
-                repoScopedConfigs = current.repoScopedConfigs,
-                fallbackRules = current.projectRules,
-                fallbackMemories = current.projectMemories,
-                fallbackSkills = current.projectSkills,
-                fallbackPreferences = current.projectToolPreferences
+        val updateResult = applyProjectConfigUpdate(
+            scopePath = normalizedScope,
+            workspaceScopePath = workspaceScope,
+            currentProjectConfig = current.toSessionProjectConfig(),
+            repoScopedConfigs = current.repoScopedProjectConfigMap()
+        ) { projectConfig ->
+            projectConfig.copy(
+                projectRules = rules ?: projectConfig.projectRules,
+                projectMemories = memories ?: projectConfig.projectMemories,
+                projectSkills = skills ?: projectConfig.projectSkills
             )
-            current.repoScopedConfigs + (
-                normalizedScope to currentScopedConfig.copy(
-                    projectRules = rules ?: currentScopedConfig.projectRules,
-                    projectMemories = memories ?: currentScopedConfig.projectMemories,
-                    projectSkills = skills ?: currentScopedConfig.projectSkills
-                )
-            )
-        } else {
-            current.repoScopedConfigs
         }
-        val shouldUpdateLegacyFields = normalizedScope == null || normalizedScope == workspaceScope
         _state.value = current.copy(
-            projectRules = if (shouldUpdateLegacyFields) (rules ?: current.projectRules) else current.projectRules,
-            projectMemories = if (shouldUpdateLegacyFields) (memories ?: current.projectMemories) else current.projectMemories,
-            projectSkills = if (shouldUpdateLegacyFields) (skills ?: current.projectSkills) else current.projectSkills,
-            repoScopedConfigs = updatedRepoScopedConfigs
-        )
+            projectRules = updateResult.activeProjectConfig.projectRules,
+            projectMemories = updateResult.activeProjectConfig.projectMemories,
+            projectSkills = updateResult.activeProjectConfig.projectSkills
+        ).copyWithRepoScopedProjectConfigs(updateResult.repoScopedConfigs)
         saveCurrentSession()
+    }
+
+    private suspend fun acceptArchivedMemoryCandidateAsGlobalMemory(
+        candidate: ArchivedMemoryCandidate
+    ): ArchivedMemoryCandidateMutationResult {
+        return runCatching {
+            val config = configRepository.getConfig()
+            val existingMemory = findMatchingMemory(
+                memories = config.globalMemories,
+                candidate = candidate
+            )
+            val targetMemory = existingMemory ?: GlobalMemory(
+                id = UUID.randomUUID().toString().take(8),
+                title = candidate.suggestedTitle,
+                content = candidate.suggestedContent
+            )
+            if (existingMemory == null) {
+                configRepository.saveConfig(
+                    config.copy(globalMemories = config.globalMemories + targetMemory)
+                )
+            }
+            val resolution = buildArchivedMemoryCandidateAcceptanceResolution(
+                scope = ArchivedMemoryCandidateScope.GLOBAL,
+                deduplicated = existingMemory != null
+            )
+            if (!conversationStore.markArchivedMemoryCandidateAccepted(
+                    sessionId = candidate.sourceSessionId,
+                    scope = ArchivedMemoryCandidateScope.GLOBAL,
+                    memoryId = targetMemory.id,
+                    resolutionSource = resolution.source,
+                    resolutionSummary = resolution.summary
+                )
+            ) {
+                return ArchivedMemoryCandidateMutationResult(
+                    success = false,
+                    message = "已写入全局记忆，但归档候选接受状态回写失败。",
+                    status = ArchivedMemoryCandidateStatus.ACCEPTED,
+                    resolutionSource = resolution.source,
+                    resolutionSummary = resolution.summary,
+                    scope = ArchivedMemoryCandidateScope.GLOBAL,
+                    memoryId = targetMemory.id,
+                    deduplicated = existingMemory != null
+                )
+            }
+            ArchivedMemoryCandidateMutationResult(
+                success = true,
+                message = resolution.summary,
+                status = ArchivedMemoryCandidateStatus.ACCEPTED,
+                resolutionSource = resolution.source,
+                resolutionSummary = resolution.summary,
+                scope = ArchivedMemoryCandidateScope.GLOBAL,
+                memoryId = targetMemory.id,
+                deduplicated = existingMemory != null
+            )
+        }.getOrElse { error ->
+            ArchivedMemoryCandidateMutationResult(
+                success = false,
+                message = "接受归档候选为全局记忆失败: ${error.message}"
+            )
+        }
+    }
+
+    private fun acceptArchivedMemoryCandidateAsProjectMemory(
+        candidate: ArchivedMemoryCandidate
+    ): ArchivedMemoryCandidateMutationResult {
+        return runCatching {
+            val targetScopePath = normalizeProjectPath(candidate.sourceProjectPath)
+                ?: activeProjectScopePath(
+                    activeScopePath = _state.value.activeProjectScopePath,
+                    projectPath = _state.value.projectPath
+                )
+                ?: return ArchivedMemoryCandidateMutationResult(
+                    success = false,
+                    message = "该归档候选缺少项目作用域，无法保存为项目记忆。"
+                )
+            val current = _state.value
+            val scopedConfig = current.resolveProjectConfig(targetScopePath)
+            val existingMemory = findMatchingMemory(
+                memories = scopedConfig.projectMemories,
+                candidate = candidate
+            )
+            val targetMemory = existingMemory ?: GlobalMemory(
+                id = UUID.randomUUID().toString().take(8),
+                title = candidate.suggestedTitle,
+                content = candidate.suggestedContent
+            )
+            if (existingMemory == null) {
+                updateProjectConfig(
+                    scopePath = targetScopePath,
+                    memories = scopedConfig.projectMemories + targetMemory
+                )
+            }
+            val resolution = buildArchivedMemoryCandidateAcceptanceResolution(
+                scope = ArchivedMemoryCandidateScope.PROJECT,
+                deduplicated = existingMemory != null
+            )
+            if (!conversationStore.markArchivedMemoryCandidateAccepted(
+                    sessionId = candidate.sourceSessionId,
+                    scope = ArchivedMemoryCandidateScope.PROJECT,
+                    memoryId = targetMemory.id,
+                    resolutionSource = resolution.source,
+                    resolutionSummary = resolution.summary
+                )
+            ) {
+                return ArchivedMemoryCandidateMutationResult(
+                    success = false,
+                    message = "已写入项目记忆，但归档候选接受状态回写失败。",
+                    status = ArchivedMemoryCandidateStatus.ACCEPTED,
+                    resolutionSource = resolution.source,
+                    resolutionSummary = resolution.summary,
+                    scope = ArchivedMemoryCandidateScope.PROJECT,
+                    memoryId = targetMemory.id,
+                    deduplicated = existingMemory != null
+                )
+            }
+            ArchivedMemoryCandidateMutationResult(
+                success = true,
+                message = resolution.summary,
+                status = ArchivedMemoryCandidateStatus.ACCEPTED,
+                resolutionSource = resolution.source,
+                resolutionSummary = resolution.summary,
+                scope = ArchivedMemoryCandidateScope.PROJECT,
+                memoryId = targetMemory.id,
+                deduplicated = existingMemory != null
+            )
+        }.getOrElse { error ->
+            ArchivedMemoryCandidateMutationResult(
+                success = false,
+                message = "接受归档候选为项目记忆失败: ${error.message}"
+            )
+        }
+    }
+
+    private fun findMatchingMemory(
+        memories: List<GlobalMemory>,
+        candidate: ArchivedMemoryCandidate
+    ): GlobalMemory? {
+        val normalizedTitle = candidate.suggestedTitle.trim()
+        val normalizedContent = candidate.suggestedContent.trim()
+        return memories.firstOrNull { memory ->
+            memory.title.trim() == normalizedTitle &&
+                memory.content.trim() == normalizedContent
+        }
+    }
+
+    private fun buildArchivedMemoryCandidateAcceptanceResolution(
+        scope: ArchivedMemoryCandidateScope,
+        deduplicated: Boolean
+    ): ArchivedMemoryCandidateResolutionTelemetry {
+        if (deduplicated) {
+            return ArchivedMemoryCandidateResolutionTelemetry(
+                source = ArchivedMemoryCandidateResolutionSource.AUTO_DEDUPLICATED_REUSE,
+                summary = when (scope) {
+                    ArchivedMemoryCandidateScope.PROJECT -> "已将归档候选关联到现有项目记忆。"
+                    ArchivedMemoryCandidateScope.GLOBAL -> "已将归档候选关联到现有全局记忆。"
+                }
+            )
+        }
+        return ArchivedMemoryCandidateResolutionTelemetry(
+            source = ArchivedMemoryCandidateResolutionSource.USER_ACTION,
+            summary = when (scope) {
+                ArchivedMemoryCandidateScope.PROJECT -> "已将归档候选保存为项目记忆。"
+                ArchivedMemoryCandidateScope.GLOBAL -> "已将归档候选保存为全局记忆。"
+            }
+        )
     }
 
     fun updateProjectToolPreferences(
@@ -1758,26 +3734,17 @@ class ChatSessionManager(
         val current = _state.value
         val normalizedScope = normalizeProjectPath(scopePath)
         val workspaceScope = normalizeProjectPath(current.projectPath)
-        val updatedRepoScopedConfigs = if (normalizedScope != null) {
-            val currentScopedConfig = resolveRepoScopedProjectConfig(
-                scopePath = normalizedScope,
-                repoScopedConfigs = current.repoScopedConfigs,
-                fallbackRules = current.projectRules,
-                fallbackMemories = current.projectMemories,
-                fallbackSkills = current.projectSkills,
-                fallbackPreferences = current.projectToolPreferences
-            )
-            current.repoScopedConfigs + (
-                normalizedScope to currentScopedConfig.copy(projectToolPreferences = preferences)
-            )
-        } else {
-            current.repoScopedConfigs
+        val updateResult = applyProjectConfigUpdate(
+            scopePath = normalizedScope,
+            workspaceScopePath = workspaceScope,
+            currentProjectConfig = current.toSessionProjectConfig(),
+            repoScopedConfigs = current.repoScopedProjectConfigMap()
+        ) { projectConfig ->
+            projectConfig.copy(projectToolPreferences = preferences)
         }
-        val shouldUpdateLegacyFields = normalizedScope == null || normalizedScope == workspaceScope
         _state.value = current.copy(
-            projectToolPreferences = if (shouldUpdateLegacyFields) preferences else current.projectToolPreferences,
-            repoScopedConfigs = updatedRepoScopedConfigs
-        )
+            projectToolPreferences = updateResult.activeProjectConfig.projectToolPreferences
+        ).copyWithRepoScopedProjectConfigs(updateResult.repoScopedConfigs)
         saveCurrentSession()
     }
 
@@ -1961,34 +3928,27 @@ class ChatSessionManager(
 
     fun clearLastAutoRouteDecision() {
         if (_state.value.lastAutoRouteDecision == null && !_state.value.autoRoutingInProgress) return
-        _state.value = _state.value.copy(
-            autoRoutingInProgress = false,
-            lastAutoRouteDecision = null
-        )
+        _state.value = applyAutoRouteClearedTransition(_state.value)
         saveCurrentSession()
     }
 
     fun clearLastWorkflowFallback() {
         if (_state.value.lastWorkflowFallback == null) return
-        _state.value = _state.value.copy(lastWorkflowFallback = null)
+        _state.value = applyWorkflowFallbackClearedTransition(_state.value)
         saveCurrentSession()
     }
 
     fun dismissPendingWorkflowPlan() {
         if (_state.value.pendingWorkflowPlan == null) return
-        _state.value = _state.value.copy(
-            pendingWorkflowPlan = null,
-            workflowPlanningInProgress = false
-        )
+        _state.value = applyWorkflowPlanDismissedTransition(_state.value)
+        recordConversationPromptCheckpoint(summary = "交互状态: 已关闭执行计划")
         saveCurrentSession()
     }
 
     fun dismissPendingClarification() {
         if (_state.value.pendingClarificationRequest == null) return
-        _state.value = _state.value.copy(
-            pendingClarificationRequest = null,
-            clarificationInProgress = false
-        )
+        _state.value = applyClarificationDismissedTransition(_state.value)
+        recordConversationPromptCheckpoint(summary = "交互状态: 已关闭澄清请求")
         saveCurrentSession()
     }
 
@@ -2058,13 +4018,20 @@ class ChatSessionManager(
     ): Result<ConversationExportData> {
         return runCatching {
             val state = _state.value
-            require(state.messages.isNotEmpty()) { "当前会话还没有可导出的内容" }
+            require(canExportSession(state, format)) { "当前会话还没有可导出的内容" }
 
             val session = buildPersistedSession(config)
+            val resolvedConfig = config ?: lastSessionConfig
             val exportName = buildExportFileName(session.title, format)
             val content = when (format) {
                 ConversationExportFormat.MARKDOWN -> buildMarkdownExport(session)
-                ConversationExportFormat.JSON -> conversationStore.encodeSession(session)
+                ConversationExportFormat.JSON ->
+                    SensitiveDataSanitizer.sanitizeText(conversationStore.encodeSession(session))
+                ConversationExportFormat.DOCTOR -> buildDoctorReport(
+                    session = session,
+                    config = resolvedConfig,
+                    pendingCrash = PendingCrashStore(context).loadPendingCrash()
+                )
             }
             ConversationExportData(
                 fileName = exportName,
@@ -2218,14 +4185,11 @@ class ChatSessionManager(
         val normalizedText = text.trim()
         if ((normalizedText.isBlank() && pendingImages.isEmpty()) || _state.value.isProcessing) return null
         val globalConfig = configRepository.getConfig()
-        val config = globalConfig.applyProjectToolPreferences(_state.value.projectToolPreferences)
+        val config = resolveEffectiveSessionConfig(globalConfig = globalConfig)
         if (normalizedText.isBlank() && pendingImages.isNotEmpty() && !config.isMultimodalEnabled()) {
-            appendMessage(
-                ChatMessageUi(
-                    id = nextId(),
-                    role = "system",
-                    content = "⚠️ 当前已关闭多模态，图片消息未发送。请到设置里开启多模态后再试。"
-                )
+            appendSystemMessage(
+                content = "⚠️ 当前已关闭多模态，图片消息未发送。请到设置里开启多模态后再试。",
+                source = "send_message:image_only_multimodal_disabled"
             )
             return null
         }
@@ -2268,7 +4232,7 @@ class ChatSessionManager(
         if (normalizedText.isBlank() || _state.value.isProcessing) return null
 
         val globalConfig = configRepository.getConfig()
-        val config = globalConfig.applyProjectToolPreferences(_state.value.projectToolPreferences)
+        val config = resolveEffectiveSessionConfig(globalConfig = globalConfig)
         val plannerConfig = config.getPlannerResolvedConfig()
         val executionConfig = resolveExecutionConfig(
             baseConfig = config,
@@ -2285,14 +4249,11 @@ class ChatSessionManager(
         }
 
         val provider = ProviderRegistry.getActiveProvider(plannerConfig.activeProviderId)
+        val stateBeforePlanning = _state.value
         val history = buildHistory()
         val compressionContext = buildCompressionContext()
-        _state.value = _state.value.copy(
-            error = null,
-            autoRoutingInProgress = true,
-            lastAutoRouteDecision = null,
-            lastWorkflowFallback = null
-        )
+        val recentSessionHistoryClue = stateBeforePlanning.recentSessionHistoryClue
+        _state.value = applyAutoRouteStartTransition(_state.value)
         val decision: AutoRouteDecisionUi = try {
             val rawText = callProviderWithConfiguredStreaming(
                 provider = provider,
@@ -2315,11 +4276,7 @@ class ChatSessionManager(
             ).content?.trim().orEmpty()
             parseAutoRouteDecision(rawText)
         } catch (e: Exception) {
-            _state.value = _state.value.copy(
-                error = null,
-                autoRoutingInProgress = false,
-                lastAutoRouteDecision = null
-            )
+            _state.value = applyAutoRouteFailureTransition(_state.value)
             when (
                 resolveWorkflowFailureFallbackMode(
                     config = plannerConfig,
@@ -2356,17 +4313,21 @@ class ChatSessionManager(
                     return mergeToastMessages(autoCompressionToast, executionToast)
                 }
                 WorkflowFailureFallbackMode.LOCAL_CLARIFICATION -> {
-                    _state.value = _state.value.copy(
-                        pendingClarificationRequest = buildLocalFallbackClarificationRequest(
-                            goal = normalizedText,
-                            mentionedFiles = mentionedFiles,
-                            previousAnswers = emptyList(),
-                            turnIndex = 1,
-                            maxTurns = MAX_CLARIFICATION_TURNS,
-                            source = ClarificationSource.AUTO_ROUTE
-                        ),
-                        clarificationInProgress = false
+                    val fallbackRequest = buildStateAwareLocalFallbackClarificationRequest(
+                        goal = normalizedText,
+                        mentionedFiles = mentionedFiles,
+                        previousAnswers = emptyList(),
+                        turnIndex = 1,
+                        maxTurns = MAX_CLARIFICATION_TURNS,
+                        source = ClarificationSource.AUTO_ROUTE,
+                        state = _state.value,
+                        recentSessionHistoryClue = _state.value.recentSessionHistoryClue
                     )
+                    _state.value = applyAutoRouteLocalClarificationFallbackTransition(
+                        state = _state.value,
+                        request = fallbackRequest
+                    )
+                    recordClarificationPromptCheckpoint(fallbackRequest)
                     applyWorkflowFallback(
                         message = "发送前自动分流失败，已按配置回退为本地通用澄清问题。",
                         config = plannerConfig
@@ -2377,9 +4338,9 @@ class ChatSessionManager(
             }
         }
 
-        _state.value = _state.value.copy(
-            autoRoutingInProgress = false,
-            lastAutoRouteDecision = decision
+        _state.value = applyAutoRouteDecisionResolvedTransition(
+            state = _state.value,
+            decision = decision
         )
         saveCurrentSession(plannerConfig)
         when (decision.action) {
@@ -2399,7 +4360,7 @@ class ChatSessionManager(
         if (normalizedGoal.isBlank() || _state.value.isProcessing) return
 
         val globalConfig = configRepository.getConfig()
-        val config = globalConfig.applyProjectToolPreferences(_state.value.projectToolPreferences)
+        val config = resolveEffectiveSessionConfig(globalConfig = globalConfig)
         val plannerConfig = config.getPlannerResolvedConfig()
         maybeAutoCompressContext(plannerConfig)
         lastSessionConfig = plannerConfig
@@ -2412,15 +4373,11 @@ class ChatSessionManager(
         }
 
         val provider = ProviderRegistry.getActiveProvider(plannerConfig.activeProviderId)
+        val stateBeforePlanning = _state.value
         val history = buildHistory()
         val compressionContext = buildCompressionContext()
-        _state.value = _state.value.copy(
-            isProcessing = true,
-            error = null,
-            workflowPlanningInProgress = true,
-            pendingWorkflowPlan = null,
-            lastWorkflowFallback = null
-        )
+        val recentSessionHistoryClue = stateBeforePlanning.recentSessionHistoryClue
+        _state.value = applyWorkflowPlanGenerationStartTransition(_state.value)
         try {
             val response = callProviderWithConfiguredStreaming(
                 provider = provider,
@@ -2442,19 +4399,25 @@ class ChatSessionManager(
                 )
             )
             val rawPlan = response.content?.trim().orEmpty()
-            _state.value = _state.value.copy(
-                pendingWorkflowPlan = parseWorkflowPlan(
-                    goal = normalizedGoal,
-                    rawPlan = rawPlan,
-                    mentionedFiles = mentionedFiles
-                ),
-                workflowPlanningInProgress = false
+            val parsedPlan = parseWorkflowPlan(
+                goal = normalizedGoal,
+                rawPlan = rawPlan,
+                mentionedFiles = mentionedFiles,
+                recentSessionHistoryClue = recentSessionHistoryClue
+            )
+            _state.value = applyWorkflowPlanGeneratedTransition(
+                state = _state.value,
+                plan = parsedPlan
+            )
+            recordConversationPromptCheckpoint(
+                summary = "交互状态: 已生成执行计划",
+                createdAt = parsedPlan.createdAt
             )
             saveCurrentSession(plannerConfig)
         } catch (e: Exception) {
-            _state.value = _state.value.copy(
-                error = "⚠️ ${e.message ?: "生成执行计划失败"}",
-                workflowPlanningInProgress = false
+            _state.value = applyWorkflowPlanGenerationFailureTransition(
+                state = _state.value,
+                errorMessage = "⚠️ ${e.message ?: "生成执行计划失败"}"
             )
         } finally {
             _state.value = _state.value.copy(isProcessing = false)
@@ -2463,47 +4426,34 @@ class ChatSessionManager(
 
     suspend fun executePendingWorkflowPlan() {
         val plan = _state.value.pendingWorkflowPlan ?: return
+        val autoApproveWindow = PlanApprovalAutoApproveWindow(
+            planId = plan.id,
+            planGoal = plan.goal
+        )
         val executingPlan = normalizeWorkflowPlan(
             plan.copy(
                 status = WorkflowPlanStatusUi.EXECUTING,
                 currentStepIndex = if (plan.steps.isEmpty()) 0 else 1
             )
         )
-        _state.value = _state.value.copy(
-            pendingWorkflowPlan = executingPlan,
-            workflowPlanningInProgress = false
+        _state.value = applyPlanExecutionStartTransition(
+            state = _state.value,
+            executingPlan = executingPlan
         )
         saveCurrentSession()
         sendMessageInternal(
             userVisibleText = "按计划执行: ${plan.goal}",
-            modelInput = buildWorkflowExecutionPrompt(executingPlan),
+            modelInput = buildWorkflowExecutionPrompt(_state.value, executingPlan),
             mentionedFiles = plan.mentionedFiles,
-            executionGoal = plan.goal
+            executionGoal = plan.goal,
+            forceWritableTools = true,
+            planApprovalAutoApproveWindow = autoApproveWindow
         )
-        val finalStatus = when {
-            _state.value.pendingClarificationRequest != null -> WorkflowPlanStatusUi.BLOCKED
-            _state.value.pendingApproval != null -> WorkflowPlanStatusUi.BLOCKED
-            !_state.value.error.isNullOrBlank() -> WorkflowPlanStatusUi.BLOCKED
-            else -> WorkflowPlanStatusUi.COMPLETED
-        }
-        val finalPlan = normalizeWorkflowPlan(
-            plan.copy(
-                status = finalStatus,
-                currentStepIndex = when (finalStatus) {
-                    WorkflowPlanStatusUi.COMPLETED -> plan.steps.size
-                    WorkflowPlanStatusUi.BLOCKED -> minOf(maxOf(executingPlan.currentStepIndex, 1), plan.steps.size)
-                    WorkflowPlanStatusUi.EXECUTING -> executingPlan.currentStepIndex
-                    WorkflowPlanStatusUi.READY -> 0
-                },
-                nextStepHint = when (finalStatus) {
-                    WorkflowPlanStatusUi.BLOCKED -> buildBlockedWorkflowHint(_state.value)
-                    WorkflowPlanStatusUi.COMPLETED -> "当前计划已完成，可继续发起下一轮任务或重做计划。"
-                    WorkflowPlanStatusUi.EXECUTING -> executingPlan.nextStepHint
-                    WorkflowPlanStatusUi.READY -> plan.nextStepHint
-                }
-            )
+        _state.value = applyWorkflowExecutionSettlementTransition(
+            state = _state.value,
+            originalPlan = plan,
+            executingPlan = executingPlan
         )
-        _state.value = _state.value.copy(pendingWorkflowPlan = finalPlan)
         saveCurrentSession()
     }
 
@@ -2531,7 +4481,7 @@ class ChatSessionManager(
         if (normalizedGoal.isBlank() || _state.value.isProcessing) return
 
         val globalConfig = configRepository.getConfig()
-        val config = globalConfig.applyProjectToolPreferences(_state.value.projectToolPreferences)
+        val config = resolveEffectiveSessionConfig(globalConfig = globalConfig)
         val plannerConfig = config.getPlannerResolvedConfig()
         lastSessionConfig = plannerConfig
         val apiKey = plannerConfig.getActiveApiKey().trim()
@@ -2543,15 +4493,11 @@ class ChatSessionManager(
         }
 
         val provider = ProviderRegistry.getActiveProvider(plannerConfig.activeProviderId)
+        val stateBeforeClarification = _state.value
         val history = buildHistory()
         val compressionContext = buildCompressionContext()
-        _state.value = _state.value.copy(
-            isProcessing = true,
-            error = null,
-            clarificationInProgress = true,
-            pendingClarificationRequest = null,
-            lastWorkflowFallback = null
-        )
+        val recentSessionHistoryClue = stateBeforeClarification.recentSessionHistoryClue
+        _state.value = applyClarificationGenerationStartTransition(_state.value)
         try {
             val response = callProviderWithConfiguredStreaming(
                 provider = provider,
@@ -2575,18 +4521,20 @@ class ChatSessionManager(
                     tools = null
                 )
             )
-            _state.value = _state.value.copy(
-                pendingClarificationRequest = parseClarificationQuestion(
+            _state.value = applyClarificationGeneratedTransition(
+                state = _state.value,
+                request = parseClarificationQuestion(
                     goal = normalizedGoal,
                     rawQuestion = response.content?.trim().orEmpty(),
                     mentionedFiles = mentionedFiles,
                     previousAnswers = previousAnswers,
                     turnIndex = turnIndex,
                     maxTurns = maxTurns,
-                    source = source
-                ),
-                clarificationInProgress = false
+                    source = source,
+                    recentSessionHistoryClue = recentSessionHistoryClue
+                )
             )
+            recordConversationPromptCheckpoint(summary = "交互状态: 等待澄清回答")
             saveCurrentSession(plannerConfig)
         } catch (e: Exception) {
             when (
@@ -2602,16 +4550,16 @@ class ChatSessionManager(
                 )
             ) {
                 WorkflowFailureFallbackMode.DIRECT_EXECUTION -> {
-                    _state.value = _state.value.copy(
-                        error = null,
-                        isProcessing = false,
-                        clarificationInProgress = false,
-                        pendingClarificationRequest = null
+                    _state.value = applyDirectExecutionResumeTransition(
+                        state = _state.value,
+                        clearError = true
                     )
                     val fallbackModelInput = if (previousAnswers.isNotEmpty()) {
                         buildClarificationExecutionPrompt(
                             goal = normalizedGoal,
-                            answers = previousAnswers
+                            answers = previousAnswers,
+                            state = _state.value,
+                            recentSessionHistoryClue = recentSessionHistoryClue
                         )
                     } else {
                         normalizedGoal
@@ -2625,7 +4573,8 @@ class ChatSessionManager(
                         modelInput = fallbackModelInput,
                         mentionedFiles = mentionedFiles,
                         executionGoal = normalizedGoal,
-                        existingClarificationAnswers = previousAnswers
+                        existingClarificationAnswers = previousAnswers,
+                        forceWritableTools = true
                     )
                     applyWorkflowFallback(
                         message = "澄清问题生成失败，已按配置回退为直接执行。",
@@ -2633,18 +4582,20 @@ class ChatSessionManager(
                     )
                 }
                 WorkflowFailureFallbackMode.LOCAL_CLARIFICATION -> {
-                    _state.value = _state.value.copy(
-                        error = null,
-                        clarificationInProgress = false,
-                        pendingClarificationRequest = buildLocalFallbackClarificationRequest(
+                    _state.value = applyClarificationLocalFallbackTransition(
+                        state = _state.value,
+                        request = buildStateAwareLocalFallbackClarificationRequest(
                             goal = normalizedGoal,
                             mentionedFiles = mentionedFiles,
                             previousAnswers = previousAnswers,
                             turnIndex = turnIndex,
                             maxTurns = maxTurns,
-                            source = source
+                            source = source,
+                            state = _state.value,
+                            recentSessionHistoryClue = recentSessionHistoryClue
                         )
                     )
+                    recordConversationPromptCheckpoint(summary = "交互状态: 等待澄清回答")
                     applyWorkflowFallback(
                         message = "澄清问题生成失败，已按配置回退为本地通用澄清问题。",
                         config = plannerConfig
@@ -2661,45 +4612,38 @@ class ChatSessionManager(
         val request = _state.value.pendingClarificationRequest ?: return
         val normalizedAnswer = answer.trim()
         if (normalizedAnswer.isBlank()) return
-        val accumulatedAnswers = request.previousAnswers + ClarificationAnswerUi(
-            question = request.question,
-            answer = normalizedAnswer
-        )
-        _state.value = _state.value.copy(
-            isProcessing = true,
-            error = null,
-            clarificationInProgress = true,
-            lastWorkflowFallback = null
-        )
-        if (request.turnIndex >= request.maxTurns) {
-            _state.value = _state.value.copy(
-                isProcessing = false,
-                pendingClarificationRequest = null,
-                clarificationInProgress = false
+        val accumulatedAnswers = accumulateClarificationAnswers(request, normalizedAnswer)
+        _state.value = applyClarificationAnswerSubmitStartTransition(_state.value)
+        if (shouldForceClarificationExecution(request)) {
+            val stateBeforeExecution = _state.value
+            _state.value = applyDirectExecutionResumeTransition(
+                state = _state.value
             )
             sendMessageInternal(
                 userVisibleText = "补充回答: $normalizedAnswer",
                 modelInput = buildClarificationExecutionPrompt(
                     goal = request.goal,
-                    answers = accumulatedAnswers
+                    answers = accumulatedAnswers,
+                    state = stateBeforeExecution,
+                    recentSessionHistoryClue = request.recentSessionHistoryClue
                 ),
                 mentionedFiles = request.mentionedFiles,
                 executionGoal = request.goal,
-                existingClarificationAnswers = accumulatedAnswers
+                existingClarificationAnswers = accumulatedAnswers,
+                forceWritableTools = true
             )
             return
         }
 
         val globalConfig = configRepository.getConfig()
-        val config = globalConfig.applyProjectToolPreferences(_state.value.projectToolPreferences)
+        val config = resolveEffectiveSessionConfig(globalConfig = globalConfig)
         val plannerConfig = config.getPlannerResolvedConfig()
         lastSessionConfig = plannerConfig
         val apiKey = plannerConfig.getActiveApiKey().trim()
         if (apiKey.isBlank()) {
-            _state.value = _state.value.copy(
-                isProcessing = false,
-                clarificationInProgress = false,
-                error = "⚠️ 未配置 API Key。请先到设置页完成模型配置。"
+            _state.value = applyClarificationAnswerSubmitFailureTransition(
+                state = _state.value,
+                errorMessage = "⚠️ 未配置 API Key。请先到设置页完成模型配置。"
             )
             return
         }
@@ -2713,11 +4657,13 @@ class ChatSessionManager(
                 config = plannerConfig,
                 request = ChatRequest(
                     messages = buildClarificationFollowUpPrompt(
+                        state = _state.value,
                         goal = request.goal,
                         history = history,
                         compressionContext = compressionContext,
                         mentionedFiles = request.mentionedFiles,
                         answers = accumulatedAnswers,
+                        recentSessionHistoryClue = request.recentSessionHistoryClue,
                         nextTurnIndex = request.turnIndex + 1,
                         maxTurns = request.maxTurns
                     ),
@@ -2745,21 +4691,23 @@ class ChatSessionManager(
                 )
             ) {
                 WorkflowFailureFallbackMode.DIRECT_EXECUTION -> {
-                    _state.value = _state.value.copy(
-                        isProcessing = false,
-                        clarificationInProgress = false,
-                        error = null,
-                        pendingClarificationRequest = null
+                    val stateBeforeExecution = _state.value
+                    _state.value = applyDirectExecutionResumeTransition(
+                        state = _state.value,
+                        clearError = true
                     )
                     sendMessageInternal(
                         userVisibleText = "补充回答: $normalizedAnswer",
                         modelInput = buildClarificationExecutionPrompt(
                             goal = request.goal,
-                            answers = accumulatedAnswers
+                            answers = accumulatedAnswers,
+                            state = stateBeforeExecution,
+                            recentSessionHistoryClue = request.recentSessionHistoryClue
                         ),
                         mentionedFiles = request.mentionedFiles,
                         executionGoal = request.goal,
-                        existingClarificationAnswers = accumulatedAnswers
+                        existingClarificationAnswers = accumulatedAnswers,
+                        forceWritableTools = true
                     )
                     applyWorkflowFallback(
                         message = "判断是否继续澄清失败，已按配置回退为直接继续执行。",
@@ -2767,17 +4715,17 @@ class ChatSessionManager(
                     )
                 }
                 WorkflowFailureFallbackMode.LOCAL_CLARIFICATION -> {
-                    _state.value = _state.value.copy(
-                        isProcessing = false,
-                        clarificationInProgress = false,
-                        error = null,
-                        pendingClarificationRequest = buildLocalFallbackClarificationRequest(
+                    _state.value = applyClarificationFollowUpLocalFallbackTransition(
+                        state = _state.value,
+                        request = buildStateAwareLocalFallbackClarificationRequest(
                             goal = request.goal,
                             mentionedFiles = request.mentionedFiles,
                             previousAnswers = accumulatedAnswers,
                             turnIndex = request.turnIndex + 1,
                             maxTurns = request.maxTurns,
-                            source = request.source
+                            source = request.source,
+                            state = _state.value,
+                            recentSessionHistoryClue = request.recentSessionHistoryClue
                         )
                     )
                     applyWorkflowFallback(
@@ -2790,40 +4738,39 @@ class ChatSessionManager(
             return
         }
 
-        when (followUpDecision.action) {
-            AutoRouteAction.CLARIFY -> {
-                _state.value = _state.value.copy(
-                    isProcessing = false,
-                    clarificationInProgress = false,
-                    pendingClarificationRequest = ClarificationRequestUi(
-                        goal = request.goal,
-                        question = followUpDecision.question
-                            ?: "基于你刚补充的信息，我还需要再确认一个关键点：你最希望我优先按哪种方式继续？",
-                        mentionedFiles = request.mentionedFiles,
-                        previousAnswers = accumulatedAnswers,
-                        turnIndex = request.turnIndex + 1,
-                        maxTurns = request.maxTurns,
-                        source = request.source
-                    )
+        val resolution = resolveClarificationAnswerResolution(
+            request = request,
+            accumulatedAnswers = accumulatedAnswers,
+            action = followUpDecision.action,
+            question = followUpDecision.question
+        )
+        when (resolution.action) {
+            ClarificationResolutionAction.ASK_FOLLOW_UP -> {
+                _state.value = applyClarificationFollowUpTransition(
+                    state = _state.value,
+                    request = resolution.nextClarificationRequest ?: return
                 )
+                recordConversationPromptCheckpoint(summary = "交互状态: 已更新澄清问题")
                 saveCurrentSession(plannerConfig)
             }
 
-            else -> {
-                _state.value = _state.value.copy(
-                    isProcessing = false,
-                    pendingClarificationRequest = null,
-                    clarificationInProgress = false
+            ClarificationResolutionAction.EXECUTE -> {
+                val stateBeforeExecution = _state.value
+                _state.value = applyDirectExecutionResumeTransition(
+                    state = _state.value
                 )
                 sendMessageInternal(
                     userVisibleText = "补充回答: $normalizedAnswer",
                     modelInput = buildClarificationExecutionPrompt(
                         goal = request.goal,
-                        answers = accumulatedAnswers
+                        answers = accumulatedAnswers,
+                        state = stateBeforeExecution,
+                        recentSessionHistoryClue = request.recentSessionHistoryClue
                     ),
                     mentionedFiles = request.mentionedFiles,
                     executionGoal = request.goal,
-                    existingClarificationAnswers = accumulatedAnswers
+                    existingClarificationAnswers = accumulatedAnswers,
+                    forceWritableTools = true
                 )
             }
         }
@@ -2837,19 +4784,32 @@ class ChatSessionManager(
         executionGoal: String = userVisibleText,
         existingClarificationAnswers: List<ClarificationAnswerUi> = emptyList(),
         configOverride: ProviderConfig? = null,
-        extraUserContext: String? = null
+        extraUserContext: String? = null,
+        forceWritableTools: Boolean = false,
+        planApprovalAutoApproveWindow: PlanApprovalAutoApproveWindow? = null
     ) {
         val stateBeforeSend = _state.value
         if ((modelInput.isBlank() && pendingImages.isEmpty()) || stateBeforeSend.isProcessing) return
-        val config = configOverride ?: configRepository.getConfig()
-            .applyProjectToolPreferences(stateBeforeSend.projectToolPreferences)
+        val requestedExecutionGoal = executionGoal.trim().takeIf { it.isNotBlank() }
+            ?: modelInput.trim().takeIf { it.isNotBlank() }
+        val orchestratorDecision = resolveTurnOrchestratorDecision(
+            state = stateBeforeSend,
+            requestedExecutionGoal = requestedExecutionGoal,
+            forceWritableTools = forceWritableTools
+        )
+        val readOnlyPlanModeDecision = orchestratorDecision.readOnlyPlanModeDecision
+        val readOnlyPlanMode = readOnlyPlanModeDecision.enabled
+        val config = configOverride ?: resolveEffectiveSessionConfig(
+            globalConfig = configRepository.getConfig(),
+            state = stateBeforeSend
+        )
         lastSessionConfig = config
         val apiKey = config.getActiveApiKey()
         if (apiKey.isBlank()) {
-            appendMessage(ChatMessageUi(
-                id = nextId(), role = "system",
-                content = "⚠️ 未配置 API Key。请点击底部「设置」→ 选择 AI 提供商 → 填入你的 API Key。"
-            ))
+            appendSystemMessage(
+                content = "⚠️ 未配置 API Key。请点击底部「设置」→ 选择 AI 提供商 → 填入你的 API Key。",
+                source = "send_message:missing_api_key"
+            )
             _state.value = _state.value.copy(
                 isProcessing = false,
                 lastWorkflowFallback = null
@@ -2860,14 +4820,21 @@ class ChatSessionManager(
         val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
 
         // 创建 ToolRegistry（包含 MCP 工具）
-        val toolRegistry = createToolRegistry(provider, config)
-        mcpRegistry?.let { mcp ->
+        val toolRegistry = createToolRegistry(
+            provider = provider,
+            config = config,
+            allowWriteTools = orchestratorDecision.allowWriteTools
+        )
+        if (orchestratorDecision.allowWriteTools) {
+            mcpRegistry?.let { mcp ->
             mcp.getMcpTools()
                 .filter { config.isMcpToolEnabled(it.name) }
                 .forEach { toolRegistry.register(it) }
+            }
         }
+        emitMcpConnectionStatusSnapshot(trigger = "send_message_preflight")
 
-        agentLoop = AgentLoop(provider, toolRegistry, config)
+        agentLoop = AgentLoop(provider, toolRegistry, config, hookBus)
         val compressionContext = buildCompressionContext(stateBeforeSend)
         val projectContext = buildCurrentProjectContext()
         val sessionGoalContext = buildSessionGoalContext()
@@ -2876,12 +4843,9 @@ class ChatSessionManager(
         val fileMentionContext = buildMentionedFilesContext(mentionedFiles)
         val executionInterruptContext = buildExecutionInterruptionContext(existingClarificationAnswers)
         if (pendingImages.isNotEmpty() && !config.isMultimodalEnabled()) {
-            appendMessage(
-                ChatMessageUi(
-                    id = nextId(),
-                    role = "system",
-                    content = "⚠️ 已忽略 ${pendingImages.size} 张图片，因为设置中已关闭多模态。"
-                )
+            appendSystemMessage(
+                content = "⚠️ 已忽略 ${pendingImages.size} 张图片，因为设置中已关闭多模态。",
+                source = "send_message:multimodal_disabled"
             )
         }
         val importedImages = if (config.isMultimodalEnabled()) {
@@ -2890,12 +4854,9 @@ class ChatSessionManager(
             emptyList()
         }
         if (config.isMultimodalEnabled() && pendingImages.isNotEmpty() && importedImages.isEmpty()) {
-            appendMessage(
-                ChatMessageUi(
-                    id = nextId(),
-                    role = "system",
-                    content = "⚠️ 当前图片读取失败，请重新选择图片后再试。"
-                )
+            appendSystemMessage(
+                content = "⚠️ 当前图片读取失败，请重新选择图片后再试。",
+                source = "send_message:image_import_failed"
             )
             return
         }
@@ -2909,14 +4870,38 @@ class ChatSessionManager(
             projectContext,
             sessionGoalContext,
             projectSkillsContext,
-            mcpToolsContext
+            mcpToolsContext.takeUnless { readOnlyPlanMode }
         )
             .takeIf { it.isNotEmpty() }
             ?.joinToString("\n\n")
+        pendingPromptCacheShape = capturePromptCacheShape(
+            stableSystemContext = stableSystemContext,
+            toolsJson = toolRegistry.buildToolsJson(),
+            compressionContext = compressionContext,
+            projectContext = projectContext,
+            sessionGoalContext = sessionGoalContext,
+            projectSkillsContext = projectSkillsContext,
+            mcpToolsContext = mcpToolsContext.takeUnless { readOnlyPlanMode },
+            readOnlyPlanMode = readOnlyPlanMode
+        )
+        val finalReadinessContext = buildFinalReadinessContinuationContext(
+            audits = stateBeforeSend.recentFinalReadinessAudits,
+            recentSessionHistoryClue = stateBeforeSend.recentSessionHistoryClue
+        )
+        val recentSessionHistoryReferenceContext = stateBeforeSend.recentSessionHistoryContext
+        val recentSkillUsageContext = stateBeforeSend.recentSkillUsageContext
+        val recentMemoryUpdateSuggestionContext = stateBeforeSend.recentPendingMemoryUpdateSuggestionContext
+        val turnOrchestratorContext = buildTurnOrchestratorContext(orchestratorDecision)
         val turnScopedUserContext = buildTurnScopedUserContext(
             fileMentionContext = fileMentionContext,
             executionInterruptContext = executionInterruptContext,
             multimodalContext = multimodalContext,
+            turnOrchestratorContext = turnOrchestratorContext,
+            planningModeContext = buildReadOnlyPlanModeContext(readOnlyPlanModeDecision),
+            finalReadinessContext = finalReadinessContext,
+            recentSessionHistoryReferenceContext = recentSessionHistoryReferenceContext,
+            recentSkillUsageContext = recentSkillUsageContext,
+            recentMemoryUpdateSuggestionContext = recentMemoryUpdateSuggestionContext,
             extraUserContext = extraUserContext
         )
         val resolvedBaseModelInput = modelInput.ifBlank {
@@ -2946,8 +4931,10 @@ class ChatSessionManager(
         _state.value = _state.value.copy(
             isProcessing = true,
             error = null,
-            lastWorkflowFallback = null
+            lastWorkflowFallback = null,
+            lastFinalReadinessReceipt = null
         )
+        currentTurnCheckpointCaptureState = TurnCheckpointCaptureState()
         processingCancelledByUser = false
         val history = buildHistory(stateBeforeSend)
 
@@ -2961,6 +4948,10 @@ class ChatSessionManager(
                     emptyList()
                 }
             )
+            val shouldEnforcePersistentFinalReadiness = buildPersistentFinalReadinessReceipt(
+                state = stateBeforeSend,
+                executionGoal = executionGoal
+            ) != null
             agentLoop?.processMessage(
                 userMessage = userModelMessage,
                 history = history,
@@ -2984,11 +4975,16 @@ class ChatSessionManager(
                             appendMessage(toolMsg)
                         }
                         is AgentEvent.ToolResult -> {
+                            val toolExecutionSucceeded = !event.result.startsWith("Error:", ignoreCase = true) &&
+                                !event.result.startsWith("Blocked by", ignoreCase = true) &&
+                                !event.result.startsWith("Rejected by user:", ignoreCase = true)
                             recordToolCall(
                                 toolName = event.toolName,
                                 args = event.args,
                                 result = event.result,
-                                isSuccess = !event.result.startsWith("Error")
+                                isSuccess = toolExecutionSucceeded,
+                                stepSignOffReceipt = event.stepSignOffReceipt,
+                                structuredPayload = event.structuredPayload
                             )
                             val fileChanges = recordFileChanges(
                                 toolName = event.toolName,
@@ -3008,20 +5004,46 @@ class ChatSessionManager(
                         is AgentEvent.UsageUpdate -> {
                             appendUsage(event.usage, config)
                         }
+                        is AgentEvent.ReadinessAudit -> recordFinalReadinessAudit(event.audit)
                         is AgentEvent.Error -> {
                             finalizeStreaming()
-                            recordError(event.message)
-                            appendMessage(ChatMessageUi(
-                                id = nextId(), role = "system",
-                                content = "⚠️ ${event.message}"
-                            ))
+                            recordError(
+                                message = event.message,
+                                kind = if (event.finalReadinessReceipt != null) {
+                                    ErrorRecordKind.FINAL_READINESS
+                                } else {
+                                    ErrorRecordKind.GENERAL
+                                }
+                            )
+                            _state.value = _state.value.copy(
+                                lastFinalReadinessReceipt = event.finalReadinessReceipt
+                            )
+                            appendSystemMessage(
+                                content = "⚠️ ${event.message}",
+                                source = "agent_event:error"
+                            )
                         }
                         is AgentEvent.Done -> finalizeStreaming()
                     }
                 },
                 requestApproval = { request ->
-                    waitForApproval(request)
-                }
+                    waitForApproval(
+                        request = request,
+                        planApprovalAutoApproveWindow = planApprovalAutoApproveWindow
+                    )
+                },
+                toolExecutionGuard = if (readOnlyPlanMode) {
+                    ::buildReadOnlyPlanModeToolBlockMessage
+                } else {
+                    null
+                },
+                finalReadinessGuard = {
+                    buildPersistentFinalReadinessReceipt(
+                        state = _state.value,
+                        executionGoal = executionGoal
+                    )
+                },
+                enforceFinalReadinessWithoutCurrentToolRuns = shouldEnforcePersistentFinalReadiness
             )
 
             // 更新会话标题（取第一条用户输入）
@@ -3042,24 +5064,53 @@ class ChatSessionManager(
                 return
             }
 
-            _state.value = _state.value.copy(
+            var completedState = _state.value.copy(
                 pendingWorkflowPlan = null,
                 workflowPlanningInProgress = false,
                 pendingClarificationRequest = null,
                 clarificationInProgress = false,
                 autoRoutingInProgress = false
             )
+            val finalizedTurnCheckpoint = finalizeTurnCheckpoint(
+                captureState = currentTurnCheckpointCaptureState,
+                checkpoints = completedState.checkpoints,
+                messages = completedState.messages,
+                checkpointIdFactory = { "chk-${System.currentTimeMillis()}" }
+            )
+            if (finalizedTurnCheckpoint != null) {
+                completedState = completedState.copy(
+                    checkpoints = upsertCheckpointHistory(
+                        checkpoints = completedState.checkpoints,
+                        checkpoint = finalizedTurnCheckpoint,
+                        maxSize = MAX_CHECKPOINT_HISTORY
+                    )
+                )
+            }
+            buildMidSessionMemoryUpdateSuggestion(
+                stateBeforeSend = stateBeforeSend,
+                completedState = completedState,
+                userMessage = userMsg,
+                assistantMessageId = assistantMsg.id,
+                executionGoal = executionGoal,
+                currentProjectScopePath = activeProjectScopePath(
+                    activeScopePath = completedState.activeProjectScopePath,
+                    projectPath = completedState.projectPath
+                )
+            )?.let { suggestion ->
+                completedState = applyMemoryUpdateSuggestionTransition(
+                    state = completedState,
+                    suggestion = suggestion
+                )
+            }
+            _state.value = completedState
             // 自动保存
             saveCurrentSession(config)
         } catch (e: CancellationException) {
             finalizeStreaming()
             if (!processingCancelledByUser) {
-                appendMessage(
-                    ChatMessageUi(
-                        id = nextId(),
-                        role = "system",
-                        content = "⏹️ 当前处理已取消。"
-                    )
+                appendSystemMessage(
+                    content = "⏹️ 当前处理已取消。",
+                    source = "send_message:cancelled"
                 )
             }
         } catch (e: Exception) {
@@ -3069,6 +5120,7 @@ class ChatSessionManager(
             )
         } finally {
             _state.value = _state.value.copy(isProcessing = false)
+            currentTurnCheckpointCaptureState = TurnCheckpointCaptureState()
             processingCancelledByUser = false
         }
     }
@@ -3077,10 +5129,24 @@ class ChatSessionManager(
      * 清空当前对话
      */
     fun clear() {
+        val previousState = _state.value
         resetPendingStreamingUpdates()
         _state.value = SessionState(sessionId = currentSessionId)
         messageCounter = 0
         currentStreamingId = null
+        emitNotification(
+            channel = "session_lifecycle",
+            message = "当前会话已清空。",
+            source = "clear_session"
+        )
+        emitSessionTransition(
+            sessionId = currentSessionId,
+            phase = SessionTransitionPhase.STARTED,
+            trigger = "clear_session",
+            counterpartSessionId = currentSessionId,
+            sessionTitle = previousState.sessionTitle,
+            projectPath = previousState.projectPath
+        )
     }
 
     fun rollbackLastTurn(): Boolean {
@@ -3097,57 +5163,45 @@ class ChatSessionManager(
         return rollbackConversationToMessageIndex(targetIndex)
     }
 
-    fun rollbackFileCheckpoint(checkpointId: String): Result<Int> {
+    fun rollbackCheckpoint(
+        checkpointId: String,
+        scope: ConversationCheckpointScope = ConversationCheckpointScope.CODE
+    ): Result<Int> {
         return runCatching {
             val state = _state.value
-            require(!state.isProcessing) { "处理中暂时不能回滚文件修改" }
+            require(!state.isProcessing) { "处理中暂时不能执行恢复" }
 
             val checkpoint = state.checkpoints.firstOrNull { it.id == checkpointId }
                 ?: error("未找到对应的修改批次")
-            val records = state.fileChanges
-                .filter { it.checkpointId == checkpointId }
-                .sortedBy { it.changedAt }
-            require(records.isNotEmpty()) { "当前批次没有可回滚的文件记录" }
+            val recoveryPlan = resolveCheckpointRecoveryPlan(
+                state = state,
+                checkpoint = checkpoint,
+                requestedScope = scope
+            )
+            when (scope) {
+                ConversationCheckpointScope.CODE -> rollbackCheckpointFiles(
+                    state = state,
+                    checkpoint = checkpoint,
+                    scope = scope,
+                    records = recoveryPlan.checkpointRecords
+                ).getOrThrow()
 
-            val rollbackCheckpointId = "chk-${System.currentTimeMillis()}"
-            val rollbackRecords = records.mapIndexed { index, record ->
-                val currentContent = restoreFileRecord(record).getOrThrow()
-
-                FileChangeRecordUi(
-                    id = "$rollbackCheckpointId-$index",
-                    path = record.path,
-                    operation = "rollback",
-                    beforeContent = currentContent,
-                    afterContent = record.beforeContent,
-                    diffPreview = buildDiffPreview(currentContent, record.beforeContent),
-                    changedAt = System.currentTimeMillis(),
-                    checkpointId = rollbackCheckpointId
-                )
+                ConversationCheckpointScope.CONVERSATION,
+                ConversationCheckpointScope.BOTH -> rollbackCheckpointConversation(
+                    state = state,
+                    checkpoint = checkpoint,
+                    scope = scope,
+                    targetExclusiveIndex = recoveryPlan.targetExclusiveIndex
+                ).getOrThrow()
             }
-
-            val rollbackCheckpoint = ConversationCheckpointUi(
-                id = rollbackCheckpointId,
-                messageIndex = state.messages.lastIndex,
-                createdAt = rollbackRecords.maxOfOrNull { it.changedAt } ?: System.currentTimeMillis(),
-                summary = "回滚 ${records.size} 个文件: ${checkpoint.changedFiles.take(3).joinToString("、")}" +
-                    if (records.size > 3) " 等" else "",
-                changedFiles = rollbackRecords.map { it.path }
-            )
-
-            _state.value = state.copy(
-                fileChanges = (rollbackRecords + state.fileChanges).take(MAX_FILE_CHANGE_HISTORY),
-                checkpoints = (listOf(rollbackCheckpoint) + state.checkpoints).take(MAX_CHECKPOINT_HISTORY)
-            )
-            appendMessage(
-                ChatMessageUi(
-                    id = nextId(),
-                    role = "system",
-                    content = "已回滚修改批次：${checkpoint.summary}"
-                )
-            )
-            saveCurrentSession()
-            rollbackRecords.size
         }
+    }
+
+    fun rollbackFileCheckpoint(checkpointId: String): Result<Int> {
+        return rollbackCheckpoint(
+            checkpointId = checkpointId,
+            scope = ConversationCheckpointScope.CODE
+        )
     }
 
     private fun rollbackConversationToMessageIndex(targetExclusiveIndex: Int): Boolean {
@@ -3168,34 +5222,12 @@ class ChatSessionManager(
             clearPendingApproval()
             return false
         }
-
-        val keptMessages = state.messages.take(targetExclusiveIndex)
-        val keptCheckpoints = state.checkpoints
-            .filter { it.messageIndex < targetExclusiveIndex }
-            .sortedByDescending { it.createdAt }
-        val keptCheckpointIds = keptCheckpoints.map { it.id }.toSet()
-        val keptFileChanges = state.fileChanges.filter { change ->
-            change.checkpointId == null || change.checkpointId in keptCheckpointIds
-        }
-        val keptCompressionSnapshots = resolveCompressionSnapshotsAfterRollback(
-            snapshots = state.compressionSnapshots,
-            targetExclusiveIndex = targetExclusiveIndex
-        )
-        val currentCompressionSnapshot = keptCompressionSnapshots.firstOrNull { it.active }
-        val keptSubagentRunIds = keptMessages.mapNotNull { it.subagentRunId }.toSet()
-        val keptSubagentBatchIds = keptMessages.mapNotNull { it.subagentBatchId }.toSet()
-
-        _state.value = state.copy(
-            messages = keptMessages,
-            subagentRuns = state.subagentRuns.filter { it.runId in keptSubagentRunIds },
-            subagentBatches = state.subagentBatches.filter { it.batchId in keptSubagentBatchIds },
-            isProcessing = false,
-            error = null,
-            compressionSnapshot = currentCompressionSnapshot,
-            compressionSnapshots = keptCompressionSnapshots,
-            checkpoints = keptCheckpoints,
-            fileChanges = keptFileChanges,
-            pendingApproval = null
+        applyConversationRollbackProjection(
+            state = state,
+            projection = projectConversationRollbackState(
+                state = state,
+                targetExclusiveIndex = targetExclusiveIndex
+            )
         )
         currentStreamingId = null
         clearPendingApproval()
@@ -3206,21 +5238,178 @@ class ChatSessionManager(
     private fun rollbackFutureFileChangesForMessageIndex(
         state: SessionState,
         targetExclusiveIndex: Int
-    ): Result<Unit> {
+    ): Result<Int> {
         return runCatching {
-            val checkpointsToRollback = state.checkpoints
-                .filter { it.messageIndex >= targetExclusiveIndex }
-                .sortedByDescending { it.createdAt }
+            var restoredRecordCount = 0
 
-            checkpointsToRollback.forEach { checkpoint ->
-                state.fileChanges
-                    .filter { it.checkpointId == checkpoint.id }
-                    .sortedByDescending { it.changedAt }
-                    .forEach { record ->
-                        restoreFileRecord(record).getOrThrow()
-                    }
+            collectFutureCheckpointRollbackRecords(
+                state = state,
+                targetExclusiveIndex = targetExclusiveIndex
+            ).forEach { record ->
+                restoreFileRecord(record).getOrThrow()
+                restoredRecordCount += 1
             }
+            restoredRecordCount
         }
+    }
+
+    private fun rollbackCheckpointFiles(
+        state: SessionState,
+        checkpoint: ConversationCheckpointUi,
+        scope: ConversationCheckpointScope,
+        records: List<FileChangeRecordUi>
+    ): Result<Int> {
+        return runCatching {
+            require(records.isNotEmpty()) { "该检查点没有可回滚的代码修改" }
+
+            val rollbackCheckpointId = "chk-${System.currentTimeMillis()}"
+            val rollbackRecords = records.mapIndexed { index, record ->
+                val currentContent = restoreFileRecord(record).getOrThrow()
+
+                FileChangeRecordUi(
+                    id = "$rollbackCheckpointId-$index",
+                    path = record.path,
+                    operation = "rollback",
+                    beforeContent = currentContent,
+                    afterContent = record.beforeContent,
+                    diffPreview = buildDiffPreview(currentContent, record.beforeContent),
+                    changedAt = System.currentTimeMillis(),
+                    checkpointId = rollbackCheckpointId
+                )
+            }
+
+            val rollbackCheckpoint = buildCheckpointRecoveryEvent(
+                rollbackCheckpointId = rollbackCheckpointId,
+                checkpoint = checkpoint,
+                restoredScope = scope,
+                messageIndex = state.messages.lastIndex,
+                createdAt = rollbackRecords.maxOfOrNull { it.changedAt } ?: System.currentTimeMillis(),
+                changedFiles = rollbackRecords.map { it.path },
+                recentSessionHistoryClue = state.recentSessionHistoryClue
+            )
+
+            _state.value = state.copy(
+                fileChanges = (rollbackRecords + state.fileChanges).take(MAX_FILE_CHANGE_HISTORY),
+                checkpoints = upsertCheckpointHistory(
+                    checkpoints = state.checkpoints,
+                    checkpoint = rollbackCheckpoint,
+                    maxSize = MAX_CHECKPOINT_HISTORY
+                )
+            )
+            val recentSessionHistoryClue = _state.value.recentSessionHistoryClue
+            val recoveryRecord = buildCheckpointRecoveryRecord(
+                checkpoint = checkpoint,
+                restoredScope = scope,
+                restoredFileCount = rollbackRecords.size,
+                recentSessionHistoryClue = recentSessionHistoryClue
+            )
+            recordCheckpointRecovery(recoveryRecord)
+            appendSystemMessage(
+                content = buildCheckpointRecoverySystemMessage(
+                    checkpoint = checkpoint,
+                    restoredScope = scope,
+                    recentSessionHistoryClue = recentSessionHistoryClue
+                ),
+                source = "checkpoint_recovery:file_scope"
+            )
+            saveCurrentSession()
+            rollbackRecords.size
+        }
+    }
+
+    private fun rollbackCheckpointConversation(
+        state: SessionState,
+        checkpoint: ConversationCheckpointUi,
+        scope: ConversationCheckpointScope,
+        targetExclusiveIndex: Int
+    ): Result<Int> {
+        return runCatching {
+            val restoredFileRecords = if (scope == ConversationCheckpointScope.BOTH) {
+                collectFutureCheckpointRollbackRecords(
+                    state = state,
+                    targetExclusiveIndex = targetExclusiveIndex
+                )
+            } else {
+                emptyList()
+            }
+            val restoredFileCount = if (scope == ConversationCheckpointScope.BOTH) {
+                rollbackFutureFileChangesForMessageIndex(
+                    state = state,
+                    targetExclusiveIndex = targetExclusiveIndex
+                ).getOrThrow()
+            } else {
+                0
+            }
+            applyConversationRollbackProjection(
+                state = state,
+                projection = projectConversationRollbackState(
+                    state = state,
+                    targetExclusiveIndex = targetExclusiveIndex,
+                    targetCheckpoint = checkpoint
+                )
+            )
+            val recentSessionHistoryClue = _state.value.recentSessionHistoryClue
+            val rollbackCheckpoint = buildCheckpointRecoveryEvent(
+                rollbackCheckpointId = "chk-${System.currentTimeMillis()}",
+                checkpoint = checkpoint,
+                restoredScope = scope,
+                messageIndex = _state.value.messages.lastIndex,
+                createdAt = System.currentTimeMillis(),
+                changedFiles = restoredFileRecords.map { it.path },
+                recentSessionHistoryClue = recentSessionHistoryClue
+            )
+            val recoveryRecord = buildCheckpointRecoveryRecord(
+                checkpoint = checkpoint,
+                restoredScope = scope,
+                restoredFileCount = restoredFileCount,
+                recentSessionHistoryClue = recentSessionHistoryClue
+            )
+            _state.value = _state.value.copy(
+                checkpoints = upsertCheckpointHistory(
+                    checkpoints = _state.value.checkpoints,
+                    checkpoint = rollbackCheckpoint,
+                    maxSize = MAX_CHECKPOINT_HISTORY
+                )
+            )
+            recordCheckpointRecovery(recoveryRecord)
+            appendSystemMessage(
+                content = buildCheckpointRecoverySystemMessage(
+                    checkpoint = checkpoint,
+                    restoredScope = scope,
+                    recentSessionHistoryClue = recentSessionHistoryClue
+                ),
+                source = "checkpoint_recovery:conversation"
+            )
+            currentStreamingId = null
+            clearPendingApproval()
+            saveCurrentSession()
+            restoredFileCount
+        }
+    }
+
+    private fun applyConversationRollbackProjection(
+        state: SessionState,
+        projection: ConversationRollbackProjection
+    ) {
+        pendingAskDecision = null
+        _state.value = state.copy(
+            messages = projection.messages,
+            subagentRuns = projection.subagentRuns,
+            subagentBatches = projection.subagentBatches,
+            isProcessing = false,
+            error = null,
+            compressionSnapshot = projection.compressionSnapshot,
+            compressionSnapshots = projection.compressionSnapshots,
+            checkpoints = projection.checkpoints,
+            fileChanges = projection.fileChanges,
+            pendingAskRequest = projection.pendingAskRequest,
+            pendingWorkflowPlan = projection.pendingWorkflowPlan,
+            canonicalWorkflowPlan = projection.canonicalWorkflowPlan,
+            workflowPlanningInProgress = projection.workflowPlanningInProgress,
+            pendingClarificationRequest = projection.pendingClarificationRequest,
+            clarificationInProgress = projection.clarificationInProgress,
+            pendingApproval = null
+        )
     }
 
     private fun restoreFileRecord(record: FileChangeRecordUi): Result<String?> {
@@ -3290,72 +5479,152 @@ class ChatSessionManager(
                 approvedScopes = approvedScopesSnapshot,
                 cachedSession = cachedSessionSnapshot
             )
-            conversationStore.saveSession(persistedSession)
-            if (currentSessionId == sessionIdSnapshot) {
+            val saved = conversationStore.saveSession(persistedSession)
+            if (saved && currentSessionId == sessionIdSnapshot) {
                 cachedCurrentPersistedSession = persistedSession
             }
         }
     }
 
+    private fun findRememberMemorySuggestion(suggestionId: String): RememberMemorySuggestion? {
+        return findRememberMemorySuggestion(
+            state = _state.value,
+            suggestionId = suggestionId
+        )
+    }
+
+    private fun markMemoryUpdateSuggestionApplied(
+        suggestionId: String,
+        memoryId: String
+    ) {
+        _state.value = applyMemoryUpdateSuggestionAppliedTransition(
+            state = _state.value,
+            suggestionId = suggestionId,
+            memoryId = memoryId
+        )
+    }
+
+    private fun resolveEffectiveSessionConfig(
+        globalConfig: ProviderConfig,
+        state: SessionState = _state.value
+    ): ProviderConfig {
+        return resolveSessionConfig(
+            globalConfig = globalConfig,
+            projectConfig = state.toSessionProjectConfig()
+        ).effectiveProviderConfig
+    }
+
+    private fun SessionState.toSessionProjectConfig(): SessionProjectConfig {
+        return buildSessionProjectConfig(
+            projectRules = projectRules,
+            projectMemories = projectMemories,
+            projectSkills = projectSkills,
+            projectToolPreferences = projectToolPreferences
+        )
+    }
+
     private fun shouldPersistSession(state: SessionState): Boolean {
-        return state.messages.isNotEmpty() ||
-            !state.sessionGoal.isNullOrBlank() ||
-            !state.projectPath.isNullOrBlank() ||
-            !state.remoteTaskRepositoryOwner.isNullOrBlank() ||
-            !state.remoteTaskRepositoryName.isNullOrBlank() ||
-            state.projectRules.isNotEmpty() ||
-            state.projectMemories.isNotEmpty() ||
-            state.projectSkills.isNotEmpty() ||
-            state.projectKnowledgePaths.isNotEmpty() ||
-            state.projectToolPreferences != null ||
-            state.repoScopedConfigs.isNotEmpty() ||
-            state.pendingWorkflowPlan != null ||
-            state.pendingClarificationRequest != null ||
-            state.lastAutoRouteDecision != null ||
-            state.lastWorkflowFallback != null ||
-            state.subagentRuns.isNotEmpty() ||
-            state.compressionSnapshot != null ||
-            state.compressionSnapshots.isNotEmpty() ||
-            state.checkpoints.isNotEmpty() ||
-            state.fileChanges.isNotEmpty() ||
-            state.recentErrors.isNotEmpty() ||
-            state.recentToolCalls.isNotEmpty() ||
-            state.recentApprovals.isNotEmpty()
+        return hasPersistableSessionContent(state)
+    }
+
+    private fun replaceCurrentSessionWithBlank(
+        savePrevious: Boolean,
+        trigger: String
+    ) {
+        val previousState = _state.value
+        val previousSessionId = currentSessionId
+        if (savePrevious) {
+            saveCurrentSession()
+        }
+        resetPendingStreamingUpdates()
+        currentSessionId = UUID.randomUUID().toString().take(8)
+        cachedCurrentPersistedSession = null
+        clearApprovedApprovalScopes()
+        messageCounter = 0
+        _state.value = SessionState(sessionId = currentSessionId)
+        syncApprovedApprovalScopesState()
+        emitSessionTransition(
+            sessionId = previousSessionId,
+            phase = SessionTransitionPhase.STOPPED,
+            trigger = trigger,
+            counterpartSessionId = currentSessionId,
+            sessionTitle = previousState.sessionTitle,
+            projectPath = previousState.projectPath
+        )
+        emitSessionTransition(
+            sessionId = currentSessionId,
+            phase = SessionTransitionPhase.STARTED,
+            trigger = trigger,
+            counterpartSessionId = previousSessionId,
+            sessionTitle = _state.value.sessionTitle,
+            projectPath = _state.value.projectPath
+        )
+    }
+
+    private fun ensureSessionLifecycleAllowed(action: SessionLifecycleAction): Boolean {
+        val notice = buildSessionLifecycleGuardNotice(_state.value, action) ?: return true
+        emitSessionLifecycleNotice(
+            notice = notice,
+            source = "guard:${action.name.lowercase()}"
+        )
+        return false
     }
 
     fun approvePendingTool(): Boolean {
+        if (_state.value.pendingApproval?.isReplayOnly == true) {
+            return false
+        }
         val deferred = pendingApprovalDecision ?: return false
         if (!deferred.isCompleted) {
             deferred.complete(true)
         }
-        clearPendingApproval()
         return true
     }
 
     fun rejectPendingTool(): Boolean {
-        val deferred = pendingApprovalDecision ?: return false
+        val deferred = pendingApprovalDecision
+        if (deferred == null) {
+            if (_state.value.pendingApproval?.isReplayOnly == true) {
+                clearPendingApproval()
+                return true
+            }
+            return false
+        }
         if (!deferred.isCompleted) {
             deferred.complete(false)
         }
-        clearPendingApproval()
         return true
     }
 
     fun submitPendingAskAnswers(answers: List<AskAnswerUi>): Boolean {
+        if (_state.value.pendingAskRequest?.isReplayOnly == true) {
+            return false
+        }
         val deferred = pendingAskDecision ?: return false
         if (!deferred.isCompleted) {
             deferred.complete(answers)
         }
         clearPendingAsk()
+        recordConversationPromptCheckpoint(summary = "交互状态: 已提交提问回答")
+        saveCurrentSession()
         return true
     }
 
     fun dismissPendingAsk(): Boolean {
-        val deferred = pendingAskDecision ?: return false
+        val deferred = pendingAskDecision
+        if (deferred == null) {
+            if (_state.value.pendingAskRequest?.isReplayOnly == true) {
+                clearPendingAsk()
+                return true
+            }
+            return false
+        }
         if (!deferred.isCompleted) {
             deferred.complete(null)
         }
         clearPendingAsk()
+        recordConversationPromptCheckpoint(summary = "交互状态: 已关闭提问卡片")
+        saveCurrentSession()
         return true
     }
 
@@ -3385,12 +5654,9 @@ class ChatSessionManager(
             workflowPlanningInProgress = false,
             clarificationInProgress = false
         )
-        appendMessage(
-            ChatMessageUi(
-                id = nextId(),
-                role = "system",
-                content = "⏹️ 已终止当前处理，可直接修改提示词后重新发送。"
-            )
+        appendSystemMessage(
+            content = "⏹️ 已终止当前处理，可直接修改提示词后重新发送。",
+            source = "stop_processing"
         )
         saveCurrentSession()
         return true
@@ -3455,7 +5721,11 @@ class ChatSessionManager(
         val id = currentStreamingId ?: return
         flushPendingStreamingUpdates(messageId = id)
         updateMessageById(id) { msg ->
-            if (msg.isStreaming) msg.copy(isStreaming = false) else msg
+            val finalized = if (msg.isStreaming) msg.copy(isStreaming = false) else msg
+            applyPostLlmHookToMessage(
+                message = finalized,
+                hookBus = hookBus
+            )
         }
         currentStreamingId = null
     }
@@ -3550,6 +5820,11 @@ class ChatSessionManager(
             state.messages
         }
         val pruningPlan = planToolResultHistoryPruning(baseMessages)
+        val elisionPlan = planStaleToolResultElision(
+            messages = baseMessages,
+            keptIndices = pruningPlan.keptIndices,
+            recentMessageWindow = TOOL_RESULT_RECENT_MESSAGE_WINDOW
+        )
         val foldedSummary = buildFoldedToolHistorySummary(pruningPlan.removedMessages)
         val history = mutableListOf<ChatMessage>()
         val toolSummaryBuffer = mutableListOf<String>()
@@ -3574,7 +5849,11 @@ class ChatSessionManager(
                 return@forEachIndexed
             }
             if (uiMsg.role == "tool_exec") {
-                summarizeToolResultForHistory(uiMsg.content)
+                (if (index in elisionPlan.elidedIndices) {
+                    buildElidedToolResultHistorySummary(uiMsg.content)
+                } else {
+                    summarizeToolResultForHistory(uiMsg.content)
+                })
                     ?.takeIf { it.isNotBlank() }
                     ?.let { toolSummaryBuffer += it }
                 return@forEachIndexed
@@ -3692,10 +5971,22 @@ class ChatSessionManager(
         fileMentionContext: String?,
         executionInterruptContext: String,
         multimodalContext: String?,
+        turnOrchestratorContext: String?,
+        planningModeContext: String?,
+        finalReadinessContext: String?,
+        recentSessionHistoryReferenceContext: String?,
+        recentSkillUsageContext: String?,
+        recentMemoryUpdateSuggestionContext: String?,
         extraUserContext: String? = null
     ): String {
         return listOfNotNull(
             multimodalContext?.trim()?.takeIf { it.isNotBlank() },
+            turnOrchestratorContext?.trim()?.takeIf { it.isNotBlank() },
+            planningModeContext?.trim()?.takeIf { it.isNotBlank() },
+            finalReadinessContext?.trim()?.takeIf { it.isNotBlank() },
+            recentSessionHistoryReferenceContext?.trim()?.takeIf { it.isNotBlank() },
+            recentSkillUsageContext?.trim()?.takeIf { it.isNotBlank() },
+            recentMemoryUpdateSuggestionContext?.trim()?.takeIf { it.isNotBlank() },
             fileMentionContext?.trim()?.takeIf { it.isNotBlank() },
             executionInterruptContext.trim().takeIf { it.isNotBlank() },
             extraUserContext?.trim()?.takeIf { it.isNotBlank() }
@@ -3846,8 +6137,41 @@ class ChatSessionManager(
         return uri.lastPathSegment
     }
 
-    private fun createToolRegistry(provider: com.murong.agent.core.provider.ModelProvider, config: ProviderConfig): ToolRegistry {
+    private fun createToolRegistry(
+        provider: com.murong.agent.core.provider.ModelProvider,
+        config: ProviderConfig,
+        allowWriteTools: Boolean = true
+    ): ToolRegistry {
         val registry = ToolRegistry()
+        val subagentTool = if (config.isBuiltinToolEnabled("subagent")) {
+            createSubagentTool(provider, config)
+        } else {
+            null
+        }
+        var currentGlobalSkills = config.globalSkills
+        val memoryStore = PersistedMemoryStore(
+            baseDir = File(context.filesDir, "memories"),
+            globalMemoriesProvider = { config.globalMemories },
+            projectMemoriesProvider = { _state.value.projectMemories },
+            currentProjectPathProvider = {
+                activeProjectScopePath(
+                    activeScopePath = _state.value.activeProjectScopePath,
+                    projectPath = _state.value.projectPath
+                )
+            }
+        )
+        val skillStore = PersistedSkillStore(
+            globalSkillsProvider = { currentGlobalSkills },
+            projectSkillsProvider = { _state.value.projectSkills },
+            saveGlobalSkills = { updated ->
+                currentGlobalSkills = updated
+                val latestConfig = configRepository.getConfig()
+                configRepository.saveConfig(latestConfig.copy(globalSkills = updated))
+            },
+            saveProjectSkills = { updated ->
+                updateProjectConfig(skills = updated)
+            }
+        )
         registry.register(
             AskUserTool(
                 requestAnswer = ::requestAskUser
@@ -3861,14 +6185,69 @@ class ChatSessionManager(
         )
         registry.register(
             CreateGlobalMemoryTool(
-                configProvider = { configRepository.getConfig() },
-                saveConfig = { configRepository.saveConfig(it) }
+                memoryStore = memoryStore
+            )
+        )
+        registry.register(
+            MemoryListTool(
+                memoryStore = memoryStore
+            )
+        )
+        registry.register(
+            MigrateLegacyMemoriesTool(
+                memoryStore = memoryStore,
+                currentProjectScopePathProvider = {
+                    activeProjectScopePath(
+                        activeScopePath = _state.value.activeProjectScopePath,
+                        projectPath = _state.value.projectPath
+                    )
+                }
+            )
+        )
+        registry.register(
+            RememberMemoryTool(
+                memoryStore = memoryStore,
+                currentProjectScopePathProvider = {
+                    activeProjectScopePath(
+                        activeScopePath = _state.value.activeProjectScopePath,
+                        projectPath = _state.value.projectPath
+                    )
+                },
+                suggestionProvider = ::findRememberMemorySuggestion,
+                onSuggestionApplied = ::markMemoryUpdateSuggestionApplied
+            )
+        )
+        registry.register(
+            MemorySearchTool(
+                memoryStore = memoryStore
+            )
+        )
+        registry.register(
+            MemoryReadTool(
+                memoryStore = memoryStore
+            )
+        )
+        registry.register(
+            ForgetMemoryTool(
+                memoryStore = memoryStore
             )
         )
         registry.register(
             CreateGlobalSkillTool(
-                configProvider = { configRepository.getConfig() },
-                saveConfig = { configRepository.saveConfig(it) }
+                skillStore = skillStore
+            )
+        )
+        registry.register(
+            ReadSkillTool(
+                skillStore = skillStore
+            )
+        )
+        registry.register(
+            RunSkillTool(
+                skillStore = skillStore,
+                subagentExecutor = subagentTool?.let { tool ->
+                    { args -> tool.executeWithResult(args) }
+                }
             )
         )
         if (mcpRegistry != null) {
@@ -3876,7 +6255,12 @@ class ChatSessionManager(
                 CreateMcpServerTool(
                     configsProvider = { mcpRegistry.loadConfigs() },
                     saveConfigs = { mcpRegistry.saveConfigs(it) },
-                    connectAll = { configs -> mcpRegistry.connectAll(configs) }
+                    connectAll = { configs ->
+                        connectMcpServersWithHook(
+                            configs = configs,
+                            trigger = "create_mcp_server"
+                        )
+                    }
                 )
             )
         }
@@ -3902,8 +6286,27 @@ class ChatSessionManager(
                     )
                 },
                 scopeLabelProvider = ::currentProjectScopeLabel,
-                memoriesProvider = { _state.value.projectMemories },
-                updateMemories = { updateProjectConfig(memories = it) }
+                memoryStore = memoryStore
+            )
+        )
+        registry.register(
+            CreateProjectSkillTool(
+                scopePathProvider = {
+                    activeProjectScopePath(
+                        activeScopePath = _state.value.activeProjectScopePath,
+                        projectPath = _state.value.projectPath
+                    )
+                },
+                scopeLabelProvider = ::currentProjectScopeLabel,
+                skillStore = skillStore
+            )
+        )
+        registry.register(
+            SessionHistorySearchTool(
+                sessionsProvider = conversationStore::listSessions,
+                sessionLoader = conversationStore::loadSession,
+                currentSessionIdProvider = { currentSessionId },
+                currentProjectPathProvider = { normalizeProjectPath(_state.value.projectPath) }
             )
         )
         registry.register(
@@ -3932,28 +6335,36 @@ class ChatSessionManager(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
                 githubTokenProvider = { config.githubToken },
                 githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
-            )
+            ),
+            isEnabled = { allowWriteTools },
+            isPromptExposed = { true }
         )
         registry.register(
             TaskRepoCreatePrTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
                 githubTokenProvider = { config.githubToken },
                 githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
-            )
+            ),
+            isEnabled = { allowWriteTools },
+            isPromptExposed = { true }
         )
         registry.register(
             TaskRepoClosePrTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
                 githubTokenProvider = { config.githubToken },
                 githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
-            )
+            ),
+            isEnabled = { allowWriteTools },
+            isPromptExposed = { true }
         )
         registry.register(
             TaskRepoDeleteBranchTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
                 githubTokenProvider = { config.githubToken },
                 githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
-            )
+            ),
+            isEnabled = { allowWriteTools },
+            isPromptExposed = { true }
         )
         registry.register(
             TaskRepoReadFileTool(
@@ -3967,40 +6378,82 @@ class ChatSessionManager(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
                 githubTokenProvider = { config.githubToken },
                 githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
-            )
+            ),
+            isEnabled = { allowWriteTools },
+            isPromptExposed = { true }
+        )
+        registry.register(
+            TaskRepoApplyPatchTool(
+                repositoryProvider = ::currentRemoteTaskRepositoryTarget,
+                githubTokenProvider = { config.githubToken },
+                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+            ),
+            isEnabled = { allowWriteTools },
+            isPromptExposed = { true }
         )
         registry.register(
             TaskRepoUpdateFileTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
                 githubTokenProvider = { config.githubToken },
                 githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
-            )
+            ),
+            isEnabled = { allowWriteTools },
+            isPromptExposed = { true }
         )
         registry.register(
             TaskRepoDeleteFileTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
                 githubTokenProvider = { config.githubToken },
                 githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
-            )
+            ),
+            isEnabled = { allowWriteTools },
+            isPromptExposed = { true }
         )
         registry.register(
             TaskRepoCommitFilesTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
                 githubTokenProvider = { config.githubToken },
                 githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+            ),
+            isEnabled = { allowWriteTools },
+            isPromptExposed = { true }
+        )
+        registry.register(
+            CompleteStepTool(
+                recentToolReceiptsProvider = ::buildRecentToolExecutionReceipts,
+                workflowSnapshotProvider = ::buildWorkflowExecutionSnapshot,
+                onWorkflowStepCompleted = ::markWorkflowStepCompleted
             )
         )
         if (config.isBuiltinToolEnabled("shell")) {
-            registry.register(ShellTool())
+            registry.register(
+                ShellTool(
+                    scheduleBackgroundExecution = ::scheduleBackgroundShellExecution
+                ),
+                isEnabled = { allowWriteTools && shouldExposeLocalProjectTools() },
+                isPromptExposed = { shouldExposeLocalProjectTools() }
+            )
         }
         if (config.isBuiltinToolEnabled("file")) {
-            registry.register(FileTool(config.getEnabledFileToolOperations()))
+            registry.register(
+                FileTool(
+                    config.getEnabledFileToolOperations()
+                ),
+                isEnabled = ::shouldExposeLocalProjectTools
+            )
         }
         if (config.isBuiltinToolEnabled("code_edit")) {
-            registry.register(CodeEditTool())
+            registry.register(
+                CodeEditTool(),
+                isEnabled = { allowWriteTools && shouldExposeLocalProjectTools() },
+                isPromptExposed = { shouldExposeLocalProjectTools() }
+            )
         }
         if (config.isBuiltinToolEnabled("code_search")) {
-            registry.register(CodeSearchTool())
+            registry.register(
+                CodeSearchTool(),
+                isEnabled = ::shouldExposeLocalProjectTools
+            )
         }
         if (config.isBuiltinToolEnabled("web_search")) {
             registry.register(WebSearchTool(config))
@@ -4008,8 +6461,7 @@ class ChatSessionManager(
         if (config.isBuiltinToolEnabled("web_fetch")) {
             registry.register(WebFetchTool())
         }
-        if (config.isBuiltinToolEnabled("subagent")) {
-            val subagentTool = createSubagentTool(provider, config)
+        if (subagentTool != null) {
             registry.register(subagentTool)
             createSubagentPresetTools(subagentTool)
                 .filter { preset -> config.isBuiltinToolEnabled(preset.name) }
@@ -4025,12 +6477,16 @@ class ChatSessionManager(
         return SubagentTool(
             provider = provider,
             baseConfig = config,
-            projectTemplates = _state.value.projectToolPreferences?.subagentTemplates.orEmpty(),
+            projectTemplates = config.projectToolPreferences?.subagentTemplates.orEmpty(),
             allowedFileOperations = config.getEnabledSubagentFileOperations(),
             writableFileOperations = config.getEnabledFileToolOperations().filter { it == "write" }.toSet(),
             allowWebSearchTool = config.isBuiltinToolEnabled("web_search"),
             allowCodeEditTool = config.isBuiltinToolEnabled("code_edit"),
             allowShellTool = config.isBuiltinToolEnabled("shell"),
+            remoteTaskRepositoryTargetProvider = ::currentRemoteTaskRepositoryTarget,
+            remoteTaskRepositoryEditableProvider = { _state.value.remoteTaskRepositoryEditable },
+            githubTokenProvider = { config.githubToken },
+            githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() },
             mcpRegistry = mcpRegistry,
             isCancellationRequested = ::isSubagentCancellationRequested,
             requestApproval = ::waitForApproval,
@@ -4046,9 +6502,13 @@ class ChatSessionManager(
         return if (projectName.isBlank()) normalized else projectName
     }
 
-    private suspend fun waitForApproval(request: ToolApprovalRequest): Boolean {
+    private suspend fun waitForApproval(
+        request: ToolApprovalRequest,
+        planApprovalAutoApproveWindow: PlanApprovalAutoApproveWindow? = null
+    ): Boolean {
         val scopeSummary = approvalScopeSummaryOrNull(request.approvalScopeTokens)
         val requestSubject = approvalRequestSubjectLabel(request)
+        val postureMode = lastSessionConfig.approvalMode
         val approvalDecision = lastSessionConfig.evaluateApprovalRequirement(
             riskLevel = request.riskLevel,
             toolName = request.toolName,
@@ -4056,25 +6516,20 @@ class ChatSessionManager(
             commandBoundaryValue = request.commandBoundaryValue,
             pathBoundaryValue = request.pathBoundaryValue
         )
-        if (isApprovalScopeAlreadyGranted(request)) {
-            recordApproval(
-                toolName = request.toolName,
-                summary = "${request.summary}（复用授权）",
-                decision = "复用授权",
-                scopeSummary = scopeSummary,
-                explanationLabel = "命中当前会话授权",
-                explanationDetail = buildString {
-                    append("当前会话里已存在可覆盖本次")
-                    append(requestSubject)
-                    append("的授权范围")
-                    scopeSummary?.let { append("：$it") }
-                    append("，因此直接复用，不再重复申请审批。")
-                }
-            )
-            return true
-        }
-        findAutoInheritedApprovalCandidate(request)?.let { candidate ->
-            val inherited = mergeApprovedApprovalScope(
+        val planWindowDecision = resolvePlanApprovalAutoApproveDecision(
+            window = planApprovalAutoApproveWindow,
+            request = request
+        )
+        val serializationDecision = resolvePromptRuntimePostureDecision(
+            effectiveMode = postureMode,
+            requestedKind = PendingPromptKind.APPROVAL,
+            hasPendingApproval = hasPendingApprovalPrompt(),
+            hasPendingAsk = hasPendingAskPrompt()
+        )
+        val reusedScope = isApprovalScopeAlreadyGranted(request)
+        val autoInheritedCandidate = if (reusedScope) null else findAutoInheritedApprovalCandidate(request)
+        val inheritedScope = autoInheritedCandidate?.let { candidate ->
+            mergeApprovedApprovalScope(
                 buildAutoInheritedApprovalScope(
                     scope = candidate.scope,
                     sourceSessionId = candidate.sourceSessionId,
@@ -4082,7 +6537,36 @@ class ChatSessionManager(
                     sourceUpdatedAt = candidate.sourceUpdatedAt
                 )
             )
-            if (inherited) {
+        } == true
+        val runtimeDecision = resolveApprovalRuntimePostureDecision(
+            effectiveMode = postureMode,
+            hasReusableScope = reusedScope,
+            hasAutoInheritedScope = inheritedScope,
+            approvalRequirement = approvalDecision,
+            planWindowDecision = planWindowDecision,
+            promptDecision = serializationDecision
+        )
+        when (runtimeDecision.kind) {
+            ApprovalRuntimeDecisionKind.REUSE_EXISTING_SCOPE -> {
+                recordApproval(
+                    toolName = request.toolName,
+                    summary = "${request.summary}（复用授权）",
+                    decision = "复用授权",
+                    scopeSummary = scopeSummary,
+                    explanationLabel = "命中当前会话授权",
+                    explanationDetail = buildString {
+                        append("当前会话里已存在可覆盖本次")
+                        append(requestSubject)
+                        append("的授权范围")
+                        scopeSummary?.let { append("：$it") }
+                        append("，因此直接复用，不再重复申请审批。")
+                    }
+                )
+                return true
+            }
+
+            ApprovalRuntimeDecisionKind.AUTO_INHERIT_SCOPE -> {
+                val candidate = autoInheritedCandidate ?: return false
                 recordApproval(
                     toolName = request.toolName,
                     summary = "${request.summary}（项目自动继承: ${candidate.sourceSessionTitle}）",
@@ -4099,79 +6583,175 @@ class ChatSessionManager(
                 )
                 return true
             }
+
+            ApprovalRuntimeDecisionKind.AUTO_APPROVE_BY_POSTURE -> {
+                registerApprovedApprovalScope(request)
+                recordApproval(
+                    toolName = request.toolName,
+                    summary = request.summary,
+                    decision = "自动批准",
+                    scopeSummary = scopeSummary,
+                    explanationLabel = runtimeDecision.explanationLabel,
+                    explanationDetail = buildString {
+                        append(runtimeDecision.explanationDetail)
+                        scopeSummary?.let { append("，并记录范围：$it") }
+                        append("。")
+                    }
+                )
+                return true
+            }
+
+            ApprovalRuntimeDecisionKind.AUTO_APPROVE_BY_PLAN_WINDOW -> {
+                recordApproval(
+                    toolName = request.toolName,
+                    summary = "${request.summary}（按计划执行窗口）",
+                    decision = "计划窗口自动放行",
+                    scopeSummary = scopeSummary,
+                    explanationLabel = runtimeDecision.explanationLabel,
+                    explanationDetail = buildString {
+                        append(runtimeDecision.explanationDetail)
+                        scopeSummary?.let { append(" 当前请求范围：$it") }
+                    }
+                )
+                return true
+            }
+
+            ApprovalRuntimeDecisionKind.BLOCKED_BY_PROMPT_SERIALIZATION -> {
+                recordApproval(
+                    toolName = request.toolName,
+                    summary = "${request.summary}（串行化守门拦截）",
+                    decision = "串行化守门拦截",
+                    scopeSummary = scopeSummary,
+                    explanationLabel = runtimeDecision.explanationLabel,
+                    explanationDetail = runtimeDecision.explanationDetail
+                )
+                appendSystemMessage(
+                    content = "⚠️ ${runtimeDecision.explanationDetail}",
+                    source = "approval:blocked_by_prompt_serialization"
+                )
+                return false
+            }
+
+            ApprovalRuntimeDecisionKind.REQUIRE_MANUAL_APPROVAL -> Unit
         }
-        if (!approvalDecision.requiresApproval) {
-            registerApprovedApprovalScope(request)
-            recordApproval(
-                toolName = request.toolName,
-                summary = request.summary,
-                decision = "自动批准",
-                scopeSummary = scopeSummary,
-                explanationLabel = approvalDecision.explanationLabel,
-                explanationDetail = buildString {
-                    append(approvalDecision.explanationDetail)
-                    scopeSummary?.let { append("，并记录范围：$it") }
-                    append("。")
-                }
-            )
-            return true
-        }
+        val requestedApproval = applyApprovalRequestedHook(
+            toolName = request.toolName,
+            summary = request.summary,
+            detail = request.detail,
+            rawArgs = request.rawArgs,
+            riskLevel = request.riskLevel,
+            requestSubject = requestSubject,
+            scopeSummary = scopeSummary,
+            explanationLabel = runtimeDecision.explanationLabel,
+            explanationDetail = runtimeDecision.explanationDetail,
+            hookBus = hookBus
+        )
         val deferred = CompletableDeferred<Boolean>()
+        val approvalTransitionPayload = buildApprovalDecisionTransitionPayload(_state.value)
         pendingApprovalDecision = deferred
         _state.value = _state.value.copy(
             pendingApproval = PendingApprovalUi(
-                toolName = request.toolName,
-                summary = request.summary,
-                detail = request.detail,
-                rawArgs = request.rawArgs,
-                riskLevel = request.riskLevel,
-                explanationLabel = approvalDecision.explanationLabel,
-                explanationDetail = approvalDecision.explanationDetail
+                toolName = requestedApproval.toolName,
+                summary = requestedApproval.summary,
+                detail = requestedApproval.detail,
+                rawArgs = requestedApproval.rawArgs,
+                riskLevel = requestedApproval.riskLevel,
+                explanationLabel = requestedApproval.explanationLabel,
+                explanationDetail = requestedApproval.explanationDetail
             )
         )
+        saveCurrentSession()
         return try {
             val decision = deferred.await()
             if (decision) {
                 registerApprovedApprovalScope(request)
             }
             recordApproval(
-                toolName = request.toolName,
-                summary = request.summary,
+                toolName = requestedApproval.toolName,
+                summary = requestedApproval.summary,
                 decision = if (decision) "Approved" else "Rejected",
-                scopeSummary = scopeSummary,
+                scopeSummary = requestedApproval.scopeSummary,
                 explanationLabel = if (decision) "用户确认放行" else "用户拒绝",
                 explanationDetail = buildString {
-                    append(approvalDecision.explanationDetail)
+                    append(requestedApproval.explanationDetail)
                     append("\n")
                     append("本次")
-                    append(requestSubject)
+                    append(requestedApproval.requestSubject)
                     append("未命中会话复用、项目自动继承或当前审批放行规则，因此进入人工审批；用户已")
                     append(if (decision) "批准" else "拒绝")
                     append("该请求")
-                    scopeSummary?.let { append("，申请范围：$it") }
+                    requestedApproval.scopeSummary?.let { append("，申请范围：$it") }
                     append("。")
                 }
             )
+            _state.value = applyApprovalDecisionTransition(
+                state = _state.value,
+                approved = decision,
+                payload = approvalTransitionPayload,
+                rejectedSummary = requestedApproval.summary
+            )
+            if (decision) {
+                approvalTransitionPayload.approvedResumePayload?.let { resumePayload ->
+                    recordConversationPromptCheckpoint(summary = resumePayload.recoverySummary)
+                }
+            }
+            saveCurrentSession()
             decision
         } finally {
-            clearPendingApproval()
+            pendingApprovalDecision = null
+            if (_state.value.pendingApproval != null) {
+                _state.value = applyPendingApprovalClearedTransition(_state.value)
+                saveCurrentSession()
+            }
         }
     }
 
     private fun clearPendingApproval() {
         pendingApprovalDecision = null
-        _state.value = _state.value.copy(pendingApproval = null)
+        _state.value = applyPendingApprovalClearedTransition(_state.value)
+        saveCurrentSession()
     }
 
     private fun clearPendingAsk() {
         pendingAskDecision = null
         _state.value = _state.value.copy(pendingAskRequest = null)
+        saveCurrentSession()
+    }
+
+    private fun hasPendingApprovalPrompt(): Boolean {
+        return _state.value.pendingApproval != null || pendingApprovalDecision != null
+    }
+
+    private fun hasPendingAskPrompt(): Boolean {
+        return _state.value.pendingAskRequest != null || pendingAskDecision != null
     }
 
     private suspend fun requestAskUser(request: PendingAskRequestUi): List<AskAnswerUi>? {
+        val serializationDecision = resolvePromptRuntimePostureDecision(
+            effectiveMode = lastSessionConfig.approvalMode,
+            requestedKind = PendingPromptKind.ASK,
+            hasPendingApproval = hasPendingApprovalPrompt(),
+            hasPendingAsk = hasPendingAskPrompt()
+        )
+        if (serializationDecision.blocked) {
+            appendSystemMessage(
+                content = "⚠️ ${serializationDecision.explanationDetail}",
+                source = "ask_user:blocked_by_prompt_serialization"
+            )
+            return null
+        }
+        val requestWithHistory = buildStateAwarePendingAskRequest(
+            request = request,
+            state = _state.value
+        )
         val deferred = CompletableDeferred<List<AskAnswerUi>?>()
         pendingAskDecision = deferred
-        _state.value = _state.value.copy(pendingAskRequest = request)
+        _state.value = _state.value.copy(pendingAskRequest = requestWithHistory)
+        recordConversationPromptCheckpoint(
+            summary = "交互状态: 等待用户确认",
+            createdAt = requestWithHistory.createdAt
+        )
+        saveCurrentSession()
         return try {
             deferred.await()
         } finally {
@@ -4181,6 +6761,20 @@ class ChatSessionManager(
 
     private fun appendUsage(usage: Usage, config: ProviderConfig) {
         val current = _state.value.usageSummary
+        val cacheShape = pendingPromptCacheShape ?: capturePromptCacheShape(
+            stableSystemContext = null,
+            toolsJson = "",
+            compressionContext = null,
+            projectContext = null,
+            sessionGoalContext = null,
+            projectSkillsContext = null,
+            mcpToolsContext = null,
+            readOnlyPlanMode = false
+        )
+        val cacheDiagnostics = buildPromptCacheDiagnostics(
+            previous = current,
+            current = cacheShape
+        )
         val updatedPromptTokens = current.promptTokens + usage.promptTokens
         val updatedCompletionTokens = current.completionTokens + usage.completionTokens
         val updatedTotalTokens = current.totalTokens + usage.totalTokens
@@ -4203,14 +6797,32 @@ class ChatSessionManager(
                 totalTokens = updatedTotalTokens,
                 promptCacheHitTokens = updatedCacheHit,
                 promptCacheMissTokens = updatedCacheMiss,
+                lastTurnPromptCacheHitTokens = usage.promptCacheHitTokens ?: 0,
+                lastTurnPromptCacheMissTokens = usage.promptCacheMissTokens ?: 0,
+                lastCachePrefixHash = cacheDiagnostics.shape.prefixHash,
+                lastCacheStableSystemHash = cacheDiagnostics.shape.stableSystemHash,
+                lastCacheToolsHash = cacheDiagnostics.shape.toolsHash,
+                lastCacheCompressionHash = cacheDiagnostics.shape.compressionHash,
+                lastCacheProjectContextHash = cacheDiagnostics.shape.projectContextHash,
+                lastCacheSessionGoalHash = cacheDiagnostics.shape.sessionGoalHash,
+                lastCacheProjectSkillsHash = cacheDiagnostics.shape.projectSkillsHash,
+                lastCacheMcpToolsHash = cacheDiagnostics.shape.mcpToolsHash,
+                lastCachePlanModeHash = cacheDiagnostics.shape.planModeHash,
+                lastCachePrefixChanged = cacheDiagnostics.prefixChanged,
+                lastCachePrefixChangeReasons = cacheDiagnostics.prefixChangeReasons,
                 estimatedCostAmount = updatedEstimatedCostAmount,
                 estimatedCostCurrency = estimatedCostCurrency,
                 estimatedCostUsd = updatedEstimatedCostUsd
             )
         )
+        pendingPromptCacheShape = null
     }
 
-    private fun appendSubagentEvent(event: SubagentUiEvent) {
+    private fun appendSubagentEvent(originalEvent: SubagentUiEvent) {
+        val event = applySubagentLifecycleHook(
+            event = originalEvent,
+            hookBus = hookBus
+        )
         val affectedBatchId = when (event) {
             is SubagentUiEvent.BatchApprovalRequested -> event.batchId
             is SubagentUiEvent.BatchRejected -> event.batchId
@@ -4923,17 +7535,13 @@ class ChatSessionManager(
         }
     }
 
-    private fun refreshBackgroundExecutionState() {
-        val (slotAssignments, queuedRunIds) = synchronized(subagentExecutionLock) {
-            runningSubagentExecutionSlots.toMap() to pendingSubagentExecutions.map { it.runId }
-        }
-        val runningByRunId = slotAssignments.entries.associate { (slot, runId) -> runId to slot }
+    private fun refreshBackgroundExecutionState(schedulerJobs: List<BackgroundJobUi> = subagentSchedulerJobs) {
+        val schedulerJobsByRunId = schedulerJobs.associateBy { it.jobId }
         val currentRuns = _state.value.subagentRuns
         val updatedRuns = currentRuns.map { run ->
-            val assignedSlot = runningByRunId[run.runId]
-            val queuePosition = queuedRunIds.indexOf(run.runId)
-                .takeIf { it >= 0 }
-                ?.plus(1)
+            val schedulerJob = schedulerJobsByRunId[run.runId]
+            val assignedSlot = schedulerJob?.assignedSlot
+            val queuePosition = schedulerJob?.queuePosition
             val updatedStatusMessage = buildSubagentQueueStatusMessage(
                 status = run.status,
                 retryCount = run.retryCount,
@@ -4953,7 +7561,6 @@ class ChatSessionManager(
         updatedRuns.mapNotNull { it.batchId }
             .distinct()
             .forEach(::refreshSubagentBatchState)
-        saveCurrentSession()
     }
 
     private fun buildSubagentQueueStatusMessage(
@@ -5113,6 +7720,7 @@ class ChatSessionManager(
                 finishedAt = finishedAt
             )
         }
+        _state.value = applyParallelBatchWorkflowProgressTransition(_state.value)
 
         val updatedBatch = _state.value.subagentBatches.firstOrNull { it.batchId == batchId } ?: return
         updateSubagentBatchMessage(
@@ -5427,7 +8035,7 @@ class ChatSessionManager(
     fun cancelSubagentRun(runId: String): Boolean {
         val target = _state.value.subagentRuns.firstOrNull { it.runId == runId } ?: return false
         if (target.status !in setOf("pending_approval", "queued", "running", "summarizing")) return false
-        if (removePendingSubagentExecution(runId)) {
+        if (subagentBackgroundJobsManager.cancelQueued(runId)) {
             synchronized(cancelledSubagentRunIds) {
                 cancelledSubagentRunIds.add(runId)
             }
@@ -5468,7 +8076,7 @@ class ChatSessionManager(
         if (originalRun.status !in setOf("failed", "cancelled", "completed", "rejected")) return false
 
         val globalConfig = configRepository.getConfig()
-        val config = globalConfig.applyProjectToolPreferences(_state.value.projectToolPreferences)
+        val config = resolveEffectiveSessionConfig(globalConfig = globalConfig)
         lastSessionConfig = config
         val apiKey = config.getActiveApiKey().trim()
         if (apiKey.isBlank()) {
@@ -5589,83 +8197,79 @@ class ChatSessionManager(
         }
     }
 
+    private suspend fun scheduleBackgroundShellExecution(
+        request: BackgroundJobRequest,
+        executeNow: suspend () -> BackgroundJobCompletion
+    ): String {
+        return backgroundJobsManager.schedule(
+            request = request,
+            executeNow = executeNow
+        )
+    }
+
+    private fun appendBackgroundJobCompletionNotice(job: BackgroundJobUi) {
+        val statusLabel = when (job.status) {
+            "completed" -> "已完成"
+            "failed" -> "失败"
+            else -> "已结束"
+        }
+        val preview = job.resultPreview
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { truncateBackgroundJobPreview(it, 240) }
+        appendSystemMessage(
+            content = buildString {
+                append("后台任务$statusLabel：")
+                append(job.title.ifBlank { job.toolName })
+                job.summary.trim()
+                    .takeIf { it.isNotBlank() }
+                    ?.let { summary ->
+                        append(" · ")
+                        append(summary)
+                    }
+                preview?.let {
+                    append("\n")
+                    append(it)
+                }
+            },
+            source = "background_job_completion"
+        )
+    }
+
+    private fun truncateBackgroundJobPreview(text: String, maxChars: Int): String {
+        val normalized = text.replace("\r\n", "\n").trim()
+        if (normalized.length <= maxChars) return normalized
+        return normalized.take((maxChars - 3).coerceAtLeast(1)).trimEnd() + "..."
+    }
+
     private suspend fun scheduleBackgroundSubagentExecution(
         runId: String,
         executeNow: suspend () -> String
     ): String {
-        val execution = PendingSubagentExecution(runId = runId) {
-            executeNow()
+        return subagentBackgroundJobsManager.schedule(
+            request = BackgroundJobRequest(
+                jobIdOverride = runId,
+                toolName = "subagent",
+                title = "子代理后台任务",
+                summary = runId
+            )
+        ) {
+            val output = executeNow()
+            BackgroundJobCompletion(
+                status = when {
+                    output.startsWith("Subagent cancelled:", ignoreCase = true) -> "cancelled"
+                    output.startsWith("Subagent failed:", ignoreCase = true) -> "failed"
+                    output.startsWith("Subagent rejected:", ignoreCase = true) -> "rejected"
+                    else -> "completed"
+                },
+                statusMessage = when {
+                    output.startsWith("Subagent cancelled:", ignoreCase = true) -> "子代理后台任务已取消。"
+                    output.startsWith("Subagent failed:", ignoreCase = true) -> "子代理后台任务执行失败。"
+                    output.startsWith("Subagent rejected:", ignoreCase = true) -> "子代理后台任务被拒绝。"
+                    else -> "子代理后台任务执行完成。"
+                }
+            )
         }
-        val (startNow, queuePosition, assignedSlot) = synchronized(subagentExecutionLock) {
-            if (runningSubagentExecutionSlots.size < maxConcurrentSubagentExecutions) {
-                val slot = findNextAvailableSubagentSlot()
-                runningSubagentExecutionSlots[slot] = runId
-                Triple(true, 0, slot)
-            } else {
-                pendingSubagentExecutions.add(execution)
-                Triple(false, pendingSubagentExecutions.size, null)
-            }
-        }
-        refreshBackgroundExecutionState()
-        if (startNow) {
-            launchBackgroundSubagentExecution(execution)
-            return "Subagent queued in background: $runId (slot $assignedSlot/$maxConcurrentSubagentExecutions)"
-        }
-        return "Subagent queued in background: $runId (position $queuePosition)"
-    }
-
-    private fun launchBackgroundSubagentExecution(execution: PendingSubagentExecution) {
-        subagentExecutionScope.launch {
-            try {
-                execution.execute()
-            } finally {
-                onBackgroundSubagentExecutionFinished(execution.runId)
-            }
-        }
-    }
-
-    private fun onBackgroundSubagentExecutionFinished(runId: String) {
-        val next = synchronized(subagentExecutionLock) {
-            val freedSlot = runningSubagentExecutionSlots.entries.firstOrNull { it.value == runId }?.key
-            if (freedSlot != null) {
-                runningSubagentExecutionSlots.remove(freedSlot)
-            }
-            if (pendingSubagentExecutions.isEmpty()) {
-                null
-            } else {
-                val pending = pendingSubagentExecutions.removeAt(0)
-                val slot = freedSlot ?: findNextAvailableSubagentSlot()
-                runningSubagentExecutionSlots[slot] = pending.runId
-                pending
-            }
-        }
-        refreshBackgroundExecutionState()
-        next?.let(::launchBackgroundSubagentExecution)
-    }
-
-    private fun removePendingSubagentExecution(runId: String): Boolean {
-        val removed = synchronized(subagentExecutionLock) {
-            val index = pendingSubagentExecutions.indexOfFirst { it.runId == runId }
-            if (index == -1) {
-                false
-            } else {
-                pendingSubagentExecutions.removeAt(index)
-                true
-            }
-        }
-        if (removed) {
-            refreshBackgroundExecutionState()
-        }
-        return removed
-    }
-
-    private fun findNextAvailableSubagentSlot(): Int {
-        for (slot in 1..maxConcurrentSubagentExecutions) {
-            if (slot !in runningSubagentExecutionSlots) {
-                return slot
-            }
-        }
-        return maxConcurrentSubagentExecutions
     }
 
     private fun buildCompressionContext(state: SessionState = _state.value): String? {
@@ -5710,11 +8314,7 @@ class ChatSessionManager(
             }
         val activeProjectMemories = state.projectMemories
             .filter { it.enabled }
-            .mapNotNull { memory ->
-                val content = memory.content.trim()
-                if (content.isBlank()) return@mapNotNull null
-                memory.title.trim().ifBlank { "unnamed" } to content
-            }
+            .count { memory -> memory.content.trim().isNotBlank() }
         return buildString {
             appendLine("Project Context:")
             scopePath?.let {
@@ -5731,15 +8331,20 @@ class ChatSessionManager(
                 )
                 appendLine("When the user asks about this repository, prefer enabled GitHub/MCP remote tools instead of assuming local file access.")
                 appendLine("Do not substitute similarly named local directories for this remote repository unless the user explicitly switches back to a local project.")
-                appendLine("For the current task repository, prefer tool aliases task_repo_list_dir, task_repo_list_branches, task_repo_create_branch, task_repo_create_pr, task_repo_close_pr, task_repo_delete_branch, task_repo_search_code, task_repo_read_file, task_repo_search_replace, task_repo_update_file, task_repo_delete_file, and task_repo_commit_files before generic mcp_* tools.")
+                appendLine("While a remote task repository is active, local shell/file/code_edit/code_search tools are hidden from the main agent; stay on task_repo_* unless the user explicitly switches context.")
+                appendLine("For the current task repository, prefer tool aliases task_repo_list_dir, task_repo_list_branches, task_repo_create_branch, task_repo_create_pr, task_repo_close_pr, task_repo_delete_branch, task_repo_search_code, task_repo_read_file, task_repo_search_replace, task_repo_apply_patch, task_repo_update_file, task_repo_delete_file, and task_repo_commit_files before generic mcp_* tools.")
                 appendLine("If the exact remote path is still unclear, use task_repo_list_dir first to browse the repository structure before reading or editing files.")
+                appendLine("Remote task_repo_read_file may auto-window large files; if you need a later section, continue with explicit startLine/endLine instead of assuming the whole file is already in context.")
                 appendLine("If the edit is a small, exact replacement in one remote file, prefer task_repo_search_replace before task_repo_update_file.")
+                appendLine("If the edit needs several exact hunks or touches a large remote file without replacing the whole file, prefer task_repo_apply_patch; it can use structured hunks or patch_text, and when the same search text appears multiple times, include context_before/context_after and, if you know the rough location, line_hint to lock the intended hunk.")
+                appendLine("If an existing remote file is very large, avoid whole-file task_repo_update_file or task_repo_commit_files overwrites; read the relevant window first and prefer task_repo_search_replace.")
                 appendLine("If branch names are unclear before writing or batch committing, use task_repo_list_branches first.")
                 appendLine("If the user wants to isolate changes before editing, use task_repo_create_branch first and then commit to that branch.")
                 appendLine("If the user wants to open a Pull Request after remote changes are committed, use task_repo_create_pr.")
                 appendLine("If a test PR or branch should be cleaned up after verification, use task_repo_close_pr and task_repo_delete_branch to restore the repository state.")
                 appendLine("If the user asks to delete a remote file, use task_repo_delete_file. Do not simulate deletion by writing an empty file.")
                 appendLine("If the user wants one commit containing multiple file edits, use task_repo_commit_files instead of multiple single-file submissions.")
+                appendLine("Before claiming that a plan step, verification step, or critical execution step is complete, call complete_step with real tool evidence instead of only stating it in natural language.")
             }
             if (projectPath != null) {
                 if (remoteTaskRepositoryLabel != null) {
@@ -5764,20 +8369,23 @@ class ChatSessionManager(
                     appendLine("  $content")
                 }
             }
-            if (activeProjectMemories.isNotEmpty()) {
+            if (activeProjectMemories > 0) {
                 appendLine()
-                appendLine("Active Project Memories:")
-                activeProjectMemories.forEach { (title, content) ->
-                    appendLine("- Memory: $title")
-                    appendLine("  $content")
-                }
+                appendLine("Legacy Project Memories Detected:")
+                appendLine("- $activeProjectMemories legacy config memories remain in this project scope.")
+                appendLine("- Their contents are not injected into the project context anymore.")
+                appendLine("- Use memory_list / memory_search / memory_read when you need durable or bridged memory content.")
+                appendLine("- If the user explicitly wants to retire old config memories, use migrate_legacy_memories.")
             }
             if (scopePath != null) {
                 appendLine()
-                appendLine("Project rule/memory management:")
+                appendLine("Project rule/memory/skill management:")
                 appendLine("- If the user explicitly asks to save a reusable project rule, use create_project_rule.")
-                appendLine("- If the user explicitly asks to save a reusable project memory, use create_project_memory.")
-                appendLine("- Do not auto-create or auto-extract project rules or memories from ordinary conversation.")
+                appendLine("- If the user explicitly asks to save a reusable project memory, prefer remember_memory with scope=project; create_project_memory remains a compatibility path.")
+                appendLine("- If the user explicitly asks to delete a durable project memory, use forget_memory.")
+                appendLine("- If the user explicitly asks to migrate old legacy project memories into durable memory, use migrate_legacy_memories.")
+                appendLine("- If the user explicitly asks to save a reusable project skill, use create_project_skill.")
+                appendLine("- Do not auto-create or auto-extract project rules, memories, or skills from ordinary conversation.")
             }
         }.trim()
     }
@@ -5799,6 +8407,89 @@ class ChatSessionManager(
             repo = repo,
             label = state.remoteTaskRepositoryLabel?.trim().takeUnless { it.isNullOrBlank() } ?: "$owner/$repo"
         )
+    }
+
+    private fun shouldExposeLocalProjectTools(): Boolean {
+        return shouldExposeLocalProjectTools(_state.value)
+    }
+
+    private fun buildRecentToolExecutionReceipts(): List<ToolExecutionReceipt> {
+        return _state.value.recentToolCalls.map { record ->
+            ToolExecutionReceipt(
+                toolName = record.toolName,
+                args = record.args,
+                result = record.result,
+                isSuccess = record.isSuccess,
+                structuredPayload = record.structuredPayload,
+                timestamp = record.timestamp
+            )
+        }
+    }
+
+    private fun buildPersistentFinalReadinessReceipt(
+        state: SessionState,
+        executionGoal: String
+    ): FinalReadinessReceipt? {
+        return buildCanonicalWorkflowReadinessReceipt(
+            canonicalPlan = state.canonicalWorkflowPlan,
+            executionGoal = executionGoal
+        )
+    }
+
+    private fun buildWorkflowExecutionSnapshot(): WorkflowExecutionSnapshot? {
+        val plan = _state.value.pendingWorkflowPlan ?: _state.value.canonicalWorkflowPlan ?: return null
+        return WorkflowExecutionSnapshot(
+            steps = plan.steps,
+            currentStepIndex = plan.currentStepIndex,
+            status = plan.status.name
+        )
+    }
+
+    private fun markWorkflowStepCompleted(completion: WorkflowStepCompletion) {
+        val currentPlan = _state.value.pendingWorkflowPlan ?: _state.value.canonicalWorkflowPlan ?: return
+        if (currentPlan.steps.isEmpty()) return
+        val updatedPlan = normalizeWorkflowPlan(
+            resolveWorkflowPlanAfterStepCompletion(
+                currentPlan = currentPlan,
+                completion = completion
+            )
+        )
+        _state.value = applyWorkflowPlanProgressTransition(
+            state = _state.value,
+            updatedPlan = updatedPlan
+        )
+        saveCurrentSession()
+    }
+
+    private fun buildReadOnlyPlanModeToolBlockMessage(
+        toolName: String,
+        args: String
+    ): String? {
+        return when {
+            toolName == "shell" ->
+                "Blocked by planning mode: shell is disabled until the pending plan/clarification is resolved."
+            toolName == "code_edit" ->
+                "Blocked by planning mode: code_edit is disabled until the pending plan/clarification is resolved."
+            toolName == "file" && isWriteLikeFileToolOperation(args) ->
+                "Blocked by planning mode: file write/delete/chmod operations are disabled until the pending plan/clarification is resolved."
+            toolName in READ_ONLY_PLAN_MODE_BLOCKED_TOOL_NAMES ->
+                "Blocked by planning mode: `$toolName` is a write-capable tool and cannot run until the pending plan/clarification is resolved."
+            else -> null
+        }
+    }
+
+    private fun isWriteLikeFileToolOperation(args: String): Boolean {
+        return try {
+            val operation = Json.parseToJsonElement(args)
+                .jsonObject["operation"]
+                ?.jsonPrimitive
+                ?.contentOrNull
+                ?.trim()
+                ?.lowercase()
+            operation in WRITE_LIKE_FILE_OPERATIONS
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun buildSessionGoalContext(): String? {
@@ -5925,10 +8616,11 @@ class ChatSessionManager(
         mentionedFiles: List<FileMentionUi>,
         extraContext: String? = null
     ): String? {
-        return listOfNotNull(
-            buildMentionedFilesContext(mentionedFiles)?.takeIf { it.isNotBlank() },
-            extraContext?.takeIf { it.isNotBlank() }
-        ).takeIf { it.isNotEmpty() }?.joinToString("\n\n")
+        return buildTurnScopedAuxiliaryUserContext(
+            recentSessionHistoryClue = _state.value.recentSessionHistoryClue,
+            mentionedFilesContext = buildMentionedFilesContext(mentionedFiles),
+            extraContext = extraContext
+        )
     }
 
     private fun buildWorkflowPlanPrompt(
@@ -6036,7 +8728,8 @@ class ChatSessionManager(
     private fun parseWorkflowPlan(
         goal: String,
         rawPlan: String,
-        mentionedFiles: List<FileMentionUi>
+        mentionedFiles: List<FileMentionUi>,
+        recentSessionHistoryClue: SessionHistoryReferenceClueUi?
     ): WorkflowPlanUi {
         val normalized = rawPlan.trim()
         val lines = normalized.lines().map { it.trim() }.filter { it.isNotBlank() }
@@ -6067,12 +8760,22 @@ class ChatSessionManager(
                 nextStepHint = normalizedSteps.firstOrNull().orEmpty(),
                 status = WorkflowPlanStatusUi.READY,
                 mentionedFiles = mentionedFiles.distinctBy { it.path },
+                recentSessionHistoryClue = recentSessionHistoryClue,
                 rawPlan = normalized
             )
         )
     }
 
-    private fun buildWorkflowExecutionPrompt(plan: WorkflowPlanUi): String {
+    private fun buildWorkflowExecutionPrompt(
+        state: SessionState,
+        plan: WorkflowPlanUi
+    ): String {
+        val activeParallelBatchHint = buildActiveParallelBatchExecutionHint(state)
+        val settledParallelBatchHint = if (activeParallelBatchHint == null) {
+            buildSettledParallelBatchExecutionHint(state)
+        } else {
+            null
+        }
         return buildString {
             appendLine("请按这份已确认的执行计划继续完成任务。")
             appendLine()
@@ -6102,6 +8805,23 @@ class ChatSessionManager(
                 }
             )
             appendLine()
+            buildControllerSessionHistoryContext(state, plan.recentSessionHistoryClue)?.let {
+                appendLine(it)
+                appendLine()
+            }
+            appendLine("步骤签收要求:")
+            appendLine("每当完成一个计划步骤、验证步骤或关键执行步骤时，先调用 complete_step，并引用本轮真实工具证据，再在自然语言里声称这一步已经完成。")
+            activeParallelBatchHint?.let { hint ->
+                appendLine()
+                appendLine("并行批次约束:")
+                appendLine(hint)
+            }
+            settledParallelBatchHint?.let { hint ->
+                appendLine()
+                appendLine("并行批次收敛提示:")
+                appendLine(hint)
+            }
+            appendLine()
             append("要求：优先在一次连续工作流中完成整条链路，减少中间输出和上下文污染；")
             append("只有在缺少信息、需要审批或必须用户决策时才中途打断。")
         }.trim()
@@ -6112,6 +8832,11 @@ class ChatSessionManager(
         val normalizedStages = plan.stageLabels.filter { it.isNotBlank() }
             .ifEmpty { buildDefaultWorkflowStages(normalizedSteps) }
         val boundedStepIndex = plan.currentStepIndex.coerceIn(0, normalizedSteps.size)
+        val normalizedSignOffs = plan.stepSignOffs
+            .filter { it.stepIndex in normalizedSteps.indices }
+            .groupBy { it.stepIndex }
+            .mapNotNull { (_, entries) -> entries.maxByOrNull(WorkflowStepSignOffUi::signedOffAt) }
+            .sortedBy { it.stepIndex }
         val boundedStageIndex = deriveWorkflowStageIndex(
             status = plan.status,
             currentStepIndex = boundedStepIndex,
@@ -6123,6 +8848,7 @@ class ChatSessionManager(
             stageLabels = normalizedStages,
             currentStepIndex = boundedStepIndex,
             currentStageIndex = boundedStageIndex,
+            stepSignOffs = normalizedSignOffs,
             nextStepHint = plan.nextStepHint.ifBlank {
                 defaultWorkflowNextStepHint(plan.status, normalizedSteps, boundedStepIndex)
             }
@@ -6162,15 +8888,6 @@ class ChatSessionManager(
                 "先处理当前阻塞项，再继续推进这份计划。"
             WorkflowPlanStatusUi.COMPLETED ->
                 "当前计划已完成，可继续发起下一轮任务或重做计划。"
-        }
-    }
-
-    private fun buildBlockedWorkflowHint(state: SessionState): String {
-        return when {
-            state.pendingApproval != null -> "先处理审批请求，再继续按计划执行。"
-            state.pendingClarificationRequest != null -> "先回答澄清问题，再继续按计划执行。"
-            !state.error.isNullOrBlank() -> "先处理执行错误，再决定是重试还是重规划。"
-            else -> "先补齐阻塞条件，再继续推进当前计划。"
         }
     }
 
@@ -6243,7 +8960,8 @@ class ChatSessionManager(
         previousAnswers: List<ClarificationAnswerUi>,
         turnIndex: Int,
         maxTurns: Int,
-        source: ClarificationSource
+        source: ClarificationSource,
+        recentSessionHistoryClue: SessionHistoryReferenceClueUi?
     ): ClarificationRequestUi {
         val normalized = rawQuestion
             .lineSequence()
@@ -6263,16 +8981,19 @@ class ChatSessionManager(
             previousAnswers = previousAnswers,
             turnIndex = turnIndex,
             maxTurns = maxTurns,
-            source = source
+            source = source,
+            recentSessionHistoryClue = recentSessionHistoryClue
         )
     }
 
     private fun buildClarificationFollowUpPrompt(
+        state: SessionState,
         goal: String,
         history: List<ChatMessage>,
         compressionContext: String?,
         mentionedFiles: List<FileMentionUi>,
         answers: List<ClarificationAnswerUi>,
+        recentSessionHistoryClue: SessionHistoryReferenceClueUi?,
         nextTurnIndex: Int,
         maxTurns: Int
     ): List<ChatMessage> {
@@ -6297,6 +9018,10 @@ class ChatSessionManager(
                     role = "user",
                     content = buildString {
                         buildTurnScopedAuxiliaryUserContext(mentionedFiles)?.let {
+                            appendLine(it)
+                            appendLine()
+                        }
+                        buildControllerSessionHistoryContext(state, recentSessionHistoryClue)?.let {
                             appendLine(it)
                             appendLine()
                         }
@@ -6344,6 +9069,20 @@ class ChatSessionManager(
         goal: String,
         answers: List<ClarificationAnswerUi>
     ): String {
+        return buildClarificationExecutionPrompt(
+            goal = goal,
+            answers = answers,
+            state = SessionState(),
+            recentSessionHistoryClue = null
+        )
+    }
+
+    private fun buildClarificationExecutionPrompt(
+        goal: String,
+        answers: List<ClarificationAnswerUi>,
+        state: SessionState,
+        recentSessionHistoryClue: SessionHistoryReferenceClueUi?
+    ): String {
         return buildString {
             appendLine("用户已经完成当前阶段的澄清，请基于这些信息继续完成任务。")
             appendLine()
@@ -6353,6 +9092,10 @@ class ChatSessionManager(
             appendLine("已确认的澄清信息:")
             appendLine(formatClarificationAnswers(answers))
             appendLine()
+            buildControllerSessionHistoryContext(state, recentSessionHistoryClue)?.let {
+                appendLine(it)
+                appendLine()
+            }
             append("要求：吸收这些澄清信息后继续执行，不要重复追问已经确认过的内容；")
             append("只有在仍然存在新的关键阻塞信息时，才提出新的澄清问题。")
         }.trim()
@@ -6431,7 +9174,6 @@ class ChatSessionManager(
         val assistantMessage = _state.value.messages.firstOrNull { it.id == assistantMessageId } ?: return false
         val interruption = parseExecutionInterruptionDecision(assistantMessage.content) ?: return false
         val nextTurnIndex = existingClarificationAnswers.size + 1
-        val resolvedMaxTurns = max(MAX_CLARIFICATION_TURNS, nextTurnIndex)
         if (interruption.usedFallbackQuestion) {
             when (
                 resolveWorkflowFailureFallbackMode(
@@ -6446,6 +9188,13 @@ class ChatSessionManager(
                 )
             ) {
                 WorkflowFailureFallbackMode.DIRECT_EXECUTION -> {
+                    val stateBeforeResume = _state.value
+                    val resumeExecutionPayload = buildResumeExecutionPayload(
+                        executionGoal = executionGoal,
+                        existingClarificationAnswers = existingClarificationAnswers,
+                        state = stateBeforeResume,
+                        clarificationExecutionPromptBuilder = ::buildClarificationExecutionPrompt
+                    )
                     updateMessage(assistantMessageId) { message ->
                         message.copy(
                             content = "执行中自动打断格式不完整，已按配置回退为直接继续执行。",
@@ -6453,27 +9202,17 @@ class ChatSessionManager(
                             isStreaming = false
                         )
                     }
-                    _state.value = _state.value.copy(
-                        isProcessing = false,
-                        pendingWorkflowPlan = null,
-                        workflowPlanningInProgress = false,
-                        pendingClarificationRequest = null,
-                        clarificationInProgress = false,
-                        autoRoutingInProgress = false
+                    _state.value = applyDirectExecutionResumeTransition(
+                        state = _state.value,
+                        clearPendingWorkflowPlan = true
                     )
                     sendMessageInternal(
-                        userVisibleText = "继续执行: $executionGoal",
-                        modelInput = if (existingClarificationAnswers.isNotEmpty()) {
-                            buildClarificationExecutionPrompt(
-                                goal = executionGoal,
-                                answers = existingClarificationAnswers
-                            )
-                        } else {
-                            executionGoal
-                        },
+                        userVisibleText = resumeExecutionPayload.userVisibleText,
+                        modelInput = resumeExecutionPayload.modelInput,
                         mentionedFiles = mentionedFiles,
-                        executionGoal = executionGoal,
-                        existingClarificationAnswers = existingClarificationAnswers
+                        executionGoal = resumeExecutionPayload.executionGoal,
+                        existingClarificationAnswers = resumeExecutionPayload.existingClarificationAnswers,
+                        forceWritableTools = true
                     )
                     applyWorkflowFallback(
                         message = "执行中自动打断格式不完整，已按配置回退为直接继续执行。",
@@ -6495,21 +9234,22 @@ class ChatSessionManager(
                 isStreaming = false
             )
         }
-        _state.value = _state.value.copy(
-            pendingWorkflowPlan = null,
-            workflowPlanningInProgress = false,
-            pendingClarificationRequest = ClarificationRequestUi(
-                goal = executionGoal,
+        _state.value = applyExecutionInterruptionClarificationTransition(
+            state = _state.value,
+            request = buildExecutionInterruptionClarificationRequest(
+                executionGoal = executionGoal,
                 question = interruption.question,
-                mentionedFiles = mentionedFiles.distinctBy { it.path },
-                previousAnswers = existingClarificationAnswers,
-                turnIndex = nextTurnIndex,
-                maxTurns = resolvedMaxTurns,
-                source = ClarificationSource.AUTO_INTERRUPT
-            ),
-            clarificationInProgress = false,
-            autoRoutingInProgress = false
+                mentionedFiles = mentionedFiles,
+                existingClarificationAnswers = existingClarificationAnswers,
+                state = _state.value
+            )
         )
+        _state.value.pendingClarificationRequest?.let { request ->
+            recordClarificationPromptCheckpoint(
+                request = request,
+                summary = "交互状态: 执行中等待澄清回答"
+            )
+        }
         if (interruption.usedFallbackQuestion) {
             applyWorkflowFallback(
                 message = "执行中自动打断格式不完整，已按配置回退为本地通用澄清问题。",
@@ -6524,14 +9264,10 @@ class ChatSessionManager(
         goal: String,
         previousAnswers: List<ClarificationAnswerUi>
     ): String {
-        return when {
-            previousAnswers.isNotEmpty() ->
-                "为了继续准确执行，请再补充目前最关键的限制条件、优先级或预期结果。"
-            goal.isNotBlank() ->
-                "为了避免做错，请先补充这个任务最关键的限制条件、目标范围或预期结果。"
-            else ->
-                "为了继续准确执行，请先补充当前任务最关键的限制条件或预期结果。"
-        }
+        return buildDefaultLocalFallbackClarificationQuestion(
+            goal = goal,
+            previousAnswers = previousAnswers
+        )
     }
 
     private fun buildLocalFallbackClarificationRequest(
@@ -6540,7 +9276,8 @@ class ChatSessionManager(
         previousAnswers: List<ClarificationAnswerUi>,
         turnIndex: Int,
         maxTurns: Int,
-        source: ClarificationSource
+        source: ClarificationSource,
+        recentSessionHistoryClue: SessionHistoryReferenceClueUi?
     ): ClarificationRequestUi {
         return ClarificationRequestUi(
             goal = goal,
@@ -6552,7 +9289,8 @@ class ChatSessionManager(
             previousAnswers = previousAnswers,
             turnIndex = turnIndex,
             maxTurns = maxTurns,
-            source = source
+            source = source,
+            recentSessionHistoryClue = recentSessionHistoryClue
         )
     }
 
@@ -6738,15 +9476,12 @@ class ChatSessionManager(
             state.activeProjectScopePath,
             state.projectPath
         )
-        val normalizedRepoScopedConfigs = normalizeRepoScopedConfigs(state.repoScopedConfigs).toMutableMap()
-        if (normalizedActiveScopePath != null) {
-            normalizedRepoScopedConfigs[normalizedActiveScopePath] = buildRepoScopedProjectConfig(
-                rules = state.projectRules,
-                memories = state.projectMemories,
-                skills = state.projectSkills,
-                preferences = state.projectToolPreferences
-            )
-        }
+        val persistedProjectConfig = preparePersistedProjectConfig(
+            activeScopePath = normalizedActiveScopePath,
+            currentProjectConfig = state.toSessionProjectConfig(),
+            repoScopedConfigs = state.normalizedRepoScopedProjectConfigMap()
+        )
+        val persistedProjectProjection = persistedProjectConfig.toPersistedSessionProjectConfigProjection()
         val providerId = when {
             config != null -> resolvedConfig.activeProviderId
             savedSession != null -> savedSession.providerId
@@ -6774,9 +9509,9 @@ class ChatSessionManager(
             remoteTaskRepositoryLabel = state.remoteTaskRepositoryLabel,
             remoteTaskRepositoryEditable = state.remoteTaskRepositoryEditable,
             activeProjectScopePath = normalizedActiveScopePath,
-            projectRules = state.projectRules,
-            projectMemories = state.projectMemories,
-            projectSkills = state.projectSkills,
+            projectRules = persistedProjectProjection.legacyProjectConfig.projectRules,
+            projectMemories = persistedProjectProjection.legacyProjectConfig.projectMemories,
+            projectSkills = persistedProjectProjection.legacyProjectConfig.projectSkills,
             projectKnowledgePaths = state.projectKnowledgePaths,
             projectKnowledgeSnapshots = state.projectKnowledgeSnapshots.map { snapshot ->
                 PersistedProjectKnowledgeSnapshot(
@@ -6788,15 +9523,8 @@ class ChatSessionManager(
                     lastAppliedAt = snapshot.lastAppliedAt
                 )
             },
-            projectToolPreferences = state.projectToolPreferences,
-            repoScopedConfigs = normalizedRepoScopedConfigs.mapValues { (_, repoConfig) ->
-                PersistedRepoScopedProjectConfig(
-                    projectRules = repoConfig.projectRules,
-                    projectMemories = repoConfig.projectMemories,
-                    projectSkills = repoConfig.projectSkills,
-                    projectToolPreferences = repoConfig.projectToolPreferences
-                )
-            },
+            projectToolPreferences = persistedProjectProjection.legacyProjectConfig.projectToolPreferences,
+            repoScopedConfigs = persistedProjectProjection.repoScopedConfigs,
             usageSummary = state.usageSummary,
             compressionSnapshot = conversationStore.persistCompressionSnapshot(state.compressionSnapshot),
             compressionSnapshots = conversationStore.persistCompressionSnapshots(state.compressionSnapshots),
@@ -6804,61 +9532,35 @@ class ChatSessionManager(
             fileChanges = conversationStore.persistFileChanges(state.fileChanges),
             subagentRuns = conversationStore.persistSubagentRuns(state.subagentRuns),
             subagentBatches = conversationStore.persistSubagentBatches(state.subagentBatches),
+            backgroundJobs = conversationStore.persistBackgroundJobs(state.backgroundJobs),
             recentErrors = conversationStore.persistErrorRecords(state.recentErrors),
             recentToolCalls = conversationStore.persistToolCallRecords(state.recentToolCalls),
+            recentMemoryUpdateSuggestions = conversationStore.persistMemoryUpdateSuggestions(
+                state.recentMemoryUpdateSuggestions
+            ),
+            recentFinalReadinessAudits = conversationStore.persistFinalReadinessAuditRecords(
+                state.recentFinalReadinessAudits
+            ),
             recentApprovals = conversationStore.persistApprovalRecords(state.recentApprovals),
+            recentRecoveryRecords = conversationStore.persistCheckpointRecoveryRecords(
+                state.recentRecoveryRecords
+            ),
             recentApprovalInvalidations = conversationStore.persistApprovalInvalidationRecords(
                 state.recentApprovalInvalidations
             ),
             approvedApprovalScopes = approvedScopes.map { it.tokens },
             approvedApprovalScopeEntries = conversationStore.persistApprovedApprovalScopes(approvedScopes),
-            pendingWorkflowPlan = state.pendingWorkflowPlan?.let { plan ->
-                PersistedWorkflowPlan(
-                    id = plan.id,
-                    goal = plan.goal,
-                    summary = plan.summary,
-                    steps = plan.steps,
-                    stageLabels = plan.stageLabels,
-                    currentStageIndex = plan.currentStageIndex,
-                    currentStepIndex = plan.currentStepIndex,
-                    nextStepHint = plan.nextStepHint,
-                    status = plan.status.name,
-                    mentionedFiles = plan.mentionedFiles.map { mention ->
-                        PersistedFileMention(
-                            path = mention.path,
-                            displayPath = mention.displayPath,
-                            inlineContent = mention.inlineContent
-                        )
-                    },
-                    rawPlan = plan.rawPlan,
-                    createdAt = plan.createdAt
-                )
-            },
-            pendingClarificationRequest = state.pendingClarificationRequest?.let { request ->
-                PersistedClarificationRequest(
-                    id = request.id,
-                    goal = request.goal,
-                    question = request.question,
-                    mentionedFiles = request.mentionedFiles.map { mention ->
-                        PersistedFileMention(
-                            path = mention.path,
-                            displayPath = mention.displayPath,
-                            inlineContent = mention.inlineContent
-                        )
-                    },
-                    previousAnswers = request.previousAnswers.map { answer ->
-                        PersistedClarificationAnswer(
-                            question = answer.question,
-                            answer = answer.answer,
-                            answeredAt = answer.answeredAt
-                        )
-                    },
-                    turnIndex = request.turnIndex,
-                    maxTurns = request.maxTurns,
-                    source = request.source.name,
-                    createdAt = request.createdAt
-                )
-            },
+            pendingApproval = conversationStore.persistPendingApproval(
+                state.pendingApproval?.takeUnless { it.isReplayOnly }
+            ),
+            pendingAskRequest = conversationStore.persistPendingAskRequest(
+                state.pendingAskRequest?.takeUnless { it.isReplayOnly }
+            ),
+            pendingWorkflowPlan = conversationStore.persistWorkflowPlan(state.pendingWorkflowPlan),
+            canonicalWorkflowPlan = conversationStore.persistWorkflowPlan(state.canonicalWorkflowPlan),
+            pendingClarificationRequest = conversationStore.persistClarificationRequest(
+                state.pendingClarificationRequest
+            ),
             lastAutoRouteDecision = state.lastAutoRouteDecision?.let { decision ->
                 PersistedAutoRouteDecision(
                     action = decision.action.name,
@@ -6872,6 +9574,9 @@ class ChatSessionManager(
                     createdAt = fallback.createdAt
                 )
             },
+            lastFinalReadinessReceipt = conversationStore.persistFinalReadinessReceipt(
+                state.lastFinalReadinessReceipt
+            ),
             messages = conversationStore.persistMessages(state.messages)
         )
     }
@@ -6881,31 +9586,27 @@ class ChatSessionManager(
         fileChanges: List<ToolFileChange>
     ): List<FileChangeRecordUi> {
         if (fileChanges.isEmpty()) return emptyList()
-        val checkpointId = "chk-${System.currentTimeMillis()}"
-        val records = fileChanges.mapIndexed { index, change ->
-            FileChangeRecordUi(
-                id = "$checkpointId-$index",
-                path = change.path,
-                operation = change.operation,
-                beforeContent = change.beforeContent,
-                afterContent = change.afterContent,
-                diffPreview = change.diffPreview,
-                changedAt = change.changedAt,
-                checkpointId = checkpointId
-            )
-        }
-        val checkpoint = ConversationCheckpointUi(
-            id = checkpointId,
-            messageIndex = _state.value.messages.lastIndex,
-            createdAt = records.maxOfOrNull { it.changedAt } ?: System.currentTimeMillis(),
-            summary = buildCheckpointSummary(toolName, records),
-            changedFiles = records.map { it.path }
-        )
+        val currentState = _state.value
+        val captureUpdate = captureTurnCheckpointFileChanges(
+            captureState = currentTurnCheckpointCaptureState,
+            toolName = toolName,
+            fileChanges = fileChanges,
+            existingCheckpoint = currentTurnCheckpointCaptureState.checkpointId?.let { checkpointId ->
+                currentState.checkpoints.firstOrNull { it.id == checkpointId }
+            },
+            messageIndex = currentState.messages.lastIndex,
+            checkpointIdFactory = { "chk-${System.currentTimeMillis()}" }
+        ) ?: return emptyList()
+        currentTurnCheckpointCaptureState = captureUpdate.nextState
         _state.value = _state.value.copy(
-            fileChanges = (records + _state.value.fileChanges).take(MAX_FILE_CHANGE_HISTORY),
-            checkpoints = (listOf(checkpoint) + _state.value.checkpoints).take(MAX_CHECKPOINT_HISTORY)
+            fileChanges = (captureUpdate.records + currentState.fileChanges).take(MAX_FILE_CHANGE_HISTORY),
+            checkpoints = upsertCheckpointHistory(
+                checkpoints = currentState.checkpoints,
+                checkpoint = captureUpdate.checkpoint,
+                maxSize = MAX_CHECKPOINT_HISTORY
+            )
         )
-        return records
+        return captureUpdate.records
     }
 
     private fun buildToolResultMessage(
@@ -7500,6 +10201,9 @@ class ChatSessionManager(
     }
 
     private fun buildMarkdownExport(session: PersistedSession): String {
+        val finalReadinessAuditLines = buildFinalReadinessAuditExportLines(
+            conversationStore.restoreFinalReadinessAuditRecords(session.recentFinalReadinessAudits)
+        )
         val header = buildList {
             add("# ${session.title.ifBlank { "新对话" }}")
             add("")
@@ -7529,6 +10233,7 @@ class ChatSessionManager(
                 add("- 压缩消息数: ${it.sourceMessageCount}")
                 add("- 当前摘要版本: V${it.version}")
             }
+            addAll(finalReadinessAuditLines)
             add("")
             add("---")
             add("")
@@ -7557,7 +10262,9 @@ class ChatSessionManager(
             }.trim()
         }
 
-        return (header + messageBlocks).joinToString("\n\n").trim()
+        return SensitiveDataSanitizer.sanitizeText(
+            (header + messageBlocks).joinToString("\n\n").trim()
+        )
     }
 
     private suspend fun generateCompressionSummary(
@@ -7652,6 +10359,9 @@ class ChatSessionManager(
             .filter { it.isNotBlank() }
             .distinct()
             .take(8)
+        val latestFinalReadinessAuditSummary = buildLatestFinalReadinessAuditSummary(
+            state.recentFinalReadinessAudits
+        )
         val risks = buildList {
             addAll(
                 systemMessages
@@ -7661,6 +10371,9 @@ class ChatSessionManager(
             )
             if (state.pendingApproval != null) {
                 add("当前会话仍可能遇到审批确认，执行高风险操作前需要用户明确批准。")
+            }
+            latestFinalReadinessAuditSummary?.let { auditSummary ->
+                add("最近一次最终收口状态：$auditSummary。")
             }
         }.distinct()
         val nextSteps = buildList {
@@ -7678,7 +10391,7 @@ class ChatSessionManager(
             else -> "主要处于需求梳理与方案确认阶段"
         }
 
-        return buildString {
+        val summary = buildString {
             appendLine("【上下文压缩摘要】")
             appendLine("会话标题: ${state.sessionTitle.ifBlank { "新对话" }}")
             state.projectPath?.takeIf { it.isNotBlank() }?.let {
@@ -7710,6 +10423,12 @@ class ChatSessionManager(
             appendLine("- 结合这个摘要和最近未压缩消息继续工作。")
             appendLine("- 如果历史细节不足，优先询问用户，不要编造。")
         }.trim()
+        return applyPreCompactHookToSummary(
+            sessionId = state.sessionId,
+            messageCount = messages.size,
+            summary = summary,
+            hookBus = hookBus
+        )
     }
 
     private fun buildCompressionSummaryPrompt(
@@ -7783,6 +10502,9 @@ class ChatSessionManager(
             ?.summary
             ?.take(MAX_PREVIOUS_SUMMARY_LENGTH)
             .orEmpty()
+        val latestFinalReadinessAuditSummary = buildLatestFinalReadinessAuditSummary(
+            state.recentFinalReadinessAudits
+        )
 
         return buildString {
             appendLine("会话标题: ${state.sessionTitle.ifBlank { "新对话" }}")
@@ -7792,6 +10514,9 @@ class ChatSessionManager(
             appendLine("累计消息数: ${state.messages.size}")
             appendLine("本次待压缩消息数: ${messages.size}")
             appendLine("本会话累计 Token: ${state.usageSummary.totalTokens}")
+            latestFinalReadinessAuditSummary?.let { auditSummary ->
+                appendLine("最近一次最终收口状态: $auditSummary")
+            }
             if (currentSummary.isNotBlank()) {
                 appendLine()
                 appendLine("上一版压缩摘要（需要合并仍然有效的结论）:")
@@ -8038,19 +10763,6 @@ class ChatSessionManager(
         }
     }
 
-    private fun resolveCompressionSnapshotsAfterRollback(
-        snapshots: List<ContextCompressionUi>,
-        targetExclusiveIndex: Int
-    ): List<ContextCompressionUi> {
-        val remaining = snapshots
-            .filter { it.sourceEndMessageIndex < targetExclusiveIndex }
-            .sortedBy { it.version }
-        val reactivatedId = remaining.maxByOrNull { it.version }?.id
-        return remaining.map { snapshot ->
-            snapshot.copy(active = snapshot.id == reactivatedId)
-        }
-    }
-
     private fun messageRoleLabel(role: String): String = when (role) {
         "user" -> "用户"
         "assistant" -> "助手"
@@ -8104,7 +10816,7 @@ private const val MAX_MENTION_FILE_CHARS = 2500
 private const val MAX_MENTION_TOTAL_CHARS = 7000
 private const val MAX_MENTION_FILE_SCAN_DEPTH = 3
 private const val MAX_MENTION_DIRECTORY_ENTRIES = 80
-private const val MAX_CLARIFICATION_TURNS = 3
+internal const val MAX_CLARIFICATION_TURNS = 3
 private const val MAX_TOOL_RESULTS_IN_HISTORY = 4
 private const val TOOL_RESULT_RECENT_MESSAGE_WINDOW = 10
 private const val MAX_COMBINED_TOOL_SUMMARY_ITEMS = 6

@@ -22,6 +22,13 @@ on:
       release_name:
         description: "Release 标题，默认 MurongAgent <version> (<code>)"
         required: false
+      update_message:
+        description: "更新摘要；为空时优先读取 release-notes/latest.md 里的“更新摘要：”首行"
+        required: false
+      changelog_path:
+        description: "更新日志 Markdown 路径，默认 release-notes/latest.md"
+        required: false
+        default: "release-notes/latest.md"
       sync_to_server:
         description: "是否通过后端 API 上传主程序并回写后端版本信息"
         required: false
@@ -92,6 +99,8 @@ jobs:
           INPUT_APP_VERSION_CODE: ${{ github.event.inputs.app_version_code }}
           INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag }}
           INPUT_RELEASE_NAME: ${{ github.event.inputs.release_name }}
+          INPUT_UPDATE_MESSAGE: ${{ github.event.inputs.update_message }}
+          INPUT_CHANGELOG_PATH: ${{ github.event.inputs.changelog_path }}
         run: |
           set -euo pipefail
 
@@ -120,6 +129,8 @@ jobs:
           RELEASE_NAME="${INPUT_RELEASE_NAME:-MurongAgent ${APP_VERSION} (${APP_VERSION_CODE})}"
           ARTIFACT_BASENAME="murongagent-${APP_VERSION}-${APP_VERSION_CODE}"
           APK_FILE="${ARTIFACT_BASENAME}.apk"
+          CHANGELOG_PATH="${INPUT_CHANGELOG_PATH:-release-notes/latest.md}"
+          export APP_VERSION RELEASE_NAME CHANGELOG_PATH INPUT_UPDATE_MESSAGE
 
           {
             echo "APP_VERSION=${APP_VERSION}"
@@ -128,7 +139,45 @@ jobs:
             echo "RELEASE_NAME=${RELEASE_NAME}"
             echo "ARTIFACT_BASENAME=${ARTIFACT_BASENAME}"
             echo "APK_FILE=${APK_FILE}"
+            echo "CHANGELOG_PATH=${CHANGELOG_PATH}"
           } >> "${GITHUB_ENV}"
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          changelog_path = Path(os.environ.get("CHANGELOG_PATH", "release-notes/latest.md"))
+          raw_text = ""
+          if changelog_path.is_file():
+              raw_text = changelog_path.read_text(encoding="utf-8").replace("\r\n", "\n").strip()
+
+          lines = raw_text.splitlines()
+          summary_prefixes = ("更新摘要：", "更新摘要:", "Summary:", "SUMMARY:")
+          summary = os.environ.get("INPUT_UPDATE_MESSAGE", "").strip()
+          if not summary:
+              for index, line in enumerate(lines):
+                  stripped = line.strip()
+                  if not stripped:
+                      continue
+                  matched_prefix = next((prefix for prefix in summary_prefixes if stripped.startswith(prefix)), None)
+                  if matched_prefix is not None:
+                      summary = stripped[len(matched_prefix):].strip()
+                      lines = lines[index + 1 :]
+                      while lines and not lines[0].strip():
+                          lines.pop(0)
+                      break
+
+          if not summary:
+              summary = f"发现新版本 {os.environ['APP_VERSION']}，前往下载页安装即可。"
+
+          changelog = "\n".join(lines).strip() or raw_text or f"{os.environ['RELEASE_NAME']}\n"
+          env_path = Path(os.environ["GITHUB_ENV"])
+          with env_path.open("a", encoding="utf-8") as handle:
+              handle.write(f"RELEASE_UPDATE_MESSAGE={summary}\n")
+              handle.write("RELEASE_CHANGELOG<<EOF\n")
+              handle.write(changelog)
+              handle.write("\nEOF\n")
+          PY
 
       - name: Build Release APK
         shell: bash
@@ -174,6 +223,7 @@ jobs:
           allowUpdates: true
           artifactErrorsFailBuild: true
           artifacts: dist/${{ env.APK_FILE }}
+          body: ${{ env.RELEASE_CHANGELOG }}
           makeLatest: true
           name: ${{ env.RELEASE_NAME }}
           removeArtifacts: true
@@ -263,8 +313,8 @@ jobs:
               "fileName": os.environ["APK_FILE"],
               "downloadUrl": os.environ["DOWNLOAD_URL"],
               "checksumSha256": os.environ["APK_SHA256"],
-              "changelog": os.environ["RELEASE_NAME"],
-              "updateMessage": f"发现新版本 {os.environ['APP_VERSION']}，前往下载页安装即可。",
+              "changelog": os.environ["RELEASE_CHANGELOG"],
+              "updateMessage": os.environ["RELEASE_UPDATE_MESSAGE"],
               "fileSize": int(os.environ["APK_SIZE_BYTES"]),
               "status": "active"
           }, ensure_ascii=False))

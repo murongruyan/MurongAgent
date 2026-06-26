@@ -21,7 +21,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
-internal data class RemoteTaskRepositoryTarget(
+data class RemoteTaskRepositoryTarget(
     val owner: String,
     val repo: String,
     val label: String
@@ -72,8 +72,9 @@ internal class TaskRepoSearchCodeTool(
             val path = obj["path"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().ifBlank { null }
             val language = obj["language"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().ifBlank { null }
             val limit = (obj["limit"]?.jsonPrimitive?.intOrNull ?: 10).coerceIn(1, 20)
+            val normalizedSearchTerm = normalizeRemoteTaskRepositorySearchQuery(query)
             val githubQuery = buildString {
-                append(query)
+                append(normalizedSearchTerm)
                 append(" repo:${repo.owner}/${repo.repo}")
                 path?.let {
                     append(" path:")
@@ -312,6 +313,15 @@ internal class TaskRepoCreateBranchTool(
                     }
                 }
             }
+            verifyRemoteTaskRepositoryBranchState(
+                repo = repo,
+                branch = targetBranch,
+                shouldExist = true,
+                token = token,
+                apiBaseUrl = apiBaseUrl
+            )?.let { verificationError ->
+                return "Error: 创建远端任务仓库分支后校验失败。$verificationError"
+            }
             buildString {
                 append("已创建当前任务仓库分支：")
                 append(repo.label)
@@ -448,6 +458,9 @@ internal class TaskRepoCreatePrTool(
             if (createdPr == null) {
                 return "已创建远端任务仓库 PR，但未能解析返回结果。\n原始响应:\n${result.body}"
             }
+            if (!createdPr.state.equals("open", ignoreCase = true)) {
+                return "Error: 创建远端任务仓库 PR 后校验失败。PR #${createdPr.number} 当前状态不是 open。"
+            }
             buildString {
                 append("已创建当前任务仓库 Pull Request：")
                 append(repo.label)
@@ -541,6 +554,9 @@ internal class TaskRepoClosePrTool(
                 }
             }
             val updatedPr = parseRemoteTaskRepositoryCreatedPr(result.body)
+            if (updatedPr != null && !updatedPr.state.equals("closed", ignoreCase = true)) {
+                return "Error: 关闭远端任务仓库 PR 后校验失败。PR #${updatedPr.number} 当前状态不是 closed。"
+            }
             return buildString {
                 append("已关闭当前任务仓库 Pull Request：")
                 append(repo.label)
@@ -640,6 +656,15 @@ internal class TaskRepoDeleteBranchTool(
                     }
                 }
             }
+            verifyRemoteTaskRepositoryBranchState(
+                repo = repo,
+                branch = branch,
+                shouldExist = false,
+                token = token,
+                apiBaseUrl = apiBaseUrl
+            )?.let { verificationError ->
+                return "Error: 删除远端任务仓库分支后校验失败。$verificationError"
+            }
             "已删除当前任务仓库远端分支：${repo.label}\n分支: $branch"
         } catch (e: Exception) {
             "Error: 删除当前任务仓库分支失败: ${e.message}"
@@ -654,7 +679,7 @@ internal class TaskRepoReadFileTool(
 ) : Tool {
     override val name: String = "task_repo_read_file"
     override val description: String =
-        "读取当前任务仓库里的单个文件内容。自动绑定当前远端任务仓库，不需要再手动填写 owner/repo。"
+        "读取当前任务仓库里的单个文件内容。自动绑定当前远端任务仓库，不需要再手动填写 owner/repo。大文件若未指定 startLine/endLine，会默认返回首个安全窗口，避免整文件灌入上下文。"
     override val parameters: Map<String, Any> = mapOf(
         "type" to "object",
         "properties" to mapOf(
@@ -877,6 +902,241 @@ internal class TaskRepoSearchReplaceTool(
     }
 }
 
+internal class TaskRepoApplyPatchTool(
+    private val repositoryProvider: () -> RemoteTaskRepositoryTarget?,
+    private val githubTokenProvider: () -> String,
+    private val githubApiBaseUrlProvider: () -> String
+) : Tool {
+    override val name: String = "task_repo_apply_patch"
+    override val description: String =
+        "对当前任务仓库里的一个或多个已有文件应用精确补丁，并合并为一次远端提交。适合大文件或多文件的小范围修改，避免让模型传整份文件内容。"
+    override val parameters: Map<String, Any> = mapOf(
+        "type" to "object",
+        "properties" to mapOf(
+            "message" to mapOf(
+                "type" to "string",
+                "description" to "提交说明"
+            ),
+            "branch" to mapOf(
+                "type" to "string",
+                "description" to "目标分支。建议显式填写，例如 main、master 或 feature/xxx"
+            ),
+            "patch_text" to mapOf(
+                "type" to "string",
+                "description" to "可选。接近本地 apply_patch 的文本补丁，只支持 *** Update File 场景。适合直接提交多文件 diff 风格的精确修改。"
+            ),
+            "file_patches" to mapOf(
+                "type" to "array",
+                "description" to "要应用补丁的文件列表。可与 patch_text 二选一；若同时提供，会合并后统一校验重复路径。",
+                "items" to mapOf(
+                    "type" to "object",
+                    "properties" to mapOf(
+                        "path" to mapOf(
+                            "type" to "string",
+                            "description" to "仓库内已有文件路径"
+                        ),
+                        "hunks" to mapOf(
+                            "type" to "array",
+                            "description" to "按顺序应用的精确 SEARCH/REPLACE 片段；当 search 在文件中重复出现时，可额外提供 context_before/context_after 做上下文定位",
+                            "items" to mapOf(
+                                "type" to "object",
+                                "properties" to mapOf(
+                                    "search" to mapOf(
+                                        "type" to "string",
+                                        "description" to "要查找的精确文本"
+                                    ),
+                                    "replace" to mapOf(
+                                        "type" to "string",
+                                        "description" to "替换后的文本"
+                                    ),
+                                    "context_before" to mapOf(
+                                        "type" to "string",
+                                        "description" to "可选。必须紧邻 search 之前出现的上下文片段，用于锁定重复片段中的目标位置"
+                                    ),
+                                    "context_after" to mapOf(
+                                        "type" to "string",
+                                        "description" to "可选。必须紧邻 search 之后出现的上下文片段，用于锁定重复片段中的目标位置"
+                                    ),
+                                    "line_hint" to mapOf(
+                                        "type" to "integer",
+                                        "description" to "可选。1 开始的目标行号提示。当 search 重复出现时，优先匹配最接近该行号的片段，并在错误反馈里显示候选行。"
+                                    ),
+                                    "expected_matches" to mapOf(
+                                        "type" to "integer",
+                                        "description" to "可选。预期匹配次数，默认 1。若填写了上下文，则以带上下文约束后的匹配数为准。"
+                                    )
+                                ),
+                                "required" to listOf("search", "replace")
+                            )
+                        )
+                    ),
+                    "required" to listOf("path", "hunks")
+                )
+            )
+        ),
+        "required" to listOf("message")
+    )
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override fun buildApprovalRequest(args: String): ToolApprovalRequest? {
+        val repo = repositoryProvider() ?: return null
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val filePatches = resolveRemoteTaskRepositoryApplyPatchFiles(obj)
+            if (filePatches.isEmpty()) return null
+            ToolApprovalRequest(
+                toolName = name,
+                summary = "对远端任务仓库应用精确补丁",
+                detail = "${repo.label} (${filePatches.size} 个文件)",
+                riskLevel = ApprovalRiskLevel.HIGH,
+                rawArgs = args,
+                approvalScopeTokens = setOf("mcp:github:write")
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    override suspend fun execute(args: String): String = executeWithResult(args).output
+
+    override suspend fun executeWithResult(args: String): ToolExecutionResult {
+        val repo = repositoryProvider()
+            ?: return ToolExecutionResult("Error: 当前会话没有绑定远端任务仓库。请先在项目页把 GitHub 仓库设为任务仓库。")
+        val token = githubTokenProvider().trim()
+        if (token.isBlank()) return ToolExecutionResult("Error: 请先在设置页填写 GitHub Token。")
+        val apiBaseUrl = githubApiBaseUrlProvider()
+        return try {
+            val obj = json.parseToJsonElement(args).jsonObject
+            val message = obj["message"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            if (message.isBlank()) return ToolExecutionResult("Error: 'message' parameter required")
+            val requestedBranch = obj["branch"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().ifBlank { null }
+            val filePatches = resolveRemoteTaskRepositoryApplyPatchFiles(obj)
+            if (filePatches.isEmpty()) {
+                return ToolExecutionResult("Error: 请至少提供 `file_patches` 或 `patch_text` 其中一种补丁输入。")
+            }
+            val duplicatePaths = filePatches.groupBy { it.path }.filterValues { it.size > 1 }.keys.sorted()
+            if (duplicatePaths.isNotEmpty()) {
+                return ToolExecutionResult("Error: 同一次远端补丁提交里存在重复路径: ${duplicatePaths.joinToString(", ")}")
+            }
+
+            val batchChanges = mutableListOf<RemoteTaskRepositoryBatchChange>()
+            val fileChanges = mutableListOf<ToolFileChange>()
+            var totalHunks = 0
+
+            for (filePatch in filePatches) {
+                val existingForWrite = loadRemoteTaskRepositoryExistingFileForWrite(
+                    repo = repo,
+                    path = filePatch.path,
+                    requestedBranch = requestedBranch,
+                    token = token,
+                    apiBaseUrl = apiBaseUrl
+                ) ?: return ToolExecutionResult(
+                    "Error: 远端补丁工具只能修改已有文件，未找到 `${repo.label}/${filePatch.path}`。"
+                )
+                val beforeContent = existingForWrite.file.content
+                val patchedContent = applyRemoteTaskRepositoryPatchToContent(
+                    path = filePatch.path,
+                    originalContent = beforeContent,
+                    hunks = filePatch.hunks
+                ) ?: return ToolExecutionResult(
+                    "Error: 远端补丁 `${repo.label}/${filePatch.path}` 未产生实际内容变化。"
+                )
+                totalHunks += filePatch.hunks.size
+                batchChanges += RemoteTaskRepositoryBatchChange(
+                    path = filePatch.path,
+                    operation = "write",
+                    content = patchedContent
+                )
+                fileChanges += ToolFileChange(
+                    path = "github://${repo.label}/${filePatch.path}",
+                    operation = "write",
+                    beforeContent = beforeContent,
+                    afterContent = patchedContent,
+                    diffPreview = buildDiffPreview(beforeContent, patchedContent)
+                )
+            }
+
+            val branchCandidates = if (requestedBranch != null) {
+                listOf(requestedBranch)
+            } else {
+                val resolvedDefaultBranch = loadRemoteTaskRepositoryDefaultBranch(
+                    repo = repo,
+                    token = token,
+                    apiBaseUrl = apiBaseUrl
+                )
+                listOfNotNull(
+                    resolvedDefaultBranch,
+                    "main",
+                    "master"
+                ).distinct()
+            }
+
+            var lastError: String? = null
+            var batchResult: RemoteTaskRepositoryBatchCommitResult? = null
+            for (branch in branchCandidates) {
+                val result = runRemoteTaskRepositoryBatchCommit(
+                    repo = repo,
+                    branch = branch,
+                    message = message,
+                    changes = batchChanges,
+                    token = token,
+                    apiBaseUrl = apiBaseUrl
+                )
+                if (result.success) {
+                    batchResult = result
+                    break
+                }
+                lastError = result.error
+            }
+
+            val success = batchResult ?: return ToolExecutionResult(
+                buildString {
+                    append("Error: 对远端任务仓库应用精确补丁失败。")
+                    if (!requestedBranch.isNullOrBlank()) {
+                        append(" 分支 `")
+                        append(requestedBranch)
+                        append("` 提交未成功。")
+                    } else {
+                        append(" 已尝试默认分支和 main/master 回退，但都失败。建议显式传入 branch。")
+                    }
+                    lastError?.takeIf { it.isNotBlank() }?.let {
+                        append("\n底层结果: ")
+                        append(it)
+                    }
+                }
+            )
+
+            ToolExecutionResult(
+                output = buildString {
+                    append("已对当前任务仓库应用精确补丁：")
+                    append(repo.label)
+                    append("\n分支: ")
+                    append(success.branch)
+                    append("\n提交说明: ")
+                    append(message)
+                    append("\n文件数: ")
+                    append(filePatches.size)
+                    append("\nHunk 数: ")
+                    append(totalHunks)
+                    success.commitSha?.takeIf { it.isNotBlank() }?.let {
+                        append("\n提交 SHA: ")
+                        append(it)
+                    }
+                    success.commitUrl?.takeIf { it.isNotBlank() }?.let {
+                        append("\n提交地址: ")
+                        append(it)
+                    }
+                    append("\n写后校验: 已通过")
+                },
+                fileChanges = fileChanges
+            )
+        } catch (e: Exception) {
+            ToolExecutionResult("Error: 对远端任务仓库应用精确补丁失败: ${e.message}")
+        }
+    }
+}
+
 internal class TaskRepoUpdateFileTool(
     private val repositoryProvider: () -> RemoteTaskRepositoryTarget?,
     private val githubTokenProvider: () -> String,
@@ -884,7 +1144,7 @@ internal class TaskRepoUpdateFileTool(
 ) : Tool {
     override val name: String = "task_repo_update_file"
     override val description: String =
-        "更新当前任务仓库里的单个文件并直接提交到远端分支。自动绑定当前远端任务仓库，不需要再手动填写 owner/repo。"
+        "更新当前任务仓库里的单个文件并直接提交到远端分支。自动绑定当前远端任务仓库，不需要再手动填写 owner/repo。超大已有文件的小改动应优先使用 task_repo_search_replace，避免整文件重写。"
     override val parameters: Map<String, Any> = mapOf(
         "type" to "object",
         "properties" to mapOf(
@@ -946,6 +1206,24 @@ internal class TaskRepoUpdateFileTool(
             if (path.isBlank()) return ToolExecutionResult("Error: 'path' parameter required")
             if (message.isBlank()) return ToolExecutionResult("Error: 'message' parameter required")
             val requestedBranch = obj["branch"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().ifBlank { null }
+            loadRemoteTaskRepositoryExistingFileForWrite(
+                repo = repo,
+                path = path,
+                requestedBranch = requestedBranch,
+                token = token,
+                apiBaseUrl = apiBaseUrl
+            )?.let { existingForGuard ->
+                buildRemoteTaskRepositoryWholeFileOverwriteGuardError(
+                    repo = repo,
+                    path = path,
+                    existingFile = existingForGuard.file,
+                    candidateBranch = existingForGuard.branch,
+                    newContent = content,
+                    toolName = name
+                )?.let { guardError ->
+                    return ToolExecutionResult(guardError)
+                }
+            }
             val writeResult = writeRemoteTaskRepositoryFile(
                 repo = repo,
                 path = path,
@@ -1127,6 +1405,16 @@ internal class TaskRepoDeleteFileTool(
                     }
                 )
             }
+            val verifiedBranch = chosenBranch
+            verifyRemoteTaskRepositoryFileDeletion(
+                repo = repo,
+                path = path,
+                branch = verifiedBranch,
+                token = token,
+                apiBaseUrl = apiBaseUrl
+            )?.let { verificationError ->
+                return ToolExecutionResult("Error: 删除远端任务仓库文件后校验失败。$verificationError")
+            }
             ToolExecutionResult(
                 output = buildString {
                     append("已删除当前任务仓库文件：")
@@ -1134,7 +1422,7 @@ internal class TaskRepoDeleteFileTool(
                     append("/")
                     append(path)
                     append("\n分支: ")
-                    append(chosenBranch)
+                    append(verifiedBranch)
                     append("\n提交说明: ")
                     append(message)
                     lastResult?.takeIf { it.isNotBlank() }?.let {
@@ -1165,7 +1453,7 @@ internal class TaskRepoCommitFilesTool(
 ) : Tool {
     override val name: String = "task_repo_commit_files"
     override val description: String =
-        "在当前任务仓库中一次性提交多个文件变更。适合需要在同一次提交里同时新增、修改、删除多个文件的场景。"
+        "在当前任务仓库中一次性提交多个文件变更。适合需要在同一次提交里同时新增、修改、删除多个文件的场景；若其中包含超大已有文件，优先先用 task_repo_search_replace 做精确修改，避免整文件重写。"
     override val parameters: Map<String, Any> = mapOf(
         "type" to "object",
         "properties" to mapOf(
@@ -1241,6 +1529,27 @@ internal class TaskRepoCommitFilesTool(
             val duplicatePaths = changes.groupBy { it.path }.filterValues { it.size > 1 }.keys.sorted()
             if (duplicatePaths.isNotEmpty()) {
                 return ToolExecutionResult("Error: 同一次批量提交里存在重复路径: ${duplicatePaths.joinToString(", ")}")
+            }
+            for (change in changes) {
+                if (change.operation != "write") continue
+                val afterContent = change.content ?: continue
+                val existingForGuard = loadRemoteTaskRepositoryExistingFileForWrite(
+                    repo = repo,
+                    path = change.path,
+                    requestedBranch = requestedBranch,
+                    token = token,
+                    apiBaseUrl = apiBaseUrl
+                )
+                buildRemoteTaskRepositoryWholeFileOverwriteGuardError(
+                    repo = repo,
+                    path = change.path,
+                    existingFile = existingForGuard?.file ?: continue,
+                    candidateBranch = existingForGuard.branch,
+                    newContent = afterContent,
+                    toolName = name
+                )?.let { guardError ->
+                    return ToolExecutionResult(guardError)
+                }
             }
 
             val branchCandidates = if (requestedBranch != null) {
@@ -1326,6 +1635,20 @@ private data class RemoteTaskRepositoryBatchChange(
     val content: String?
 )
 
+private data class RemoteTaskRepositoryApplyPatchFile(
+    val path: String,
+    val hunks: List<RemoteTaskRepositoryPatchHunk>
+)
+
+private data class RemoteTaskRepositoryPatchHunk(
+    val search: String,
+    val replace: String,
+    val expectedMatches: Int,
+    val contextBefore: String?,
+    val contextAfter: String?,
+    val lineHint: Int?
+)
+
 private data class RemoteTaskRepositoryBatchCommitResult(
     val success: Boolean,
     val branch: String,
@@ -1342,6 +1665,16 @@ private data class RemoteTaskRepositoryWriteFileResult(
     val fileChange: ToolFileChange? = null,
     val error: String? = null
 )
+
+private data class RemoteTaskRepositoryExistingFileForWrite(
+    val file: RemoteTaskRepositoryFile,
+    val branch: String
+)
+
+private const val REMOTE_TASK_REPOSITORY_WHOLE_FILE_OVERWRITE_CHAR_LIMIT = 120_000
+internal const val REMOTE_TASK_REPOSITORY_AUTO_READ_WINDOW_CHAR_LIMIT = 60_000
+internal const val REMOTE_TASK_REPOSITORY_AUTO_READ_WINDOW_LINE_TRIGGER = 800
+internal const val REMOTE_TASK_REPOSITORY_DEFAULT_READ_WINDOW_LINES = 220
 
 private fun parseRemoteTaskRepositoryBatchChanges(element: JsonElement?): List<RemoteTaskRepositoryBatchChange> {
     val items = element?.jsonArray ?: return emptyList()
@@ -1360,6 +1693,415 @@ private fun parseRemoteTaskRepositoryBatchChanges(element: JsonElement?): List<R
             operation = normalizedOperation,
             content = obj["content"]?.jsonPrimitive?.contentOrNull
         )
+    }
+}
+
+private fun parseRemoteTaskRepositoryApplyPatchFiles(element: JsonElement?): List<RemoteTaskRepositoryApplyPatchFile> {
+    val items = element?.jsonArray ?: return emptyList()
+    return items.mapNotNull { item ->
+        val obj = item.jsonObjectOrNull() ?: return@mapNotNull null
+        val path = obj["path"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val hunks = parseRemoteTaskRepositoryPatchHunks(obj["hunks"])
+        if (path.isBlank() || hunks.isEmpty()) return@mapNotNull null
+        RemoteTaskRepositoryApplyPatchFile(
+            path = path,
+            hunks = hunks
+        )
+    }
+}
+
+private fun resolveRemoteTaskRepositoryApplyPatchFiles(obj: JsonObject): List<RemoteTaskRepositoryApplyPatchFile> {
+    val structuredFiles = parseRemoteTaskRepositoryApplyPatchFiles(obj["file_patches"])
+    val textPatch = obj["patch_text"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+    val textPatchFiles = if (textPatch.isBlank()) {
+        emptyList()
+    } else {
+        parseRemoteTaskRepositoryTextPatch(textPatch)
+    }
+    return structuredFiles + textPatchFiles
+}
+
+private fun parseRemoteTaskRepositoryTextPatch(patchText: String): List<RemoteTaskRepositoryApplyPatchFile> {
+    val normalized = patchText.replace("\r\n", "\n").replace('\r', '\n')
+    val lines = normalized.split('\n')
+    val files = mutableListOf<RemoteTaskRepositoryApplyPatchFile>()
+    var index = 0
+    var currentPath: String? = null
+    var currentHunks = mutableListOf<RemoteTaskRepositoryPatchHunk>()
+
+    fun flushCurrentFile() {
+        val path = currentPath ?: return
+        if (currentHunks.isEmpty()) {
+            throw IllegalArgumentException("文本补丁中的 `$path` 没有任何 hunk。")
+        }
+        files += RemoteTaskRepositoryApplyPatchFile(
+            path = path,
+            hunks = currentHunks.toList()
+        )
+        currentPath = null
+        currentHunks = mutableListOf()
+    }
+
+    while (index < lines.size) {
+        val rawLine = lines[index]
+        when {
+            rawLine.isBlank() && currentPath == null -> {
+                index++
+            }
+
+            rawLine == "*** Begin Patch" || rawLine == "*** End Patch" -> {
+                if (rawLine == "*** End Patch") {
+                    flushCurrentFile()
+                }
+                index++
+            }
+
+            rawLine.startsWith("*** Update File: ") -> {
+                flushCurrentFile()
+                val path = rawLine.removePrefix("*** Update File: ").trim()
+                if (path.isBlank()) {
+                    throw IllegalArgumentException("文本补丁里存在空的 Update File 路径。")
+                }
+                currentPath = path
+                index++
+            }
+
+            rawLine.startsWith("*** Add File: ") || rawLine.startsWith("*** Delete File: ") -> {
+                throw IllegalArgumentException("当前 `task_repo_apply_patch` 的 `patch_text` 仅支持 `*** Update File`。请把新增/删除文件改用其他远端工具。")
+            }
+
+            rawLine.startsWith("@@") -> {
+                val path = currentPath ?: throw IllegalArgumentException("文本补丁里的 hunk 缺少对应的 `*** Update File`。")
+                val hunkLines = mutableListOf<String>()
+                index++
+                while (index < lines.size) {
+                    val bodyLine = lines[index]
+                    if (
+                        bodyLine.startsWith("@@") ||
+                        bodyLine.startsWith("*** Update File: ") ||
+                        bodyLine == "*** End Patch"
+                    ) {
+                        break
+                    }
+                    if (bodyLine == "*** End of File") {
+                        index++
+                        break
+                    }
+                    if (bodyLine.isNotEmpty() && bodyLine[0] !in listOf(' ', '-', '+')) {
+                        throw IllegalArgumentException("文本补丁 `$path` 的 hunk 中存在无法识别的行: `$bodyLine`")
+                    }
+                    hunkLines += bodyLine
+                    index++
+                }
+                currentHunks += buildRemoteTaskRepositoryPatchHunkFromText(path, hunkLines)
+            }
+
+            else -> {
+                throw IllegalArgumentException("无法解析文本补丁中的行: `$rawLine`")
+            }
+        }
+    }
+
+    flushCurrentFile()
+    return files
+}
+
+private fun buildRemoteTaskRepositoryPatchHunkFromText(
+    path: String,
+    hunkLines: List<String>
+): RemoteTaskRepositoryPatchHunk {
+    if (hunkLines.isEmpty()) {
+        throw IllegalArgumentException("文本补丁 `$path` 存在空 hunk。")
+    }
+    val search = StringBuilder()
+    val replace = StringBuilder()
+    var changed = false
+    hunkLines.forEach { line ->
+        if (line.isEmpty()) {
+            throw IllegalArgumentException("文本补丁 `$path` 的 hunk 存在缺少前缀的空行，请用空格前缀表示上下文空行。")
+        }
+        val marker = line[0]
+        val payload = line.substring(1)
+        when (marker) {
+            ' ' -> {
+                search.append(payload).append('\n')
+                replace.append(payload).append('\n')
+            }
+            '-' -> {
+                search.append(payload).append('\n')
+                changed = true
+            }
+            '+' -> {
+                replace.append(payload).append('\n')
+                changed = true
+            }
+            else -> throw IllegalArgumentException("文本补丁 `$path` 的 hunk 存在非法前缀 `$marker`。")
+        }
+    }
+    if (!changed) {
+        throw IllegalArgumentException("文本补丁 `$path` 的 hunk 没有任何实际改动。")
+    }
+    val searchText = search.toString()
+    if (searchText.isEmpty()) {
+        throw IllegalArgumentException("文本补丁 `$path` 的 hunk 没有可定位的原始内容，当前不支持纯追加型空搜索补丁。")
+    }
+    return RemoteTaskRepositoryPatchHunk(
+        search = searchText,
+        replace = replace.toString(),
+        expectedMatches = 1,
+        contextBefore = null,
+        contextAfter = null,
+        lineHint = null
+    )
+}
+
+private fun parseRemoteTaskRepositoryPatchHunks(element: JsonElement?): List<RemoteTaskRepositoryPatchHunk> {
+    val items = element?.jsonArray ?: return emptyList()
+    return items.mapNotNull { item ->
+        val obj = item.jsonObjectOrNull() ?: return@mapNotNull null
+        val search = obj["search"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+        val replace = obj["replace"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+        val contextBefore = obj["context_before"]?.jsonPrimitive?.contentOrNull?.ifEmpty { null }
+        val contextAfter = obj["context_after"]?.jsonPrimitive?.contentOrNull?.ifEmpty { null }
+        val lineHint = obj["line_hint"]?.jsonPrimitive?.intOrNull?.takeIf { it > 0 }
+        val expectedMatches = (obj["expected_matches"]?.jsonPrimitive?.intOrNull ?: 1).coerceAtLeast(1)
+        if (search.isEmpty()) return@mapNotNull null
+        RemoteTaskRepositoryPatchHunk(
+            search = search,
+            replace = replace,
+            expectedMatches = expectedMatches,
+            contextBefore = contextBefore,
+            contextAfter = contextAfter,
+            lineHint = lineHint
+        )
+    }
+}
+
+private fun applyRemoteTaskRepositoryPatchToContent(
+    path: String,
+    originalContent: String,
+    hunks: List<RemoteTaskRepositoryPatchHunk>
+): String? {
+    var currentContent = originalContent
+    hunks.forEachIndexed { index, hunk ->
+        val rawMatchCount = countExactOccurrences(currentContent, hunk.search)
+        val matches = findRemoteTaskRepositoryPatchMatches(currentContent, hunk)
+        if (matches.size != hunk.expectedMatches) {
+            throw IllegalArgumentException(
+                buildString {
+                    append("补丁第 ")
+                    append(index + 1)
+                    append(" 段在 `")
+                    append(path)
+                    append("` 中期望匹配 ")
+                    append(hunk.expectedMatches)
+                    append(" 次，实际匹配 ")
+                    append(matches.size)
+                    append(" 次。")
+                    if (hunk.contextBefore != null || hunk.contextAfter != null) {
+                        append(" 原始 search 命中 ")
+                        append(rawMatchCount)
+                        append(" 次，带上下文约束后命中 ")
+                        append(matches.size)
+                        append(" 次。")
+                    }
+                    hunk.lineHint?.let { lineHint ->
+                        append(" 目标行提示为 ")
+                        append(lineHint)
+                        append("。")
+                    }
+                    val candidates = buildRemoteTaskRepositoryPatchCandidatePreview(currentContent, hunk)
+                    if (candidates.isNotBlank()) {
+                        append("\n候选位置: ")
+                        append(candidates)
+                    }
+                }
+            )
+        }
+        currentContent = replaceRemoteTaskRepositoryPatchMatches(
+            content = currentContent,
+            matches = matches,
+            replacement = hunk.replace
+        )
+    }
+    return currentContent.takeIf { it != originalContent }
+}
+
+private data class RemoteTaskRepositoryPatchMatch(
+    val startIndex: Int,
+    val endIndex: Int,
+    val lineNumber: Int
+)
+
+private fun findRemoteTaskRepositoryPatchMatches(
+    content: String,
+    hunk: RemoteTaskRepositoryPatchHunk
+): List<RemoteTaskRepositoryPatchMatch> {
+    val candidateIndexes = findExactOccurrenceIndexes(content, hunk.search)
+    val matches = candidateIndexes.mapNotNull { startIndex ->
+        val endIndex = startIndex + hunk.search.length
+        val lineNumber = computeLineNumberAtIndex(content, startIndex)
+        val matchesBefore = hunk.contextBefore?.let { contextBefore ->
+            val beforeStart = startIndex - contextBefore.length
+            beforeStart >= 0 && content.regionMatches(beforeStart, contextBefore, 0, contextBefore.length)
+        } ?: true
+        val matchesAfter = hunk.contextAfter?.let { contextAfter ->
+            val afterEnd = endIndex + contextAfter.length
+            afterEnd <= content.length && content.regionMatches(endIndex, contextAfter, 0, contextAfter.length)
+        } ?: true
+        if (!matchesBefore || !matchesAfter) {
+            null
+        } else {
+            RemoteTaskRepositoryPatchMatch(
+                startIndex = startIndex,
+                endIndex = endIndex,
+                lineNumber = lineNumber
+            )
+        }
+    }
+    val lineHint = hunk.lineHint
+    return if (lineHint == null || matches.size <= 1) {
+        matches
+    } else {
+        matches.sortedWith(
+            compareBy<RemoteTaskRepositoryPatchMatch> { kotlin.math.abs(it.lineNumber - lineHint) }
+                .thenBy { it.lineNumber }
+        )
+    }
+}
+
+private fun replaceRemoteTaskRepositoryPatchMatches(
+    content: String,
+    matches: List<RemoteTaskRepositoryPatchMatch>,
+    replacement: String
+): String {
+    var updated = content
+    matches.asReversed().forEach { match ->
+        updated = updated.replaceRange(match.startIndex, match.endIndex, replacement)
+    }
+    return updated
+}
+
+private fun buildRemoteTaskRepositoryPatchCandidatePreview(
+    content: String,
+    hunk: RemoteTaskRepositoryPatchHunk
+): String {
+    val rawIndexes = findExactOccurrenceIndexes(content, hunk.search)
+    if (rawIndexes.isEmpty()) return "未找到任何 search 命中"
+    val constrainedMatches = findRemoteTaskRepositoryPatchMatches(content, hunk)
+    val sourceMatches = if (constrainedMatches.isNotEmpty()) constrainedMatches else rawIndexes.map { index ->
+        RemoteTaskRepositoryPatchMatch(
+            startIndex = index,
+            endIndex = index + hunk.search.length,
+            lineNumber = computeLineNumberAtIndex(content, index)
+        )
+    }
+    return sourceMatches.take(3).joinToString(" | ") { match ->
+        buildString {
+            append("L")
+            append(match.lineNumber)
+            append(": ")
+            append(extractRemoteTaskRepositoryPatchSnippet(content, match.startIndex, match.endIndex))
+        }
+    }
+}
+
+private fun extractRemoteTaskRepositoryPatchSnippet(
+    content: String,
+    startIndex: Int,
+    endIndex: Int,
+    radius: Int = 36
+): String {
+    val snippetStart = maxOf(0, startIndex - radius)
+    val snippetEnd = minOf(content.length, endIndex + radius)
+    val snippet = content.substring(snippetStart, snippetEnd)
+        .replace('\n', ' ')
+        .replace('\r', ' ')
+        .trim()
+    return when {
+        snippet.isBlank() -> "<empty>"
+        snippet.length <= 96 -> snippet
+        else -> snippet.take(93) + "..."
+    }
+}
+
+private fun computeLineNumberAtIndex(content: String, index: Int): Int {
+    if (index <= 0) return 1
+    var line = 1
+    var cursor = 0
+    while (cursor < index && cursor < content.length) {
+        if (content[cursor] == '\n') line++
+        cursor++
+    }
+    return line
+}
+
+private suspend fun loadRemoteTaskRepositoryExistingFileForWrite(
+    repo: RemoteTaskRepositoryTarget,
+    path: String,
+    requestedBranch: String?,
+    token: String,
+    apiBaseUrl: String
+): RemoteTaskRepositoryExistingFileForWrite? {
+    val resolvedDefaultBranch = requestedBranch ?: loadRemoteTaskRepositoryDefaultBranch(
+        repo = repo,
+        token = token,
+        apiBaseUrl = apiBaseUrl
+    )
+    val branchCandidates = listOfNotNull(
+        requestedBranch,
+        resolvedDefaultBranch,
+        "main",
+        "master"
+    ).distinct()
+    branchCandidates.forEach { branch ->
+        val file = loadRemoteTaskRepositoryFile(
+            repo = repo,
+            path = path,
+            branch = branch,
+            token = token,
+            apiBaseUrl = apiBaseUrl
+        ).file
+        if (file != null) {
+            return RemoteTaskRepositoryExistingFileForWrite(
+                file = file,
+                branch = branch
+            )
+        }
+    }
+    return null
+}
+
+private fun buildRemoteTaskRepositoryWholeFileOverwriteGuardError(
+    repo: RemoteTaskRepositoryTarget,
+    path: String,
+    existingFile: RemoteTaskRepositoryFile,
+    candidateBranch: String,
+    newContent: String,
+    toolName: String
+): String? {
+    val largestCharCount = maxOf(existingFile.content.length, newContent.length)
+    if (largestCharCount < REMOTE_TASK_REPOSITORY_WHOLE_FILE_OVERWRITE_CHAR_LIMIT) {
+        return null
+    }
+    return buildString {
+        append("Error: 已拦截远端大文件整文件改写。")
+        append("\n文件: ")
+        append(repo.label)
+        append("/")
+        append(path)
+        append("\n检测分支: ")
+        append(candidateBranch)
+        append("\n当前长度: ")
+        append(existingFile.content.length)
+        append(" chars")
+        append("\n新内容长度: ")
+        append(newContent.length)
+        append(" chars")
+        append("\n触发工具: ")
+        append(toolName)
+        append("\n原因: 这类超大已有文件如果走整文件 content 提交，容易因为请求体过大、上下文截断或误传半截内容而把远端文件写坏。")
+        append("\n建议: 先用 `task_repo_read_file` 读取相关片段，再用 `task_repo_search_replace` 做精确替换；若必须分多文件提交，请先把大文件改动拆成较小的精确修改。")
     }
 }
 
@@ -1400,7 +2142,8 @@ private data class RemoteTaskRepositoryCreatedPr(
     val title: String,
     val head: String,
     val base: String,
-    val url: String?
+    val url: String?,
+    val state: String?
 )
 
 private suspend fun loadRemoteTaskRepositoryFile(
@@ -1613,7 +2356,8 @@ private fun parseRemoteTaskRepositoryCreatedPr(body: String): RemoteTaskReposito
         title = title,
         head = head,
         base = base,
-        url = obj["html_url"]?.jsonPrimitive?.contentOrNull?.trim()
+        url = obj["html_url"]?.jsonPrimitive?.contentOrNull?.trim(),
+        state = obj["state"]?.jsonPrimitive?.contentOrNull?.trim()
     )
 }
 
@@ -1758,12 +2502,23 @@ private fun formatRemoteTaskRepositoryFile(
 ): String {
     val allLines = file.content.lines()
     val hasWindow = startLine != null || endLine != null
+    val shouldAutoWindow = !hasWindow && shouldAutoWindowRemoteTaskRepositoryFileRead(
+        content = file.content,
+        totalLines = allLines.size
+    )
+    val effectiveStartLine = if (shouldAutoWindow) 1 else startLine
+    val effectiveEndLine = if (shouldAutoWindow) {
+        minOf(allLines.size, REMOTE_TASK_REPOSITORY_DEFAULT_READ_WINDOW_LINES)
+    } else {
+        endLine
+    }
     val lineWindow = computeRemoteTaskRepositoryLineWindow(
         lines = allLines,
-        startLine = startLine,
-        endLine = endLine
+        startLine = effectiveStartLine,
+        endLine = effectiveEndLine
     )
-    val visibleText = if (hasWindow) {
+    val usesWindow = hasWindow || shouldAutoWindow
+    val visibleText = if (usesWindow) {
         lineWindow.renderedText
     } else {
         file.content.ifBlank { "(empty file)" }
@@ -1783,15 +2538,48 @@ private fun formatRemoteTaskRepositoryFile(
         }
         append("\nTotal lines: ")
         append(allLines.size)
-        if (hasWindow) {
+        if (usesWindow) {
             append("\nShowing lines: ")
             append(lineWindow.startLine)
             append("-")
             append(lineWindow.endLine)
         }
+        if (shouldAutoWindow) {
+            append("\nNote: 文件较大，未指定行号时默认只返回首个安全窗口。继续阅读请显式传入 startLine/endLine。")
+        }
         append("\n\n")
         append(visibleText)
     }
+}
+
+internal fun shouldAutoWindowRemoteTaskRepositoryFileRead(
+    content: String,
+    totalLines: Int
+): Boolean {
+    return content.length >= REMOTE_TASK_REPOSITORY_AUTO_READ_WINDOW_CHAR_LIMIT ||
+        totalLines >= REMOTE_TASK_REPOSITORY_AUTO_READ_WINDOW_LINE_TRIGGER
+}
+
+internal fun renderRemoteTaskRepositoryFileForTest(
+    repoLabel: String,
+    path: String,
+    content: String,
+    branch: String? = null,
+    sha: String? = null,
+    startLine: Int? = null,
+    endLine: Int? = null
+): String {
+    return formatRemoteTaskRepositoryFile(
+        file = RemoteTaskRepositoryFile(
+            path = path,
+            content = content,
+            sha = sha,
+            branch = branch
+        ),
+        repoLabel = repoLabel,
+        startLine = startLine,
+        endLine = endLine
+    )
 }
 
 private data class RemoteTaskRepositoryLineWindow(
@@ -1886,6 +2674,24 @@ private fun formatGitHubSearchResult(
         append("\n\n")
         append(lines.joinToString("\n"))
     }
+}
+
+private fun normalizeRemoteTaskRepositorySearchQuery(rawQuery: String): String {
+    val trimmed = rawQuery.trim()
+    if (trimmed.isBlank()) return trimmed
+    val alreadyStructured = Regex("""\b(?:repo|org|user|path|language|symbol|content|is):""")
+        .containsMatchIn(trimmed)
+    if (alreadyStructured) return trimmed
+    val needsLiteralQuoting = trimmed.any { ch ->
+        ch.isWhitespace() || ch in setOf(
+            '"', '\'', '(', ')', '[', ']', '{', '}', ':', ';', ',', '!', '?', '+', '*', '^', '|', '&'
+        )
+    }
+    if (!needsLiteralQuoting) return trimmed
+    val escaped = trimmed
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+    return "\"$escaped\""
 }
 
 private fun JsonElement.jsonObjectOrNull(): JsonObject? = this as? JsonObject
@@ -2382,6 +3188,63 @@ private suspend fun writeRemoteTaskRepositoryFile(
     )
 }
 
+private suspend fun verifyRemoteTaskRepositoryBranchState(
+    repo: RemoteTaskRepositoryTarget,
+    branch: String,
+    shouldExist: Boolean,
+    token: String,
+    apiBaseUrl: String
+): String? {
+    val branchesResult = loadRemoteTaskRepositoryBranches(
+        repo = repo,
+        token = token,
+        apiBaseUrl = apiBaseUrl,
+        limit = 200
+    )
+    val branches = branchesResult.branches ?: return buildString {
+        append("无法重新读取远端分支列表。")
+        branchesResult.rawResult?.takeIf { it.isNotBlank() }?.let {
+            append(" 底层结果: ")
+            append(it)
+        }
+    }
+    val exists = branch in branches
+    return when {
+        shouldExist && !exists -> "远端分支 `$branch` 未出现在最新分支列表中。"
+        !shouldExist && exists -> "远端分支 `$branch` 仍然存在于最新分支列表中。"
+        else -> null
+    }
+}
+
+private suspend fun verifyRemoteTaskRepositoryFileDeletion(
+    repo: RemoteTaskRepositoryTarget,
+    path: String,
+    branch: String,
+    token: String,
+    apiBaseUrl: String
+): String? {
+    val verificationResult = loadRemoteTaskRepositoryFile(
+        repo = repo,
+        path = path,
+        branch = branch,
+        token = token,
+        apiBaseUrl = apiBaseUrl
+    )
+    if (verificationResult.file == null && isRemoteTaskRepositoryNotFoundResult(verificationResult.rawResult)) {
+        return null
+    }
+    return when {
+        verificationResult.file != null -> "远端文件 `${repo.label}/$path` 仍然可以被重新读取。"
+        verificationResult.rawResult.isNullOrBlank() -> "无法确认远端文件 `${repo.label}/$path` 是否已删除。"
+        else -> "无法确认远端文件 `${repo.label}/$path` 是否已删除。底层结果: ${verificationResult.rawResult}"
+    }
+}
+
+private fun isRemoteTaskRepositoryNotFoundResult(rawResult: String?): Boolean {
+    val normalized = rawResult?.lowercase().orEmpty()
+    return "github api 错误(404)" in normalized || "not found" in normalized
+}
+
 private suspend fun verifyRemoteTaskRepositoryBatchWriteChanges(
     repo: RemoteTaskRepositoryTarget,
     branch: String,
@@ -2389,17 +3252,32 @@ private suspend fun verifyRemoteTaskRepositoryBatchWriteChanges(
     token: String,
     apiBaseUrl: String
 ): String? {
-    changes.filter { it.operation == "write" }.forEach { change ->
-        val expectedContent = change.content ?: return@forEach
-        val error = verifyRemoteTaskRepositoryFileContent(
-            repo = repo,
-            path = change.path,
-            branch = branch,
-            expectedContent = expectedContent,
-            token = token,
-            apiBaseUrl = apiBaseUrl
-        )
-        if (error != null) return error
+    changes.forEach { change ->
+        when (change.operation) {
+            "write" -> {
+                val expectedContent = change.content ?: return@forEach
+                val error = verifyRemoteTaskRepositoryFileContent(
+                    repo = repo,
+                    path = change.path,
+                    branch = branch,
+                    expectedContent = expectedContent,
+                    token = token,
+                    apiBaseUrl = apiBaseUrl
+                )
+                if (error != null) return error
+            }
+
+            "delete" -> {
+                val error = verifyRemoteTaskRepositoryFileDeletion(
+                    repo = repo,
+                    path = change.path,
+                    branch = branch,
+                    token = token,
+                    apiBaseUrl = apiBaseUrl
+                )
+                if (error != null) return error
+            }
+        }
     }
     return null
 }
@@ -2456,6 +3334,18 @@ private fun countExactOccurrences(content: String, search: String): Int {
         val index = content.indexOf(search, startIndex = fromIndex)
         if (index < 0) return count
         count++
+        fromIndex = index + search.length
+    }
+}
+
+private fun findExactOccurrenceIndexes(content: String, search: String): List<Int> {
+    if (search.isEmpty()) return emptyList()
+    val indexes = mutableListOf<Int>()
+    var fromIndex = 0
+    while (true) {
+        val index = content.indexOf(search, startIndex = fromIndex)
+        if (index < 0) return indexes
+        indexes += index
         fromIndex = index + search.length
     }
 }

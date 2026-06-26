@@ -114,14 +114,18 @@ import com.murong.agent.core.config.GlobalMemory
 import com.murong.agent.core.config.GlobalRule
 import com.murong.agent.core.config.GlobalSkill
 import com.murong.agent.core.config.ProjectToolPreferences
+import com.murong.agent.core.config.SessionProjectConfig
 import com.murong.agent.core.config.ProjectWorkflowRiskLevel
 import com.murong.agent.core.config.ProjectWorkflowType
 import com.murong.agent.core.config.ProviderConfig
 import com.murong.agent.core.config.ToolApprovalMode
 import com.murong.agent.core.config.WorkflowFailureFallbackMode
 import com.murong.agent.core.loop.ProjectKnowledgeSnapshotUi
-import com.murong.agent.core.loop.RepoScopedProjectConfigUi
 import com.murong.agent.core.loop.SessionSummary
+import com.murong.agent.ui.toSessionReadinessPresentation
+import com.murong.agent.ui.buildApprovalModeFollowGlobalOptionPresentation
+import com.murong.agent.ui.buildApprovalModeHostPresentation
+import com.murong.agent.ui.buildApprovalModeOptionPresentations
 import com.murong.agent.core.provider.ChatMessage
 import com.murong.agent.core.provider.ChatRequest
 import com.murong.agent.core.provider.ProviderRegistry
@@ -164,7 +168,9 @@ private data class ProjectEditorDerivedState(
     val diagnostics: List<ProjectEditorDiagnostic> = emptyList(),
     val conflictBlocks: List<ProjectGitConflictBlock> = emptyList(),
     val foldRegions: List<ProjectFoldRegion> = emptyList(),
-    val outlineEntries: List<ProjectOutlineEntry> = emptyList()
+    val outlineEntries: List<ProjectOutlineEntry> = emptyList(),
+    val lspState: ProjectEditorLspState = ProjectEditorLspState(),
+    val lspSessionState: ProjectEditorLspSessionState = ProjectEditorLspSessionState()
 )
 
 private data class ProjectEditorDerivedSeed(
@@ -349,7 +355,7 @@ internal fun ProjectScreen(
     projectMemories: List<GlobalMemory>,
     projectSkills: List<GlobalSkill>,
     projectToolPreferences: ProjectToolPreferences?,
-    repoScopedConfigs: Map<String, RepoScopedProjectConfigUi>,
+    repoScopedConfigs: Map<String, SessionProjectConfig>,
     selectedViewerTaskRepository: ProjectGitHubRepoRef?,
     mcpToolNames: List<String>,
     sessions: List<SessionSummary>,
@@ -465,7 +471,7 @@ internal fun ProjectScreen(
     val chromeColor = rememberMurongChromeColor()
     val mutedTextColor = rememberMurongMutedTextColor()
     val activeConfigScopePath = selectedRepoRoot ?: currentProjectPath
-    val activeRepoScopedConfig = remember(
+    val activeProjectConfig = remember(
         activeConfigScopePath,
         repoScopedConfigs,
         projectRules,
@@ -473,14 +479,7 @@ internal fun ProjectScreen(
         projectSkills,
         projectToolPreferences
     ) {
-        activeConfigScopePath?.let(repoScopedConfigs::get)?.let { scoped ->
-            RepoScopedProjectConfigUi(
-                projectRules = scoped.projectRules,
-                projectMemories = scoped.projectMemories,
-                projectSkills = scoped.projectSkills,
-                projectToolPreferences = scoped.projectToolPreferences
-            )
-        } ?: RepoScopedProjectConfigUi(
+        activeConfigScopePath?.let(repoScopedConfigs::get) ?: SessionProjectConfig(
             projectRules = projectRules,
             projectMemories = projectMemories,
             projectSkills = projectSkills,
@@ -631,10 +630,10 @@ internal fun ProjectScreen(
                                 "当前作用域：${repo.relativePath}"
                             }
                         } ?: "当前作用域：整个工作区",
-                        projectRules = activeRepoScopedConfig.projectRules,
-                        projectMemories = activeRepoScopedConfig.projectMemories,
-                        projectSkills = activeRepoScopedConfig.projectSkills,
-                        projectToolPreferences = activeRepoScopedConfig.projectToolPreferences,
+                        projectRules = activeProjectConfig.projectRules,
+                        projectMemories = activeProjectConfig.projectMemories,
+                        projectSkills = activeProjectConfig.projectSkills,
+                        projectToolPreferences = activeProjectConfig.projectToolPreferences,
                         onUpdateProjectConfig = { rules, memories, skills ->
                             onUpdateProjectConfig(activeConfigScopePath, rules, memories, skills)
                         },
@@ -923,6 +922,13 @@ private fun ProjectEditorSection(
     val activeTreeRoot = remember(activeTreeRootPath) {
         activeTreeRootPath?.let(::File)
     }
+    val recentSessionCardModel = remember(sessions, currentProjectPath, selectedRepoRoot) {
+        buildProjectRecentSessionReadinessCardModel(
+            sessions = sessions,
+            currentProjectPath = currentProjectPath,
+            selectedRepoRoot = selectedRepoRoot
+        )
+    }
     val treeListState = rememberSaveable(
         currentProjectPath,
         saver = LazyListState.Saver
@@ -931,6 +937,10 @@ private fun ProjectEditorSection(
     }
     val editorScrollOffsetsByFile = remember(currentProjectPath) { mutableStateMapOf<String, Int>() }
     var lastOpenedFilePath by rememberSaveable(currentProjectPath) { mutableStateOf<String?>(null) }
+    var lspClientHandles by remember(currentProjectPath) {
+        mutableStateOf<Map<String, ProjectEditorLspClientHandle>>(emptyMap())
+    }
+    var activeManagedLspSessionKey by remember(currentProjectPath) { mutableStateOf<String?>(null) }
 
     suspend fun applyOpenedEditorState(
         path: String,
@@ -941,14 +951,21 @@ private fun ProjectEditorSection(
         val initialValue = createInitialEditorValue(content, focusLine, focusQuery)
         val resolvedLanguage = languageOverride ?: projectLanguageForPath(path)
         val derivedSeedState = withContext(Dispatchers.Default) {
-            val diagnostics = buildProjectEditorDiagnostics(content, resolvedLanguage)
+            val diagnosticsSnapshot = buildProjectEditorLspDiagnosticsSnapshot(
+                content = content,
+                language = resolvedLanguage,
+                workspaceRoot = currentProjectPath,
+                filePath = path
+            )
             val conflictBlocks = detectGitConflictBlocks(content)
             val foldRegions = detectProjectFoldRegions(content, resolvedLanguage)
             ProjectEditorDerivedState(
-                diagnostics = diagnostics,
+                diagnostics = diagnosticsSnapshot.diagnostics,
                 conflictBlocks = conflictBlocks,
                 foldRegions = foldRegions,
-                outlineEntries = buildProjectOutlineEntries(foldRegions, resolvedLanguage)
+                outlineEntries = buildProjectOutlineEntries(foldRegions, resolvedLanguage),
+                lspState = diagnosticsSnapshot.lspState,
+                lspSessionState = diagnosticsSnapshot.sessionState
             )
         }
         selectedFilePath = path
@@ -1501,14 +1518,21 @@ private fun ProjectEditorSection(
             delay(220)
         }
         value = withContext(Dispatchers.Default) {
-            val diagnostics = buildProjectEditorDiagnostics(editedContent, language)
+            val diagnosticsSnapshot = buildProjectEditorLspDiagnosticsSnapshot(
+                content = editedContent,
+                language = language,
+                workspaceRoot = currentProjectPath,
+                filePath = selectedFilePath
+            )
             val conflicts = detectGitConflictBlocks(editedContent)
             val regions = detectProjectFoldRegions(editedContent, language)
             ProjectEditorDerivedState(
-                diagnostics = diagnostics,
+                diagnostics = diagnosticsSnapshot.diagnostics,
                 conflictBlocks = conflicts,
                 foldRegions = regions,
-                outlineEntries = buildProjectOutlineEntries(regions, language)
+                outlineEntries = buildProjectOutlineEntries(regions, language),
+                lspState = diagnosticsSnapshot.lspState,
+                lspSessionState = diagnosticsSnapshot.sessionState
             )
         }
     }
@@ -1790,6 +1814,45 @@ private fun ProjectEditorSection(
             ?.removePrefix(File.separator)
             .orEmpty()
     }
+    val editorLspState = editorDerivedState.lspState
+    val editorLspSessionState = editorDerivedState.lspSessionState
+    LaunchedEffect(editorLspSessionState.sessionKey, editorLspSessionState.status, editorLspState.providerLabel) {
+        var nextClients = lspClientHandles
+        val previousManagedSessionKey = activeManagedLspSessionKey
+        if (!previousManagedSessionKey.isNullOrBlank() && previousManagedSessionKey != editorLspSessionState.sessionKey) {
+            nextClients = detachProjectEditorLspClientSkeleton(
+                currentClients = nextClients,
+                sessionKey = previousManagedSessionKey
+            )
+        }
+        if (editorLspSessionState.status == ProjectEditorLspSessionStatus.MANAGED) {
+            nextClients = attachProjectEditorLspClientSkeleton(
+                currentClients = nextClients,
+                sessionState = editorLspSessionState,
+                lspState = editorLspState
+            )
+            activeManagedLspSessionKey = editorLspSessionState.sessionKey
+        } else {
+            activeManagedLspSessionKey = null
+        }
+        lspClientHandles = nextClients
+    }
+    val editorLspLiveSessionState = remember(editorLspSessionState, editorLspState, lspClientHandles) {
+        resolveProjectEditorLspLiveSessionState(
+            currentSessions = lspClientHandles,
+            sessionState = editorLspSessionState,
+            lspState = editorLspState
+        )
+    }
+    val editorLspClientHandle = remember(editorLspSessionState, lspClientHandles) {
+        lspClientHandles[editorLspSessionState.sessionKey]
+    }
+    val editorRuntimeLspState = remember(editorLspState, editorLspClientHandle) {
+        resolveProjectEditorLspRuntimeState(
+            baseState = editorLspState,
+            clientHandle = editorLspClientHandle
+        )
+    }
 
     SideEffect {
         onProjectSecondaryPageChanged(
@@ -1797,7 +1860,7 @@ private fun ProjectEditorSection(
                 ProjectSecondaryChromeState(
                     active = true,
                     title = currentFileName,
-                    subtitle = currentRelativePath,
+                    subtitle = buildProjectEditorChromeSubtitle(currentRelativePath, editorRuntimeLspState),
                     supportsEditorMenu = true,
                     wordWrapEnabled = editorWordWrapEnabled
                 )
@@ -2013,6 +2076,74 @@ private fun ProjectEditorSection(
                                 enabled = !selectedRepoRoot.isNullOrBlank(),
                                 label = { Text("当前仓库", fontSize = 12.sp) }
                             )
+                        }
+                    }
+                }
+
+                recentSessionCardModel?.let { cardModel ->
+                    ProjectInsetCard(
+                        surfaceColorOverride = editorChromeColor.copy(alpha = 0.18f)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = "最近会话收口",
+                                    style = MaterialTheme.typography.labelLarge
+                                )
+                                Text(
+                                    text = cardModel.session.title.ifBlank { "新对话" },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = editorMutedTextColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = cardModel.supportText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = editorMutedTextColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = cardModel.statusLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (cardModel.blocked) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    }
+                                )
+                                Text(
+                                    text = cardModel.readinessSummary,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (cardModel.blocked) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    },
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                cardModel.readinessReasonSummary?.let { reasonSummary ->
+                                    Text(
+                                        text = "原因：$reasonSummary",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = editorMutedTextColor,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            OutlinedButton(onClick = onOpenChat) {
+                                Text(cardModel.actionLabel)
+                            }
                         }
                     }
                 }
@@ -2735,7 +2866,10 @@ private fun ProjectEditorSection(
     if (showDiagnosticsDialog) {
         ProjectScreenLargeDialog(
             title = "错误列表",
-            subtitle = "共 ${editorDiagnostics.size} 条诊断结果",
+            subtitle = buildProjectEditorDiagnosticsDialogSubtitle(
+                diagnosticsCount = editorDiagnostics.size,
+                lspState = editorRuntimeLspState
+            ),
             onDismissRequest = { showDiagnosticsDialog = false },
             actions = {
                 TextButton(onClick = { showDiagnosticsDialog = false }) { Text("关闭") }
@@ -2750,6 +2884,37 @@ private fun ProjectEditorSection(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                Text(
+                    text = editorRuntimeLspState.statusDetail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = mutedTextColor
+                )
+                buildProjectEditorLspSessionFacts(editorLspSessionState).forEach { fact ->
+                    Text(
+                        text = fact,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                }
+                buildProjectEditorLspLiveSessionFacts(editorLspLiveSessionState).forEach { fact ->
+                    Text(
+                        text = fact,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                }
+                buildProjectEditorLspClientFacts(editorLspClientHandle).forEach { fact ->
+                    Text(
+                        text = fact,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor
+                    )
+                }
+                Text(
+                    text = editorLspLiveSessionState.detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = mutedTextColor
+                )
                 if (editorDiagnostics.isEmpty()) {
                     Text(
                         text = "当前没有识别到明显的结构错误。",
@@ -2966,8 +3131,6 @@ private fun ProjectConfigSection(
     var approvalModeOverride by remember(projectToolPreferences) {
         mutableStateOf(projectToolPreferences?.approvalMode)
     }
-    val effectiveApprovalMode = approvalModeOverride ?: config.approvalMode
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -2996,11 +3159,10 @@ private fun ProjectConfigSection(
             Text("审批模式", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = if (approvalModeOverride == null) {
-                    "当前跟随全局，实际生效：${approvalModeLabel(config.approvalMode)}"
-                } else {
-                    "当前使用项目覆盖：${approvalModeLabel(effectiveApprovalMode)}"
-                },
+                text = buildApprovalModeHostPresentation(
+                    globalMode = config.approvalMode,
+                    overrideMode = approvalModeOverride
+                ).message,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -3034,43 +3196,47 @@ private fun ProjectConfigSection(
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("跟随全局", style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        "全局当前为 ${approvalModeLabel(config.approvalMode)}",
+                        buildApprovalModeFollowGlobalOptionPresentation(config.approvalMode).subtitle,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
-            ToolApprovalMode.entries.forEach { mode ->
+            buildApprovalModeOptionPresentations().forEach { optionPresentation ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            approvalModeOverride = mode
+                            approvalModeOverride = optionPresentation.mode
                             onUpdateProjectToolPreferences(
                                 normalizeProjectToolPreferences(
-                                    (projectToolPreferences ?: ProjectToolPreferences()).copy(approvalMode = mode)
+                                    (projectToolPreferences ?: ProjectToolPreferences()).copy(
+                                        approvalMode = optionPresentation.mode
+                                    )
                                 )
                             )
                         }
                         .padding(vertical = 4.dp)
                 ) {
                     RadioButton(
-                        selected = approvalModeOverride == mode,
+                        selected = approvalModeOverride == optionPresentation.mode,
                         onClick = {
-                            approvalModeOverride = mode
+                            approvalModeOverride = optionPresentation.mode
                             onUpdateProjectToolPreferences(
                                 normalizeProjectToolPreferences(
-                                    (projectToolPreferences ?: ProjectToolPreferences()).copy(approvalMode = mode)
+                                    (projectToolPreferences ?: ProjectToolPreferences()).copy(
+                                        approvalMode = optionPresentation.mode
+                                    )
                                 )
                             )
                         }
                     )
                     Spacer(Modifier.width(8.dp))
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(approvalModeLabel(mode), style = MaterialTheme.typography.bodyMedium)
+                        Text(optionPresentation.title, style = MaterialTheme.typography.bodyMedium)
                         Text(
-                            approvalModeDescription(mode),
+                            optionPresentation.subtitle,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -7813,20 +7979,6 @@ private fun ProjectGitSection(
         }
     }
 
-}
-
-private fun approvalModeLabel(mode: ToolApprovalMode): String = when (mode) {
-    ToolApprovalMode.READ_ONLY -> "只读模式"
-    ToolApprovalMode.ALL_APPROVAL -> "全部审批"
-    ToolApprovalMode.WHITELIST_AUTO -> "白名单自动通过"
-    ToolApprovalMode.ALL_AUTO -> "全部自动通过"
-}
-
-private fun approvalModeDescription(mode: ToolApprovalMode): String = when (mode) {
-    ToolApprovalMode.READ_ONLY -> "仅允许只读类能力自动运行，写入和执行类操作会被明显收紧。"
-    ToolApprovalMode.ALL_APPROVAL -> "所有工具调用都需要你显式确认后才会继续。"
-    ToolApprovalMode.WHITELIST_AUTO -> "命中白名单的操作可自动通过，其余请求仍然审批。"
-    ToolApprovalMode.ALL_AUTO -> "默认不再弹审批，适合你完全信任当前任务时使用。"
 }
 
 private fun normalizeProjectToolPreferences(

@@ -5,6 +5,9 @@ import com.murong.agent.core.config.GlobalMemory
 import com.murong.agent.core.config.GlobalRule
 import com.murong.agent.core.config.GlobalSkill
 import com.murong.agent.core.config.ProjectToolPreferences
+import com.murong.agent.core.tool.ApprovalRiskLevel
+import com.murong.agent.core.tool.StepSignOffReceipt
+import com.murong.agent.core.tool.ToolStructuredPayload
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -22,6 +25,19 @@ data class UsageSummarySnapshot(
     val totalTokens: Int = 0,
     val promptCacheHitTokens: Int = 0,
     val promptCacheMissTokens: Int = 0,
+    val lastTurnPromptCacheHitTokens: Int = 0,
+    val lastTurnPromptCacheMissTokens: Int = 0,
+    val lastCachePrefixHash: String? = null,
+    val lastCacheStableSystemHash: String? = null,
+    val lastCacheToolsHash: String? = null,
+    val lastCacheCompressionHash: String? = null,
+    val lastCacheProjectContextHash: String? = null,
+    val lastCacheSessionGoalHash: String? = null,
+    val lastCacheProjectSkillsHash: String? = null,
+    val lastCacheMcpToolsHash: String? = null,
+    val lastCachePlanModeHash: String? = null,
+    val lastCachePrefixChanged: Boolean = false,
+    val lastCachePrefixChangeReasons: List<String> = emptyList(),
     val estimatedCostAmount: Double = 0.0,
     val estimatedCostCurrency: String = "USD",
     val estimatedCostUsd: Double = 0.0
@@ -119,6 +135,25 @@ data class PersistedSubagentBatch(
 )
 
 @Serializable
+data class PersistedBackgroundJob(
+    val jobId: String,
+    val toolName: String,
+    val title: String,
+    val summary: String,
+    val detail: String = "",
+    val status: String,
+    val statusMessage: String = "",
+    val resultPreview: String? = null,
+    val queuePosition: Int? = null,
+    val assignedSlot: Int? = null,
+    val concurrencyLimit: Int? = null,
+    val timeoutSeconds: Int? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+    val startedAt: Long? = null,
+    val finishedAt: Long? = null
+)
+
+@Serializable
 data class PersistedSubagentTimelineEntry(
     val id: String,
     val timestamp: Long,
@@ -156,7 +191,23 @@ data class PersistedFileChangeRecord(
 data class PersistedErrorRecord(
     val id: String,
     val message: String,
+    val kind: String = ErrorRecordKind.GENERAL.name,
     val timestamp: Long
+)
+
+@Serializable
+data class PersistedStepSignOffReceipt(
+    val reportedStep: String,
+    val resultSummary: String,
+    val matchedEvidenceCount: Int,
+    val totalEvidenceCount: Int,
+    val matchedToolNames: List<String> = emptyList(),
+    val matchedSessionHistorySessionIds: List<String> = emptyList(),
+    val matchedSessionHistoryMessageReferences: List<String> = emptyList(),
+    val signOffTimestamp: Long,
+    val workflowStepIndex: Int? = null,
+    val workflowStep: String? = null,
+    val workflowTotalSteps: Int? = null
 )
 
 @Serializable
@@ -166,7 +217,35 @@ data class PersistedToolCallRecord(
     val args: String,
     val result: String? = null,
     val isSuccess: Boolean = true,
+    val stepSignOffReceipt: PersistedStepSignOffReceipt? = null,
+    val structuredPayload: ToolStructuredPayload? = null,
     val timestamp: Long
+)
+
+@Serializable
+data class PersistedCheckpointRecoveryRecord(
+    val id: String,
+    val checkpointId: String,
+    val checkpointSummary: String,
+    val scope: String,
+    val restoredFileCount: Int = 0,
+    val targetMessageIndex: Int,
+    val timestamp: Long
+)
+
+@Serializable
+data class PersistedFinalReadinessAuditRecord(
+    val result: String,
+    val recovered: Boolean = false,
+    val receiptKind: String,
+    val requiredAction: String,
+    val latestSuccessfulWriteToolName: String? = null,
+    val remainingUnsignedSteps: Int? = null,
+    val nextRequiredStep: String? = null,
+    val latestSignedOffStep: String? = null,
+    val latestSignedOffMatchedTools: List<String> = emptyList(),
+    val latestSignedOffSessionHistorySessionIds: List<String> = emptyList(),
+    val latestSignedOffSessionHistoryMessageReferences: List<String> = emptyList()
 )
 
 @Serializable
@@ -198,7 +277,40 @@ data class PersistedConversationCheckpoint(
     val messageIndex: Int,
     val createdAt: Long = System.currentTimeMillis(),
     val summary: String,
-    val changedFiles: List<String> = emptyList()
+    val changedFiles: List<String> = emptyList(),
+    val kind: String = ConversationCheckpointKind.FILE_TURN.name,
+    val scope: String = ConversationCheckpointScope.CODE.name,
+    val source: String = ConversationCheckpointSource.TOOL_EXECUTION.name,
+    val toolNames: List<String> = emptyList(),
+    val promptSnapshot: PersistedConversationCheckpointPromptSnapshot? = null
+)
+
+@Serializable
+data class PersistedConversationCheckpointPromptSnapshot(
+    val pendingAskRequest: PersistedPendingAskRequest? = null,
+    val pendingWorkflowPlan: PersistedWorkflowPlan? = null,
+    val canonicalWorkflowPlan: PersistedWorkflowPlan? = null,
+    val pendingClarificationRequest: PersistedClarificationRequest? = null
+)
+
+@Serializable
+data class PersistedCheckpointStore(
+    val checkpoints: List<PersistedConversationCheckpoint> = emptyList(),
+    val fileChanges: List<PersistedFileChangeRecord> = emptyList()
+)
+
+@Serializable
+data class PersistedWorkflowStepSignOff(
+    val stepIndex: Int,
+    val step: String,
+    val reportedStep: String,
+    val resultSummary: String,
+    val matchedEvidenceCount: Int = 0,
+    val totalEvidenceCount: Int = 0,
+    val matchedToolNames: List<String> = emptyList(),
+    val matchedSessionHistorySessionIds: List<String> = emptyList(),
+    val matchedSessionHistoryMessageReferences: List<String> = emptyList(),
+    val signedOffAt: Long = System.currentTimeMillis()
 )
 
 @Serializable
@@ -213,8 +325,19 @@ data class PersistedWorkflowPlan(
     val nextStepHint: String = "",
     val status: String = "READY",
     val mentionedFiles: List<PersistedFileMention> = emptyList(),
+    val stepSignOffs: List<PersistedWorkflowStepSignOff> = emptyList(),
+    val recentSessionHistoryClue: PersistedSessionHistoryReferenceClue? = null,
     val rawPlan: String = "",
     val createdAt: Long = System.currentTimeMillis()
+)
+
+@Serializable
+data class PersistedSessionHistoryReferenceClue(
+    val queries: List<String> = emptyList(),
+    val sessionIds: List<String> = emptyList(),
+    val messageReferences: List<String> = emptyList(),
+    val snippets: List<String> = emptyList(),
+    val excerptWindows: List<String> = emptyList()
 )
 
 @Serializable
@@ -232,6 +355,21 @@ data class PersistedProjectKnowledgeSnapshot(
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
     val lastAppliedAt: Long? = null
+)
+
+@Serializable
+data class PersistedMemoryUpdateSuggestion(
+    val id: String,
+    val title: String,
+    val content: String,
+    val scope: String,
+    val reason: String,
+    val sourceKind: String,
+    val sourceUserMessageId: Long? = null,
+    val sourceAssistantMessageId: Long? = null,
+    val linkedMemoryId: String? = null,
+    val status: String = "PENDING",
+    val createdAt: Long = System.currentTimeMillis()
 )
 
 @Serializable
@@ -259,6 +397,7 @@ data class PersistedClarificationRequest(
     val turnIndex: Int = 1,
     val maxTurns: Int = 3,
     val source: String = "MANUAL",
+    val recentSessionHistoryClue: PersistedSessionHistoryReferenceClue? = null,
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -272,6 +411,56 @@ data class PersistedAutoRouteDecision(
 @Serializable
 data class PersistedWorkflowFallback(
     val message: String,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+@Serializable
+data class PersistedFinalReadinessReceipt(
+    val kind: String,
+    val requiredAction: String,
+    val message: String,
+    val latestSuccessfulWriteToolName: String? = null,
+    val remainingUnsignedSteps: Int? = null,
+    val nextRequiredStep: String? = null,
+    val latestSignedOffStep: String? = null,
+    val latestSignedOffResultSummary: String? = null,
+    val latestSignedOffMatchedTools: List<String> = emptyList(),
+    val latestSignedOffSessionHistorySessionIds: List<String> = emptyList(),
+    val latestSignedOffSessionHistoryMessageReferences: List<String> = emptyList()
+)
+
+@Serializable
+data class PersistedPendingApproval(
+    val toolName: String,
+    val summary: String,
+    val detail: String,
+    val rawArgs: String,
+    val riskLevel: String,
+    val explanationLabel: String? = null,
+    val explanationDetail: String? = null
+)
+
+@Serializable
+data class PersistedAskOption(
+    val label: String,
+    val description: String? = null
+)
+
+@Serializable
+data class PersistedAskQuestion(
+    val id: String,
+    val header: String = "",
+    val question: String,
+    val options: List<PersistedAskOption> = emptyList(),
+    val multiSelect: Boolean = false
+)
+
+@Serializable
+data class PersistedPendingAskRequest(
+    val id: String,
+    val title: String = "需要确认",
+    val questions: List<PersistedAskQuestion> = emptyList(),
+    val recentSessionHistoryClue: PersistedSessionHistoryReferenceClue? = null,
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -307,16 +496,24 @@ data class PersistedSession(
     val fileChanges: List<PersistedFileChangeRecord> = emptyList(),
     val subagentRuns: List<PersistedSubagentRun> = emptyList(),
     val subagentBatches: List<PersistedSubagentBatch> = emptyList(),
+    val backgroundJobs: List<PersistedBackgroundJob> = emptyList(),
     val recentErrors: List<PersistedErrorRecord> = emptyList(),
     val recentToolCalls: List<PersistedToolCallRecord> = emptyList(),
+    val recentMemoryUpdateSuggestions: List<PersistedMemoryUpdateSuggestion> = emptyList(),
+    val recentRecoveryRecords: List<PersistedCheckpointRecoveryRecord> = emptyList(),
+    val recentFinalReadinessAudits: List<PersistedFinalReadinessAuditRecord> = emptyList(),
     val recentApprovals: List<PersistedApprovalRecord> = emptyList(),
     val recentApprovalInvalidations: List<PersistedApprovalInvalidationRecord> = emptyList(),
     val approvedApprovalScopes: List<List<String>> = emptyList(),
     val approvedApprovalScopeEntries: List<PersistedApprovedApprovalScope> = emptyList(),
+    val pendingApproval: PersistedPendingApproval? = null,
+    val pendingAskRequest: PersistedPendingAskRequest? = null,
     val pendingWorkflowPlan: PersistedWorkflowPlan? = null,
+    val canonicalWorkflowPlan: PersistedWorkflowPlan? = null,
     val pendingClarificationRequest: PersistedClarificationRequest? = null,
     val lastAutoRouteDecision: PersistedAutoRouteDecision? = null,
     val lastWorkflowFallback: PersistedWorkflowFallback? = null,
+    val lastFinalReadinessReceipt: PersistedFinalReadinessReceipt? = null,
     val messages: List<PersistedMessage>
 )
 
@@ -336,33 +533,64 @@ data class PersistedApprovedApprovalScope(
  * 存储位置: context.filesDir/conversations/<sessionId>.json
  * 索引文件: context.filesDir/conversations/index.json
  */
-class ConversationStore(private val context: Context) {
+class ConversationStore internal constructor(
+    private val conversationDir: File
+) {
+    constructor(context: Context) : this(File(context.filesDir, "conversations"))
 
     private val json = Json {
         prettyPrint = true
         ignoreUnknownKeys = true
     }
+    private val sessionMutationLock = Any()
+    private val deletedSessionIds = linkedSetOf<String>()
+    private var deletedSessionIdsLoaded = false
 
     private val baseDir: File
-        get() = File(context.filesDir, "conversations").also { it.mkdirs() }
+        get() = conversationDir.also { it.mkdirs() }
 
     /**
      * 保存会话
      */
-    fun saveSession(session: PersistedSession) {
-        val file = File(baseDir, "${session.id}.json")
-        file.writeText(json.encodeToString(session))
+    fun saveSession(session: PersistedSession): Boolean = synchronized(sessionMutationLock) {
+        if (session.id in deletedSessionIdsLocked()) {
+            return false
+        }
+        val mainSession = session.copy(
+            checkpoints = emptyList(),
+            fileChanges = emptyList()
+        )
+        sessionFile(session.id).writeText(json.encodeToString(mainSession))
+        checkpointStoreFile(session.id).writeText(
+            json.encodeToString(
+                PersistedCheckpointStore(
+                    checkpoints = session.checkpoints,
+                    fileChanges = session.fileChanges
+                )
+            )
+        )
         updateIndex(session)
+        true
     }
 
     /**
      * 加载会话
      */
-    fun loadSession(sessionId: String): PersistedSession? {
-        val file = File(baseDir, "${sessionId}.json")
+    fun loadSession(sessionId: String): PersistedSession? = synchronized(sessionMutationLock) {
+        if (sessionId in deletedSessionIdsLocked()) return null
+        val file = sessionFile(sessionId)
         if (!file.exists()) return null
-        return try {
-            json.decodeFromString<PersistedSession>(file.readText())
+        try {
+            val session = json.decodeFromString<PersistedSession>(file.readText())
+            val checkpointStore = loadCheckpointStore(sessionId)
+            if (checkpointStore != null) {
+                session.copy(
+                    checkpoints = checkpointStore.checkpoints,
+                    fileChanges = checkpointStore.fileChanges
+                )
+            } else {
+                session
+            }
         } catch (e: Exception) {
             null
         }
@@ -386,22 +614,175 @@ class ConversationStore(private val context: Context) {
     /**
      * 删除会话
      */
-    fun deleteSession(sessionId: String) {
-        File(baseDir, "${sessionId}.json").delete()
+    fun deleteSession(sessionId: String) = synchronized(sessionMutationLock) {
+        loadSession(sessionId)?.let { session ->
+            writeArchivedSessionsLocked(
+                archivedSessionsLocked()
+                    .filterNot { it.originalSessionId == sessionId }
+                    .plus(buildArchivedSessionSummary(session))
+            )
+        }
+        deletedSessionIdsLocked().add(sessionId)
+        writeDeletedSessionIdsLocked()
+        sessionFile(sessionId).delete()
+        checkpointStoreFile(sessionId).delete()
         rebuildIndex()
+    }
+
+    fun listArchivedSessions(): List<ArchivedSessionSummary> = synchronized(sessionMutationLock) {
+        archivedSessionsLocked().sortedByDescending { it.archivedAt }
+    }
+
+    fun loadArchivedSessionSummary(sessionId: String): ArchivedSessionSummary? = synchronized(sessionMutationLock) {
+        archivedSessionsLocked().firstOrNull { it.originalSessionId == sessionId }
+    }
+
+    fun loadArchivedMemoryCandidate(sessionId: String): ArchivedMemoryCandidate? =
+        synchronized(sessionMutationLock) {
+            archivedSessionsLocked()
+                .firstOrNull { it.originalSessionId == sessionId && it.isPendingMemoryCandidate() }
+                ?.let(::buildArchivedMemoryCandidate)
+        }
+
+    fun listArchivedMemoryCandidates(limit: Int = 20): List<ArchivedMemoryCandidate> =
+        synchronized(sessionMutationLock) {
+            archivedSessionsLocked()
+                .sortedByDescending { it.archivedAt }
+                .filter { it.isPendingMemoryCandidate() }
+                .map(::buildArchivedMemoryCandidate)
+                .take(limit.coerceAtLeast(0))
+        }
+
+    fun markArchivedMemoryCandidateAccepted(
+        sessionId: String,
+        scope: ArchivedMemoryCandidateScope,
+        memoryId: String,
+        acceptedAt: Long = System.currentTimeMillis(),
+        resolutionSource: ArchivedMemoryCandidateResolutionSource = ArchivedMemoryCandidateResolutionSource.USER_ACTION,
+        resolutionSummary: String? = null
+    ): Boolean = synchronized(sessionMutationLock) {
+        if (memoryId.isBlank()) return false
+        val normalizedSummary = resolutionSummary?.trim()?.takeIf { it.isNotBlank() }
+            ?: when (scope) {
+                ArchivedMemoryCandidateScope.PROJECT -> "已将归档候选保存为项目记忆。"
+                ArchivedMemoryCandidateScope.GLOBAL -> "已将归档候选保存为全局记忆。"
+            }
+        val records = archivedSessionsLocked()
+        var updated = false
+        val rewritten = records.map { summary ->
+            if (summary.originalSessionId != sessionId || !summary.isPendingMemoryCandidate()) {
+                summary
+            } else {
+                updated = true
+                summary.copy(
+                    candidateStatus = ArchivedMemoryCandidateStatus.ACCEPTED,
+                    acceptedMemoryScope = scope,
+                    acceptedMemoryId = memoryId,
+                    acceptedAt = acceptedAt,
+                    dismissedReason = null,
+                    dismissedAt = null,
+                    consumedReason = null,
+                    consumedAt = null,
+                    resolutionSource = resolutionSource,
+                    resolutionSummary = normalizedSummary
+                )
+            }
+        }
+        if (updated) {
+            writeArchivedSessionsLocked(rewritten)
+        }
+        updated
+    }
+
+    fun markArchivedMemoryCandidateDismissed(
+        sessionId: String,
+        dismissedReason: String? = null,
+        dismissedAt: Long = System.currentTimeMillis(),
+        resolutionSource: ArchivedMemoryCandidateResolutionSource = ArchivedMemoryCandidateResolutionSource.USER_ACTION,
+        resolutionSummary: String? = null
+    ): Boolean = synchronized(sessionMutationLock) {
+        val normalizedReason = dismissedReason?.trim()?.takeIf { it.isNotBlank() }
+        val normalizedSummary = resolutionSummary?.trim()?.takeIf { it.isNotBlank() }
+            ?: normalizedReason
+            ?: "已关闭归档记忆候选。"
+        val records = archivedSessionsLocked()
+        var updated = false
+        val rewritten = records.map { summary ->
+            if (summary.originalSessionId != sessionId || !summary.isPendingMemoryCandidate()) {
+                summary
+            } else {
+                updated = true
+                summary.copy(
+                    candidateStatus = ArchivedMemoryCandidateStatus.DISMISSED,
+                    acceptedMemoryScope = null,
+                    acceptedMemoryId = null,
+                    acceptedAt = null,
+                    dismissedReason = normalizedReason,
+                    dismissedAt = dismissedAt,
+                    consumedReason = null,
+                    consumedAt = null,
+                    resolutionSource = resolutionSource,
+                    resolutionSummary = normalizedSummary
+                )
+            }
+        }
+        if (updated) {
+            writeArchivedSessionsLocked(rewritten)
+        }
+        updated
+    }
+
+    fun markArchivedMemoryCandidateConsumed(
+        sessionId: String,
+        consumedReason: String? = null,
+        consumedAt: Long = System.currentTimeMillis(),
+        resolutionSource: ArchivedMemoryCandidateResolutionSource = ArchivedMemoryCandidateResolutionSource.USER_ACTION,
+        resolutionSummary: String? = null
+    ): Boolean = synchronized(sessionMutationLock) {
+        val normalizedReason = consumedReason?.trim()?.takeIf { it.isNotBlank() }
+        val normalizedSummary = resolutionSummary?.trim()?.takeIf { it.isNotBlank() }
+            ?: normalizedReason
+            ?: "已将归档记忆候选标记为已处理。"
+        val records = archivedSessionsLocked()
+        var updated = false
+        val rewritten = records.map { summary ->
+            if (summary.originalSessionId != sessionId || !summary.isPendingMemoryCandidate()) {
+                summary
+            } else {
+                updated = true
+                summary.copy(
+                    candidateStatus = ArchivedMemoryCandidateStatus.CONSUMED,
+                    acceptedMemoryScope = null,
+                    acceptedMemoryId = null,
+                    acceptedAt = null,
+                    dismissedReason = null,
+                    dismissedAt = null,
+                    consumedReason = normalizedReason,
+                    consumedAt = consumedAt,
+                    resolutionSource = resolutionSource,
+                    resolutionSummary = normalizedSummary
+                )
+            }
+        }
+        if (updated) {
+            writeArchivedSessionsLocked(rewritten)
+        }
+        updated
     }
 
     /**
      * 列出所有会话摘要
      */
-    fun listSessions(): List<SessionSummary> {
+    fun listSessions(): List<SessionSummary> = synchronized(sessionMutationLock) {
+        val deletedIds = deletedSessionIdsLocked()
         val indexFile = File(baseDir, "index.json")
         if (!indexFile.exists()) {
             // 无索引时扫描目录重建
             return scanAndRebuildIndex()
         }
-        return try {
+        try {
             json.decodeFromString<List<SessionSummary>>(indexFile.readText())
+                .filterNot { it.id in deletedIds }
                 .sortedByDescending { it.updatedAt }
         } catch (e: Exception) {
             scanAndRebuildIndex()
@@ -607,6 +988,50 @@ class ConversationStore(private val context: Context) {
         }
     }
 
+    fun persistBackgroundJobs(jobs: List<BackgroundJobUi>): List<PersistedBackgroundJob> {
+        return jobs.map { job ->
+            PersistedBackgroundJob(
+                jobId = job.jobId,
+                toolName = job.toolName,
+                title = job.title,
+                summary = job.summary,
+                detail = job.detail,
+                status = job.status,
+                statusMessage = job.statusMessage,
+                resultPreview = job.resultPreview,
+                queuePosition = job.queuePosition,
+                assignedSlot = job.assignedSlot,
+                concurrencyLimit = job.concurrencyLimit,
+                timeoutSeconds = job.timeoutSeconds,
+                createdAt = job.createdAt,
+                startedAt = job.startedAt,
+                finishedAt = job.finishedAt
+            )
+        }
+    }
+
+    fun restoreBackgroundJobs(jobs: List<PersistedBackgroundJob>): List<BackgroundJobUi> {
+        return jobs.map { job ->
+            BackgroundJobUi(
+                jobId = job.jobId,
+                toolName = job.toolName,
+                title = job.title,
+                summary = job.summary,
+                detail = job.detail,
+                status = job.status,
+                statusMessage = job.statusMessage,
+                resultPreview = job.resultPreview,
+                queuePosition = job.queuePosition,
+                assignedSlot = job.assignedSlot,
+                concurrencyLimit = job.concurrencyLimit,
+                timeoutSeconds = job.timeoutSeconds,
+                createdAt = job.createdAt,
+                startedAt = job.startedAt,
+                finishedAt = job.finishedAt
+            )
+        }
+    }
+
     fun persistCompressionSnapshot(snapshot: ContextCompressionUi?): PersistedCompressionSnapshot? {
         return snapshot?.let {
             PersistedCompressionSnapshot(
@@ -643,6 +1068,244 @@ class ConversationStore(private val context: Context) {
         return snapshots.mapNotNull(::persistCompressionSnapshot)
     }
 
+    fun persistSessionHistoryReferenceClue(
+        clue: SessionHistoryReferenceClueUi?
+    ): PersistedSessionHistoryReferenceClue? {
+        return clue?.let {
+            PersistedSessionHistoryReferenceClue(
+                queries = it.queries,
+                sessionIds = it.sessionIds,
+                messageReferences = it.messageReferences,
+                snippets = it.snippets,
+                excerptWindows = it.excerptWindows
+            )
+        }
+    }
+
+    fun restoreSessionHistoryReferenceClue(
+        clue: PersistedSessionHistoryReferenceClue?
+    ): SessionHistoryReferenceClueUi? {
+        return clue?.let {
+            SessionHistoryReferenceClueUi(
+                queries = it.queries,
+                sessionIds = it.sessionIds,
+                messageReferences = it.messageReferences,
+                snippets = it.snippets,
+                excerptWindows = it.excerptWindows
+            )
+        }
+    }
+
+    fun persistWorkflowPlan(plan: WorkflowPlanUi?): PersistedWorkflowPlan? {
+        return plan?.let {
+            PersistedWorkflowPlan(
+                id = it.id,
+                goal = it.goal,
+                summary = it.summary,
+                steps = it.steps,
+                stageLabels = it.stageLabels,
+                currentStageIndex = it.currentStageIndex,
+                currentStepIndex = it.currentStepIndex,
+                nextStepHint = it.nextStepHint,
+                status = it.status.name,
+                mentionedFiles = it.mentionedFiles.map { mention ->
+                    PersistedFileMention(
+                        path = mention.path,
+                        displayPath = mention.displayPath,
+                        inlineContent = mention.inlineContent
+                    )
+                },
+                stepSignOffs = it.stepSignOffs.map { signOff ->
+                    PersistedWorkflowStepSignOff(
+                        stepIndex = signOff.stepIndex,
+                        step = signOff.step,
+                        reportedStep = signOff.reportedStep,
+                        resultSummary = signOff.resultSummary,
+                        matchedEvidenceCount = signOff.matchedEvidenceCount,
+                        totalEvidenceCount = signOff.totalEvidenceCount,
+                        matchedToolNames = signOff.matchedToolNames,
+                        matchedSessionHistorySessionIds = signOff.matchedSessionHistorySessionIds,
+                        matchedSessionHistoryMessageReferences =
+                            signOff.matchedSessionHistoryMessageReferences,
+                        signedOffAt = signOff.signedOffAt
+                    )
+                },
+                recentSessionHistoryClue = persistSessionHistoryReferenceClue(
+                    it.recentSessionHistoryClue
+                ),
+                rawPlan = it.rawPlan,
+                createdAt = it.createdAt
+            )
+        }
+    }
+
+    fun restoreWorkflowPlan(plan: PersistedWorkflowPlan?): WorkflowPlanUi? {
+        return plan?.let {
+            WorkflowPlanUi(
+                id = it.id,
+                goal = it.goal,
+                summary = it.summary,
+                steps = it.steps,
+                stageLabels = it.stageLabels,
+                currentStageIndex = it.currentStageIndex,
+                currentStepIndex = it.currentStepIndex,
+                nextStepHint = it.nextStepHint,
+                status = it.status.toPersistedWorkflowPlanStatusUi(),
+                mentionedFiles = it.mentionedFiles.map { mention ->
+                    FileMentionUi(
+                        path = mention.path,
+                        displayPath = mention.displayPath,
+                        inlineContent = mention.inlineContent
+                    )
+                },
+                stepSignOffs = it.stepSignOffs.map { signOff ->
+                    WorkflowStepSignOffUi(
+                        stepIndex = signOff.stepIndex,
+                        step = signOff.step,
+                        reportedStep = signOff.reportedStep,
+                        resultSummary = signOff.resultSummary,
+                        matchedEvidenceCount = signOff.matchedEvidenceCount,
+                        totalEvidenceCount = signOff.totalEvidenceCount,
+                        matchedToolNames = signOff.matchedToolNames,
+                        matchedSessionHistorySessionIds = signOff.matchedSessionHistorySessionIds,
+                        matchedSessionHistoryMessageReferences =
+                            signOff.matchedSessionHistoryMessageReferences,
+                        signedOffAt = signOff.signedOffAt
+                    )
+                },
+                recentSessionHistoryClue = restoreSessionHistoryReferenceClue(
+                    it.recentSessionHistoryClue
+                ),
+                rawPlan = it.rawPlan,
+                createdAt = it.createdAt
+            )
+        }
+    }
+
+    fun persistClarificationRequest(
+        request: ClarificationRequestUi?
+    ): PersistedClarificationRequest? {
+        return request?.let {
+            PersistedClarificationRequest(
+                id = it.id,
+                goal = it.goal,
+                question = it.question,
+                mentionedFiles = it.mentionedFiles.map { mention ->
+                    PersistedFileMention(
+                        path = mention.path,
+                        displayPath = mention.displayPath,
+                        inlineContent = mention.inlineContent
+                    )
+                },
+                previousAnswers = it.previousAnswers.map { answer ->
+                    PersistedClarificationAnswer(
+                        question = answer.question,
+                        answer = answer.answer,
+                        answeredAt = answer.answeredAt
+                    )
+                },
+                turnIndex = it.turnIndex,
+                maxTurns = it.maxTurns,
+                source = it.source.name,
+                recentSessionHistoryClue = persistSessionHistoryReferenceClue(
+                    it.recentSessionHistoryClue
+                ),
+                createdAt = it.createdAt
+            )
+        }
+    }
+
+    fun restoreClarificationRequest(
+        persisted: PersistedClarificationRequest?
+    ): ClarificationRequestUi? {
+        return persisted?.let {
+            ClarificationRequestUi(
+                id = it.id,
+                goal = it.goal,
+                question = it.question,
+                mentionedFiles = it.mentionedFiles.map { mention ->
+                    FileMentionUi(
+                        path = mention.path,
+                        displayPath = mention.displayPath,
+                        inlineContent = mention.inlineContent
+                    )
+                },
+                previousAnswers = it.previousAnswers.map { answer ->
+                    ClarificationAnswerUi(
+                        question = answer.question,
+                        answer = answer.answer,
+                        answeredAt = answer.answeredAt
+                    )
+                },
+                turnIndex = it.turnIndex,
+                maxTurns = it.maxTurns,
+                source = when (it.source.trim().uppercase()) {
+                    "AUTO_ROUTE" -> ClarificationSource.AUTO_ROUTE
+                    "AUTO_INTERRUPT" -> ClarificationSource.AUTO_INTERRUPT
+                    else -> ClarificationSource.MANUAL
+                },
+                recentSessionHistoryClue = restoreSessionHistoryReferenceClue(
+                    it.recentSessionHistoryClue
+                ),
+                createdAt = it.createdAt
+            )
+        }
+    }
+
+    fun persistFinalReadinessReceipt(
+        receipt: FinalReadinessReceipt?
+    ): PersistedFinalReadinessReceipt? {
+        return receipt?.let {
+            PersistedFinalReadinessReceipt(
+                kind = it.kind.name,
+                requiredAction = it.requiredAction.name,
+                message = it.message,
+                latestSuccessfulWriteToolName = it.latestSuccessfulWriteToolName,
+                remainingUnsignedSteps = it.remainingUnsignedSteps,
+                nextRequiredStep = it.nextRequiredStep,
+                latestSignedOffStep = it.latestSignedOffStep,
+                latestSignedOffResultSummary = it.latestSignedOffResultSummary,
+                latestSignedOffMatchedTools = it.latestSignedOffMatchedTools,
+                latestSignedOffSessionHistorySessionIds = it.latestSignedOffSessionHistorySessionIds,
+                latestSignedOffSessionHistoryMessageReferences =
+                    it.latestSignedOffSessionHistoryMessageReferences
+            )
+        }
+    }
+
+    fun restoreFinalReadinessReceipt(
+        receipt: PersistedFinalReadinessReceipt?
+    ): FinalReadinessReceipt? {
+        return receipt?.let {
+            FinalReadinessReceipt(
+                kind = runCatching { FinalReadinessReceiptKind.valueOf(it.kind) }
+                    .getOrDefault(FinalReadinessReceiptKind.MISSING_COMPLETE_STEP_AFTER_WRITE),
+                requiredAction = runCatching {
+                    FinalReadinessRequiredAction.valueOf(it.requiredAction)
+                }.getOrDefault(FinalReadinessRequiredAction.SIGN_OFF_WITH_EVIDENCE),
+                message = it.message,
+                latestSuccessfulWriteToolName = it.latestSuccessfulWriteToolName,
+                remainingUnsignedSteps = it.remainingUnsignedSteps,
+                nextRequiredStep = it.nextRequiredStep,
+                latestSignedOffStep = it.latestSignedOffStep,
+                latestSignedOffResultSummary = it.latestSignedOffResultSummary,
+                latestSignedOffMatchedTools = it.latestSignedOffMatchedTools,
+                latestSignedOffSessionHistorySessionIds = it.latestSignedOffSessionHistorySessionIds,
+                latestSignedOffSessionHistoryMessageReferences =
+                    it.latestSignedOffSessionHistoryMessageReferences
+            )
+        }
+    }
+
+    private fun String?.toPersistedWorkflowPlanStatusUi(): WorkflowPlanStatusUi {
+        return when (this?.uppercase()) {
+            WorkflowPlanStatusUi.EXECUTING.name -> WorkflowPlanStatusUi.EXECUTING
+            WorkflowPlanStatusUi.BLOCKED.name -> WorkflowPlanStatusUi.BLOCKED
+            WorkflowPlanStatusUi.COMPLETED.name -> WorkflowPlanStatusUi.COMPLETED
+            else -> WorkflowPlanStatusUi.READY
+        }
+    }
+
     fun restoreCompressionSnapshots(
         snapshots: List<PersistedCompressionSnapshot>,
         fallbackSnapshot: PersistedCompressionSnapshot? = null
@@ -663,7 +1326,21 @@ class ConversationStore(private val context: Context) {
                 messageIndex = checkpoint.messageIndex,
                 createdAt = checkpoint.createdAt,
                 summary = checkpoint.summary,
-                changedFiles = checkpoint.changedFiles
+                changedFiles = checkpoint.changedFiles,
+                kind = checkpoint.kind.name,
+                scope = checkpoint.scope.name,
+                source = checkpoint.source.name,
+                toolNames = checkpoint.toolNames,
+                promptSnapshot = checkpoint.promptSnapshot?.let { snapshot ->
+                    PersistedConversationCheckpointPromptSnapshot(
+                        pendingAskRequest = persistPendingAskRequest(snapshot.pendingAskRequest),
+                        pendingWorkflowPlan = persistWorkflowPlan(snapshot.pendingWorkflowPlan),
+                        canonicalWorkflowPlan = persistWorkflowPlan(snapshot.canonicalWorkflowPlan),
+                        pendingClarificationRequest = persistClarificationRequest(
+                            snapshot.pendingClarificationRequest
+                        )
+                    )
+                }
             )
         }
     }
@@ -677,33 +1354,225 @@ class ConversationStore(private val context: Context) {
                 messageIndex = checkpoint.messageIndex,
                 createdAt = checkpoint.createdAt,
                 summary = checkpoint.summary,
-                changedFiles = checkpoint.changedFiles
+                changedFiles = checkpoint.changedFiles,
+                kind = runCatching {
+                    ConversationCheckpointKind.valueOf(checkpoint.kind)
+                }.getOrDefault(ConversationCheckpointKind.FILE_TURN),
+                scope = runCatching {
+                    ConversationCheckpointScope.valueOf(checkpoint.scope)
+                }.getOrDefault(ConversationCheckpointScope.CODE),
+                source = runCatching {
+                    ConversationCheckpointSource.valueOf(checkpoint.source)
+                }.getOrDefault(ConversationCheckpointSource.LEGACY_EMBEDDED),
+                toolNames = checkpoint.toolNames,
+                promptSnapshot = checkpoint.promptSnapshot?.let { snapshot ->
+                    ConversationCheckpointPromptSnapshotUi(
+                        pendingAskRequest = restorePendingAskRequest(snapshot.pendingAskRequest),
+                        pendingWorkflowPlan = restoreWorkflowPlan(snapshot.pendingWorkflowPlan),
+                        canonicalWorkflowPlan = restoreWorkflowPlan(snapshot.canonicalWorkflowPlan),
+                        pendingClarificationRequest = restoreClarificationRequest(
+                            snapshot.pendingClarificationRequest
+                        )
+                    )
+                }
             )
         }
     }
 
     fun persistErrorRecords(records: List<ErrorRecordUi>): List<PersistedErrorRecord> {
         return records.map {
-            PersistedErrorRecord(it.id, it.message, it.timestamp)
+            PersistedErrorRecord(it.id, it.message, it.kind.name, it.timestamp)
         }
     }
 
     fun restoreErrorRecords(persisted: List<PersistedErrorRecord>): List<ErrorRecordUi> {
         return persisted.map {
-            ErrorRecordUi(it.id, it.message, it.timestamp)
+            ErrorRecordUi(
+                id = it.id,
+                message = it.message,
+                kind = runCatching { ErrorRecordKind.valueOf(it.kind) }
+                    .getOrDefault(ErrorRecordKind.GENERAL),
+                timestamp = it.timestamp
+            )
         }
     }
 
     fun persistToolCallRecords(records: List<ToolCallRecordUi>): List<PersistedToolCallRecord> {
         return records.map {
-            PersistedToolCallRecord(it.id, it.toolName, it.args, it.result, it.isSuccess, it.timestamp)
+            PersistedToolCallRecord(
+                id = it.id,
+                toolName = it.toolName,
+                args = it.args,
+                result = it.result,
+                isSuccess = it.isSuccess,
+                stepSignOffReceipt = it.stepSignOffReceipt?.let(::persistStepSignOffReceipt),
+                structuredPayload = it.structuredPayload,
+                timestamp = it.timestamp
+            )
         }
     }
 
     fun restoreToolCallRecords(persisted: List<PersistedToolCallRecord>): List<ToolCallRecordUi> {
         return persisted.map {
-            ToolCallRecordUi(it.id, it.toolName, it.args, it.result, it.isSuccess, it.timestamp)
+            ToolCallRecordUi(
+                id = it.id,
+                toolName = it.toolName,
+                args = it.args,
+                result = it.result,
+                isSuccess = it.isSuccess,
+                stepSignOffReceipt = it.stepSignOffReceipt?.let(::restoreStepSignOffReceipt),
+                structuredPayload = it.structuredPayload,
+                timestamp = it.timestamp
+            )
         }
+    }
+
+    fun persistMemoryUpdateSuggestions(
+        suggestions: List<MemoryUpdateSuggestionUi>
+    ): List<PersistedMemoryUpdateSuggestion> {
+        return suggestions.map { suggestion ->
+            PersistedMemoryUpdateSuggestion(
+                id = suggestion.id,
+                title = suggestion.title,
+                content = suggestion.content,
+                scope = suggestion.scope,
+                reason = suggestion.reason,
+                sourceKind = suggestion.sourceKind,
+                sourceUserMessageId = suggestion.sourceUserMessageId,
+                sourceAssistantMessageId = suggestion.sourceAssistantMessageId,
+                linkedMemoryId = suggestion.linkedMemoryId,
+                status = suggestion.status.name,
+                createdAt = suggestion.createdAt
+            )
+        }
+    }
+
+    fun restoreMemoryUpdateSuggestions(
+        persisted: List<PersistedMemoryUpdateSuggestion>
+    ): List<MemoryUpdateSuggestionUi> {
+        return persisted.map { suggestion ->
+            MemoryUpdateSuggestionUi(
+                id = suggestion.id,
+                title = suggestion.title,
+                content = suggestion.content,
+                scope = suggestion.scope,
+                reason = suggestion.reason,
+                sourceKind = suggestion.sourceKind,
+                sourceUserMessageId = suggestion.sourceUserMessageId,
+                sourceAssistantMessageId = suggestion.sourceAssistantMessageId,
+                linkedMemoryId = suggestion.linkedMemoryId,
+                status = runCatching { MemoryUpdateSuggestionStatusUi.valueOf(suggestion.status) }
+                    .getOrDefault(MemoryUpdateSuggestionStatusUi.PENDING),
+                createdAt = suggestion.createdAt
+            )
+        }
+    }
+
+    fun persistCheckpointRecoveryRecords(
+        records: List<CheckpointRecoveryRecordUi>
+    ): List<PersistedCheckpointRecoveryRecord> {
+        return records.map {
+            PersistedCheckpointRecoveryRecord(
+                id = it.id,
+                checkpointId = it.checkpointId,
+                checkpointSummary = it.checkpointSummary,
+                scope = it.scope.name,
+                restoredFileCount = it.restoredFileCount,
+                targetMessageIndex = it.targetMessageIndex,
+                timestamp = it.timestamp
+            )
+        }
+    }
+
+    fun restoreCheckpointRecoveryRecords(
+        persisted: List<PersistedCheckpointRecoveryRecord>
+    ): List<CheckpointRecoveryRecordUi> {
+        return persisted.map {
+            CheckpointRecoveryRecordUi(
+                id = it.id,
+                checkpointId = it.checkpointId,
+                checkpointSummary = it.checkpointSummary,
+                scope = runCatching { ConversationCheckpointScope.valueOf(it.scope) }
+                    .getOrDefault(ConversationCheckpointScope.CODE),
+                restoredFileCount = it.restoredFileCount,
+                targetMessageIndex = it.targetMessageIndex,
+                timestamp = it.timestamp
+            )
+        }
+    }
+
+    fun persistFinalReadinessAuditRecords(
+        records: List<FinalReadinessAuditRecord>
+    ): List<PersistedFinalReadinessAuditRecord> {
+        return records.map {
+            PersistedFinalReadinessAuditRecord(
+                result = it.result.name,
+                recovered = it.recovered,
+                receiptKind = it.receiptKind.name,
+                requiredAction = it.requiredAction.name,
+                latestSuccessfulWriteToolName = it.latestSuccessfulWriteToolName,
+                remainingUnsignedSteps = it.remainingUnsignedSteps,
+                nextRequiredStep = it.nextRequiredStep,
+                latestSignedOffStep = it.latestSignedOffStep,
+                latestSignedOffMatchedTools = it.latestSignedOffMatchedTools,
+                latestSignedOffSessionHistorySessionIds = it.latestSignedOffSessionHistorySessionIds,
+                latestSignedOffSessionHistoryMessageReferences =
+                    it.latestSignedOffSessionHistoryMessageReferences
+            )
+        }
+    }
+
+    fun restoreFinalReadinessAuditRecords(
+        persisted: List<PersistedFinalReadinessAuditRecord>
+    ): List<FinalReadinessAuditRecord> {
+        return persisted.map {
+            FinalReadinessAuditRecord(
+                result = FinalReadinessAuditResult.valueOf(it.result),
+                recovered = it.recovered,
+                receiptKind = FinalReadinessReceiptKind.valueOf(it.receiptKind),
+                requiredAction = FinalReadinessRequiredAction.valueOf(it.requiredAction),
+                latestSuccessfulWriteToolName = it.latestSuccessfulWriteToolName,
+                remainingUnsignedSteps = it.remainingUnsignedSteps,
+                nextRequiredStep = it.nextRequiredStep,
+                latestSignedOffStep = it.latestSignedOffStep,
+                latestSignedOffMatchedTools = it.latestSignedOffMatchedTools,
+                latestSignedOffSessionHistorySessionIds = it.latestSignedOffSessionHistorySessionIds,
+                latestSignedOffSessionHistoryMessageReferences =
+                    it.latestSignedOffSessionHistoryMessageReferences
+            )
+        }
+    }
+
+    private fun persistStepSignOffReceipt(receipt: StepSignOffReceipt): PersistedStepSignOffReceipt {
+        return PersistedStepSignOffReceipt(
+            reportedStep = receipt.reportedStep,
+            resultSummary = receipt.resultSummary,
+            matchedEvidenceCount = receipt.matchedEvidenceCount,
+            totalEvidenceCount = receipt.totalEvidenceCount,
+            matchedToolNames = receipt.matchedToolNames,
+            matchedSessionHistorySessionIds = receipt.matchedSessionHistorySessionIds,
+            matchedSessionHistoryMessageReferences = receipt.matchedSessionHistoryMessageReferences,
+            signOffTimestamp = receipt.signOffTimestamp,
+            workflowStepIndex = receipt.workflowStepIndex,
+            workflowStep = receipt.workflowStep,
+            workflowTotalSteps = receipt.workflowTotalSteps
+        )
+    }
+
+    private fun restoreStepSignOffReceipt(receipt: PersistedStepSignOffReceipt): StepSignOffReceipt {
+        return StepSignOffReceipt(
+            reportedStep = receipt.reportedStep,
+            resultSummary = receipt.resultSummary,
+            matchedEvidenceCount = receipt.matchedEvidenceCount,
+            totalEvidenceCount = receipt.totalEvidenceCount,
+            matchedToolNames = receipt.matchedToolNames,
+            matchedSessionHistorySessionIds = receipt.matchedSessionHistorySessionIds,
+            matchedSessionHistoryMessageReferences = receipt.matchedSessionHistoryMessageReferences,
+            signOffTimestamp = receipt.signOffTimestamp,
+            workflowStepIndex = receipt.workflowStepIndex,
+            workflowStep = receipt.workflowStep,
+            workflowTotalSteps = receipt.workflowTotalSteps
+        )
     }
 
     fun persistApprovalRecords(records: List<ApprovalRecordUi>): List<PersistedApprovalRecord> {
@@ -788,6 +1657,89 @@ class ConversationStore(private val context: Context) {
         }
     }
 
+    fun persistPendingApproval(pendingApproval: PendingApprovalUi?): PersistedPendingApproval? {
+        return pendingApproval?.let {
+            PersistedPendingApproval(
+                toolName = it.toolName,
+                summary = it.summary,
+                detail = it.detail,
+                rawArgs = it.rawArgs,
+                riskLevel = it.riskLevel.name,
+                explanationLabel = it.explanationLabel,
+                explanationDetail = it.explanationDetail
+            )
+        }
+    }
+
+    fun restorePendingApproval(persisted: PersistedPendingApproval?): PendingApprovalUi? {
+        return persisted?.let {
+            PendingApprovalUi(
+                toolName = it.toolName,
+                summary = it.summary,
+                detail = it.detail,
+                rawArgs = it.rawArgs,
+                riskLevel = runCatching { ApprovalRiskLevel.valueOf(it.riskLevel) }
+                    .getOrDefault(ApprovalRiskLevel.MEDIUM),
+                explanationLabel = it.explanationLabel,
+                explanationDetail = it.explanationDetail
+            )
+        }
+    }
+
+    fun persistPendingAskRequest(request: PendingAskRequestUi?): PersistedPendingAskRequest? {
+        return request?.let {
+            PersistedPendingAskRequest(
+                id = it.id,
+                title = it.title,
+                questions = it.questions.map { question ->
+                    PersistedAskQuestion(
+                        id = question.id,
+                        header = question.header,
+                        question = question.question,
+                        options = question.options.map { option ->
+                            PersistedAskOption(
+                                label = option.label,
+                                description = option.description
+                            )
+                        },
+                        multiSelect = question.multiSelect
+                    )
+                },
+                recentSessionHistoryClue = persistSessionHistoryReferenceClue(
+                    it.recentSessionHistoryClue
+                ),
+                createdAt = it.createdAt
+            )
+        }
+    }
+
+    fun restorePendingAskRequest(persisted: PersistedPendingAskRequest?): PendingAskRequestUi? {
+        return persisted?.let {
+            PendingAskRequestUi(
+                id = it.id,
+                title = it.title,
+                questions = it.questions.map { question ->
+                    AskQuestionUi(
+                        id = question.id,
+                        header = question.header,
+                        question = question.question,
+                        options = question.options.map { option ->
+                            AskOptionUi(
+                                label = option.label,
+                                description = option.description
+                            )
+                        },
+                        multiSelect = question.multiSelect
+                    )
+                },
+                recentSessionHistoryClue = restoreSessionHistoryReferenceClue(
+                    it.recentSessionHistoryClue
+                ),
+                createdAt = it.createdAt
+            )
+        }
+    }
+
     fun persistFileChanges(records: List<FileChangeRecordUi>): List<PersistedFileChangeRecord> {
         return records.map { record ->
             PersistedFileChangeRecord(
@@ -834,6 +1786,9 @@ class ConversationStore(private val context: Context) {
     private fun updateIndex(session: PersistedSession) {
         val summaries = listSessions().toMutableList()
         val existing = summaries.indexOfFirst { it.id == session.id }
+        val latestFinalReadinessTelemetry = buildLatestFinalReadinessSessionTelemetry(
+            restoreFinalReadinessAuditRecords(session.recentFinalReadinessAudits)
+        )
         val summary = SessionSummary(
             id = session.id,
             title = session.title,
@@ -844,7 +1799,12 @@ class ConversationStore(private val context: Context) {
             modelName = session.modelName,
             projectPath = session.projectPath,
             usageSummary = session.usageSummary,
-            subagentSummary = buildSessionSubagentSummary(session)
+            subagentSummary = buildSessionSubagentSummary(session),
+            finalReadinessAuditCount = session.recentFinalReadinessAudits.size,
+            latestFinalReadinessAuditSummary = latestFinalReadinessTelemetry?.statusSummary,
+            latestFinalReadinessStatusKind = latestFinalReadinessTelemetry?.statusKind
+                ?: FinalReadinessSessionStatusKind.NONE,
+            latestFinalReadinessReasonSummary = latestFinalReadinessTelemetry?.reasonSummary
         )
         if (existing >= 0) {
             summaries[existing] = summary
@@ -855,11 +1815,24 @@ class ConversationStore(private val context: Context) {
     }
 
     private fun scanAndRebuildIndex(): List<SessionSummary> {
+        val deletedIds = deletedSessionIdsLocked()
         val summaries = baseDir.listFiles()
-            ?.filter { it.name.endsWith(".json") && it.name != "index.json" }
+            ?.filter {
+                it.name.endsWith(".json") &&
+                    it.name != INDEX_FILE_NAME &&
+                    it.name != DELETED_SESSIONS_FILE_NAME &&
+                    it.name != ARCHIVED_SESSIONS_FILE_NAME &&
+                    !it.name.endsWith(CHECKPOINT_STORE_SUFFIX)
+            }
             ?.mapNotNull { file ->
                 try {
                     val session = json.decodeFromString<PersistedSession>(file.readText())
+                    if (session.id in deletedIds) {
+                        return@mapNotNull null
+                    }
+                    val latestFinalReadinessTelemetry = buildLatestFinalReadinessSessionTelemetry(
+                        restoreFinalReadinessAuditRecords(session.recentFinalReadinessAudits)
+                    )
                     SessionSummary(
                         id = session.id,
                         title = session.title,
@@ -870,7 +1843,12 @@ class ConversationStore(private val context: Context) {
                         modelName = session.modelName,
                         projectPath = session.projectPath,
                         usageSummary = session.usageSummary,
-                        subagentSummary = buildSessionSubagentSummary(session)
+                        subagentSummary = buildSessionSubagentSummary(session),
+                        finalReadinessAuditCount = session.recentFinalReadinessAudits.size,
+                        latestFinalReadinessAuditSummary = latestFinalReadinessTelemetry?.statusSummary,
+                        latestFinalReadinessStatusKind = latestFinalReadinessTelemetry?.statusKind
+                            ?: FinalReadinessSessionStatusKind.NONE,
+                        latestFinalReadinessReasonSummary = latestFinalReadinessTelemetry?.reasonSummary
                     )
                 } catch (_: Exception) { null }
             }
@@ -968,13 +1946,170 @@ class ConversationStore(private val context: Context) {
             .coerceIn(0, 100)
     }
 
+    private fun loadCheckpointStore(sessionId: String): PersistedCheckpointStore? {
+        val file = checkpointStoreFile(sessionId)
+        if (!file.exists()) return null
+        return runCatching {
+            json.decodeFromString<PersistedCheckpointStore>(file.readText())
+        }.getOrNull()
+    }
+
+    private fun sessionFile(sessionId: String): File = File(baseDir, "$sessionId.json")
+
+    private fun checkpointStoreFile(sessionId: String): File =
+        File(baseDir, "$sessionId$CHECKPOINT_STORE_SUFFIX")
+
     private fun writeIndex(summaries: List<SessionSummary>) {
-        val indexFile = File(baseDir, "index.json")
+        val indexFile = File(baseDir, INDEX_FILE_NAME)
         indexFile.writeText(json.encodeToString(summaries))
     }
 
     private fun rebuildIndex() {
         scanAndRebuildIndex()
+    }
+
+    private fun deletedSessionIdsLocked(): MutableSet<String> {
+        if (deletedSessionIdsLoaded) return deletedSessionIds
+        val file = File(baseDir, DELETED_SESSIONS_FILE_NAME)
+        val restored = if (!file.exists()) {
+            emptyList()
+        } else {
+            try {
+                json.decodeFromString<List<String>>(file.readText())
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
+        deletedSessionIds.clear()
+        deletedSessionIds.addAll(restored)
+        deletedSessionIdsLoaded = true
+        return deletedSessionIds
+    }
+
+    private fun writeDeletedSessionIdsLocked() {
+        val file = File(baseDir, DELETED_SESSIONS_FILE_NAME)
+        file.writeText(json.encodeToString(deletedSessionIds.toList()))
+    }
+
+    private fun archivedSessionsLocked(): List<ArchivedSessionSummary> {
+        val file = File(baseDir, ARCHIVED_SESSIONS_FILE_NAME)
+        if (!file.exists()) return emptyList()
+        return try {
+            json.decodeFromString<List<ArchivedSessionSummary>>(file.readText())
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun writeArchivedSessionsLocked(records: List<ArchivedSessionSummary>) {
+        val file = File(baseDir, ARCHIVED_SESSIONS_FILE_NAME)
+        file.writeText(
+            json.encodeToString(
+                records.sortedByDescending { it.archivedAt }
+            )
+        )
+    }
+
+    private fun buildArchivedSessionSummary(
+        session: PersistedSession,
+        archivedAt: Long = System.currentTimeMillis()
+    ): ArchivedSessionSummary {
+        val latestFinalReadinessTelemetry = buildLatestFinalReadinessSessionTelemetry(
+            restoreFinalReadinessAuditRecords(session.recentFinalReadinessAudits)
+        )
+        val latestAssistantMessage = session.messages
+            .asReversed()
+            .firstOrNull { it.role == "assistant" && it.content.isNotBlank() }
+        val latestUserMessage = session.messages
+            .asReversed()
+            .firstOrNull { it.role == "user" && it.content.isNotBlank() }
+        val latestVisibleMessage = latestAssistantMessage ?: latestUserMessage ?: session.messages
+            .asReversed()
+            .firstOrNull { it.content.isNotBlank() }
+        val retainedSummary = listOfNotNull(
+            session.sessionGoal?.trim()?.takeIf { it.isNotBlank() },
+            latestAssistantMessage?.content?.trim()?.takeIf { it.isNotBlank() },
+            latestUserMessage?.content?.trim()?.takeIf { it.isNotBlank() },
+            latestFinalReadinessTelemetry?.statusSummary?.trim()?.takeIf { it.isNotBlank() },
+            session.title.trim().takeIf { it.isNotBlank() }
+        ).firstOrNull()?.replace("\r\n", "\n")
+            ?.lineSequence()
+            ?.map { it.trim() }
+            ?.firstOrNull { it.isNotBlank() }
+            ?.take(240)
+            .orEmpty()
+        return ArchivedSessionSummary(
+            originalSessionId = session.id,
+            title = session.title,
+            sessionGoal = session.sessionGoal,
+            projectPath = session.projectPath,
+            createdAt = session.createdAt,
+            updatedAt = session.updatedAt,
+            archivedAt = archivedAt,
+            messageCount = session.messages.size,
+            retainedSummary = retainedSummary,
+            anchorMessageReference = latestVisibleMessage?.let { "${session.id}#${it.id}" },
+            latestFinalReadinessSummary = latestFinalReadinessTelemetry?.statusSummary,
+            latestFinalReadinessStatusKind = latestFinalReadinessTelemetry?.statusKind
+                ?: FinalReadinessSessionStatusKind.NONE
+        )
+    }
+
+    private fun buildArchivedMemoryCandidate(
+        summary: ArchivedSessionSummary
+    ): ArchivedMemoryCandidate {
+        val titleSource = listOfNotNull(
+            summary.sessionGoal?.trim()?.takeIf { it.isNotBlank() },
+            summary.title.trim().takeIf { it.isNotBlank() },
+            summary.retainedSummary.trim().takeIf { it.isNotBlank() }
+        ).first()
+        val normalizedTitle = titleSource
+            .replace("\r\n", "\n")
+            .lineSequence()
+            .map { it.trim() }
+            .firstOrNull { it.isNotBlank() }
+            ?.take(48)
+            .orEmpty()
+        return ArchivedMemoryCandidate(
+            sourceSessionId = summary.originalSessionId,
+            sourceSessionTitle = summary.title,
+            sourceProjectPath = summary.projectPath,
+            suggestedScope = if (summary.projectPath.isNullOrBlank()) {
+                ArchivedMemoryCandidateScope.GLOBAL
+            } else {
+                ArchivedMemoryCandidateScope.PROJECT
+            },
+            suggestedTitle = normalizedTitle.ifBlank { "归档记忆" },
+            suggestedContent = summary.retainedSummary.ifBlank { summary.title },
+            sourceAnchorMessageReference = summary.anchorMessageReference,
+            sourceArchivedAt = summary.archivedAt,
+            sourceUpdatedAt = summary.updatedAt,
+            sourceFinalReadinessSummary = summary.latestFinalReadinessSummary
+        )
+    }
+
+    private fun ArchivedSessionSummary.isPendingMemoryCandidate(): Boolean {
+        return resolvedCandidateStatus() == ArchivedMemoryCandidateStatus.PENDING
+    }
+
+    private fun ArchivedSessionSummary.resolvedCandidateStatus(): ArchivedMemoryCandidateStatus {
+        return when {
+            candidateStatus == ArchivedMemoryCandidateStatus.CONSUMED ||
+                consumedAt != null -> ArchivedMemoryCandidateStatus.CONSUMED
+            candidateStatus == ArchivedMemoryCandidateStatus.DISMISSED ||
+                dismissedAt != null -> ArchivedMemoryCandidateStatus.DISMISSED
+            candidateStatus == ArchivedMemoryCandidateStatus.ACCEPTED ||
+                acceptedAt != null ||
+                !acceptedMemoryId.isNullOrBlank() -> ArchivedMemoryCandidateStatus.ACCEPTED
+            else -> ArchivedMemoryCandidateStatus.PENDING
+        }
+    }
+
+    private companion object {
+        const val INDEX_FILE_NAME = "index.json"
+        const val DELETED_SESSIONS_FILE_NAME = "deleted_sessions.json"
+        const val ARCHIVED_SESSIONS_FILE_NAME = "archived_sessions.json"
+        const val CHECKPOINT_STORE_SUFFIX = ".checkpoints.json"
     }
 }
 
@@ -992,7 +2127,71 @@ data class SessionSummary(
     val modelName: String,
     val projectPath: String? = null,
     val usageSummary: UsageSummarySnapshot = UsageSummarySnapshot(),
-    val subagentSummary: SessionSubagentSummary = SessionSubagentSummary()
+    val subagentSummary: SessionSubagentSummary = SessionSubagentSummary(),
+    val finalReadinessAuditCount: Int = 0,
+    val latestFinalReadinessAuditSummary: String? = null,
+    val latestFinalReadinessStatusKind: FinalReadinessSessionStatusKind = FinalReadinessSessionStatusKind.NONE,
+    val latestFinalReadinessReasonSummary: String? = null
+)
+
+@Serializable
+data class ArchivedSessionSummary(
+    val originalSessionId: String,
+    val title: String,
+    val sessionGoal: String? = null,
+    val projectPath: String? = null,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val archivedAt: Long,
+    val messageCount: Int,
+    val retainedSummary: String,
+    val anchorMessageReference: String? = null,
+    val latestFinalReadinessSummary: String? = null,
+    val latestFinalReadinessStatusKind: FinalReadinessSessionStatusKind = FinalReadinessSessionStatusKind.NONE,
+    val candidateStatus: ArchivedMemoryCandidateStatus = ArchivedMemoryCandidateStatus.PENDING,
+    val acceptedMemoryScope: ArchivedMemoryCandidateScope? = null,
+    val acceptedMemoryId: String? = null,
+    val acceptedAt: Long? = null,
+    val dismissedReason: String? = null,
+    val dismissedAt: Long? = null,
+    val consumedReason: String? = null,
+    val consumedAt: Long? = null,
+    val resolutionSource: ArchivedMemoryCandidateResolutionSource? = null,
+    val resolutionSummary: String? = null
+)
+
+@Serializable
+enum class ArchivedMemoryCandidateStatus {
+    PENDING,
+    ACCEPTED,
+    DISMISSED,
+    CONSUMED
+}
+
+@Serializable
+enum class ArchivedMemoryCandidateResolutionSource {
+    USER_ACTION,
+    AUTO_DEDUPLICATED_REUSE
+}
+
+@Serializable
+enum class ArchivedMemoryCandidateScope {
+    PROJECT,
+    GLOBAL
+}
+
+@Serializable
+data class ArchivedMemoryCandidate(
+    val sourceSessionId: String,
+    val sourceSessionTitle: String,
+    val sourceProjectPath: String? = null,
+    val suggestedScope: ArchivedMemoryCandidateScope,
+    val suggestedTitle: String,
+    val suggestedContent: String,
+    val sourceAnchorMessageReference: String? = null,
+    val sourceArchivedAt: Long,
+    val sourceUpdatedAt: Long,
+    val sourceFinalReadinessSummary: String? = null
 )
 
 @Serializable

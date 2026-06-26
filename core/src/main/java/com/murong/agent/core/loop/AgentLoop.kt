@@ -4,7 +4,11 @@ import com.murong.agent.core.config.ProviderConfig
 import com.murong.agent.core.provider.*
 import com.murong.agent.core.tool.ToolFileChange
 import com.murong.agent.core.tool.ToolApprovalRequest
+import com.murong.agent.core.tool.ToolExecutionReceipt
 import com.murong.agent.core.tool.ToolRegistry
+import com.murong.agent.core.tool.ToolRuntimeContext
+import com.murong.agent.core.tool.ToolStructuredPayload
+import com.murong.agent.core.tool.StepSignOffReceipt
 import kotlinx.coroutines.delay
 
 /**
@@ -23,10 +27,17 @@ sealed class AgentEvent {
         val toolName: String,
         val args: String,
         val result: String,
-        val fileChanges: List<ToolFileChange> = emptyList()
+        val modelContextResult: String = result,
+        val fileChanges: List<ToolFileChange> = emptyList(),
+        val stepSignOffReceipt: StepSignOffReceipt? = null,
+        val structuredPayload: ToolStructuredPayload? = null
     ) : AgentEvent()
     data class UsageUpdate(val usage: Usage) : AgentEvent()
-    data class Error(val message: String) : AgentEvent()
+    data class ReadinessAudit(val audit: FinalReadinessAuditRecord) : AgentEvent()
+    data class Error(
+        val message: String,
+        val finalReadinessReceipt: FinalReadinessReceipt? = null
+    ) : AgentEvent()
     data object Done : AgentEvent()
 }
 
@@ -59,7 +70,8 @@ enum class AgentState {
 class AgentLoop(
     private val provider: ModelProvider,
     private val toolRegistry: ToolRegistry,
-    private val config: ProviderConfig
+    private val config: ProviderConfig,
+    private val hookBus: HookBusRunner = HookBusRunner()
 ) {
     private val maxToolIterations = 999
     private val maxRetries = 3
@@ -75,7 +87,10 @@ class AgentLoop(
         history: List<ChatMessage>,
         stableSystemContext: String? = null,
         onEvent: (AgentEvent) -> Unit,
-        requestApproval: suspend (ToolApprovalRequest) -> Boolean = { true }
+        requestApproval: suspend (ToolApprovalRequest) -> Boolean = { true },
+        toolExecutionGuard: (suspend (toolName: String, args: String) -> String?)? = null,
+        finalReadinessGuard: (() -> FinalReadinessReceipt?)? = null,
+        enforceFinalReadinessWithoutCurrentToolRuns: Boolean = false
     ) {
         state = AgentState.THINKING
 
@@ -88,6 +103,8 @@ class AgentLoop(
         var toolIteration = 0
         var hasExecutedTools = false
         var hasRetriedForPostToolSummary = false
+        var hasRetriedForFinalReadiness = false
+        var lastAuditedFinalReadinessReceipt: FinalReadinessReceipt? = null
         val completedToolRuns = mutableListOf<CompletedToolRun>()
         val preferredSummaryLanguage = inferPreferredSummaryLanguage(
             userMessage = userMessage,
@@ -161,6 +178,68 @@ class AgentLoop(
 
             // ── 检查是否有 Tool Call ────────────────
             if (toolCalls.isNullOrEmpty()) {
+                val localFinalReadinessReceipt = buildFinalReadinessReceipt(
+                    completedToolRuns = completedToolRuns,
+                    language = preferredSummaryLanguage
+                )
+                val finalReadinessReceipt = localFinalReadinessReceipt
+                    ?: finalReadinessGuard?.invoke()
+                if (finalReadinessReceipt != null &&
+                    (hasExecutedTools || enforceFinalReadinessWithoutCurrentToolRuns)
+                ) {
+                    if (lastAuditedFinalReadinessReceipt != finalReadinessReceipt) {
+                        onEvent(
+                            AgentEvent.ReadinessAudit(
+                                buildFinalReadinessAuditRecord(
+                                    receipt = finalReadinessReceipt,
+                                    result = FinalReadinessAuditResult.BLOCKED,
+                                    recovered = false
+                                )
+                            )
+                        )
+                        lastAuditedFinalReadinessReceipt = finalReadinessReceipt
+                    }
+                    if (!hasRetriedForFinalReadiness) {
+                        hasRetriedForFinalReadiness = true
+                        currentMessages.add(
+                            ChatMessage(
+                                role = "system",
+                                content = buildFinalReadinessRetryReminder(
+                                    receipt = finalReadinessReceipt,
+                                    language = preferredSummaryLanguage
+                                )
+                            )
+                        )
+                        state = AgentState.THINKING
+                        continue
+                    }
+
+                    onEvent(
+                        AgentEvent.Error(
+                            buildFinalReadinessBlockedMessage(
+                                receipt = finalReadinessReceipt,
+                                language = preferredSummaryLanguage
+                            ),
+                            finalReadinessReceipt = finalReadinessReceipt
+                        )
+                    )
+                    onEvent(AgentEvent.Done)
+                    state = AgentState.ERROR
+                    return
+                }
+                if (hasRetriedForFinalReadiness && lastAuditedFinalReadinessReceipt != null) {
+                    onEvent(
+                        AgentEvent.ReadinessAudit(
+                            buildFinalReadinessAuditRecord(
+                                receipt = lastAuditedFinalReadinessReceipt,
+                                result = FinalReadinessAuditResult.ALLOWED,
+                                recovered = true
+                            )
+                        )
+                    )
+                    lastAuditedFinalReadinessReceipt = null
+                }
+
                 // 工具执行后如果模型没给任何自然语言结论，强制再补一轮总结请求。
                 if (!hasTextualResponse && hasExecutedTools) {
                     if (!hasRetriedForPostToolSummary) {
@@ -202,65 +281,134 @@ class AgentLoop(
             for (tc in toolCalls) {
                 hasExecutedTools = true
                 hasRetriedForPostToolSummary = false
-                onEvent(
-                    AgentEvent.ToolExecution(
+                val preToolContext = hookBus.dispatchPreToolUse(
+                    PreToolUseHookContext(
                         toolName = tc.function.name,
                         args = tc.function.arguments,
+                        callId = tc.id
+                    )
+                )
+                val toolName = preToolContext.toolName
+                val toolArgs = preToolContext.args
+                onEvent(
+                    AgentEvent.ToolExecution(
+                        toolName = toolName,
+                        args = toolArgs,
                         callId = tc.id,
                         isPartial = false
                     )
                 )
 
-                val tool = toolRegistry.getTool(tc.function.name)
+                val tool = toolRegistry.getTool(toolName)
                 val result = if (tool != null) {
                     try {
-                        val approvalRequest = tool.buildApprovalRequest(tc.function.arguments)
-                        if (approvalRequest != null && !requestApproval(approvalRequest)) {
+                        val guardMessage = toolExecutionGuard?.invoke(toolName, toolArgs)
+                        if (guardMessage != null) {
                             com.murong.agent.core.tool.ToolExecutionResult(
-                                output = "Rejected by user: ${approvalRequest.summary}"
+                                output = guardMessage
                             )
                         } else {
-                            tool.executeWithResult(tc.function.arguments)
+                            val repeatGuardMessage = buildRepeatWriteToolGuardMessage(
+                                toolName = toolName,
+                                args = toolArgs,
+                                completedToolRuns = completedToolRuns,
+                                language = preferredSummaryLanguage
+                            )
+                            if (repeatGuardMessage != null) {
+                                com.murong.agent.core.tool.ToolExecutionResult(
+                                    output = repeatGuardMessage
+                                )
+                            } else {
+                                val approvalRequest = tool.buildApprovalRequest(toolArgs)
+                                if (approvalRequest != null && !requestApproval(approvalRequest)) {
+                                    com.murong.agent.core.tool.ToolExecutionResult(
+                                        output = "Rejected by user: ${approvalRequest.summary}"
+                                    )
+                                } else {
+                                    tool.executeWithContext(
+                                        toolArgs,
+                                        ToolRuntimeContext(
+                                            currentTurnToolReceipts = completedToolRuns.map { toolRun ->
+                                                ToolExecutionReceipt(
+                                                    toolName = toolRun.toolName,
+                                                    args = toolRun.arguments,
+                                                    result = toolRun.result,
+                                                    isSuccess = toolRun.isSuccess,
+                                                    structuredPayload = toolRun.structuredPayload
+                                                )
+                                            }
+                                    )
+                                        )
+                                }
+                            }
                         }
                     } catch (e: Exception) {
                         com.murong.agent.core.tool.ToolExecutionResult(
-                            output = "Error executing `${tc.function.name}`: ${e.message}"
+                            output = "Error executing `$toolName`: ${e.message}"
                         )
                     }
+                } else if (toolRegistry.isPromptExposed(toolName)) {
+                    val guardMessage = toolExecutionGuard?.invoke(toolName, toolArgs)
+                    com.murong.agent.core.tool.ToolExecutionResult(
+                        output = guardMessage ?: "Error: Tool `$toolName` is currently unavailable in this mode."
+                    )
                 } else {
                     com.murong.agent.core.tool.ToolExecutionResult(
-                        output = "Error: Unknown tool `${tc.function.name}`. " +
-                            "Available tools: ${toolRegistry.getAllTools().joinToString(", ") { it.name }}"
+                        output = "Error: Unknown tool `$toolName`. " +
+                            "Available tools: ${toolRegistry.getPromptVisibleTools().joinToString(", ") { it.name }}"
                     )
                 }
+                val modelContextResult = buildToolModelContextResult(
+                    toolName = toolName,
+                    output = result.output
+                )
+                val executionSucceeded = isSuccessfulToolResult(result.output)
+                val postToolContext = hookBus.dispatchPostToolUse(
+                    PostToolUseHookContext(
+                        toolName = toolName,
+                        args = toolArgs,
+                        result = result.output,
+                        modelContextResult = modelContextResult,
+                        isSuccess = executionSucceeded,
+                        fileChanges = result.fileChanges,
+                        stepSignOffReceipt = result.stepSignOffReceipt,
+                        structuredPayload = result.structuredPayload
+                    )
+                )
 
                 onEvent(
                     AgentEvent.ToolResult(
-                        toolName = tc.function.name,
-                        args = tc.function.arguments,
-                        result = result.output,
-                        fileChanges = result.fileChanges
+                        toolName = postToolContext.toolName,
+                        args = postToolContext.args,
+                        result = postToolContext.result,
+                        modelContextResult = postToolContext.modelContextResult,
+                        fileChanges = postToolContext.fileChanges,
+                        stepSignOffReceipt = postToolContext.stepSignOffReceipt,
+                        structuredPayload = postToolContext.structuredPayload
                     )
                 )
                 completedToolRuns += CompletedToolRun(
-                    toolName = tc.function.name,
-                    arguments = tc.function.arguments,
-                    result = result.output
+                    toolName = postToolContext.toolName,
+                    arguments = postToolContext.args,
+                    result = postToolContext.result,
+                    isSuccess = postToolContext.isSuccess,
+                    stepSignOffReceipt = postToolContext.stepSignOffReceipt,
+                    structuredPayload = postToolContext.structuredPayload
                 )
 
                 currentMessages.add(
                     ChatMessage(
                         role = "tool",
                         toolCallId = tc.id,
-                        content = result.output,
-                        name = tc.function.name
+                        content = postToolContext.modelContextResult,
+                        name = postToolContext.toolName
                     )
                 )
 
-                if (shouldStopAfterHighRiskRemoteWriteFailure(tc.function.name, result.output)) {
+                if (shouldStopAfterHighRiskRemoteWriteFailure(postToolContext.toolName, postToolContext.result)) {
                     onEvent(
                         AgentEvent.Error(
-                            buildHighRiskRemoteWriteStopMessage(tc.function.name, preferredSummaryLanguage)
+                            buildHighRiskRemoteWriteStopMessage(postToolContext.toolName, preferredSummaryLanguage)
                         )
                     )
                     onEvent(AgentEvent.Done)
@@ -491,6 +639,77 @@ class AgentLoop(
         }
     }
 
+    private fun buildFinalReadinessReceipt(
+        completedToolRuns: List<CompletedToolRun>,
+        language: SummaryLanguage
+    ): FinalReadinessReceipt? {
+        return buildWriteSignOffReadinessReceipt(
+            completedToolRuns = completedToolRuns.map { toolRun ->
+                FinalReadinessToolRunSnapshot(
+                    toolName = toolRun.toolName,
+                    result = toolRun.result,
+                    isSuccess = toolRun.isSuccess,
+                    stepSignOffReceipt = toolRun.stepSignOffReceipt
+                )
+            },
+            language = language.toFinalReadinessLanguage(),
+            isWriteTool = ::isFinalReadinessWriteTool
+        )
+    }
+
+    private fun buildFinalReadinessRetryReminder(
+        receipt: FinalReadinessReceipt,
+        language: SummaryLanguage
+    ): String {
+        return com.murong.agent.core.loop.buildFinalReadinessRetryReminder(
+            receipt = receipt,
+            language = language.toFinalReadinessLanguage()
+        )
+    }
+
+    private fun buildFinalReadinessBlockedMessage(
+        receipt: FinalReadinessReceipt,
+        language: SummaryLanguage
+    ): String {
+        return com.murong.agent.core.loop.buildFinalReadinessBlockedMessage(
+            receipt = receipt,
+            language = language.toFinalReadinessLanguage()
+        )
+    }
+
+    private fun buildToolModelContextResult(
+        toolName: String,
+        output: String
+    ): String {
+        if (output.length <= MAX_TOOL_RESULT_CONTEXT_CHARS) {
+            return output
+        }
+        val head = output.take(TOOL_RESULT_CONTEXT_HEAD_CHARS)
+        val tail = output.takeLast(TOOL_RESULT_CONTEXT_TAIL_CHARS)
+        return buildString {
+            append("[tool output truncated for model context]\n")
+            append("tool=")
+            append(toolName)
+            append(", original_chars=")
+            append(output.length)
+            append(", kept_head_chars=")
+            append(head.length)
+            append(", kept_tail_chars=")
+            append(tail.length)
+            append("\n\n[head]\n")
+            append(head)
+            append("\n\n[middle omitted]\n\n[tail]\n")
+            append(tail)
+            append("\n\nIf you need more details, call a narrower tool or re-read a smaller window instead of assuming the omitted middle content.")
+        }
+    }
+
+    private fun isSuccessfulToolResult(output: String): Boolean {
+        return !output.startsWith("Error:", ignoreCase = true) &&
+            !output.startsWith("Blocked by", ignoreCase = true) &&
+            !output.startsWith("Rejected by user:", ignoreCase = true)
+    }
+
     private fun inferPreferredSummaryLanguage(
         userMessage: ChatMessage,
         history: List<ChatMessage>
@@ -540,10 +759,49 @@ class AgentLoop(
         }
     }
 
+    private fun buildRepeatWriteToolGuardMessage(
+        toolName: String,
+        args: String,
+        completedToolRuns: List<CompletedToolRun>,
+        language: SummaryLanguage
+    ): String? {
+        if (!isRepeatGuardTargetTool(toolName)) return null
+        val repeatedSuccessCount = completedToolRuns.count { completedRun ->
+            completedRun.isSuccess &&
+                completedRun.toolName == toolName &&
+                completedRun.arguments == args
+        }
+        if (repeatedSuccessCount < MAX_REPEATED_SUCCESSFUL_WRITE_TOOL_CALLS) return null
+        return when (language) {
+            SummaryLanguage.CHINESE ->
+                "Blocked by repeat guard: 检测到写工具 `$toolName` 已经用完全相同的参数成功执行 $repeatedSuccessCount 次。" +
+                    " 为避免陷入重复修改循环，本次已拦截。请先改用读取/搜索类工具检查最新状态，或改成不同的精确修改参数后再继续。"
+            SummaryLanguage.ENGLISH ->
+                "Blocked by repeat guard: write tool `$toolName` has already succeeded $repeatedSuccessCount times " +
+                    "with the exact same arguments. This call was blocked to avoid a repeated edit loop. " +
+                    "Inspect the latest state with a read/search tool or change the edit arguments before continuing."
+        }
+    }
+
+    private fun isRepeatGuardTargetTool(toolName: String): Boolean {
+        if (toolName in REPEAT_GUARD_WRITE_TOOL_NAMES) return true
+        val normalized = toolName.lowercase()
+        return REPEAT_GUARD_WRITE_TOOL_KEYWORDS.any { keyword ->
+            normalized.contains(keyword)
+        }
+    }
+
+    private fun isFinalReadinessWriteTool(toolName: String): Boolean {
+        return isFinalReadinessWriteToolName(toolName)
+    }
+
     private data class CompletedToolRun(
         val toolName: String,
         val arguments: String,
-        val result: String
+        val result: String,
+        val isSuccess: Boolean,
+        val stepSignOffReceipt: StepSignOffReceipt? = null,
+        val structuredPayload: ToolStructuredPayload? = null
     )
 
     private enum class SummaryLanguage {
@@ -551,9 +809,21 @@ class AgentLoop(
         ENGLISH
     }
 
+    private fun SummaryLanguage.toFinalReadinessLanguage(): FinalReadinessLanguage {
+        return when (this) {
+            SummaryLanguage.CHINESE -> FinalReadinessLanguage.CHINESE
+            SummaryLanguage.ENGLISH -> FinalReadinessLanguage.ENGLISH
+        }
+    }
+
     private companion object {
+        const val MAX_TOOL_RESULT_CONTEXT_CHARS = 32 * 1024
+        const val TOOL_RESULT_CONTEXT_HEAD_CHARS = 12 * 1024
+        const val TOOL_RESULT_CONTEXT_TAIL_CHARS = 12 * 1024
+
         val HIGH_RISK_REMOTE_WRITE_TOOL_NAMES = setOf(
             "task_repo_search_replace",
+            "task_repo_apply_patch",
             "task_repo_update_file",
             "task_repo_commit_files"
         )
@@ -566,5 +836,32 @@ class AgentLoop(
             "expectedLength=",
             "actualLength="
         )
+
+        const val MAX_REPEATED_SUCCESSFUL_WRITE_TOOL_CALLS = 2
+
+        val REPEAT_GUARD_WRITE_TOOL_NAMES = setOf(
+            "task_repo_search_replace",
+            "task_repo_apply_patch",
+            "task_repo_update_file",
+            "task_repo_commit_files",
+            "task_repo_delete_file",
+            "task_repo_create_branch",
+            "task_repo_delete_branch",
+            "task_repo_create_pr",
+            "task_repo_close_pr",
+            "code_edit"
+        )
+
+        val REPEAT_GUARD_WRITE_TOOL_KEYWORDS = listOf(
+            "write",
+            "edit",
+            "update",
+            "patch",
+            "replace",
+            "delete",
+            "commit",
+            "mutating"
+        )
+
     }
 }

@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.Application
 import android.os.Build
 import com.murong.agent.core.config.ConfigRepository
+import com.murong.agent.core.doctor.SensitiveDataSanitizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -123,7 +124,9 @@ class UsageAnalyticsTracker(
     ) {
         val durationSeconds = ((System.currentTimeMillis() - startedAtMsSnapshot).coerceAtLeast(0L) / 1000L).toInt()
         val config = runCatching { configRepository.getConfig() }.getOrNull() ?: return
-        val apiUrl = config.getMurongUsageApiUrl().trim()
+        val apiUrl = SensitiveDataSanitizer.sanitizeTransportHeaderValue(
+            config.getMurongUsageApiUrl().trim()
+        )
         if (apiUrl.isBlank()) return
 
         val packageInfo = runCatching {
@@ -144,20 +147,38 @@ class UsageAnalyticsTracker(
             .put("app_version_code", versionCode)
             .put("platform", "android")
             .put("os_version", Build.VERSION.RELEASE ?: "")
-            .put("device_model", listOfNotNull(Build.MANUFACTURER, Build.MODEL).joinToString(" ").trim())
+            .put(
+                "device_model",
+                SensitiveDataSanitizer.sanitizeText(
+                    listOfNotNull(Build.MANUFACTURER, Build.MODEL).joinToString(" ").trim()
+                )
+            )
             .put("duration_seconds", durationSeconds)
             .put("ended", ended)
 
+        val sanitizedPayload = SensitiveDataSanitizer.sanitizeText(payload.toString())
         val requestBuilder = Request.Builder()
             .url(
                 if ("?" in apiUrl) "$apiUrl&action=heartbeat" else "$apiUrl?action=heartbeat"
             )
-            .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+            .post(sanitizedPayload.toRequestBody(JSON_MEDIA_TYPE))
             .addHeader("Accept", "application/json")
-            .addHeader("User-Agent", "MurongAgent/${versionName.ifBlank { "1.0" }}")
+            .addHeader(
+                "User-Agent",
+                SensitiveDataSanitizer.sanitizeTransportHeaderValue(
+                    "MurongAgent/${versionName.ifBlank { "1.0" }}"
+                )
+            )
 
         if (config.githubBackendSessionToken.isNotBlank()) {
-            requestBuilder.addHeader("Authorization", "Bearer ${config.githubBackendSessionToken}")
+            requestBuilder.addHeader(
+                "Authorization",
+                "Bearer ${
+                    SensitiveDataSanitizer.sanitizeTransportHeaderValue(
+                        config.githubBackendSessionToken
+                    )
+                }"
+            )
         }
 
         runCatching {

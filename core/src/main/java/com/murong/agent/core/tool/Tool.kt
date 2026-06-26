@@ -2,6 +2,7 @@ package com.murong.agent.core.tool
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.Serializable
 
 data class ToolFileChange(
     val path: String,
@@ -12,9 +13,73 @@ data class ToolFileChange(
     val changedAt: Long = System.currentTimeMillis()
 )
 
+data class StepSignOffReceipt(
+    val reportedStep: String,
+    val resultSummary: String,
+    val matchedEvidenceCount: Int,
+    val totalEvidenceCount: Int,
+    val matchedToolNames: List<String>,
+    val matchedSessionHistorySessionIds: List<String> = emptyList(),
+    val matchedSessionHistoryMessageReferences: List<String> = emptyList(),
+    val signOffTimestamp: Long,
+    val workflowStepIndex: Int? = null,
+    val workflowStep: String? = null,
+    val workflowTotalSteps: Int? = null
+)
+
+@Serializable
+data class SessionHistoryToolPayload(
+    val kind: String,
+    val query: String? = null,
+    val projectOnly: Boolean = false,
+    val sessionIds: List<String> = emptyList(),
+    val messageReferences: List<String> = emptyList(),
+    val anchorMessageIds: List<Long> = emptyList(),
+    val matchedFields: List<String> = emptyList(),
+    val snippets: List<String> = emptyList(),
+    val excerptWindows: List<String> = emptyList()
+)
+
+@Serializable
+data class SkillToolPayload(
+    val kind: String,
+    val query: String? = null,
+    val source: String? = null,
+    val skillId: String? = null,
+    val skillTitle: String? = null,
+    val matchedSkillIds: List<String> = emptyList(),
+    val matchedSkillTitles: List<String> = emptyList(),
+    val runAs: String? = null,
+    val task: String? = null,
+    val allowedTools: List<String> = emptyList(),
+    val background: Boolean = false,
+    val delegatedToSubagent: Boolean = false
+)
+
+@Serializable
+data class ToolStructuredPayload(
+    val sessionHistory: SessionHistoryToolPayload? = null,
+    val skill: SkillToolPayload? = null
+)
+
 data class ToolExecutionResult(
     val output: String,
-    val fileChanges: List<ToolFileChange> = emptyList()
+    val fileChanges: List<ToolFileChange> = emptyList(),
+    val stepSignOffReceipt: StepSignOffReceipt? = null,
+    val structuredPayload: ToolStructuredPayload? = null
+)
+
+data class ToolExecutionReceipt(
+    val toolName: String,
+    val args: String,
+    val result: String? = null,
+    val isSuccess: Boolean = true,
+    val structuredPayload: ToolStructuredPayload? = null,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+data class ToolRuntimeContext(
+    val currentTurnToolReceipts: List<ToolExecutionReceipt> = emptyList()
 )
 
 /**
@@ -43,6 +108,17 @@ interface Tool {
      */
     suspend fun executeWithResult(args: String): ToolExecutionResult {
         return ToolExecutionResult(output = execute(args))
+    }
+
+    /**
+     * 带运行时上下文执行工具。
+     * 默认忽略上下文，兼容现有工具；少数需要查看本轮已执行工具收据的工具可重写。
+     */
+    suspend fun executeWithContext(
+        args: String,
+        runtimeContext: ToolRuntimeContext
+    ): ToolExecutionResult {
+        return executeWithResult(args)
     }
 
     /**

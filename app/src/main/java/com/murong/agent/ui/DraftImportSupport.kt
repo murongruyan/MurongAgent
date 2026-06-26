@@ -1,6 +1,8 @@
 package com.murong.agent.ui
 
+import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -35,11 +37,13 @@ import com.murong.agent.core.config.GlobalRule
 import com.murong.agent.core.config.GlobalSkill
 import com.murong.agent.core.config.SkillRunAs
 import com.murong.agent.core.mcp.McpServerConfig
+import com.murong.agent.core.mcp.McpConfigSource
 import com.murong.agent.core.mcp.McpTransportType
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
@@ -343,6 +347,7 @@ fun McpDraftImportCard(
     var draftText by remember { mutableStateOf("") }
     var previewItems by remember { mutableStateOf<List<McpServerConfig>>(emptyList()) }
     var feedback by remember { mutableStateOf<String?>(null) }
+    var importedSourcePath by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier = modifier,
@@ -359,6 +364,13 @@ fun McpDraftImportCard(
                 draftText = draftText,
                 onDraftTextChange = {
                     draftText = it
+                    importedSourcePath = null
+                    previewItems = emptyList()
+                    feedback = null
+                },
+                onDocumentImported = { importedText, sourcePath ->
+                    draftText = importedText
+                    importedSourcePath = sourcePath
                     previewItems = emptyList()
                     feedback = null
                 },
@@ -367,7 +379,7 @@ fun McpDraftImportCard(
                 previewLabels = previewItems.map(::buildMcpDraftPreviewLabel),
                 importButtonLabel = "确认导入 ${previewItems.size} 个 MCP",
                 onParse = {
-                    val result = parseMcpServerDrafts(draftText)
+                    val result = parseMcpServerDrafts(draftText, importedSourcePath)
                     previewItems = result.items
                     feedback = result.feedback
                 },
@@ -375,6 +387,7 @@ fun McpDraftImportCard(
                     if (previewItems.isNotEmpty()) {
                         onImportDrafts(previewItems)
                         draftText = ""
+                        importedSourcePath = null
                         previewItems = emptyList()
                         feedback = "已导入草案"
                         expanded = false
@@ -448,6 +461,7 @@ private fun DraftImportCardShell(
     hint: String,
     draftText: String,
     onDraftTextChange: (String) -> Unit,
+    onDocumentImported: ((String, String?) -> Unit)? = null,
     feedback: String?,
     feedbackIsError: Boolean,
     previewLabels: List<String>,
@@ -466,7 +480,8 @@ private fun DraftImportCardShell(
             }.getOrNull()
         }.orEmpty()
         if (importedText.isNotBlank()) {
-            onDraftTextChange(importedText)
+            val sourcePath = uri?.let { resolveImportedDocumentSourcePath(context, it) }
+            onDocumentImported?.invoke(importedText, sourcePath) ?: onDraftTextChange(importedText)
         }
     }
     Surface(
@@ -618,17 +633,26 @@ internal fun parseMemoryDrafts(raw: String): DraftImportParseResult<GlobalMemory
 }
 
 internal fun parseMcpServerDrafts(raw: String): DraftImportParseResult<McpServerConfig> {
+    return parseMcpServerDrafts(raw, importedSourcePath = null)
+}
+
+internal fun parseMcpServerDrafts(
+    raw: String,
+    importedSourcePath: String?
+): DraftImportParseResult<McpServerConfig> {
     val markdownMcp = parseMarkdownMcpServer(raw)
     if (markdownMcp != null) {
+        val normalized = applyImportedMcpSourceFallbacks(listOf(markdownMcp), importedSourcePath)
         return DraftImportParseResult(
-            items = listOf(markdownMcp),
+            items = normalized,
             feedback = "已按 Markdown 解析 1 条 MCP 草案。"
         )
     }
     val rawSpecItems = parseMcpSpecLines(raw)
     if (rawSpecItems.isNotEmpty()) {
+        val normalized = applyImportedMcpSourceFallbacks(rawSpecItems.distinctBy { it.name }, importedSourcePath)
         return DraftImportParseResult(
-            items = rawSpecItems.distinctBy { it.name },
+            items = normalized,
             feedback = "已按桌面端 MCP spec 解析 ${rawSpecItems.size} 条草案。"
         )
     }
@@ -636,7 +660,7 @@ internal fun parseMcpServerDrafts(raw: String): DraftImportParseResult<McpServer
         items = emptyList(),
         feedback = "草案不是合法 JSON，也不是可识别的桌面端 MCP spec。"
     )
-    val entries = unwrapDraftEntries(parsed, "servers", "mcpServers", "items", "drafts")
+    val entries = unwrapMcpDraftEntries(parsed)
     var invalidCount = 0
     val items = entries.mapNotNull { element ->
         parseMcpServerDraft(element).getOrElse {
@@ -645,7 +669,7 @@ internal fun parseMcpServerDrafts(raw: String): DraftImportParseResult<McpServer
         }
     }.distinctBy { it.name }
     return buildParseResult(
-        items = items,
+        items = applyImportedMcpSourceFallbacks(items, importedSourcePath),
         invalidCount = invalidCount,
         successLabel = "MCP 草案"
     )
@@ -676,6 +700,27 @@ internal fun parseSkillDrafts(raw: String): DraftImportParseResult<GlobalSkill> 
         invalidCount = invalidCount,
         successLabel = "Skill 草案"
     )
+}
+
+private fun unwrapMcpDraftEntries(root: JsonElement): List<JsonElement> {
+    if (root !is JsonObject) {
+        return unwrapDraftEntries(root, "servers", "mcpServers", "items", "drafts")
+    }
+    val grouped = sequenceOf("servers", "mcpServers", "items", "drafts")
+        .mapNotNull { key -> root[key] }
+        .firstOrNull()
+    return when (grouped) {
+        is JsonArray -> grouped.toList()
+        is JsonObject -> grouped.entries.map { (name, value) ->
+            if (value is JsonObject && "name" !in value) {
+                JsonObject(value + ("name" to JsonPrimitive(name)))
+            } else {
+                value
+            }
+        }
+        null -> listOf(root)
+        else -> emptyList()
+    }
 }
 
 private fun <T> buildParseResult(
@@ -721,13 +766,15 @@ private fun parseDesktopMcpSpec(input: String): Result<McpServerConfig> = runCat
         McpServerConfig(
             name = name ?: inferMcpNameFromUrl(streamableMatch.groupValues[1]) ?: "imported-mcp",
             transport = McpTransportType.STREAMABLE_HTTP,
-            url = streamableMatch.groupValues[1]
+            url = streamableMatch.groupValues[1],
+            source = McpConfigSource.IMPORTED_DRAFT
         )
     } else if (Regex("^https?://", RegexOption.IGNORE_CASE).containsMatchIn(body)) {
         McpServerConfig(
             name = name ?: inferMcpNameFromUrl(body) ?: "imported-mcp",
             transport = McpTransportType.SSE,
-            url = body
+            url = body,
+            source = McpConfigSource.IMPORTED_DRAFT
         )
     } else {
         val argv = splitCommandLine(body)
@@ -736,7 +783,8 @@ private fun parseDesktopMcpSpec(input: String): Result<McpServerConfig> = runCat
             name = name ?: argv.first(),
             transport = McpTransportType.STDIO,
             command = argv.first(),
-            args = argv.drop(1)
+            args = argv.drop(1),
+            source = McpConfigSource.IMPORTED_DRAFT
         )
     }
 }
@@ -796,6 +844,19 @@ private fun parseMcpServerDraft(element: JsonElement): Result<McpServerConfig> =
         ?: ""
     val headers = obj.stringMap("headers")
     val requestTimeoutMs = obj.long("requestTimeoutMs")
+    val source = parseMcpConfigSource(
+        obj.string("source"),
+        fallback = if (obj.containsKey("mcpServers")) McpConfigSource.MCP_JSON else McpConfigSource.IMPORTED_DRAFT
+    )
+    val sourcePath = obj.string("sourcePath")
+        ?: obj.string("source_path")
+        ?: obj.string("file")
+        ?: ""
+    val trustedReadOnlyTools = normalizeMcpTrustedReadOnlyTools(obj)
+    val autoStart = obj.boolean("autoStart")
+        ?: obj.boolean("autostart")
+        ?: obj.boolean("auto_start")
+        ?: true
     when (transport) {
         McpTransportType.STDIO -> require(command.isNotBlank()) { "stdio command required" }
         McpTransportType.SSE,
@@ -811,6 +872,10 @@ private fun parseMcpServerDraft(element: JsonElement): Result<McpServerConfig> =
         url = url,
         headers = headers,
         requestTimeoutMs = requestTimeoutMs,
+        source = source,
+        sourcePath = sourcePath,
+        trustedReadOnlyTools = trustedReadOnlyTools,
+        autoStart = autoStart,
         enabled = obj.boolean("enabled") ?: true
     )
 }
@@ -982,6 +1047,10 @@ private fun parseMarkdownMcpServer(raw: String): McpServerConfig? {
                 url = explicitUrl.orEmpty(),
                 headers = parseKeyValueLines(parsed.data["headers"]),
                 requestTimeoutMs = parsed.data["requestTimeoutMs"]?.toLongOrNull(),
+                source = parseMcpConfigSource(parsed.data["source"], McpConfigSource.IMPORTED_DRAFT),
+                sourcePath = parsed.data["sourcePath"].orEmpty(),
+                trustedReadOnlyTools = parseAllowedToolsCompat(parsed.data["trusted_read_only_tools"]),
+                autoStart = parsed.data["autoStart"]?.toBooleanStrictOrNull() ?: true,
                 enabled = parsed.data["enabled"]?.toBooleanStrictOrNull() ?: true
             )
         }
@@ -994,6 +1063,10 @@ private fun parseMarkdownMcpServer(raw: String): McpServerConfig? {
                 env = parseKeyValueLines(parsed.data["env"]).ifEmpty { parsedSpec.env },
                 headers = parseKeyValueLines(parsed.data["headers"]).ifEmpty { parsedSpec.headers },
                 requestTimeoutMs = parsed.data["requestTimeoutMs"]?.toLongOrNull() ?: parsedSpec.requestTimeoutMs,
+                source = parseMcpConfigSource(parsed.data["source"], McpConfigSource.IMPORTED_DRAFT),
+                sourcePath = parsed.data["sourcePath"].orEmpty(),
+                trustedReadOnlyTools = parseAllowedToolsCompat(parsed.data["trusted_read_only_tools"]),
+                autoStart = parsed.data["autoStart"]?.toBooleanStrictOrNull() ?: parsedSpec.autoStart,
                 enabled = parsed.data["enabled"]?.toBooleanStrictOrNull() ?: parsedSpec.enabled
             )
         }
@@ -1028,6 +1101,26 @@ private fun inferRemoteTransport(url: String): McpTransportType {
     } else {
         McpTransportType.SSE
     }
+}
+
+private fun parseMcpConfigSource(raw: String?, fallback: McpConfigSource): McpConfigSource {
+    return when (raw?.trim()?.lowercase()) {
+        "manual" -> McpConfigSource.MANUAL
+        "mcp_json", "mcp-json", ".mcp.json" -> McpConfigSource.MCP_JSON
+        "imported_draft", "imported-draft", "draft" -> McpConfigSource.IMPORTED_DRAFT
+        else -> fallback
+    }
+}
+
+private fun normalizeMcpTrustedReadOnlyTools(obj: JsonObject): List<String> {
+    return normalizeAllowedToolsCompat(
+        obj.stringList("trustedReadOnlyTools").orEmpty() +
+            obj.stringList("trusted_read_only_tools").orEmpty() +
+            listOfNotNull(
+                obj.string("trustedReadOnlyTools"),
+                obj.string("trusted_read_only_tools")
+            )
+    )
 }
 
 private data class ParsedMarkdownTextEntry(
@@ -1142,7 +1235,61 @@ private fun buildMcpDraftPreviewLabel(config: McpServerConfig): String {
             append(" · env=")
             append(config.env.size)
         }
+        if (config.sourcePath.isNotBlank()) {
+            append(" · src=")
+            append(config.sourcePath.replace('\\', '/').substringAfterLast('/'))
+        }
     }
+}
+
+private fun applyImportedMcpSourceFallbacks(
+    items: List<McpServerConfig>,
+    importedSourcePath: String?
+): List<McpServerConfig> {
+    val normalizedSourcePath = importedSourcePath?.trim().orEmpty()
+    if (normalizedSourcePath.isBlank()) return items
+    val inferredSource = inferSourceFromImportedDocument(normalizedSourcePath)
+    return items.map { config ->
+        config.copy(
+            source = if (config.source == McpConfigSource.IMPORTED_DRAFT && inferredSource == McpConfigSource.MCP_JSON) {
+                McpConfigSource.MCP_JSON
+            } else {
+                config.source
+            },
+            sourcePath = config.sourcePath.ifBlank { normalizedSourcePath }
+        )
+    }
+}
+
+private fun inferSourceFromImportedDocument(sourcePath: String): McpConfigSource {
+    val normalized = sourcePath.replace('\\', '/')
+    return if (normalized.endsWith("/.mcp.json", ignoreCase = true) || normalized.equals(".mcp.json", ignoreCase = true)) {
+        McpConfigSource.MCP_JSON
+    } else {
+        McpConfigSource.IMPORTED_DRAFT
+    }
+}
+
+private fun resolveImportedDocumentSourcePath(context: Context, uri: Uri): String? {
+    if (uri.scheme.equals("file", ignoreCase = true)) {
+        return uri.path?.takeIf { it.isNotBlank() } ?: uri.lastPathSegment
+    }
+    val cursor = context.contentResolver.query(
+        uri,
+        arrayOf(OpenableColumns.DISPLAY_NAME),
+        null,
+        null,
+        null
+    ) ?: return uri.lastPathSegment
+    cursor.use {
+        if (it.moveToFirst()) {
+            val index = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (index >= 0) {
+                return it.getString(index)
+            }
+        }
+    }
+    return uri.lastPathSegment
 }
 
 @Composable

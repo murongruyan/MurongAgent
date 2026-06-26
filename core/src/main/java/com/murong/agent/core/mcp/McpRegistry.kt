@@ -20,7 +20,7 @@ class McpRegistry(private val context: Context) {
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
     private val transports = mutableMapOf<String, McpTransport>()
     private val toolCache = mutableMapOf<String, McpToolDef>()
-    private val serverErrors = mutableMapOf<String, String>()
+    private val serverFailures = mutableMapOf<String, McpFailureRecord>()
 
     private val configFile: File
         get() = File(context.filesDir, "mcp_servers.json")
@@ -36,18 +36,20 @@ class McpRegistry(private val context: Context) {
      * 获取所有服务器状态
      */
     fun getServerStatuses(): List<McpServerStatus> {
-        val serverNames = (transports.keys + serverErrors.keys).distinct().sorted()
+        val serverNames = (transports.keys + serverFailures.keys).distinct().sorted()
         return serverNames.map { name ->
             val transport = transports[name]
             val serverTools = toolCache.values
                 .filter { it.serverName == name }
                 .sortedBy { it.name }
+            val failure = serverFailures[name]
             McpServerStatus(
                 name = name,
                 connected = transport?.isActive() == true,
                 toolCount = serverTools.size,
-                error = serverErrors[name],
-                toolNames = serverTools.map { it.name }
+                error = failure?.message,
+                toolNames = serverTools.map { it.name },
+                failureRecord = failure
             )
         }
     }
@@ -64,7 +66,7 @@ class McpRegistry(private val context: Context) {
                     val result = transport.connect()
                     if (result.isSuccess) {
                         transports[cfg.name] = transport
-                        serverErrors.remove(cfg.name)
+                        serverFailures.remove(cfg.name)
                         val toolsResult = transport.listTools()
                         if (toolsResult.isSuccess) {
                             toolCache.entries.removeAll { it.value.serverName == cfg.name }
@@ -72,15 +74,25 @@ class McpRegistry(private val context: Context) {
                                 toolCache[toolDef.name] = toolDef
                             }
                         } else {
-                            serverErrors[cfg.name] = toolsResult.exceptionOrNull()?.message
-                                ?: "列出工具失败"
+                            serverFailures[cfg.name] = buildFailureRecord(
+                                cfg = cfg,
+                                stage = McpFailureStage.LIST_TOOLS,
+                                message = toolsResult.exceptionOrNull()?.message ?: "列出工具失败"
+                            )
                         }
                     } else {
-                        serverErrors[cfg.name] = result.exceptionOrNull()?.message
-                            ?: "连接失败"
+                        serverFailures[cfg.name] = buildFailureRecord(
+                            cfg = cfg,
+                            stage = McpFailureStage.CONNECT,
+                            message = result.exceptionOrNull()?.message ?: "连接失败"
+                        )
                     }
                 } catch (e: Exception) {
-                    serverErrors[cfg.name] = e.message ?: "连接失败"
+                    serverFailures[cfg.name] = buildFailureRecord(
+                        cfg = cfg,
+                        stage = McpFailureStage.CONNECT,
+                        message = e.message ?: "连接失败"
+                    )
                 }
             }
         }
@@ -92,7 +104,7 @@ class McpRegistry(private val context: Context) {
     fun disconnect(serverName: String) {
         transports.remove(serverName)?.disconnect()
         toolCache.entries.removeAll { it.value.serverName == serverName }
-        serverErrors.remove(serverName)
+        serverFailures.remove(serverName)
     }
 
     /**
@@ -102,7 +114,7 @@ class McpRegistry(private val context: Context) {
         transports.values.forEach { it.disconnect() }
         transports.clear()
         toolCache.clear()
-        serverErrors.clear()
+        serverFailures.clear()
     }
 
     /**
@@ -120,7 +132,28 @@ class McpRegistry(private val context: Context) {
         if (!configFile.exists()) return emptyList()
         return try {
             json.decodeFromString(ListSerializer(McpServerConfig.serializer()), configFile.readText())
-        } catch (_: Exception) { emptyList() }
+        } catch (error: Exception) {
+            serverFailures["config"] = McpFailureRecord(
+                stage = McpFailureStage.CONFIG_LOAD,
+                message = error.message ?: "加载 MCP 配置失败",
+                retryable = false
+            )
+            emptyList()
+        }
+    }
+
+    fun getTrustedReadOnlyToolNames(): Set<String> {
+        return loadConfigs()
+            .asSequence()
+            .filter { it.enabled }
+            .flatMap { cfg ->
+                cfg.trustedReadOnlyTools.asSequence().map { tool ->
+                    val normalized = tool.trim()
+                    if (normalized.startsWith("mcp_")) normalized else "mcp_$normalized"
+                }
+            }
+            .filter { it.isNotBlank() }
+            .toSet()
     }
 
     /**
@@ -150,7 +183,14 @@ class McpRegistry(private val context: Context) {
                     element.toString()
                 }
             },
-            onFailure = { "Error calling MCP tool '$toolName': ${it.message}" }
+            onFailure = {
+                serverFailures[toolDef.serverName] = McpFailureRecord(
+                    stage = McpFailureStage.CALL_TOOL,
+                    message = it.message ?: "调用 MCP 工具失败",
+                    transport = loadConfigs().firstOrNull { cfg -> cfg.name == toolDef.serverName }?.transport
+                )
+                "Error calling MCP tool '$toolName': ${it.message}"
+            }
         )
     }
 }
@@ -189,6 +229,18 @@ class McpToolAdapter(
 private fun buildMcpApprovalScopeTokens(toolDef: McpToolDef): Set<String> {
     if (!toolDef.isGitHubTool()) return emptySet()
     return if (toolDef.isGitHubWriteTool()) setOf("mcp:github:write") else emptySet()
+}
+
+private fun buildFailureRecord(
+    cfg: McpServerConfig,
+    stage: McpFailureStage,
+    message: String
+): McpFailureRecord {
+    return McpFailureRecord(
+        stage = stage,
+        message = message,
+        transport = cfg.transport
+    )
 }
 
 private fun buildGitHubApprovalDetail(toolDef: McpToolDef, args: String): String {

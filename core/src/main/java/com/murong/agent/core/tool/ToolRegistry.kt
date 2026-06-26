@@ -5,15 +5,41 @@ package com.murong.agent.core.tool
  */
 class ToolRegistry {
 
-    private val tools = mutableMapOf<String, Tool>()
+    private data class RegisteredTool(
+        val tool: Tool,
+        val isEnabled: () -> Boolean,
+        val isPromptExposed: () -> Boolean
+    )
 
-    fun register(tool: Tool) {
-        tools[tool.name] = tool
+    private val tools = mutableMapOf<String, RegisteredTool>()
+
+    fun register(
+        tool: Tool,
+        isEnabled: () -> Boolean = { true },
+        isPromptExposed: () -> Boolean = isEnabled
+    ) {
+        tools[tool.name] = RegisteredTool(
+            tool = tool,
+            isEnabled = isEnabled,
+            isPromptExposed = isPromptExposed
+        )
     }
 
     fun getTool(name: String): Tool? = tools[name]
+        ?.takeIf { it.isEnabled() }
+        ?.tool
 
-    fun getAllTools(): List<Tool> = tools.values.toList()
+    fun hasTool(name: String): Boolean = tools.containsKey(name)
+
+    fun isPromptExposed(name: String): Boolean = tools[name]?.isPromptExposed?.invoke() == true
+
+    fun getAllTools(): List<Tool> = tools.values.mapNotNull { entry ->
+        entry.tool.takeIf { entry.isEnabled() }
+    }
+
+    fun getPromptVisibleTools(): List<Tool> = tools.values.mapNotNull { entry ->
+        entry.tool.takeIf { entry.isPromptExposed() }
+    }
 
     /**
      * 构建 tools 数组 JSON（发送给模型用）
@@ -21,7 +47,7 @@ class ToolRegistry {
     fun buildToolsJson(): String {
         val sb = StringBuilder()
         sb.append("[")
-        tools.values.forEachIndexed { index, tool ->
+        getPromptVisibleTools().forEachIndexed { index, tool ->
             if (index > 0) sb.append(",")
             sb.append("""
                 {

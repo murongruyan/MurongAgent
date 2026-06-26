@@ -112,14 +112,103 @@ class SubagentToolTest {
         )
     }
 
+    @Test
+    fun execute_parallelTasks_schedulesDependentsAfterUpstreamCompletion() = runBlocking {
+        val queuedEvents = mutableListOf<SubagentUiEvent.Queued>()
+        val completedEvents = mutableListOf<SubagentUiEvent.Completed>()
+        val scheduledRunIds = mutableListOf<String>()
+        val scheduledExecutions = linkedMapOf<String, suspend () -> String>()
+        val tool = createTool(
+            provider = EchoModelProvider(),
+            baseConfig = ProviderConfig(
+                activeProviderId = "openai-compatible",
+                openaiModel = "gpt-5.5",
+                openaiReasoningEffort = "medium"
+            ),
+            scheduleBackgroundExecution = { runId, executeNow ->
+                scheduledRunIds += runId
+                scheduledExecutions[runId] = executeNow
+                "scheduled:$runId"
+            },
+            onUiEvent = { event ->
+                when (event) {
+                    is SubagentUiEvent.Queued -> queuedEvents += event
+                    is SubagentUiEvent.Completed -> completedEvents += event
+                    else -> Unit
+                }
+            }
+        )
+
+        val result = tool.execute(
+            """
+            {
+              "goal": "并行处理代码研究",
+              "parallelTasks": [
+                { "label": "discover", "goal": "扫描登录入口" },
+                { "label": "review", "goal": "分析状态流转", "dependsOn": [1] },
+                { "label": "summarize", "goal": "汇总结论", "dependsOn": [2] }
+              ]
+            }
+            """.trimIndent()
+        )
+
+        assertTrue(result.contains("Subagent parallel batch queued"))
+        assertEquals(3, queuedEvents.size)
+        assertEquals(1, scheduledRunIds.size)
+
+        val firstRunId = queuedEvents.single { it.batchIndex == 1 }.runId
+        val secondRunId = queuedEvents.single { it.batchIndex == 2 }.runId
+        val thirdRunId = queuedEvents.single { it.batchIndex == 3 }.runId
+
+        scheduledExecutions.getValue(firstRunId).invoke()
+        assertEquals(listOf(firstRunId, secondRunId), scheduledRunIds)
+
+        scheduledExecutions.getValue(secondRunId).invoke()
+        assertEquals(listOf(firstRunId, secondRunId, thirdRunId), scheduledRunIds)
+
+        scheduledExecutions.getValue(thirdRunId).invoke()
+        assertEquals(listOf(firstRunId, secondRunId, thirdRunId), completedEvents.map { it.runId })
+    }
+
+    @Test
+    fun execute_parallelTasks_rejectsDependencyCycle() = runBlocking {
+        val tool = createTool(
+            baseConfig = ProviderConfig(
+                activeProviderId = "deepseek",
+                deepseekModel = "deepseek-v4-flash",
+                deepseekReasoningEffort = "high"
+            ),
+            scheduleBackgroundExecution = { runId, _ -> "scheduled:$runId" },
+            onUiEvent = {}
+        )
+
+        val result = tool.execute(
+            """
+            {
+              "goal": "循环依赖测试",
+              "parallelTasks": [
+                { "goal": "任务一", "dependsOn": [2] },
+                { "goal": "任务二", "dependsOn": [1] }
+              ]
+            }
+            """.trimIndent()
+        )
+
+        assertEquals(
+            "Subagent parallel batch ignored: parallelTasks contains a dependency cycle",
+            result
+        )
+    }
+
     private fun createTool(
+        provider: ModelProvider = FakeModelProvider(),
         baseConfig: ProviderConfig,
         projectTemplates: List<ProjectSubagentTemplate> = emptyList(),
         scheduleBackgroundExecution: suspend (String, suspend () -> String) -> String,
         onUiEvent: (SubagentUiEvent) -> Unit
     ): SubagentTool {
         return SubagentTool(
-            provider = FakeModelProvider(),
+            provider = provider,
             baseConfig = baseConfig,
             projectTemplates = projectTemplates,
             allowedFileOperations = setOf("read", "list", "exists"),
@@ -133,6 +222,34 @@ class SubagentToolTest {
             scheduleBackgroundExecution = scheduleBackgroundExecution,
             onUiEvent = onUiEvent
         )
+    }
+
+    private class EchoModelProvider : ModelProvider {
+        override val name = "Echo"
+        override val id = "echo"
+        override val defaultBaseUrl = "https://example.invalid"
+        override val defaultModel = "echo-model"
+        override val supportsReasoning = true
+
+        override suspend fun chatStream(
+            request: ChatRequest,
+            apiKey: String,
+            baseUrl: String?,
+            onDelta: (StreamDelta) -> Unit
+        ): ChatResponse {
+            return ChatResponse(
+                content = request.messages.lastOrNull()?.content ?: "empty",
+                toolCalls = null
+            )
+        }
+
+        override suspend fun chat(
+            request: ChatRequest,
+            apiKey: String,
+            baseUrl: String?
+        ): ChatResponse {
+            error("chat should not be called in SubagentTool dependency scheduling tests")
+        }
     }
 
     private class FakeModelProvider : ModelProvider {

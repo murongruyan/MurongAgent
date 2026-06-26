@@ -358,7 +358,6 @@ data class ProviderConfig(
         val enabledMemories = globalMemories.filter { it.enabled }
         val enabledSkills = buildSkillsInstruction(skills = globalSkills, heading = "Active Global Skills")
         val rulesText = enabledRules.joinToString("\n\n") { "Rule: ${it.title}\n${it.content.trim()}" }
-        val memoriesText = enabledMemories.joinToString("\n\n") { "Memory: ${it.title.ifBlank { "δ��������" }}\n${it.content.trim()}" }
         return buildString {
             append(systemPrompt.trim())
             val wfInstr = buildWorkflowInstruction()
@@ -366,15 +365,24 @@ data class ProviderConfig(
             val verbosityInstr = buildResponseVerbosityInstruction()
             if (verbosityInstr.isNotEmpty()) append("\n\n$verbosityInstr")
             if (enabledRules.isNotEmpty()) append("\n\nActive Global Rules:\n$rulesText")
-            if (enabledMemories.isNotEmpty()) append("\n\nActive Global Memories:\n$memoriesText")
+            if (enabledMemories.isNotEmpty()) {
+                append("\n\nLegacy Global Memories Detected:\n")
+                append("- ${enabledMemories.size} legacy config memories remain configured.\n")
+                append("- Their contents are not injected into the stable system prompt anymore.\n")
+                append("- Use `memory_list`, `memory_search`, or `memory_read` to inspect durable/bridged memories when needed.\n")
+                append("- If the user explicitly wants to retire old config memories, use `migrate_legacy_memories`.")
+            }
             if (enabledSkills.isNotEmpty()) append("\n\n$enabledSkills")
             append(
                 """
 
 Global configuration management:
 - If the user explicitly asks to save or add a reusable global rule, use `create_global_rule`.
-- If the user explicitly asks to save or add a reusable global memory, use `create_global_memory`.
+- If the user explicitly asks to save or add a reusable global memory, prefer `remember_memory` with `"scope":"global"`; `create_global_memory` remains a compatibility path.
+- If the user explicitly asks to delete a durable memory, use `forget_memory`.
+- If the user explicitly asks to migrate old legacy global/project memories into durable memory, use `migrate_legacy_memories`.
 - If the user explicitly asks to import or save a reusable global skill, use `create_global_skill`.
+- When the current task may match an existing global or project Skill, first use `read_skill` to inspect the Skill, then use `run_skill` if it is relevant.
 - If the user explicitly asks to import or add an MCP server, use `create_mcp_server`.
 - Never auto-create global rules, memories, skills, or MCP entries from ordinary conversation.
                 """.trimIndent()
@@ -411,6 +419,8 @@ Global configuration management:
         val normalized = token.trim().lowercase()
         return normalized in setOf("writable", "write", "allow_write", "write_access", "full")
     }
+
+    private fun requiresFreshApproval(toolName: String): Boolean = isFreshApprovalToolName(toolName)
 
     fun buildWorkflowInstruction(): String = """
         Prefer completing the whole workflow in as few assistant turns as practical.
@@ -465,6 +475,13 @@ Global configuration management:
         }
     }
     fun isMcpToolEnabled(toolName: String): Boolean = allowAllMcpTools || allowedMcpTools.contains(toolName)
+    fun isTrustedReadOnlyMcpTool(
+        toolName: String,
+        approvalScopeTokens: Set<String>
+    ): Boolean {
+        if (!toolName.startsWith("mcp_")) return false
+        return approvalScopeTokens.any { it == "mcp:trusted_read_only" || it.startsWith("mcp:trusted_read_only:") }
+    }
     fun getEnabledFileToolOperations(): Set<String> = DEFAULT_ENABLED_FILE_TOOL_OPERATIONS.filter { it in enabledFileToolOperations }.toSet()
     fun isFileToolOperationEnabled(operation: String): Boolean = operation in getEnabledFileToolOperations()
     fun getEnabledSubagentFileOperations(): Set<String> = DEFAULT_SUBAGENT_FILE_TOOL_OPERATIONS.filter { isFileToolOperationEnabled(it) }.toSet()
@@ -479,12 +496,18 @@ Global configuration management:
         approvalScopeTokens: Set<String> = emptySet(),
         commandBoundaryValue: String? = null, pathBoundaryValue: String? = null
     ): ApprovalDecisionExplanation {
+        val normalizedToolName = toolName.trim()
+        val trustedReadOnlyMcp = isTrustedReadOnlyMcpTool(normalizedToolName, approvalScopeTokens)
         return when (approvalMode) {
             ToolApprovalMode.READ_ONLY -> {
-                if (toolName in setOf("file", "web_fetch", "web_search", "subagent_launch")) {
+                if (normalizedToolName in setOf("file", "web_fetch", "web_search", "subagent_launch") || trustedReadOnlyMcp) {
                     ApprovalDecisionExplanation(requiresApproval = false,
                         explanationLabel = "只读模式放行",
-                        explanationDetail = "只读模式下仅允许文件读取、信息获取这类工具自动运行。"
+                        explanationDetail = if (trustedReadOnlyMcp) {
+                            "当前 MCP 工具被标记为可信只读，可在只读模式下直接运行。"
+                        } else {
+                            "只读模式下仅允许文件读取、信息获取这类工具自动运行。"
+                        }
                     )
                 } else ApprovalDecisionExplanation(requiresApproval = true,
                     explanationLabel = "只读模式拦截",
@@ -496,15 +519,22 @@ Global configuration management:
                 explanationDetail = "当前审批模式为全部审批，所有工具调用都需要人工确认。"
             )
             ToolApprovalMode.WHITELIST_AUTO -> {
-                if (approvalScopeTokens.isNotEmpty()) ApprovalDecisionExplanation(
+                if (requiresFreshApproval(normalizedToolName)) ApprovalDecisionExplanation(
+                    requiresApproval = true, explanationLabel = "关键工具始终审批",
+                    explanationDetail = "工具 `$normalizedToolName` 属于关键配置或交互操作，即使在自动模式下也需要重新人工确认。"
+                ) else if (trustedReadOnlyMcp) ApprovalDecisionExplanation(
+                    requiresApproval = false,
+                    explanationLabel = "可信只读 MCP 已放行",
+                    explanationDetail = "当前 MCP 工具命中了可信只读名单，可在白名单自动模式下直接执行。"
+                ) else if (approvalScopeTokens.isNotEmpty()) ApprovalDecisionExplanation(
                     requiresApproval = true, explanationLabel = "涉及额外授权范围",
                     explanationDetail = "当前请求包含额外授权范围，仍需要人工确认。"
                 ) else {
-                    val toolWhitelisted = isBuiltinToolEnabled(toolName) || isMcpToolEnabled(toolName)
+                    val toolWhitelisted = isBuiltinToolEnabled(normalizedToolName) || isMcpToolEnabled(normalizedToolName)
                     if (!toolWhitelisted) ApprovalDecisionExplanation(
                         requiresApproval = true, explanationLabel = "未命中白名单",
-                        explanationDetail = "工具 `$toolName` 不在项目白名单内，需要人工审批。"
-                    ) else when (toolName) {
+                        explanationDetail = "工具 `$normalizedToolName` 不在项目白名单内，需要人工审批。"
+                    ) else when (normalizedToolName) {
                         "shell" -> {
                             val boundaries = getNormalizedShellCommandPrefixes()
                             if (boundaries.isEmpty()) ApprovalDecisionExplanation(requiresApproval = false,
@@ -544,10 +574,15 @@ Global configuration management:
                     }
                 }
             }
-            ToolApprovalMode.ALL_AUTO -> ApprovalDecisionExplanation(
-                requiresApproval = false, explanationLabel = "全部自动通过",
-                explanationDetail = "当前模式为全部自动通过，默认不再弹出人工审批。"
-            )
+            ToolApprovalMode.ALL_AUTO -> {
+                if (requiresFreshApproval(normalizedToolName)) ApprovalDecisionExplanation(
+                    requiresApproval = true, explanationLabel = "关键工具始终审批",
+                    explanationDetail = "工具 `$normalizedToolName` 属于关键配置或交互操作，即使在自动模式下也需要重新人工确认。"
+                ) else ApprovalDecisionExplanation(
+                    requiresApproval = false, explanationLabel = "全部自动通过",
+                    explanationDetail = "当前模式为全部自动通过，默认不再弹出人工审批。"
+                )
+            }
         }
     }
 
@@ -557,16 +592,30 @@ Global configuration management:
 
     fun applyProjectToolPreferences(preferences: ProjectToolPreferences?): ProviderConfig {
         if (preferences == null) return this
+        val mergedPreferences = ProjectToolPreferences(
+            workflowExecutionMode = preferences.workflowExecutionMode ?: projectToolPreferences?.workflowExecutionMode,
+            autoRouteBeforeExecution = preferences.autoRouteBeforeExecution ?: projectToolPreferences?.autoRouteBeforeExecution,
+            failureFallbackMode = preferences.failureFallbackMode ?: projectToolPreferences?.failureFallbackMode,
+            approvalMode = preferences.approvalMode ?: projectToolPreferences?.approvalMode,
+            enabledBuiltinTools = preferences.enabledBuiltinTools ?: projectToolPreferences?.enabledBuiltinTools,
+            enabledFileToolOperations = preferences.enabledFileToolOperations ?: projectToolPreferences?.enabledFileToolOperations,
+            allowAllMcpTools = preferences.allowAllMcpTools ?: projectToolPreferences?.allowAllMcpTools,
+            allowedMcpTools = preferences.allowedMcpTools ?: projectToolPreferences?.allowedMcpTools,
+            allowedShellCommandPrefixes = preferences.allowedShellCommandPrefixes ?: projectToolPreferences?.allowedShellCommandPrefixes,
+            allowedPathPrefixes = preferences.allowedPathPrefixes ?: projectToolPreferences?.allowedPathPrefixes,
+            subagentTemplates = preferences.subagentTemplates ?: projectToolPreferences?.subagentTemplates
+        )
         return copy(
-            workflowExecutionMode = preferences.workflowExecutionMode ?: workflowExecutionMode,
-            autoRouteBeforeExecution = preferences.autoRouteBeforeExecution ?: autoRouteBeforeExecution,
-            approvalMode = preferences.approvalMode ?: approvalMode,
-            enabledBuiltinTools = preferences.enabledBuiltinTools ?: enabledBuiltinTools,
-            enabledFileToolOperations = preferences.enabledFileToolOperations ?: enabledFileToolOperations,
-            allowAllMcpTools = preferences.allowAllMcpTools ?: allowAllMcpTools,
-            allowedMcpTools = preferences.allowedMcpTools ?: allowedMcpTools,
-            allowedShellCommandPrefixes = preferences.allowedShellCommandPrefixes ?: allowedShellCommandPrefixes,
-            allowedPathPrefixes = preferences.allowedPathPrefixes ?: allowedPathPrefixes
+            projectToolPreferences = mergedPreferences,
+            workflowExecutionMode = mergedPreferences.workflowExecutionMode ?: workflowExecutionMode,
+            autoRouteBeforeExecution = mergedPreferences.autoRouteBeforeExecution ?: autoRouteBeforeExecution,
+            approvalMode = mergedPreferences.approvalMode ?: approvalMode,
+            enabledBuiltinTools = mergedPreferences.enabledBuiltinTools ?: enabledBuiltinTools,
+            enabledFileToolOperations = mergedPreferences.enabledFileToolOperations ?: enabledFileToolOperations,
+            allowAllMcpTools = mergedPreferences.allowAllMcpTools ?: allowAllMcpTools,
+            allowedMcpTools = mergedPreferences.allowedMcpTools ?: allowedMcpTools,
+            allowedShellCommandPrefixes = mergedPreferences.allowedShellCommandPrefixes ?: allowedShellCommandPrefixes,
+            allowedPathPrefixes = mergedPreferences.allowedPathPrefixes ?: allowedPathPrefixes
         )
     }
 
@@ -591,6 +640,10 @@ private fun normalizeApprovalCommandPrefix(value: String?): String {
 }
 private fun normalizeApprovalPathPrefix(value: String?): String {
     return value.orEmpty().trim().replace('\\', '/').removeSuffix("/")
+}
+
+fun isFreshApprovalToolName(toolName: String): Boolean {
+    return toolName.trim().lowercase() in FRESH_APPROVAL_TOOL_NAMES
 }
 
 fun ProjectToolPreferences?.isUsingGlobalToolPreferences(): Boolean {
@@ -623,3 +676,13 @@ const val MURONG_BACKEND_USAGE_API_URL = "https://murongagent.rl1.cc/api/usage.p
 const val MURONG_DOWNLOADS_PAGE_URL = "https://murongagent.rl1.cc/downloads.html"
 const val MURONG_APP_RELEASE_ARTIFACT_KEY = "murongagent-app"
 const val MURONG_EXTENSION_RELEASE_ARTIFACT_KEY = "murong-terminal-extension"
+private val FRESH_APPROVAL_TOOL_NAMES = setOf(
+    "ask_user",
+    "create_global_rule",
+    "create_global_memory",
+    "remember_memory",
+    "forget_memory",
+    "migrate_legacy_memories",
+    "create_global_skill",
+    "create_mcp_server"
+)

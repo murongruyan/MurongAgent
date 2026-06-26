@@ -60,14 +60,41 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import dagger.hilt.android.AndroidEntryPoint
 import com.murong.agent.core.config.WorkflowExecutionMode
+import com.murong.agent.core.config.resolveEffectiveProviderConfig
+import com.murong.agent.core.doctor.PendingCrashReport
+import com.murong.agent.core.doctor.PendingCrashStore
 import com.murong.agent.core.loop.ConversationExportData
 import com.murong.agent.core.loop.ConversationExportFormat
+import com.murong.agent.core.loop.ConversationCheckpointScope
 import com.murong.agent.core.loop.PendingImageAttachmentUi
 import com.murong.agent.core.loop.PendingApprovalUi
 import com.murong.agent.core.loop.UsageSummarySnapshot
+import com.murong.agent.core.loop.resolveApprovalRuntimeTelemetry
+import com.murong.agent.core.loop.resolveRuntimeStatusSnapshot
 import com.murong.agent.core.tool.ApprovalRiskLevel
 import com.murong.agent.ui.chat.ChatViewModel
+import com.murong.agent.ui.chat.AskHostSurfaceKind
+import com.murong.agent.ui.chat.AskPromptPresentation
+import com.murong.agent.ui.chat.AskUserDialog
+import com.murong.agent.ui.chat.ClarificationDialog
+import com.murong.agent.ui.chat.ClarificationHostSurfaceKind
 import com.murong.agent.ui.chat.ChatScreen
+import com.murong.agent.ui.chat.buildChatRuntimeHostPresentation
+import com.murong.agent.ui.chat.buildPendingPromptRuntimePresentation
+import com.murong.agent.ui.chat.buildSupplementalRuntimeStatusPresentations
+import com.murong.agent.ui.chat.PendingPromptHostPresentation
+import com.murong.agent.ui.chat.WorkflowPlanDialog
+import com.murong.agent.ui.chat.WorkflowPlanHostSurfaceKind
+import com.murong.agent.ui.chat.buildInitialPendingPromptHostInteractionState
+import com.murong.agent.ui.chat.buildPendingPromptHostPresentation
+import com.murong.agent.ui.chat.syncPendingPromptHostInteractionState
+import com.murong.agent.ui.chat.toAskPromptPresentation
+import com.murong.agent.ui.chat.toClarificationPromptPresentation
+import com.murong.agent.ui.chat.toRecentHistoryCluePresentation
+import com.murong.agent.ui.chat.toWorkflowPlanPromptPresentation
+import com.murong.agent.ui.chat.updatePendingPromptAskInteractionState
+import com.murong.agent.ui.chat.updatePendingPromptClarificationInteractionState
+import com.murong.agent.ui.chat.updatePendingPromptWorkflowPlanInteractionState
 import com.murong.agent.ui.chat.SessionDrawerContent
 import com.murong.agent.ui.chat.buildConversationText
 import com.murong.agent.ui.auth.AuthViewModel
@@ -88,10 +115,16 @@ import com.murong.agent.ui.settings.enqueueApkInstallDownload
 import com.murong.agent.ui.settings.openDownloadedApkInstaller
 import com.murong.agent.ui.settings.queryDownloadFailureReason
 import com.murong.agent.ui.tools.ToolsScreen
+import com.murong.agent.ui.tools.buildApprovalToolsPresentation
+import com.murong.agent.ui.tools.buildCheckpointRollbackSuccessMessage
+import com.murong.agent.ui.tools.buildCheckpointToolsPresentation
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -172,6 +205,7 @@ fun MainScreen() {
         initialPage = selectedTopLevelPage,
         pageCount = { shellScreens.size }
     )
+    MurongInteractionPerformanceHint(active = pagerState.isScrollInProgress)
     val authVm: AuthViewModel = hiltViewModel()
     val chatVm: ChatViewModel = hiltViewModel()
     val settingsVm: SettingsViewModel = hiltViewModel()
@@ -179,6 +213,7 @@ fun MainScreen() {
     val chatState by chatVm.state.collectAsState()
     val chatConfig by chatVm.config.collectAsState()
     val chatSessions by chatVm.sessions.collectAsState()
+    val archivedMemoryCandidates by chatVm.archivedMemoryCandidates.collectAsState()
     val settingsConfig by settingsVm.config.collectAsState()
     val appUpdateState by settingsVm.appUpdateState.collectAsState()
     val extensionUpdateState by settingsVm.extensionUpdateState.collectAsState()
@@ -203,7 +238,68 @@ fun MainScreen() {
     val mcpConnectError by settingsVm.mcpConnectError.collectAsState()
     val gitHubAuthState by settingsVm.gitHubAuthState.collectAsState()
     val effectiveChatConfig = remember(settingsConfig, chatState.projectToolPreferences) {
-        settingsConfig.applyProjectToolPreferences(chatState.projectToolPreferences)
+        resolveEffectiveProviderConfig(
+            globalConfig = settingsConfig,
+            projectToolPreferences = chatState.projectToolPreferences
+        )
+    }
+    val runtimeStatusSnapshot = remember(chatState) {
+        resolveRuntimeStatusSnapshot(chatState)
+    }
+    val approvalRuntimeTelemetry = remember(
+        chatState.pendingApproval,
+        chatState.recentApprovals,
+        chatState.recentApprovalInvalidations,
+        chatState.approvedApprovalScopes,
+        chatState.projectApprovalHistory,
+        chatState.projectInheritedApprovalScopes
+    ) {
+        resolveApprovalRuntimeTelemetry(
+            pendingApproval = chatState.pendingApproval,
+            recentApprovals = chatState.recentApprovals,
+            approvedApprovalScopes = chatState.approvedApprovalScopes,
+            inheritedApprovalScopes = chatState.projectInheritedApprovalScopes,
+            recentInvalidations = chatState.recentApprovalInvalidations,
+            projectApprovalHistory = chatState.projectApprovalHistory
+        )
+    }
+    val approvalRuntimePosturePresentation = remember(
+        settingsConfig.approvalMode,
+        settingsConfig.projectToolPreferences?.approvalMode,
+        approvalRuntimeTelemetry,
+        runtimeStatusSnapshot
+    ) {
+        buildApprovalRuntimePosturePresentation(
+            config = settingsConfig,
+            approvalRuntimeTelemetry = approvalRuntimeTelemetry,
+            runtimeStatusSnapshot = runtimeStatusSnapshot
+        )
+    }
+    val approvalToolsPresentation = remember(
+        approvalRuntimePosturePresentation,
+        approvalRuntimeTelemetry,
+    ) {
+        buildApprovalToolsPresentation(
+            runtimePosturePresentation = approvalRuntimePosturePresentation,
+            approvalRuntimeTelemetry = approvalRuntimeTelemetry,
+        )
+    }
+    val checkpointToolsPresentation = remember(
+        chatState.checkpoints,
+        chatState.fileChanges,
+        chatState.recentRecoveryRecords
+    ) {
+        buildCheckpointToolsPresentation(
+            checkpoints = chatState.checkpoints,
+            fileChanges = chatState.fileChanges,
+            recentRecoveryRecords = chatState.recentRecoveryRecords
+        )
+    }
+    var showToolsApprovalDetail by remember(
+        approvalToolsPresentation.pendingApproval?.toolName,
+        approvalToolsPresentation.pendingApproval?.rawArgs
+    ) {
+        mutableStateOf(false)
     }
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
@@ -233,9 +329,138 @@ fun MainScreen() {
     var hasAutoCheckedUpdates by rememberSaveable { mutableStateOf(false) }
     var dismissedUpdateDialogKey by rememberSaveable { mutableStateOf<String?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
+    val pendingCrashStore = remember(context) { PendingCrashStore(context) }
     val uiController = LocalMurongUiController.current
     val visibleTopLevelPage = pagerState.currentPage.coerceIn(0, shellScreens.lastIndex)
     val visibleScreen = shellScreens[visibleTopLevelPage]
+    val isChatScreenVisible = visibleScreen is Screen.Chat
+    val askPresentation = remember(chatState.pendingAskRequest) {
+        chatState.pendingAskRequest?.toAskPromptPresentation()
+    }
+    val workflowPlanPresentation = remember(chatState.pendingWorkflowPlan) {
+        chatState.pendingWorkflowPlan?.toWorkflowPlanPromptPresentation()
+    }
+    val clarificationPresentation = remember(chatState.pendingClarificationRequest) {
+        chatState.pendingClarificationRequest?.toClarificationPromptPresentation()
+    }
+    var rawPendingPromptHostInteractionState by remember {
+        mutableStateOf(buildInitialPendingPromptHostInteractionState())
+    }
+    val hasPendingPromptSurface = askPresentation != null ||
+        workflowPlanPresentation != null ||
+        clarificationPresentation != null
+    val pendingPromptHostInteractionState = remember(
+        askPresentation,
+        workflowPlanPresentation,
+        clarificationPresentation,
+        rawPendingPromptHostInteractionState
+    ) {
+        syncPendingPromptHostInteractionState(
+            state = rawPendingPromptHostInteractionState,
+            askPresentation = askPresentation,
+            workflowPlanPresentation = workflowPlanPresentation,
+            clarificationPresentation = clarificationPresentation
+        )
+    }
+    val pendingPromptHostPresentation = if (isChatScreenVisible || hasPendingPromptSurface) {
+        remember(
+            askPresentation,
+            workflowPlanPresentation,
+            clarificationPresentation,
+            pendingPromptHostInteractionState,
+            visibleScreen.route
+        ) {
+            buildPendingPromptHostPresentation(
+                askPresentation = askPresentation,
+                workflowPlanPresentation = workflowPlanPresentation,
+                clarificationPresentation = clarificationPresentation,
+                interactionState = pendingPromptHostInteractionState,
+                isChatScreenVisible = isChatScreenVisible
+            )
+        }
+    } else {
+        remember { PendingPromptHostPresentation() }
+    }
+    val pendingPromptRuntimePresentation = if (isChatScreenVisible) {
+        remember(
+            runtimeStatusSnapshot,
+            askPresentation,
+            workflowPlanPresentation,
+            clarificationPresentation
+        ) {
+            buildPendingPromptRuntimePresentation(
+                runtimeStatusSnapshot = runtimeStatusSnapshot,
+                askPresentation = askPresentation,
+                workflowPlanPresentation = workflowPlanPresentation,
+                clarificationPresentation = clarificationPresentation
+            )
+        }
+    } else {
+        null
+    }
+    val supplementalRuntimeStatuses = if (isChatScreenVisible) {
+        remember(
+            settingsConfig.workflowExecutionMode,
+            settingsConfig.autoRouteBeforeExecution,
+            chatState.autoRoutingInProgress,
+            chatState.workflowPlanningInProgress,
+            chatState.clarificationInProgress,
+            runtimeStatusSnapshot
+        ) {
+            buildSupplementalRuntimeStatusPresentations(
+                workflowExecutionMode = settingsConfig.workflowExecutionMode,
+                autoRouteBeforeExecution = settingsConfig.autoRouteBeforeExecution,
+                autoRoutingInProgress = chatState.autoRoutingInProgress,
+                workflowPlanningInProgress = chatState.workflowPlanningInProgress,
+                clarificationInProgress = chatState.clarificationInProgress,
+                runtimeStatusSnapshot = runtimeStatusSnapshot
+            )
+        }
+    } else {
+        emptyList()
+    }
+    val sessionRecentHistoryClue = remember(isChatScreenVisible, chatState.recentSessionHistoryClue) {
+        if (isChatScreenVisible) chatState.recentSessionHistoryClue else null
+    }
+    val recentHistoryCluePresentation = remember(sessionRecentHistoryClue) {
+        sessionRecentHistoryClue?.toRecentHistoryCluePresentation()
+    }
+    val visibleArchivedMemoryCandidates = if (isChatScreenVisible) {
+        archivedMemoryCandidates
+    } else {
+        emptyList()
+    }
+    val chatRuntimeHostPresentation = remember(
+        isChatScreenVisible,
+        approvalRuntimePosturePresentation,
+        runtimeStatusSnapshot,
+        pendingPromptRuntimePresentation,
+        pendingPromptHostPresentation,
+        recentHistoryCluePresentation,
+        visibleArchivedMemoryCandidates,
+        supplementalRuntimeStatuses
+    ) {
+        buildChatRuntimeHostPresentation(
+            approvalRuntimePosturePresentation = approvalRuntimePosturePresentation,
+            runtimeStatusSnapshot = runtimeStatusSnapshot.takeIf { isChatScreenVisible },
+            pendingPromptRuntimePresentation = pendingPromptRuntimePresentation,
+            pendingPromptHostPresentation = pendingPromptHostPresentation,
+            recentHistoryCluePresentation = recentHistoryCluePresentation,
+            archivedMemoryCandidates = visibleArchivedMemoryCandidates,
+            supplementalRuntimeStatuses = supplementalRuntimeStatuses
+        )
+    }
+    val approvalHostSurface = remember(
+        approvalToolsPresentation.pendingApproval,
+        visibleScreen.route,
+        showToolsApprovalDetail
+    ) {
+        buildApprovalHostSurfacePresentation(
+            pendingApproval = approvalToolsPresentation.pendingApproval,
+            isToolsScreenVisible = visibleScreen is Screen.Tools,
+            showToolsApprovalDetail = showToolsApprovalDetail
+        )
+    }
     val chatPageIndex = remember(shellScreens) {
         shellScreens.indexOfFirst { it.route == Screen.Chat.route }.coerceAtLeast(0)
     }
@@ -251,9 +476,12 @@ fun MainScreen() {
     val taskProjectPath = dialogState.taskProjectPath
     val renameSessionTargetId = dialogState.renameSessionTargetId
     val renameSessionDraft = dialogState.renameSessionDraft
+    val showPendingCrashDialog = dialogState.showPendingCrashDialog
+    val pendingCrashReport = dialogState.pendingCrashReport
     val showExportDialog = dialogState.showExportDialog
     val exportFormat = dialogState.exportFormat
     val pendingExportData = dialogState.pendingExportData
+    val clearPendingCrashAfterExport = dialogState.clearPendingCrashAfterExport
     val shouldShowAppUpdateEntry = appUpdateState.isInstallOrUpdateAvailable &&
         (appUpdateState.forceUpdate || !settingsConfig.isAppUpdateSkipped(appUpdateState.latestVersionCode))
     val shouldShowExtensionUpdateEntry = extensionUpdateState.isInstallOrUpdateAvailable &&
@@ -834,8 +1062,9 @@ fun MainScreen() {
         contract = ActivityResultContracts.CreateDocument("*/*")
     ) { uri ->
         val exportData = pendingExportData
+        val shouldClearPendingCrash = clearPendingCrashAfterExport
         if (uri == null || exportData == null) {
-            dispatchDialogAction(MainScreenDialogAction.ClearPendingExport)
+            dialogState = applyPendingCrashExportCancelledState(dialogState)
             return@rememberLauncherForActivityResult
         }
 
@@ -845,16 +1074,44 @@ fun MainScreen() {
                 writer.write(exportData.content)
             }
         }.onSuccess {
+            if (shouldClearPendingCrash) {
+                pendingCrashStore.clearPendingCrash()
+            }
+            dialogState = applyPendingCrashExportSucceededState(dialogState)
             scope.launch {
                 snackbarHostState.showSnackbar("已导出为 ${exportData.fileName}")
             }
         }.onFailure { error ->
+            dialogState = applyPendingCrashExportFailedState(dialogState)
             scope.launch {
                 snackbarHostState.showSnackbar(error.message ?: "导出失败")
             }
         }
+    }
 
-        dispatchDialogAction(MainScreenDialogAction.ClearPendingExport)
+    fun launchConversationExport(
+        format: ConversationExportFormat,
+        clearPendingCrashAfterExport: Boolean = false
+    ) {
+        chatVm.exportCurrentConversation(format)
+            .onSuccess { exportData ->
+                dispatchDialogAction(
+                    MainScreenDialogAction.PreparePendingExport(
+                        exportData = exportData,
+                        clearPendingCrashAfterExport = clearPendingCrashAfterExport
+                    )
+                )
+                exportConversationLauncher.launch(exportData.fileName)
+            }
+            .onFailure { error ->
+                dialogState = applyPendingCrashExportLaunchFailedState(
+                    state = dialogState,
+                    clearPendingCrashAfterExport = clearPendingCrashAfterExport
+                )
+                scope.launch {
+                    snackbarHostState.showSnackbar(error.message ?: "导出失败")
+                }
+            }
     }
 
     fun openRenameDialog(sessionId: String, title: String) {
@@ -883,6 +1140,11 @@ fun MainScreen() {
                 snackbarHostState.showSnackbar("已选择文件夹，但系统未能解析出绝对路径，可手动调整")
             }
         }
+    }
+
+    LaunchedEffect(pendingCrashStore) {
+        val report = pendingCrashStore.loadPendingCrash() ?: return@LaunchedEffect
+        dispatchDialogAction(MainScreenDialogAction.ShowPendingCrashDialog(report))
     }
 
     @Composable
@@ -925,7 +1187,6 @@ fun MainScreen() {
                         pageOwnsShellState &&
                         page == chatPageIndex &&
                         isChatSessionPanelVisible
-
                     @Composable
                     fun ChatMainPage() {
                         if (shouldRenderFullChat) {
@@ -934,9 +1195,32 @@ fun MainScreen() {
                                 isScreenActive = pageOwnsShellState &&
                                     isChatChromeVisible &&
                                     page == chatPageIndex,
+                                chatRuntimeHostPresentation = chatRuntimeHostPresentation,
+                                onPendingWorkflowPlanInteractionStateChange = { nextState ->
+                                    rawPendingPromptHostInteractionState =
+                                        updatePendingPromptWorkflowPlanInteractionState(
+                                            state = pendingPromptHostInteractionState,
+                                            interactionState = nextState
+                                        )
+                                },
+                                onPendingClarificationInteractionStateChange = { nextState ->
+                                    rawPendingPromptHostInteractionState =
+                                        updatePendingPromptClarificationInteractionState(
+                                            state = pendingPromptHostInteractionState,
+                                            interactionState = nextState
+                                        )
+                                },
+                                onPendingAskInteractionStateChange = { nextState ->
+                                    rawPendingPromptHostInteractionState =
+                                        updatePendingPromptAskInteractionState(
+                                            state = pendingPromptHostInteractionState,
+                                            interactionState = nextState
+                                        )
+                                },
                                 bottomReservedPadding = pageLayoutState.bottomPadding,
                                 multimodalEnabled = settingsConfig.isMultimodalEnabled(),
                                 executionProfileConfig = effectiveChatConfig,
+                                globalApprovalMode = settingsConfig.approvalMode,
                                 projectKnowledgePaths = chatState.projectKnowledgePaths,
                                 onSend = { text, mentions, images, skills ->
                                     chatVm.sendMessage(text, mentions, images, skills)
@@ -979,18 +1263,7 @@ fun MainScreen() {
                                     chatVm.rollbackToUserMessage(messageId)
                                 },
                                 onCompressContext = {
-                                    scope.launch {
-                                        val message = chatVm.compressCurrentContext()
-                                            .fold(
-                                                onSuccess = {
-                                                    "已压缩 ${it.sourceMessageCount} 条历史消息，生成摘要 V${it.version} 后续将基于摘要续聊"
-                                                },
-                                                onFailure = { error ->
-                                                    error.message ?: "上下文压缩失败"
-                                                }
-                                            )
-                                        snackbarHostState.showSnackbar(message)
-                                    }
+                                    chatVm.compressCurrentContext()
                                 },
                                 onGeneratePlan = { input, mentions ->
                                     chatVm.generateWorkflowPlan(input, mentions)
@@ -1013,8 +1286,23 @@ fun MainScreen() {
                                 onDismissAsk = {
                                     chatVm.dismissPendingAsk()
                                 },
+                                onScreenAttached = {
+                                    chatVm.onChatScreenAttached()
+                                },
+                                onScreenActiveStateChanged = { isActive ->
+                                    chatVm.onChatScreenActiveStateChanged(isActive)
+                                },
                                 onSearchFiles = { query ->
                                     chatVm.searchMentionFiles(query)
+                                },
+                                onAcceptArchivedMemoryCandidate = { sessionId, candidateScope ->
+                                    chatVm.acceptArchivedMemoryCandidate(sessionId, candidateScope)
+                                },
+                                onDismissArchivedMemoryCandidate = { sessionId ->
+                                    chatVm.dismissArchivedMemoryCandidate(sessionId)
+                                },
+                                onConsumeArchivedMemoryCandidate = { sessionId ->
+                                    chatVm.consumeArchivedMemoryCandidate(sessionId)
                                 },
                                 onRetrySubagent = { runId ->
                                     chatVm.retrySubagentRun(runId)
@@ -1032,14 +1320,17 @@ fun MainScreen() {
                                         snackbarHostState.showSnackbar(message)
                                     }
                                 },
-                                onRollbackFileCheckpoint = { checkpointId ->
-                                    val message = chatVm.rollbackFileCheckpoint(checkpointId)
+                                onRollbackCheckpoint = { checkpointId, checkpointScope ->
+                                    val message = chatVm.rollbackCheckpoint(
+                                        checkpointId = checkpointId,
+                                        scope = checkpointScope
+                                    )
                                         .fold(
                                             onSuccess = { count ->
-                                                "已按该对话前状态回滚这一批修改，恢复 $count 个文件"
+                                                buildCheckpointRollbackSuccessMessage(checkpointScope, count)
                                             },
                                             onFailure = { error ->
-                                                error.message ?: "回滚文件修改失败"
+                                                error.message ?: "恢复检查点失败"
                                             }
                                         )
                                     scope.launch {
@@ -1233,14 +1524,16 @@ fun MainScreen() {
                         rootStatus = rootStatus,
                         isCheckingRoot = isCheckingRoot,
                         onCheckRoot = { settingsVm.checkRoot() },
-                        pendingApproval = chatState.pendingApproval,
-                        recentApprovals = chatState.recentApprovals,
+                        approvalPresentation = approvalToolsPresentation,
+                        checkpointPresentation = checkpointToolsPresentation,
+                        recentFinalReadinessAudits = chatState.recentFinalReadinessAudits,
                         recentErrors = chatState.recentErrors,
                         recentToolCalls = chatState.recentToolCalls,
-                        checkpoints = chatState.checkpoints,
-                        fileChanges = chatState.fileChanges,
                         onOpenChat = {
                             navigateToTopLevel(Screen.Chat)
+                        },
+                        onOpenApprovalDetail = {
+                            showToolsApprovalDetail = true
                         },
                         onApprovePendingTool = {
                             chatVm.approvePendingTool()
@@ -1248,20 +1541,24 @@ fun MainScreen() {
                         onRejectPendingTool = {
                             chatVm.rejectPendingTool()
                         },
-                        onRollbackFileCheckpoint = { checkpointId ->
-                            val message = chatVm.rollbackFileCheckpoint(checkpointId)
+                        onRollbackCheckpoint = { checkpointId, checkpointScope ->
+                            val message = chatVm.rollbackCheckpoint(
+                                checkpointId = checkpointId,
+                                scope = checkpointScope
+                            )
                                 .fold(
                                     onSuccess = { count ->
-                                        "已按该对话前状态回滚这一批修改，恢复 $count 个文件"
+                                        buildCheckpointRollbackSuccessMessage(checkpointScope, count)
                                     },
                                     onFailure = { error ->
-                                        error.message ?: "回滚文件修改失败"
+                                        error.message ?: "恢复检查点失败"
                                     }
                                 )
                             scope.launch {
                                 snackbarHostState.showSnackbar(message)
                             }
                         },
+                        mcpServers = mcpServers,
                         mcpStatuses = mcpStatuses,
                         mcpConnectError = mcpConnectError,
                         onConnectMcpServers = { settingsVm.connectMcpServers() },
@@ -1292,6 +1589,7 @@ fun MainScreen() {
                             onRefreshProviderBalance = { settingsVm.refreshProviderBalance(it) },
                             supportsBalanceFetch = { settingsVm.supportsBalanceFetch(it) },
                             onAddMcpServer = { settingsVm.addMcpServer(it) },
+                            onImportMcpDrafts = { settingsVm.importMcpServers(it) },
                             onRemoveMcpServer = { settingsVm.removeMcpServer(it) },
                             onConnectMcpServers = { settingsVm.connectMcpServers() },
                             onRefreshMcpStatus = { settingsVm.refreshMcpStatus() },
@@ -1998,31 +2296,102 @@ fun MainScreen() {
                 },
                 onDismiss = { dispatchDialogAction(MainScreenDialogAction.HideExportDialog) },
                 onConfirm = {
-                    chatVm.exportCurrentConversation(exportFormat)
-                        .onSuccess { exportData ->
-                            dispatchDialogAction(
-                                MainScreenDialogAction.PreparePendingExport(exportData)
-                            )
-                            exportConversationLauncher.launch(exportData.fileName)
-                        }
-                        .onFailure { error ->
-                            scope.launch {
-                                snackbarHostState.showSnackbar(error.message ?: "导出失败")
-                            }
-                        }
+                    launchConversationExport(exportFormat)
                     dispatchDialogAction(MainScreenDialogAction.HideExportDialog)
+                }
+            )
+        }
+        if (showPendingCrashDialog && pendingCrashReport != null) {
+            PendingCrashRecoveryDialog(
+                report = pendingCrashReport,
+                onDismiss = {
+                    dispatchDialogAction(MainScreenDialogAction.HidePendingCrashDialog)
+                },
+                onExportDoctorReport = {
+                    dialogState = beginPendingCrashRecoveryExportState(dialogState)
+                    launchConversationExport(
+                        format = ConversationExportFormat.DOCTOR,
+                        clearPendingCrashAfterExport = true
+                    )
                 }
             )
         }
 
         if (visibleScreen !is Screen.Tools) {
-            chatState.pendingApproval?.let { pendingApproval ->
+            if (approvalHostSurface.kind == ApprovalHostSurfaceKind.DIALOG) {
                 ApprovalDialog(
-                    approval = pendingApproval,
+                    presentation = requireNotNull(approvalHostSurface.pendingApproval),
                     onApprove = { chatVm.approvePendingTool() },
                     onReject = { chatVm.rejectPendingTool() }
                 )
             }
+        }
+        if (approvalHostSurface.kind == ApprovalHostSurfaceKind.TOOLS_DETAIL) {
+            ApprovalDetailSheet(
+                presentation = requireNotNull(approvalHostSurface.pendingApproval),
+                onDismiss = { showToolsApprovalDetail = false },
+                onApprove = {
+                    showToolsApprovalDetail = false
+                    chatVm.approvePendingTool()
+                },
+                onReject = {
+                    showToolsApprovalDetail = false
+                    chatVm.rejectPendingTool()
+                }
+            )
+        }
+        if (chatRuntimeHostPresentation.pendingPromptHostPresentation.askHostSurface.kind == AskHostSurfaceKind.DIALOG) {
+            AskUserDialog(
+                presentation = requireNotNull(
+                    chatRuntimeHostPresentation.pendingPromptHostPresentation.askHostSurface.askPresentation
+                ),
+                interactionState = chatRuntimeHostPresentation.pendingPromptHostPresentation.askHostSurface.interactionState,
+                onInteractionStateChange = { nextState ->
+                    rawPendingPromptHostInteractionState =
+                        updatePendingPromptAskInteractionState(
+                            state = pendingPromptHostInteractionState,
+                            interactionState = nextState
+                        )
+                },
+                onSubmit = { answers -> chatVm.submitPendingAskAnswers(answers) },
+                onDismiss = { chatVm.dismissPendingAsk() }
+            )
+        }
+        if (chatRuntimeHostPresentation.pendingPromptHostPresentation.workflowPlanHostSurface.kind == WorkflowPlanHostSurfaceKind.DIALOG) {
+            WorkflowPlanDialog(
+                presentation = requireNotNull(
+                    chatRuntimeHostPresentation.pendingPromptHostPresentation.workflowPlanHostSurface.workflowPlanPresentation
+                ),
+                interactionState = chatRuntimeHostPresentation.pendingPromptHostPresentation.workflowPlanHostSurface.interactionState,
+                onInteractionStateChange = { nextState ->
+                    rawPendingPromptHostInteractionState =
+                        updatePendingPromptWorkflowPlanInteractionState(
+                            state = pendingPromptHostInteractionState,
+                            interactionState = nextState
+                        )
+                },
+                isProcessing = chatState.isProcessing,
+                onExecute = { chatVm.executePendingWorkflowPlan() },
+                onDismiss = { chatVm.dismissPendingWorkflowPlan() }
+            )
+        }
+        if (chatRuntimeHostPresentation.pendingPromptHostPresentation.clarificationHostSurface.kind == ClarificationHostSurfaceKind.DIALOG) {
+            ClarificationDialog(
+                presentation = requireNotNull(
+                    chatRuntimeHostPresentation.pendingPromptHostPresentation.clarificationHostSurface.clarificationPresentation
+                ),
+                interactionState = chatRuntimeHostPresentation.pendingPromptHostPresentation.clarificationHostSurface.interactionState,
+                onInteractionStateChange = { nextState ->
+                    rawPendingPromptHostInteractionState =
+                        updatePendingPromptClarificationInteractionState(
+                            state = pendingPromptHostInteractionState,
+                            interactionState = nextState
+                        )
+                },
+                isProcessing = chatState.isProcessing,
+                onSubmit = { answer -> chatVm.submitClarificationAnswer(answer) },
+                onDismiss = { chatVm.dismissPendingClarification() }
+            )
         }
 
         if (shouldShowUpdateDialog) {
@@ -2112,7 +2481,9 @@ private fun MainScreenUpdateDialog(
                 .padding(16.dp)
         ) {
             Column(
-                modifier = Modifier.padding(18.dp),
+                modifier = Modifier
+                    .verticalScroll(rememberScrollState())
+                    .padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
@@ -2176,6 +2547,82 @@ private fun MainScreenUpdateDialog(
 }
 
 @Composable
+private fun PendingCrashRecoveryDialog(
+    report: PendingCrashReport,
+    onDismiss: () -> Unit,
+    onExportDoctorReport: () -> Unit
+) {
+    MurongDialog(onDismissRequest = onDismiss) {
+        MurongPopupSurface(
+            shape = RoundedCornerShape(28.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "检测到上次崩溃",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "应用发现了上次启动遗留的崩溃记录。你可以先导出脱敏后的 Doctor Report，再继续当前会话。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                MurongGlassSurface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(22.dp),
+                    contentPadding = PaddingValues(14.dp)
+                ) {
+                    Text(
+                        text = "时间：${formatPendingCrashTimestamp(report.timestamp)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "线程：${report.threadName}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "异常：${report.exceptionType}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (report.message.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "消息：${report.message}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("稍后处理")
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(onClick = onExportDoctorReport) {
+                        Text("导出 Doctor Report")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun UpdateDialogEntryCard(
     title: String,
     state: AppUpdateUiState,
@@ -2222,6 +2669,37 @@ private fun UpdateDialogEntryCard(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        val changelog = state.changelog
+            ?.replace("\r\n", "\n")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        changelog?.let { content ->
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                text = "更新日志",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            MurongGlassSurface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                contentPadding = PaddingValues(12.dp)
+            ) {
+                SelectionContainer {
+                    Text(
+                        text = content,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 180.dp)
+                            .verticalScroll(rememberScrollState()),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
         if (state.forceUpdate) {
             Spacer(modifier = Modifier.height(6.dp))
             Text(
@@ -2554,7 +3032,7 @@ private fun ExportConversationDialog(
         }
     ) {
         Text(
-            text = "选择导出格式，首版支持 Markdown 和 JSON。",
+            text = "选择导出格式，当前支持 Markdown、JSON 和脱敏后的 Doctor Report。",
             style = MaterialTheme.typography.bodySmall
         )
         ConversationExportFormat.entries.forEach { format ->
@@ -2581,6 +3059,11 @@ private fun ExportConversationDialog(
             }
         }
     }
+}
+
+private fun formatPendingCrashTimestamp(timestamp: Long): String {
+    return SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+        .format(Date(timestamp))
 }
 
 @Composable
@@ -2693,22 +3176,22 @@ private fun resolveTreeUriToPath(uri: Uri): String? {
 
 @Composable
 private fun ApprovalDialog(
-    approval: PendingApprovalUi,
+    presentation: PendingApprovalPresentation,
     onApprove: () -> Unit,
     onReject: () -> Unit
 ) {
-    val presentation = remember(approval.toolName, approval.summary, approval.detail, approval.rawArgs) {
-        approval.toPendingApprovalPresentation()
-    }
     MainScreenLargeDialog(
         title = "审批请求",
-        subtitle = approval.toolName,
+        subtitle = presentation.toolName,
         onDismissRequest = {},
         actions = {
             TextButton(onClick = onReject) {
                 Text(presentation.rejectLabel)
             }
-            Button(onClick = onApprove) {
+            Button(
+                onClick = onApprove,
+                enabled = presentation.approveEnabled
+            ) {
                 Text(presentation.approveLabel)
             }
         }
@@ -2719,13 +3202,15 @@ private fun ApprovalDialog(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            RiskBadge(approval.riskLevel)
+            presentation.riskLevel?.let { riskLevel ->
+                RiskBadge(riskLevel)
+            }
             Text(
                 text = presentation.headline,
                 style = MaterialTheme.typography.titleSmall
             )
             PendingApprovalSummaryCard(presentation = presentation)
-            approval.explanationLabel?.let { label ->
+            presentation.explanationLabel?.let { label ->
                 Surface(
                     shape = MaterialTheme.shapes.medium,
                     color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
@@ -2740,7 +3225,7 @@ private fun ApprovalDialog(
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary
                         )
-                        approval.explanationDetail?.takeIf { it.isNotBlank() }?.let { detail ->
+                        presentation.explanationDetail?.takeIf { it.isNotBlank() }?.let { detail ->
                             Text(
                                 text = detail,
                                 style = MaterialTheme.typography.bodySmall,
@@ -2766,7 +3251,7 @@ private fun ApprovalDialog(
                     )
                     SelectionContainer {
                         Text(
-                            text = sanitizeForUiDisplay(approval.rawArgs),
+                            text = presentation.rawArgs,
                             style = MaterialTheme.typography.bodySmall,
                             fontFamily = FontFamily.Monospace
                         )

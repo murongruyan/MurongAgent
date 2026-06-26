@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -34,10 +35,12 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -53,25 +56,36 @@ import com.murong.agent.core.config.ToolApprovalMode
 import com.murong.agent.core.config.WorkflowFailureFallbackMode
 import com.murong.agent.core.config.WorkflowFailureType
 import com.murong.agent.core.config.WorkflowExecutionMode
-import com.murong.agent.core.loop.ApprovalRecordUi
-import com.murong.agent.core.loop.ConversationCheckpointUi
+import com.murong.agent.core.config.approvalModeLabel
+import com.murong.agent.core.config.toApprovalModePresentation
+import com.murong.agent.core.loop.ConversationCheckpointScope
+import com.murong.agent.core.loop.CheckpointRecoveryRecordUi
+import com.murong.agent.core.loop.FinalReadinessAuditOverview
+import com.murong.agent.core.loop.FinalReadinessAuditRecord
+import com.murong.agent.core.loop.ErrorRecordKind
 import com.murong.agent.core.loop.ErrorRecordUi
-import com.murong.agent.core.loop.FileChangeRecordUi
-import com.murong.agent.core.loop.PendingApprovalUi
 import com.murong.agent.core.loop.ToolCallRecordUi
+import com.murong.agent.core.loop.buildFinalReadinessAuditOverview
+import com.murong.agent.core.mcp.McpConfigSource
+import com.murong.agent.core.mcp.McpServerConfig
 import com.murong.agent.core.mcp.McpServerStatus
+import com.murong.agent.core.mcp.McpTransportType
 import com.murong.agent.ui.PendingApprovalSummaryCard
 import com.murong.agent.ui.MurongDialog
 import com.murong.agent.ui.MurongGlassSurface
 import com.murong.agent.ui.MurongInfoCard
+import com.murong.agent.ui.MurongInteractionPerformanceHint
 import com.murong.agent.ui.MurongLargeDialogScaffold
 import com.murong.agent.ui.rememberMurongBottomBarScrollPadding
 import com.murong.agent.ui.MurongPopupSurface
 import com.murong.agent.ui.MurongPrimaryPageSurface
-import com.murong.agent.ui.toPendingApprovalPresentation
+import com.murong.agent.ui.buildApprovalModeOptionPresentations
+import com.murong.agent.ui.buildApprovalPostureCopyPresentation
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 
 private data class ToolEntry(
     val name: String,
@@ -80,8 +94,14 @@ private data class ToolEntry(
     val status: String
 )
 
+private data class SkillUsageAuditSummary(
+    val totalCount: Int,
+    val recentSkillTitles: List<String>,
+    val recentTasks: List<String>
+)
+
 @Composable
-fun ToolsScreen(
+internal fun ToolsScreen(
     config: ProviderConfig,
     currentProjectPath: String?,
     projectRuleCount: Int,
@@ -90,16 +110,17 @@ fun ToolsScreen(
     rootStatus: Boolean?,
     isCheckingRoot: Boolean,
     onCheckRoot: () -> Unit,
-    pendingApproval: PendingApprovalUi?,
-    recentApprovals: List<ApprovalRecordUi>,
+    approvalPresentation: ApprovalToolsPresentation,
+    checkpointPresentation: CheckpointToolsPresentation,
+    recentFinalReadinessAudits: List<FinalReadinessAuditRecord>,
     recentErrors: List<ErrorRecordUi>,
     recentToolCalls: List<ToolCallRecordUi>,
-    checkpoints: List<ConversationCheckpointUi>,
-    fileChanges: List<FileChangeRecordUi>,
     onOpenChat: () -> Unit,
+    onOpenApprovalDetail: () -> Unit,
     onApprovePendingTool: () -> Unit,
     onRejectPendingTool: () -> Unit,
-    onRollbackFileCheckpoint: (String) -> Unit,
+    onRollbackCheckpoint: (String, ConversationCheckpointScope) -> Unit,
+    mcpServers: List<McpServerConfig>,
     mcpStatuses: List<McpServerStatus>,
     mcpConnectError: String?,
     onConnectMcpServers: () -> Unit,
@@ -107,18 +128,21 @@ fun ToolsScreen(
     onUpdateConfig: (ProviderConfig) -> Unit
 ) {
     val bottomBarScrollPadding = rememberMurongBottomBarScrollPadding()
-    var showApprovalDetail by remember(pendingApproval?.toolName, pendingApproval?.rawArgs) {
-        mutableStateOf(false)
-    }
+    val toolsListState = rememberLazyListState()
+    MurongInteractionPerformanceHint(active = toolsListState.isScrollInProgress)
+    val pendingApprovalPresentation = approvalPresentation.pendingApproval
     var showApprovalPolicyEditor by remember { mutableStateOf(false) }
     var showWorkflowExecutionEditor by remember { mutableStateOf(false) }
     var showInlineToolAccess by remember { mutableStateOf(false) }
     var showSubagentGroup by remember { mutableStateOf(false) }
-    var selectedCheckpoint by remember { mutableStateOf<ConversationCheckpointUi?>(null) }
-    var selectedRecord by remember { mutableStateOf<FileChangeRecordUi?>(null) }
+    var selectedCheckpointId by remember { mutableStateOf<String?>(null) }
+    var selectedRecordId by remember { mutableStateOf<String?>(null) }
+    var selectedRecoveryId by remember { mutableStateOf<String?>(null) }
     var selectedToolCall by remember { mutableStateOf<ToolCallRecordUi?>(null) }
     var selectedError by remember { mutableStateOf<ErrorRecordUi?>(null) }
+    var selectedMcpServerName by remember { mutableStateOf<String?>(null) }
     val subagentPresetNames = remember { listOf("explore", "research", "review", "security_review") }
+    val mcpConfigsByName = remember(mcpServers) { mcpServers.associateBy { it.name } }
 
     fun updateBuiltinToolEnabled(toolName: String, enabled: Boolean) {
         val updated = config.enabledBuiltinTools.toMutableSet()
@@ -157,7 +181,7 @@ fun ToolsScreen(
     val mcpToolNames = remember(mcpStatuses) {
         mcpStatuses.flatMap { status -> status.toolNames.map { "mcp_$it" } }.distinct().sorted()
     }
-    val builtInTools = remember(config, pendingApproval, fileChanges) {
+    val builtInTools = remember(config, pendingApprovalPresentation, checkpointPresentation.fileChanges) {
         listOf(
             ToolEntry(
                 name = "file",
@@ -165,7 +189,8 @@ fun ToolsScreen(
                 description = "当前开放 ${config.getEnabledFileToolOperations().size}/${DEFAULT_ENABLED_FILE_TOOL_OPERATIONS.size} 个文件操作。",
                 status = when {
                     !config.isBuiltinToolEnabled("file") -> "已禁用"
-                    fileChanges.isNotEmpty() -> "最近改动 ${fileChanges.size}"
+                    checkpointPresentation.fileChanges.isNotEmpty() ->
+                        "最近改动 ${checkpointPresentation.fileChanges.size}"
                     else -> "已启用"
                 }
             ),
@@ -181,7 +206,7 @@ fun ToolsScreen(
                 description = "执行 shell 指令，支持审批拦截。",
                 status = when {
                     !config.isBuiltinToolEnabled("shell") -> "已禁用"
-                    pendingApproval?.toolName == "shell" -> "等待审批"
+                    pendingApprovalPresentation?.toolName == "shell" -> "等待审批"
                     else -> "已启用"
                 }
             ),
@@ -241,6 +266,7 @@ fun ToolsScreen(
         contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
     ) {
         LazyColumn(
+            state = toolsListState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(top = 2.dp, bottom = bottomBarScrollPadding),
             verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -314,13 +340,22 @@ fun ToolsScreen(
                 )
             }
             item {
+                ApprovalPostureCard(
+                    overview = approvalPresentation.postureOverview,
+                )
+            }
+            item {
                 ApprovalCard(
-                    pendingApproval = pendingApproval,
-                    recentApprovals = recentApprovals,
+                    cardPresentation = approvalPresentation.approvalCard,
                     onOpenChat = onOpenChat,
-                    onOpenDetail = { showApprovalDetail = true },
+                    onOpenDetail = onOpenApprovalDetail,
                     onApprove = onApprovePendingTool,
                     onReject = onRejectPendingTool
+                )
+            }
+            item {
+                ProjectApprovalCard(
+                    cardPresentation = approvalPresentation.projectApprovalCard
                 )
             }
             item {
@@ -333,6 +368,7 @@ fun ToolsScreen(
             }
             item {
                 AuditCard(
+                    recentFinalReadinessAudits = recentFinalReadinessAudits,
                     recentToolCalls = recentToolCalls,
                     recentErrors = recentErrors,
                     onOpenToolCall = { selectedToolCall = it },
@@ -341,11 +377,21 @@ fun ToolsScreen(
             }
             item {
                 FileChangeCard(
-                    checkpoints = checkpoints,
-                    fileChanges = fileChanges,
-                    onOpenCheckpoint = { selectedCheckpoint = it },
-                    onOpenRecord = { selectedRecord = it },
-                    onRollbackCheckpoint = onRollbackFileCheckpoint
+                    presentation = checkpointPresentation,
+                    onOpenCheckpoint = { selectedCheckpointId = it },
+                    onOpenRecord = { selectedRecordId = it },
+                    onOpenRecovery = { selectedRecoveryId = it },
+                    onRollbackCheckpoint = onRollbackCheckpoint
+                )
+            }
+            item {
+                McpCard(
+                    mcpServers = mcpServers,
+                    mcpStatuses = mcpStatuses,
+                    mcpConnectError = mcpConnectError,
+                    onConnectMcpServers = onConnectMcpServers,
+                    onRefreshMcpStatus = onRefreshMcpStatus,
+                    onOpenStatus = { selectedMcpServerName = it }
                 )
             }
             item {
@@ -354,20 +400,6 @@ fun ToolsScreen(
         }
     }
 
-    if (showApprovalDetail && pendingApproval != null) {
-        PendingApprovalSheet(
-            approval = pendingApproval,
-            onDismiss = { showApprovalDetail = false },
-            onApprove = {
-                showApprovalDetail = false
-                onApprovePendingTool()
-            },
-            onReject = {
-                showApprovalDetail = false
-                onRejectPendingTool()
-            }
-        )
-    }
     if (showApprovalPolicyEditor) {
         ApprovalPolicyEditorDialog(
             currentMode = config.approvalMode,
@@ -398,26 +430,43 @@ fun ToolsScreen(
             }
         )
     }
-    selectedCheckpoint?.let { checkpoint ->
-        CheckpointDetailSheet(
-            checkpoint = checkpoint,
-            records = fileChanges.filter { it.checkpointId == checkpoint.id },
-            onDismiss = { selectedCheckpoint = null },
-            onRollbackCheckpoint = {
-                selectedCheckpoint = null
-                onRollbackFileCheckpoint(checkpoint.id)
-            },
-            onOpenRecord = { record -> selectedRecord = record }
-        )
-    }
-    selectedRecord?.let { record ->
-        FileChangeDetailSheet(record = record, onDismiss = { selectedRecord = null })
-    }
+    selectedCheckpointId
+        ?.let { checkpointId -> findCheckpointToolPresentation(checkpointPresentation, checkpointId) }
+        ?.let { checkpoint ->
+            CheckpointDetailSheet(
+                checkpoint = checkpoint,
+                records = resolveCheckpointRecordPresentations(checkpointPresentation, checkpoint),
+                onDismiss = { selectedCheckpointId = null },
+                onRollbackCheckpoint = {
+                    selectedCheckpointId = null
+                    onRollbackCheckpoint(checkpoint.id, checkpoint.rollbackScope)
+                },
+                onOpenRecord = { recordId -> selectedRecordId = recordId }
+            )
+        }
+    selectedRecordId
+        ?.let { recordId -> findFileChangeToolPresentation(checkpointPresentation, recordId) }
+        ?.let { record ->
+            FileChangeDetailSheet(record = record, onDismiss = { selectedRecordId = null })
+        }
+    selectedRecoveryId
+        ?.let { recordId -> findCheckpointRecoveryToolPresentation(checkpointPresentation, recordId) }
+        ?.let { record ->
+            RecoveryDetailSheet(record = record, onDismiss = { selectedRecoveryId = null })
+        }
     selectedToolCall?.let { record ->
         ToolCallDetailSheet(record = record, onDismiss = { selectedToolCall = null })
     }
     selectedError?.let { record ->
         ErrorDetailSheet(record = record, onDismiss = { selectedError = null })
+    }
+    selectedMcpServerName?.let { serverName ->
+        McpStatusDetailSheet(
+            serverName = serverName,
+            status = mcpStatuses.firstOrNull { it.name == serverName },
+            config = mcpConfigsByName[serverName],
+            onDismiss = { selectedMcpServerName = null }
+        )
     }
 }
 
@@ -482,7 +531,7 @@ private fun WorkflowCard(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text("执行策略", style = MaterialTheme.typography.titleMedium)
-            KeyValueRow("审批模式", approvalModeLabel(config.approvalMode))
+            KeyValueRow("审批模式", config.approvalMode.approvalModeLabel())
             KeyValueRow("工作流模式", workflowExecutionModeLabel(config.workflowExecutionMode))
             KeyValueRow("发送前自动分流", if (config.autoRouteBeforeExecution) "开启" else "关闭")
             KeyValueRow("失败回退", workflowFailureFallbackModeLabel(config.getFailureFallbackMode()))
@@ -495,9 +544,45 @@ private fun WorkflowCard(
 }
 
 @Composable
+private fun ApprovalPostureCard(
+    overview: ApprovalPostureOverviewPresentation,
+) {
+    ToolsPanelCard {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(overview.sectionTitle, style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = overview.headline,
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Text(
+                text = overview.supportText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            overview.detailRows.forEach { row ->
+                KeyValueRow(row.label, row.value)
+            }
+            overview.secondaryNotes.forEach { note ->
+                Text(
+                    text = note.text,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (note.emphasized) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun ApprovalCard(
-    pendingApproval: PendingApprovalUi?,
-    recentApprovals: List<ApprovalRecordUi>,
+    cardPresentation: ApprovalCardPresentation,
     onOpenChat: () -> Unit,
     onOpenDetail: () -> Unit,
     onApprove: () -> Unit,
@@ -508,25 +593,42 @@ private fun ApprovalCard(
             modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text("审批状态", style = MaterialTheme.typography.titleMedium)
-            if (pendingApproval != null) {
-                Text("等待审批: ${pendingApproval.toolName}", style = MaterialTheme.typography.bodyLarge)
-                Text(pendingApproval.summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(cardPresentation.sectionTitle, style = MaterialTheme.typography.titleMedium)
+            cardPresentation.pendingTitle?.let { pendingTitle ->
+                Text(pendingTitle, style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    cardPresentation.pendingSupportText.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilledTonalButton(onClick = onOpenDetail) { Text("查看详情") }
-                    FilledTonalButton(onClick = onApprove) { Text("批准") }
-                    TextButton(onClick = onReject) { Text("拒绝") }
+                    FilledTonalButton(onClick = onOpenDetail) {
+                        Text(cardPresentation.detailActionLabel.orEmpty())
+                    }
+                    FilledTonalButton(
+                        onClick = onApprove,
+                        enabled = cardPresentation.approveEnabled
+                    ) {
+                        Text(cardPresentation.approveActionLabel.orEmpty())
+                    }
+                    TextButton(onClick = onReject) {
+                        Text(cardPresentation.rejectActionLabel.orEmpty())
+                    }
                 }
-            } else {
-                Text("当前没有待审批工具调用。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } ?: run {
+                Text(
+                    cardPresentation.emptyStateText.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 FilledTonalButton(onClick = onOpenChat) { Text("回到对话") }
             }
-            if (recentApprovals.isNotEmpty()) {
-                Text("最近审批", style = MaterialTheme.typography.labelLarge)
-                recentApprovals.take(3).forEach { record ->
+            cardPresentation.recentApprovalsTitle?.let { recentApprovalsTitle ->
+                Text(recentApprovalsTitle, style = MaterialTheme.typography.labelLarge)
+                cardPresentation.recentApprovalItems.forEach { item ->
                     CompactListRow(
-                        title = "${record.toolName} · ${record.decision}",
-                        subtitle = record.summary
+                        title = item.title,
+                        subtitle = item.subtitle
                     )
                 }
             }
@@ -556,20 +658,109 @@ private fun ProjectPreferenceCard(
 }
 
 @Composable
-private fun AuditCard(
-    recentToolCalls: List<ToolCallRecordUi>,
-    recentErrors: List<ErrorRecordUi>,
-    onOpenToolCall: (ToolCallRecordUi) -> Unit,
-    onOpenError: (ErrorRecordUi) -> Unit
+private fun ProjectApprovalCard(
+    cardPresentation: ProjectApprovalCardPresentation
 ) {
     ToolsPanelCard {
         Column(
             modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            Text(cardPresentation.sectionTitle, style = MaterialTheme.typography.titleMedium)
+            Text(
+                cardPresentation.summaryText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (cardPresentation.emptyStateText != null) {
+                Text(
+                    cardPresentation.emptyStateText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                cardPresentation.items.forEach { item ->
+                    CompactListRow(
+                        title = item.title,
+                        subtitle = item.subtitle
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AuditCard(
+    recentFinalReadinessAudits: List<FinalReadinessAuditRecord>,
+    recentToolCalls: List<ToolCallRecordUi>,
+    recentErrors: List<ErrorRecordUi>,
+    onOpenToolCall: (ToolCallRecordUi) -> Unit,
+    onOpenError: (ErrorRecordUi) -> Unit
+) {
+    val finalReadinessOverview = remember(recentFinalReadinessAudits) {
+        buildFinalReadinessAuditOverview(recentFinalReadinessAudits)
+    }
+    val skillUsageSummary = remember(recentToolCalls) {
+        buildSkillUsageAuditSummary(recentToolCalls)
+    }
+    ToolsPanelCard {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
             Text("工具审计", style = MaterialTheme.typography.titleMedium)
+            KeyValueRow("最终收口审计", "${finalReadinessOverview?.totalCount ?: 0}")
             KeyValueRow("最近工具调用", "${recentToolCalls.size}")
+            KeyValueRow("最近 Skill 调用", "${skillUsageSummary.totalCount}")
             KeyValueRow("最近错误", "${recentErrors.size}")
+            if (skillUsageSummary.recentSkillTitles.isNotEmpty()) {
+                Text(
+                    text = "最近 Skill: ${skillUsageSummary.recentSkillTitles.joinToString("、")}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (skillUsageSummary.recentTasks.isNotEmpty()) {
+                Text(
+                    text = "最近 Skill 任务: ${skillUsageSummary.recentTasks.joinToString("；")}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            finalReadinessOverview?.let { overview ->
+                Text(
+                    text = "最近收口: ${overview.latestStatusSummary}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (overview.currentlyBlocked) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    }
+                )
+                Text(
+                    text = buildFinalReadinessAuditOverviewHeadline(overview),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                buildFinalReadinessAuditOverviewBreakdown(overview)?.let { breakdown ->
+                    Text(
+                        text = breakdown,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            val finalReadinessErrorCount = recentErrors.count { it.kind == ErrorRecordKind.FINAL_READINESS }
+            if (finalReadinessErrorCount > 0) {
+                Text(
+                    text = "其中 $finalReadinessErrorCount 条属于最终收口阻塞，可点开查看具体 receipt 文案。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
             recentToolCalls.take(3).forEach { record ->
                 ClickableListRow(
                     title = "${record.toolName} · ${if (record.isSuccess) "成功" else "失败"}",
@@ -579,7 +770,7 @@ private fun AuditCard(
             }
             recentErrors.take(2).forEach { record ->
                 ClickableListRow(
-                    title = "错误 · ${formatTime(record.timestamp)}",
+                    title = "${errorRecordTypeLabel(record)} · ${formatTime(record.timestamp)}",
                     subtitle = record.message,
                     onClick = { onOpenError(record) }
                 )
@@ -590,11 +781,11 @@ private fun AuditCard(
 
 @Composable
 private fun FileChangeCard(
-    checkpoints: List<ConversationCheckpointUi>,
-    fileChanges: List<FileChangeRecordUi>,
-    onOpenCheckpoint: (ConversationCheckpointUi) -> Unit,
-    onOpenRecord: (FileChangeRecordUi) -> Unit,
-    onRollbackCheckpoint: (String) -> Unit
+    presentation: CheckpointToolsPresentation,
+    onOpenCheckpoint: (String) -> Unit,
+    onOpenRecord: (String) -> Unit,
+    onOpenRecovery: (String) -> Unit,
+    onRollbackCheckpoint: (String, ConversationCheckpointScope) -> Unit
 ) {
     ToolsPanelCard {
         Column(
@@ -602,22 +793,30 @@ private fun FileChangeCard(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text("文件修改", style = MaterialTheme.typography.titleMedium)
-            KeyValueRow("检查点", "${checkpoints.size}")
-            KeyValueRow("文件改动", "${fileChanges.size}")
-            checkpoints.take(3).forEach { checkpoint ->
+            KeyValueRow("检查点", presentation.checkpointCountLabel)
+            KeyValueRow("文件改动", presentation.fileChangeCountLabel)
+            KeyValueRow("最近恢复", presentation.recoveryCountLabel)
+            presentation.recoveries.take(3).forEach { record ->
                 ClickableListRow(
-                    title = checkpoint.summary,
-                    subtitle = "变更 ${checkpoint.changedFiles.size} 个文件 · ${formatTime(checkpoint.createdAt)}",
-                    trailing = "回滚",
-                    onTrailingClick = { onRollbackCheckpoint(checkpoint.id) },
-                    onClick = { onOpenCheckpoint(checkpoint) }
+                    title = record.title,
+                    subtitle = record.subtitle,
+                    onClick = { onOpenRecovery(record.id) }
                 )
             }
-            fileChanges.take(3).forEach { record ->
+            presentation.checkpoints.take(3).forEach { checkpoint ->
                 ClickableListRow(
-                    title = record.operation,
-                    subtitle = record.path,
-                    onClick = { onOpenRecord(record) }
+                    title = checkpoint.title,
+                    subtitle = checkpoint.subtitle,
+                    trailing = checkpoint.rollbackLabel,
+                    onTrailingClick = { onRollbackCheckpoint(checkpoint.id, checkpoint.rollbackScope) },
+                    onClick = { onOpenCheckpoint(checkpoint.id) }
+                )
+            }
+            presentation.fileChanges.take(3).forEach { record ->
+                ClickableListRow(
+                    title = record.title,
+                    subtitle = record.subtitle,
+                    onClick = { onOpenRecord(record.id) }
                 )
             }
         }
@@ -626,12 +825,18 @@ private fun FileChangeCard(
 
 @Composable
 private fun McpCard(
+    mcpServers: List<McpServerConfig>,
     mcpStatuses: List<McpServerStatus>,
     mcpConnectError: String?,
     onConnectMcpServers: () -> Unit,
     onRefreshMcpStatus: () -> Unit,
-    onOpenStatus: (McpServerStatus) -> Unit
+    onOpenStatus: (String) -> Unit
 ) {
+    val configsByName = remember(mcpServers) { mcpServers.associateBy { it.name } }
+    val statusesByName = remember(mcpStatuses) { mcpStatuses.associateBy { it.name } }
+    val serverNames = remember(mcpServers, mcpStatuses) {
+        (mcpServers.map { it.name } + mcpStatuses.map { it.name }).distinct().sorted()
+    }
     ToolsPanelCard {
         Column(
             modifier = Modifier.fillMaxWidth(),
@@ -645,14 +850,16 @@ private fun McpCard(
                 FilledTonalButton(onClick = onConnectMcpServers) { Text("连接") }
                 FilledTonalButton(onClick = onRefreshMcpStatus) { Text("刷新") }
             }
-            if (mcpStatuses.isEmpty()) {
-                Text("暂未连接 MCP 服务器。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (serverNames.isEmpty()) {
+                Text("暂未保存或连接 MCP 服务器。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
-                mcpStatuses.forEach { status ->
+                serverNames.forEach { serverName ->
+                    val status = statusesByName[serverName]
+                    val config = configsByName[serverName]
                     ClickableListRow(
-                        title = "${status.name} · ${if (status.connected) "已连接" else "未连接"}",
-                        subtitle = "工具 ${status.toolCount}${status.error?.let { " · $it" } ?: ""}",
-                        onClick = { onOpenStatus(status) }
+                        title = "$serverName · ${buildMcpToolsConnectionLabel(status, config)}",
+                        subtitle = buildMcpToolsOverview(status, config),
+                        onClick = { onOpenStatus(serverName) }
                     )
                 }
             }
@@ -909,41 +1116,6 @@ private fun ToolsLargeDialog(
 }
 
 @Composable
-private fun PendingApprovalSheet(
-    approval: PendingApprovalUi,
-    onDismiss: () -> Unit,
-    onApprove: () -> Unit,
-    onReject: () -> Unit
-) {
-    val presentation = remember(approval.toolName, approval.summary, approval.detail, approval.rawArgs) {
-        approval.toPendingApprovalPresentation()
-    }
-    ToolsLargeDialog(
-        title = "待审批工具调用",
-        subtitle = approval.toolName,
-        onDismissRequest = onDismiss,
-        actions = {
-            TextButton(onClick = onReject) { Text(presentation.rejectLabel) }
-            TextButton(onClick = onDismiss) { Text("关闭") }
-            FilledTonalButton(onClick = onApprove) { Text(presentation.approveLabel) }
-        }
-    ) {
-        SelectionContainer {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("工具: ${approval.toolName}")
-                Text("摘要: ${presentation.headline}")
-                Text("风险: ${approval.riskLevel}")
-                PendingApprovalSummaryCard(presentation = presentation)
-                approval.explanationLabel?.let { Text("原因: $it") }
-                approval.explanationDetail?.let { Text(it) }
-                Text(presentation.rawArgsLabel, style = MaterialTheme.typography.labelLarge)
-                CodeBlock(approval.rawArgs)
-            }
-        }
-    }
-}
-
-@Composable
 private fun ApprovalPolicyEditorDialog(
     currentMode: ToolApprovalMode,
     onDismiss: () -> Unit,
@@ -958,12 +1130,12 @@ private fun ApprovalPolicyEditorDialog(
             FilledTonalButton(onClick = { onSave(selectedMode) }) { Text("保存") }
         }
     ) {
-        ToolApprovalMode.entries.forEach { mode ->
+        buildApprovalModeOptionPresentations().forEach { optionPresentation ->
             SelectableRow(
-                title = approvalModeLabel(mode),
-                subtitle = approvalModeDescription(mode),
-                selected = selectedMode == mode,
-                onClick = { selectedMode = mode }
+                title = optionPresentation.title,
+                subtitle = optionPresentation.subtitle,
+                selected = selectedMode == optionPresentation.mode,
+                onClick = { selectedMode = optionPresentation.mode ?: currentMode }
             )
         }
     }
@@ -1146,11 +1318,11 @@ private fun ToolAccessEditorDialog(
 
 @Composable
 private fun CheckpointDetailSheet(
-    checkpoint: ConversationCheckpointUi,
-    records: List<FileChangeRecordUi>,
+    checkpoint: CheckpointToolPresentation,
+    records: List<FileChangeToolPresentation>,
     onDismiss: () -> Unit,
     onRollbackCheckpoint: () -> Unit,
-    onOpenRecord: (FileChangeRecordUi) -> Unit
+    onOpenRecord: (String) -> Unit
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -1159,17 +1331,35 @@ private fun CheckpointDetailSheet(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text(checkpoint.summary, style = MaterialTheme.typography.titleMedium)
-            Text("创建时间: ${formatTime(checkpoint.createdAt)}", style = MaterialTheme.typography.bodySmall)
+            Text(checkpoint.detailTitle, style = MaterialTheme.typography.titleMedium)
+            Text(checkpoint.detailSubtitle, style = MaterialTheme.typography.bodySmall)
+            CodeBlock(checkpoint.detailContent)
+            if (checkpoint.changedFiles.isNotEmpty()) {
+                Text(
+                    text = "关联文件",
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
             checkpoint.changedFiles.forEach { path ->
                 Text("• $path", style = MaterialTheme.typography.bodySmall)
             }
-            FilledTonalButton(onClick = onRollbackCheckpoint) { Text("回滚这个检查点") }
+            Text(
+                text = checkpoint.rollbackDescription,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            FilledTonalButton(onClick = onRollbackCheckpoint) { Text(checkpoint.rollbackLabel) }
+            if (records.isNotEmpty()) {
+                Text(
+                    text = "关联记录",
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
             records.forEach { record ->
                 ClickableListRow(
-                    title = record.operation,
-                    subtitle = record.path,
-                    onClick = { onOpenRecord(record) }
+                    title = record.title,
+                    subtitle = record.subtitle,
+                    onClick = { onOpenRecord(record.id) }
                 )
             }
             Spacer(modifier = Modifier.height(12.dp))
@@ -1178,14 +1368,23 @@ private fun CheckpointDetailSheet(
 }
 
 @Composable
-private fun FileChangeDetailSheet(record: FileChangeRecordUi, onDismiss: () -> Unit) {
+private fun FileChangeDetailSheet(record: FileChangeToolPresentation, onDismiss: () -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         DetailSheetContent(
-            title = "${record.operation} · ${record.path}",
-            subtitle = "时间 ${formatTime(record.changedAt)}",
-            content = record.diffPreview.ifBlank {
-                record.afterContent ?: record.beforeContent ?: "没有可展示内容"
-            }
+            title = record.detailTitle,
+            subtitle = record.detailSubtitle,
+            content = record.detailContent
+        )
+    }
+}
+
+@Composable
+private fun RecoveryDetailSheet(record: CheckpointRecoveryToolPresentation, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        DetailSheetContent(
+            title = record.detailTitle,
+            subtitle = record.detailSubtitle,
+            content = record.detailContent
         )
     }
 }
@@ -1211,7 +1410,7 @@ private fun ToolCallDetailSheet(record: ToolCallRecordUi, onDismiss: () -> Unit)
 private fun ErrorDetailSheet(record: ErrorRecordUi, onDismiss: () -> Unit) {
     ToolsPopupDialog(
         title = "错误详情",
-        subtitle = formatTime(record.timestamp),
+        subtitle = "${errorRecordTypeLabel(record)} · ${formatTime(record.timestamp)}",
         onDismissRequest = onDismiss,
         actions = {
             TextButton(onClick = onDismiss) { Text("关闭") }
@@ -1226,24 +1425,101 @@ private fun ErrorDetailSheet(record: ErrorRecordUi, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun McpStatusDetailSheet(status: McpServerStatus, onDismiss: () -> Unit) {
+private fun McpStatusDetailSheet(
+    serverName: String,
+    status: McpServerStatus?,
+    config: McpServerConfig?,
+    onDismiss: () -> Unit
+) {
     ToolsPopupDialog(
         title = "MCP 状态",
-        subtitle = status.name,
+        subtitle = serverName,
         onDismissRequest = onDismiss,
         actions = {
             TextButton(onClick = onDismiss) { Text("关闭") }
         }
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("连接状态: ${if (status.connected) "已连接" else "未连接"}")
-            Text("工具数量: ${status.toolCount}")
-            status.error?.let { Text("错误: $it", color = MaterialTheme.colorScheme.error) }
-            if (status.toolNames.isNotEmpty()) {
+            buildMcpDetailFacts(status, config).forEach { fact ->
+                val isErrorLine = fact.startsWith("失败信息:") || fact.startsWith("最近错误:")
+                Text(
+                    text = fact,
+                    color = if (isErrorLine) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                )
+            }
+            if (status?.toolNames?.isNotEmpty() == true) {
                 Text("工具列表", style = MaterialTheme.typography.labelLarge)
                 status.toolNames.forEach { Text("• $it") }
             }
         }
+    }
+}
+
+internal fun buildMcpToolsConnectionLabel(
+    status: McpServerStatus?,
+    config: McpServerConfig?
+): String {
+    return when {
+        status?.connected == true -> "已连接"
+        config != null -> "未连接"
+        else -> "未知"
+    }
+}
+
+internal fun buildMcpToolsOverview(
+    status: McpServerStatus?,
+    config: McpServerConfig?
+): String {
+    return buildList {
+        add("工具 ${status?.toolCount ?: 0}")
+        config?.let {
+            add("来源 ${formatMcpSourceLabel(it.source)}")
+            if (it.trustedReadOnlyTools.isNotEmpty()) add("ro ${it.trustedReadOnlyTools.size}")
+            if (!it.autoStart) add("手动连接")
+        }
+        status?.failureRecord?.let { add("${it.stage.name.lowercase(Locale.ROOT)} 失败") }
+            ?: status?.error?.takeIf { it.isNotBlank() }?.let { add(it) }
+    }.joinToString(" · ")
+}
+
+internal fun buildMcpDetailFacts(
+    status: McpServerStatus?,
+    config: McpServerConfig?
+): List<String> {
+    return buildList {
+        add("连接状态: ${buildMcpToolsConnectionLabel(status, config)}")
+        add("工具数量: ${status?.toolCount ?: 0}")
+        if (config != null) {
+            add("配置来源: ${formatMcpSourceLabel(config.source)}")
+            if (config.sourcePath.isNotBlank()) add("来源路径: ${config.sourcePath}")
+            add("自动连接: ${if (config.autoStart) "是" else "否"}")
+            add("可信只读: ${config.trustedReadOnlyTools.size} 个")
+            add("传输类型: ${formatMcpTransportLabel(config.transport)}")
+        } else {
+            add("配置来源: 未保存")
+        }
+        status?.failureRecord?.let { failure ->
+            add("失败阶段: ${failure.stage.name.lowercase(Locale.ROOT)}")
+            failure.transport?.let { add("失败传输: ${formatMcpTransportLabel(it)}") }
+            add("可重试: ${if (failure.retryable) "是" else "否"}")
+            add("失败信息: ${failure.message}")
+        } ?: status?.error?.takeIf { it.isNotBlank() }?.let { add("最近错误: $it") }
+    }
+}
+
+private fun formatMcpSourceLabel(source: McpConfigSource): String {
+    return when (source) {
+        McpConfigSource.MANUAL -> "manual"
+        McpConfigSource.IMPORTED_DRAFT -> "draft"
+        McpConfigSource.MCP_JSON -> ".mcp.json"
+    }
+}
+
+private fun formatMcpTransportLabel(transport: McpTransportType): String {
+    return when (transport) {
+        McpTransportType.STDIO -> "stdio"
+        McpTransportType.SSE -> "SSE"
+        McpTransportType.STREAMABLE_HTTP -> "streamable-http"
     }
 }
 
@@ -1400,6 +1676,24 @@ private fun ClickableListRow(
     }
 }
 
+private fun buildSkillUsageAuditSummary(
+    recentToolCalls: List<ToolCallRecordUi>
+): SkillUsageAuditSummary {
+    val skillPayloads = recentToolCalls.asSequence()
+        .filter { it.isSuccess }
+        .mapNotNull { it.structuredPayload?.skill }
+        .toList()
+    return SkillUsageAuditSummary(
+        totalCount = skillPayloads.size,
+        recentSkillTitles = skillPayloads.mapNotNull { payload ->
+            payload.skillTitle?.trim()?.takeIf { it.isNotBlank() }
+        }.distinct().take(3),
+        recentTasks = skillPayloads.mapNotNull { payload ->
+            payload.task?.trim()?.takeIf { it.isNotBlank() }
+        }.distinct().take(2)
+    )
+}
+
 @Composable
 private fun SelectableRow(
     title: String,
@@ -1508,24 +1802,6 @@ private fun builtInToolCatalog(): List<ToolEntry> {
     )
 }
 
-private fun approvalModeLabel(mode: ToolApprovalMode): String {
-    return when (mode) {
-        ToolApprovalMode.READ_ONLY -> "只读模式"
-        ToolApprovalMode.ALL_APPROVAL -> "全部审批"
-        ToolApprovalMode.WHITELIST_AUTO -> "白名单自动通过"
-        ToolApprovalMode.ALL_AUTO -> "全部自动通过"
-    }
-}
-
-private fun approvalModeDescription(mode: ToolApprovalMode): String {
-    return when (mode) {
-        ToolApprovalMode.READ_ONLY -> "仅允许只读类能力自动运行，写入和执行类操作会被明显收紧。"
-        ToolApprovalMode.ALL_APPROVAL -> "所有工具调用都需要你显式确认后才会继续。"
-        ToolApprovalMode.WHITELIST_AUTO -> "命中白名单的操作可自动通过，其余请求仍然审批。"
-        ToolApprovalMode.ALL_AUTO -> "默认不再弹审批，适合你完全信任当前任务时使用。"
-    }
-}
-
 private fun workflowExecutionModeLabel(mode: WorkflowExecutionMode): String {
     return when (mode) {
         WorkflowExecutionMode.SINGLE_PASS -> "单次工作流优先"
@@ -1626,4 +1902,31 @@ private fun fileOperationDescription(operation: String): String {
 
 private fun formatTime(timestamp: Long): String {
     return SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
+}
+
+internal fun errorRecordTypeLabel(record: ErrorRecordUi): String {
+    return when (record.kind) {
+        ErrorRecordKind.FINAL_READINESS -> "最终收口阻塞"
+        ErrorRecordKind.GENERAL -> "错误"
+    }
+}
+
+internal fun buildFinalReadinessAuditOverviewHeadline(
+    overview: FinalReadinessAuditOverview
+): String {
+    return "阻塞 ${overview.blockedCount} · 恢复 ${overview.recoveredCount} · 允许 ${overview.allowedCount}"
+}
+
+internal fun buildFinalReadinessAuditOverviewBreakdown(
+    overview: FinalReadinessAuditOverview
+): String? {
+    val parts = buildList {
+        if (overview.writeSignOffBlockCount > 0) {
+            add("写后待签收 ${overview.writeSignOffBlockCount}")
+        }
+        if (overview.canonicalWorkflowBlockCount > 0) {
+            add("计划未收口 ${overview.canonicalWorkflowBlockCount}")
+        }
+    }
+    return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
 }

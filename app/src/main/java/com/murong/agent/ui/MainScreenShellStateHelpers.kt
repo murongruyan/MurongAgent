@@ -1,5 +1,6 @@
 package com.murong.agent.ui
 
+import com.murong.agent.core.doctor.PendingCrashReport
 import com.murong.agent.core.loop.ConversationExportData
 import com.murong.agent.core.loop.ConversationExportFormat
 import com.murong.agent.core.loop.UsageSummarySnapshot
@@ -126,9 +127,12 @@ internal data class MainScreenDialogState(
     val taskDialogAppliesToCurrentSession: Boolean = false,
     val renameSessionTargetId: String? = null,
     val renameSessionDraft: String = "",
+    val showPendingCrashDialog: Boolean = false,
+    val pendingCrashReport: PendingCrashReport? = null,
     val showExportDialog: Boolean = false,
     val exportFormat: ConversationExportFormat = ConversationExportFormat.MARKDOWN,
-    val pendingExportData: ConversationExportData? = null
+    val pendingExportData: ConversationExportData? = null,
+    val clearPendingCrashAfterExport: Boolean = false
 )
 
 internal data class MainScreenSettingsState(
@@ -172,12 +176,20 @@ internal sealed interface MainScreenDialogAction {
     data class OpenRenameDialog(val sessionId: String, val title: String) : MainScreenDialogAction
     data class UpdateRenameDraft(val draft: String) : MainScreenDialogAction
     data object CloseRenameDialog : MainScreenDialogAction
+    data class ShowPendingCrashDialog(
+        val report: PendingCrashReport
+    ) : MainScreenDialogAction
+    data object HidePendingCrashDialog : MainScreenDialogAction
+    data object ClearPendingCrashDialog : MainScreenDialogAction
     data class ShowExportDialog(
         val format: ConversationExportFormat = ConversationExportFormat.MARKDOWN
     ) : MainScreenDialogAction
     data object HideExportDialog : MainScreenDialogAction
     data class SelectExportFormat(val format: ConversationExportFormat) : MainScreenDialogAction
-    data class PreparePendingExport(val exportData: ConversationExportData) : MainScreenDialogAction
+    data class PreparePendingExport(
+        val exportData: ConversationExportData,
+        val clearPendingCrashAfterExport: Boolean = false
+    ) : MainScreenDialogAction
     data object ClearPendingExport : MainScreenDialogAction
 }
 
@@ -552,6 +564,21 @@ internal fun reduceMainScreenDialogState(
         MainScreenDialogAction.CloseRenameDialog -> {
             state.copy(renameSessionTargetId = null)
         }
+        is MainScreenDialogAction.ShowPendingCrashDialog -> {
+            state.copy(
+                showPendingCrashDialog = true,
+                pendingCrashReport = action.report
+            )
+        }
+        MainScreenDialogAction.HidePendingCrashDialog -> {
+            state.copy(showPendingCrashDialog = false)
+        }
+        MainScreenDialogAction.ClearPendingCrashDialog -> {
+            state.copy(
+                showPendingCrashDialog = false,
+                pendingCrashReport = null
+            )
+        }
         is MainScreenDialogAction.ShowExportDialog -> {
             state.copy(showExportDialog = true, exportFormat = action.format)
         }
@@ -562,12 +589,92 @@ internal fun reduceMainScreenDialogState(
             state.copy(exportFormat = action.format)
         }
         is MainScreenDialogAction.PreparePendingExport -> {
-            state.copy(pendingExportData = action.exportData)
+            state.copy(
+                pendingExportData = action.exportData,
+                clearPendingCrashAfterExport = action.clearPendingCrashAfterExport
+            )
         }
         MainScreenDialogAction.ClearPendingExport -> {
-            state.copy(pendingExportData = null)
+            state.copy(
+                pendingExportData = null,
+                clearPendingCrashAfterExport = false
+            )
         }
     }
+}
+
+internal fun applyPendingCrashExportCancelledState(
+    state: MainScreenDialogState
+): MainScreenDialogState {
+    val clearedState = reduceMainScreenDialogState(
+        state = state,
+        action = MainScreenDialogAction.ClearPendingExport
+    )
+    return if (state.clearPendingCrashAfterExport && state.pendingCrashReport != null) {
+        reduceMainScreenDialogState(
+            state = clearedState,
+            action = MainScreenDialogAction.ShowPendingCrashDialog(state.pendingCrashReport)
+        )
+    } else {
+        clearedState
+    }
+}
+
+internal fun applyPendingCrashExportFailedState(
+    state: MainScreenDialogState
+): MainScreenDialogState {
+    val restoredState = if (state.clearPendingCrashAfterExport && state.pendingCrashReport != null) {
+        reduceMainScreenDialogState(
+            state = state,
+            action = MainScreenDialogAction.ShowPendingCrashDialog(state.pendingCrashReport)
+        )
+    } else {
+        state
+    }
+    return reduceMainScreenDialogState(
+        state = restoredState,
+        action = MainScreenDialogAction.ClearPendingExport
+    )
+}
+
+internal fun beginPendingCrashRecoveryExportState(
+    state: MainScreenDialogState
+): MainScreenDialogState {
+    return reduceMainScreenDialogState(
+        state = state,
+        action = MainScreenDialogAction.HidePendingCrashDialog
+    )
+}
+
+internal fun applyPendingCrashExportLaunchFailedState(
+    state: MainScreenDialogState,
+    clearPendingCrashAfterExport: Boolean
+): MainScreenDialogState {
+    return if (clearPendingCrashAfterExport && state.pendingCrashReport != null) {
+        reduceMainScreenDialogState(
+            state = state,
+            action = MainScreenDialogAction.ShowPendingCrashDialog(state.pendingCrashReport)
+        )
+    } else {
+        state
+    }
+}
+
+internal fun applyPendingCrashExportSucceededState(
+    state: MainScreenDialogState
+): MainScreenDialogState {
+    val clearedCrashState = if (state.clearPendingCrashAfterExport) {
+        reduceMainScreenDialogState(
+            state = state,
+            action = MainScreenDialogAction.ClearPendingCrashDialog
+        )
+    } else {
+        state
+    }
+    return reduceMainScreenDialogState(
+        state = clearedCrashState,
+        action = MainScreenDialogAction.ClearPendingExport
+    )
 }
 
 internal fun reduceMainScreenSettingsState(

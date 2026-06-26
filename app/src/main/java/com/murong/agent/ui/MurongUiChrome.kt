@@ -8,6 +8,9 @@ import android.graphics.BitmapFactory
 import android.graphics.RenderEffect as AndroidRenderEffect
 import android.graphics.Shader
 import android.os.Build
+import android.os.PerformanceHintManager
+import android.os.Process
+import android.os.SystemClock
 import android.view.WindowManager
 import android.graphics.Color as AndroidColor
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -57,6 +60,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -69,6 +73,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -89,7 +94,10 @@ import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -133,6 +141,133 @@ private const val KEY_CUSTOM_BACKGROUND_URI = "custom_background_uri"
 private const val KEY_BACKGROUND_BLUR_RADIUS = "background_blur_radius"
 private const val KEY_FONT_SCALE = "font_scale"
 private const val KEY_UI_SCALE = "ui_scale"
+private const val MURONG_INTERACTION_TARGET_FRAME_RATE = 120L
+private const val NANOS_PER_SECOND = 1_000_000_000L
+private const val MURONG_CPU_PULSE_WARMUP_WINDOW_MS = 260L
+private const val MURONG_CPU_PULSE_MAINTAIN_WINDOW_MS = 180L
+private const val MURONG_CPU_PULSE_WARMUP_SLICE_MS = 18L
+private const val MURONG_CPU_PULSE_MAINTAIN_SLICE_MS = 8L
+private const val MURONG_CPU_PULSE_IDLE_SLEEP_MS = 6L
+@Volatile
+private var murongInteractionCpuPulseSink = 0L
+
+private fun runMurongCpuPulseSlice(durationMs: Long) {
+    val durationNanos = durationMs.coerceAtLeast(1L) * 1_000_000L
+    val start = System.nanoTime()
+    var sink = murongInteractionCpuPulseSink xor start
+    while (System.nanoTime() - start < durationNanos) {
+        sink = sink xor (sink shl 13)
+        sink = sink xor (sink ushr 7)
+        sink = sink xor (sink shl 17)
+        sink += System.nanoTime()
+    }
+    murongInteractionCpuPulseSink = sink
+}
+
+private object MurongInteractionCpuBooster {
+    private val lock = Object()
+    @Volatile
+    private var started = false
+    @Volatile
+    private var activeUntilUptimeMs = 0L
+    @Volatile
+    private var warmupUntilUptimeMs = 0L
+
+    fun boost(warmup: Boolean) {
+        val now = SystemClock.uptimeMillis()
+        synchronized(lock) {
+            val maintainUntil = now + MURONG_CPU_PULSE_MAINTAIN_WINDOW_MS
+            if (maintainUntil > activeUntilUptimeMs) {
+                activeUntilUptimeMs = maintainUntil
+            }
+            if (warmup) {
+                val warmupUntil = now + MURONG_CPU_PULSE_WARMUP_WINDOW_MS
+                if (warmupUntil > warmupUntilUptimeMs) {
+                    warmupUntilUptimeMs = warmupUntil
+                }
+            }
+            if (!started) {
+                started = true
+                Thread(
+                    {
+                        runCatching {
+                            Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
+                        }
+                        while (true) {
+                            val nowMs = SystemClock.uptimeMillis()
+                            val activeUntil = activeUntilUptimeMs
+                            if (nowMs >= activeUntil) {
+                                synchronized(lock) {
+                                    if (SystemClock.uptimeMillis() >= activeUntilUptimeMs) {
+                                        lock.wait(64L)
+                                    }
+                                }
+                                continue
+                            }
+                            val inWarmup = nowMs < warmupUntilUptimeMs
+                            runMurongCpuPulseSlice(
+                                if (inWarmup) {
+                                    MURONG_CPU_PULSE_WARMUP_SLICE_MS
+                                } else {
+                                    MURONG_CPU_PULSE_MAINTAIN_SLICE_MS
+                                }
+                            )
+                            Thread.sleep(MURONG_CPU_PULSE_IDLE_SLEEP_MS)
+                        }
+                    },
+                    "MurongInteractionBooster"
+                ).apply {
+                    isDaemon = true
+                    start()
+                }
+            }
+            lock.notifyAll()
+        }
+    }
+}
+
+@Composable
+fun MurongInteractionPerformanceHint(
+    active: Boolean,
+    targetFrameRate: Long = MURONG_INTERACTION_TARGET_FRAME_RATE
+) {
+    val context = LocalContext.current
+    val targetWorkDurationNanos = remember(targetFrameRate) {
+        (NANOS_PER_SECOND / targetFrameRate.coerceAtLeast(1L)).coerceAtLeast(1L)
+    }
+    LaunchedEffect(context, active, targetWorkDurationNanos) {
+        if (!active) return@LaunchedEffect
+        val hintManager = context.getSystemService(PerformanceHintManager::class.java)
+            ?: return@LaunchedEffect
+        val session = runCatching {
+            hintManager.createHintSession(
+                intArrayOf(Process.myTid()),
+                targetWorkDurationNanos
+            )
+        }.getOrNull() ?: return@LaunchedEffect
+        session.updateTargetWorkDuration(targetWorkDurationNanos)
+        var previousFrameNanos = withFrameNanos { it }
+        try {
+            while (currentCoroutineContext().isActive) {
+                val frameNanos = withFrameNanos { it }
+                session.reportActualWorkDuration(
+                    (frameNanos - previousFrameNanos).coerceAtLeast(1L)
+                )
+                previousFrameNanos = frameNanos
+            }
+        } finally {
+            session.close()
+        }
+    }
+    LaunchedEffect(active) {
+        if (!active) return@LaunchedEffect
+        MurongInteractionCpuBooster.boost(warmup = true)
+        while (currentCoroutineContext().isActive) {
+            delay(48L)
+            MurongInteractionCpuBooster.boost(warmup = false)
+        }
+    }
+}
 
 private val AccentPresets = listOf(
     MurongAccentPreset("樱粉", Color(0xFFF663A6)),
@@ -576,11 +711,13 @@ fun rememberMurongSurfaceTokens(): MurongSurfaceTokens {
     } else {
         0
     }
+    // List cards keep the glass tint but skip live blur to protect scroll performance.
+    val cardBlurRadius = 0
     val popupBlurRadius = sharedBlurRadius
     val secondaryPageBlurRadius = 0
     val cardGlassColor = rememberMurongGlassColor(
         baseColor = surfaceSeed,
-        blurRadius = sharedBlurRadius,
+        blurRadius = cardBlurRadius,
         darkMode = darkMode
     )
     val bottomBarBase = when (ui.backgroundMode) {
@@ -620,10 +757,10 @@ fun rememberMurongSurfaceTokens(): MurongSurfaceTokens {
         cardGlassColor = cardGlassColor,
         cardContainerColor = murongGlassContainerColor(
             glassColor = cardGlassColor,
-            blurRadius = sharedBlurRadius,
+            blurRadius = cardBlurRadius,
             darkMode = darkMode
         ),
-        cardBlurRadius = sharedBlurRadius,
+        cardBlurRadius = cardBlurRadius,
         bottomBarGlassColor = bottomBarGlassColor,
         bottomBarContainerColor = murongGlassContainerColor(
             glassColor = bottomBarGlassColor,
@@ -945,11 +1082,7 @@ fun MurongGlassSurface(
     val ui = LocalMurongUiController.current
     val hazeState = LocalMurongHazeState.current
     val isGlassStyle = ui.themeStyle == MurongThemeStyle.GLASS
-    val effectiveBlurRadius = if (isGlassStyle && tokens.cardBlurRadius <= 0) {
-        24
-    } else {
-        tokens.cardBlurRadius
-    }
+    val effectiveBlurRadius = tokens.cardBlurRadius
     val surfaceColor = surfaceColorOverride ?: tokens.cardContainerColor
     val borderColor = tokens.accent.copy(alpha = 0.18f)
     Surface(
@@ -1283,13 +1416,32 @@ fun MurongPrimaryPageSurface(
     val tokens = rememberMurongSurfaceTokens()
     val ui = LocalMurongUiController.current
     val darkMode = murongIsDarkColor(MaterialTheme.colorScheme.background)
+    var touchBoostActive by remember { mutableStateOf(false) }
     val containerColor = if (ui.themeStyle == MurongThemeStyle.GLASS) {
         Color.Transparent
     } else {
         tokens.secondaryPageContainerColor.copy(alpha = if (darkMode) 0.98f else 0.94f)
     }
+    MurongInteractionPerformanceHint(active = touchBoostActive)
     Surface(
-        modifier = modifier.clip(shape),
+        modifier = modifier
+            .clip(shape)
+            .pointerInput(Unit) {
+                try {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(pass = PointerEventPass.Initial)
+                            val isPressed = event.changes.any { it.pressed }
+                            if (isPressed && !touchBoostActive) {
+                                MurongInteractionCpuBooster.boost(warmup = true)
+                            }
+                            touchBoostActive = isPressed
+                        }
+                    }
+                } finally {
+                    touchBoostActive = false
+                }
+            },
         shape = shape,
         color = containerColor,
         border = null,

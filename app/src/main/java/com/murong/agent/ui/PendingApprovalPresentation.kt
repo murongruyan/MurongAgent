@@ -10,20 +10,28 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.murong.agent.core.loop.PendingApprovalHostTelemetry
+import com.murong.agent.core.loop.PendingApprovalDetailTelemetry
 import com.murong.agent.core.loop.PendingApprovalUi
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import com.murong.agent.core.loop.PendingApprovalRowTelemetry
+import com.murong.agent.core.loop.resolvePendingApprovalHostTelemetry
+import com.murong.agent.core.loop.resolvePendingApprovalDetailTelemetry
+import com.murong.agent.core.tool.ApprovalRiskLevel
 
 internal data class PendingApprovalPresentation(
+    val toolName: String = "",
     val headline: String,
     val supportText: String?,
     val rows: List<Pair<String, String>>,
     val rawArgsLabel: String,
     val approveLabel: String,
-    val rejectLabel: String
+    val rejectLabel: String,
+    val rawArgs: String = "",
+    val approveEnabled: Boolean = false,
+    val riskLevel: ApprovalRiskLevel? = null,
+    val replayNotice: String? = null,
+    val explanationLabel: String? = null,
+    val explanationDetail: String? = null
 )
 
 @Composable
@@ -67,85 +75,51 @@ internal fun PendingApprovalSummaryCard(
 }
 
 internal fun PendingApprovalUi.toPendingApprovalPresentation(): PendingApprovalPresentation {
-    if (!isGitHubPendingApproval()) {
-        return PendingApprovalPresentation(
-            headline = sanitizeForUiDisplay(summary),
-            supportText = detail.takeIf { it.isNotBlank() }?.let(::sanitizeForUiDisplay),
-            rows = emptyList(),
-            rawArgsLabel = "参数",
-            approveLabel = "允许",
-            rejectLabel = "拒绝"
-        )
-    }
+    return resolvePendingApprovalHostTelemetry(this).toPendingApprovalPresentation()
+}
 
-    val normalizedToolName = toolName.removePrefix("mcp_")
-    val argsObject = parsePendingApprovalArgs(rawArgs)
-    val actionLabel = gitHubActionLabel(normalizedToolName)
-    val owner = argsObject?.get("owner")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-    val repo = argsObject?.get("repo")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-    val repoName = argsObject?.get("name")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-    val branch = argsObject?.get("branch")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-    val path = argsObject?.get("path")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-    val issueNumber = argsObject?.get("issue_number")?.jsonPrimitive?.intOrNull
-    val pullNumber = argsObject?.get("pull_number")?.jsonPrimitive?.intOrNull
-
-    val rows = buildList {
-        add("操作" to actionLabel)
-        when {
-            owner.isNotBlank() && repo.isNotBlank() -> add("仓库" to "$owner/$repo")
-            owner.isNotBlank() -> add("所有者" to owner)
-        }
-        if (repoName.isNotBlank() && repo.isBlank()) {
-            add("仓库名" to repoName)
-        }
-        if (branch.isNotBlank()) {
-            add("分支" to branch)
-        }
-        if (path.isNotBlank()) {
-            add("文件" to path)
-        }
-        if (pullNumber != null) {
-            add("Pull Request" to "#$pullNumber")
-        }
-        if (issueNumber != null) {
-            add("Issue" to "#$issueNumber")
-        }
-    }
-
-    return PendingApprovalPresentation(
-        headline = "GitHub 远端写操作",
-        supportText = "批准后才会真正修改远端 GitHub 资源；当前展示的是本次要操作的目标。",
-        rows = rows,
-        rawArgsLabel = "原始参数 (JSON)",
-        approveLabel = "允许写入 GitHub",
-        rejectLabel = "拒绝远端修改"
+internal fun PendingApprovalHostTelemetry.toPendingApprovalPresentation(): PendingApprovalPresentation {
+    return detailTelemetry.toPendingApprovalPresentation(
+        toolName = toolName,
+        rawArgs = rawArgs,
+        approveEnabled = approveEnabled,
+        riskLevel = riskLevel,
+        replayNotice = replayNotice,
+        explanationLabel = explanationLabel,
+        explanationDetail = explanationDetail
     )
 }
 
-private fun PendingApprovalUi.isGitHubPendingApproval(): Boolean {
-    return toolName.contains("github", ignoreCase = true) ||
-        summary.contains("GitHub", ignoreCase = true) ||
-        detail.contains("MCP/GitHub", ignoreCase = true)
+internal fun PendingApprovalDetailTelemetry.toPendingApprovalPresentation(): PendingApprovalPresentation {
+    return toPendingApprovalPresentation(toolName = "")
 }
 
-private fun parsePendingApprovalArgs(rawArgs: String) = runCatching {
-    Json.parseToJsonElement(rawArgs).jsonObject
-}.getOrNull()
+private fun PendingApprovalDetailTelemetry.toPendingApprovalPresentation(
+    toolName: String,
+    rawArgs: String = "",
+    approveEnabled: Boolean = false,
+    riskLevel: ApprovalRiskLevel? = null,
+    replayNotice: String? = null,
+    explanationLabel: String? = null,
+    explanationDetail: String? = null
+): PendingApprovalPresentation {
+    return PendingApprovalPresentation(
+        toolName = sanitizeForUiDisplay(toolName),
+        headline = sanitizeForUiDisplay(headline),
+        supportText = supportText?.takeIf { it.isNotBlank() }?.let(::sanitizeForUiDisplay),
+        rows = rows.map(PendingApprovalRowTelemetry::toUiRow),
+        rawArgsLabel = sanitizeForUiDisplay(rawArgsLabel),
+        approveLabel = sanitizeForUiDisplay(approveLabel),
+        rejectLabel = sanitizeForUiDisplay(rejectLabel),
+        rawArgs = sanitizeForUiDisplay(rawArgs),
+        approveEnabled = approveEnabled,
+        riskLevel = riskLevel,
+        replayNotice = replayNotice?.let(::sanitizeForUiDisplay),
+        explanationLabel = explanationLabel?.let(::sanitizeForUiDisplay),
+        explanationDetail = explanationDetail?.let(::sanitizeForUiDisplay)
+    )
+}
 
-private fun gitHubActionLabel(toolName: String): String {
-    return when (toolName.lowercase()) {
-        "create_repository" -> "创建仓库"
-        "create_branch" -> "创建分支"
-        "create_issue" -> "创建 Issue"
-        "create_pull_request" -> "创建 Pull Request"
-        "create_pull_request_review" -> "提交 Pull Request Review"
-        "create_or_update_file" -> "写入远端文件"
-        "push_files" -> "批量推送文件"
-        "update_issue" -> "更新 Issue"
-        "add_issue_comment" -> "添加 Issue 评论"
-        "merge_pull_request" -> "合并 Pull Request"
-        "update_pull_request_branch" -> "更新 Pull Request 分支"
-        "fork_repository" -> "Fork 仓库"
-        else -> "执行 GitHub 写操作"
-    }
+private fun PendingApprovalRowTelemetry.toUiRow(): Pair<String, String> {
+    return sanitizeForUiDisplay(label) to sanitizeForUiDisplay(value)
 }

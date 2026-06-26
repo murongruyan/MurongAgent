@@ -60,6 +60,7 @@ data class AppUpdateUiState(
     val downloadUrl: String? = null,
     val directDownloadUrl: String? = null,
     val updateMessage: String? = null,
+    val changelog: String? = null,
     val publishedAt: String? = null,
     val forceUpdate: Boolean = false,
     val message: String? = null,
@@ -215,6 +216,35 @@ class SettingsViewModel @Inject constructor(
         mcpRegistry.saveConfigs(updated)
     }
 
+    fun importMcpServers(configs: List<McpServerConfig>) {
+        if (configs.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val updated = _mcpServers.value.toMutableList()
+            configs.forEach { config ->
+                val idx = updated.indexOfFirst { it.name == config.name }
+                if (idx >= 0) updated[idx] = config else updated.add(config)
+            }
+            _mcpServers.value = updated
+            mcpRegistry.saveConfigs(updated)
+
+            val autoStartNames = configs
+                .asSequence()
+                .filter { it.enabled && it.autoStart }
+                .map { it.name }
+                .toSet()
+
+            if (autoStartNames.isNotEmpty()) {
+                runCatching { mcpRegistry.connectAll(updated) }
+            }
+            val statuses = mcpRegistry.getServerStatuses()
+            _mcpStatuses.value = statuses
+            _mcpConnectError.value = buildMcpImportFailureMessage(
+                importedCount = configs.size,
+                failedCount = statuses.count { it.name in autoStartNames && !it.connected && it.failureRecord != null }
+            )
+        }
+    }
+
     fun removeMcpServer(name: String) {
         mcpRegistry.disconnect(name)
         _mcpServers.value = _mcpServers.value.filter { it.name != name }
@@ -225,8 +255,14 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             _mcpConnectError.value = null
             try {
-                mcpRegistry.connectAll(_mcpServers.value)
-                _mcpStatuses.value = mcpRegistry.getServerStatuses()
+                val currentConfigs = _mcpServers.value
+                mcpRegistry.connectAll(currentConfigs)
+                val statuses = mcpRegistry.getServerStatuses()
+                _mcpStatuses.value = statuses
+                _mcpConnectError.value = buildMcpConnectFailureMessage(
+                    configs = currentConfigs,
+                    statuses = statuses
+                )
             } catch (e: Exception) {
                 _mcpConnectError.value = e.message
             }
@@ -478,6 +514,7 @@ class SettingsViewModel @Inject constructor(
                             "当前已是最新版本。"
                         }
                     },
+                    changelog = release.changelog.ifBlank { null },
                     publishedAt = release.publishedAt.ifBlank { null },
                     message = if (updateAvailable) {
                         "发现新版本 ${latestVersionName ?: latestVersionCode}"
@@ -842,6 +879,31 @@ class SettingsViewModel @Inject constructor(
     }
 }
 
+internal fun buildMcpImportFailureMessage(
+    importedCount: Int,
+    failedCount: Int
+): String? {
+    if (importedCount <= 0 || failedCount <= 0) return null
+    return "已保存 $importedCount 个 MCP 配置，其中 $failedCount 个连接失败；配置不会回滚，可稍后重试连接。"
+}
+
+internal fun buildMcpConnectFailureMessage(
+    configs: List<McpServerConfig>,
+    statuses: List<McpServerStatus>
+): String? {
+    val attemptedNames = configs
+        .asSequence()
+        .filter { it.enabled }
+        .map { it.name }
+        .toSet()
+    if (attemptedNames.isEmpty()) return null
+    val failedCount = statuses.count { status ->
+        status.name in attemptedNames && !status.connected && status.failureRecord != null
+    }
+    if (failedCount <= 0) return null
+    return "已尝试连接 ${attemptedNames.size} 个已保存 MCP，其中 $failedCount 个失败；配置已保留，可稍后重试连接。"
+}
+
 private data class GitHubViewerResult(
     val success: Boolean,
     val viewerLogin: String?,
@@ -914,6 +976,7 @@ private fun buildReleaseUiState(
         downloadUrl = resolvedDownloadUrl,
         directDownloadUrl = release.directDownloadUrl.ifBlank { null },
         updateMessage = release.updateMessage.ifBlank { fallbackMessage },
+        changelog = release.changelog.ifBlank { null },
         publishedAt = release.publishedAt.ifBlank { null },
         forceUpdate = release.forceUpdate,
         message = summaryMessage,

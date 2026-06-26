@@ -58,9 +58,22 @@ data class McpServerConfig(
     val headers: Map<String, String> = emptyMap(),
     /** per-request timeout in ms */
     val requestTimeoutMs: Long? = null,
+    /** config source type */
+    val source: McpConfigSource = McpConfigSource.MANUAL,
+    /** optional original source path, e.g. .mcp.json */
+    val sourcePath: String = "",
+    /** trusted read-only tool names exported by this server */
+    val trustedReadOnlyTools: List<String> = emptyList(),
+    /** whether the server should auto-start with the app */
+    val autoStart: Boolean = true,
     /** 启用状态 */
     val enabled: Boolean = true
 )
+
+@Serializable
+enum class McpConfigSource {
+    MANUAL, IMPORTED_DRAFT, MCP_JSON
+}
 
 @Serializable
 enum class McpTransportType {
@@ -82,5 +95,20 @@ data class McpServerStatus(
     val connected: Boolean,
     val toolCount: Int,
     val error: String? = null,
-    val toolNames: List<String> = emptyList()
+    val toolNames: List<String> = emptyList(),
+    val failureRecord: McpFailureRecord? = null
 )
+
+@Serializable
+data class McpFailureRecord(
+    val stage: McpFailureStage,
+    val message: String,
+    val transport: McpTransportType? = null,
+    val timestamp: Long = System.currentTimeMillis(),
+    val retryable: Boolean = true
+)
+
+@Serializable
+enum class McpFailureStage {
+    CONFIG_LOAD, CONNECT, LIST_TOOLS, CALL_TOOL
+}

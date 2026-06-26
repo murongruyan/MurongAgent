@@ -37,6 +37,7 @@ import com.murong.agent.core.config.SkillRunAs
 import com.murong.agent.core.loop.SessionSummary
 import com.murong.agent.core.loop.formatCurrencyAmount
 import com.murong.agent.core.mcp.McpServerConfig
+import com.murong.agent.core.mcp.McpConfigSource
 import com.murong.agent.core.mcp.McpServerStatus
 import com.murong.agent.core.provider.ModelProvider
 import com.murong.agent.core.provider.ProviderRegistry
@@ -45,6 +46,7 @@ import com.murong.agent.ui.McpDraftImportCard
 import com.murong.agent.ui.MurongGlassSurface
 import com.murong.agent.ui.MurongInfoCard
 import com.murong.agent.ui.MurongOutlinedActionButton
+import com.murong.agent.ui.MurongInteractionPerformanceHint
 import com.murong.agent.ui.MurongPrimaryPageSurface
 import com.murong.agent.ui.MurongSectionCard
 import com.murong.agent.ui.RuleDraftImportCard
@@ -55,6 +57,8 @@ import com.murong.agent.ui.SkillAllowedToolsBudgetView
 import com.murong.agent.ui.SkillDraftImportCard
 import java.util.UUID
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 
 @Composable
 fun SettingsScreen(
@@ -76,6 +80,7 @@ fun SettingsScreen(
     onRefreshProviderBalance: (String) -> Unit = {},
     supportsBalanceFetch: (String) -> Boolean = { false },
     onAddMcpServer: (McpServerConfig) -> Unit = {},
+    onImportMcpDrafts: (List<McpServerConfig>) -> Unit = {},
     onRemoveMcpServer: (String) -> Unit = {},
     onConnectMcpServers: () -> Unit = {},
     onRefreshMcpStatus: () -> Unit = {},
@@ -86,6 +91,8 @@ fun SettingsScreen(
     onOpenAboutPage: () -> Unit = {}
 ) {
     val bottomBarScrollPadding = rememberMurongBottomBarScrollPadding()
+    val settingsScrollState = rememberScrollState()
+    MurongInteractionPerformanceHint(active = settingsScrollState.isScrollInProgress)
     val providers = remember { ProviderRegistry.getAllProviders() }
     var showApiKey by remember { mutableStateOf(false) }
     val uriHandler = LocalUriHandler.current
@@ -130,7 +137,7 @@ fun SettingsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(settingsScrollState)
                 .padding(start = 12.dp, top = 10.dp, end = 12.dp, bottom = bottomBarScrollPadding),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
@@ -602,6 +609,7 @@ fun SettingsScreen(
             mcpStatuses = mcpStatuses,
             mcpConnectError = mcpConnectError,
             onAddMcpServer = onAddMcpServer,
+            onImportMcpDrafts = onImportMcpDrafts,
             onRemoveMcpServer = onRemoveMcpServer,
             onConnectMcpServers = onConnectMcpServers,
             onRefreshMcpStatus = onRefreshMcpStatus
@@ -773,6 +781,7 @@ private fun McpSettingsSection(
     mcpStatuses: List<McpServerStatus>,
     mcpConnectError: String?,
     onAddMcpServer: (McpServerConfig) -> Unit,
+    onImportMcpDrafts: (List<McpServerConfig>) -> Unit,
     onRemoveMcpServer: (String) -> Unit,
     onConnectMcpServers: () -> Unit,
     onRefreshMcpStatus: () -> Unit
@@ -910,9 +919,7 @@ private fun McpSettingsSection(
         }
         Spacer(modifier = Modifier.height(8.dp))
         McpDraftImportCard(
-            onImportDrafts = { drafts ->
-                drafts.forEach(onAddMcpServer)
-            },
+            onImportDrafts = onImportMcpDrafts,
             buttonLabel = "手动导入 MCP"
         )
     }
@@ -2774,7 +2781,7 @@ private fun formatKeyValueLines(entries: Map<String, String>): String {
     return entries.entries.joinToString("\n") { (key, value) -> "$key=$value" }
 }
 
-private fun buildMcpConfigSummary(config: McpServerConfig): String {
+internal fun buildMcpConfigSummary(config: McpServerConfig): String {
     val transportLabel = when (config.transport) {
         com.murong.agent.core.mcp.McpTransportType.STDIO -> "stdio"
         com.murong.agent.core.mcp.McpTransportType.SSE -> "SSE"
@@ -2782,6 +2789,13 @@ private fun buildMcpConfigSummary(config: McpServerConfig): String {
     }
     val details = buildList {
         add(transportLabel)
+        add(
+            when (config.source) {
+                McpConfigSource.MANUAL -> "manual"
+                McpConfigSource.IMPORTED_DRAFT -> "draft"
+                McpConfigSource.MCP_JSON -> ".mcp.json"
+            }
+        )
         when (config.transport) {
             com.murong.agent.core.mcp.McpTransportType.STDIO -> {
                 config.command.takeIf { it.isNotBlank() }?.let { add(it) }
@@ -2796,11 +2810,16 @@ private fun buildMcpConfigSummary(config: McpServerConfig): String {
             }
         }
         config.requestTimeoutMs?.let { add("${it}ms") }
+        if (config.sourcePath.isNotBlank()) {
+            add("src ${config.sourcePath.replace('\\', '/').substringAfterLast('/')}")
+        }
+        if (config.trustedReadOnlyTools.isNotEmpty()) add("ro ${config.trustedReadOnlyTools.size}")
+        if (!config.autoStart) add("手动连接")
     }
     return details.joinToString(" · ")
 }
 
-private fun buildMcpStatusSummary(
+internal fun buildMcpStatusSummary(
     status: McpServerStatus?,
     hasSavedConfig: Boolean
 ): String {
@@ -2810,7 +2829,8 @@ private fun buildMcpStatusSummary(
         hasSavedConfig -> "⏸ 未连接"
         else -> "❌ 未知"
     }
-    return "$toolCount 个工具 · $connectionLabel"
+    val failureSummary = status?.failureRecord?.let { " · 最近 ${it.stage.name.lowercase()} 失败，但配置已保留" }.orEmpty()
+    return "$toolCount 个工具 · $connectionLabel$failureSummary"
 }
 
 @Composable

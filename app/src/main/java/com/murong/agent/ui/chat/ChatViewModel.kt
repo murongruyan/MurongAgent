@@ -46,12 +46,26 @@ class ChatViewModel @Inject constructor(
 
     private val _sessions = MutableStateFlow<List<SessionSummary>>(emptyList())
     val sessions: StateFlow<List<SessionSummary>> = _sessions.asStateFlow()
+    private val _archivedMemoryCandidates = MutableStateFlow<List<ArchivedMemoryCandidate>>(emptyList())
+    val archivedMemoryCandidates: StateFlow<List<ArchivedMemoryCandidate>> =
+        _archivedMemoryCandidates.asStateFlow()
     private val _toastMessages = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val toastMessages = _toastMessages.asSharedFlow()
     private var currentRemoteTaskRepository: ProjectGitHubRepoRef? = null
+    private val replayTriggerGate = ReplayTriggerGate()
 
     init {
         refreshSessions()
+        viewModelScope.launch {
+            sessionManager.pendingPromptReplayNotices.collect { notice ->
+                _toastMessages.emit(notice)
+            }
+        }
+        viewModelScope.launch {
+            sessionManager.sessionLifecycleNotices.collect { notice ->
+                _toastMessages.emit(notice)
+            }
+        }
     }
 
     fun hasActiveApiKey(config: ProviderConfig): Boolean {
@@ -151,6 +165,33 @@ class ChatViewModel @Inject constructor(
             }
             refreshSessions()
         }
+    }
+
+    suspend fun acceptArchivedMemoryCandidate(
+        sessionId: String,
+        scope: ArchivedMemoryCandidateScope
+    ): ArchivedMemoryCandidateMutationResult {
+        val result = withContext(Dispatchers.IO) {
+            sessionManager.acceptArchivedMemoryCandidate(sessionId, scope)
+        }
+        refreshSessions()
+        return result
+    }
+
+    suspend fun dismissArchivedMemoryCandidate(sessionId: String): ArchivedMemoryCandidateMutationResult {
+        val result = withContext(Dispatchers.IO) {
+            sessionManager.dismissArchivedMemoryCandidate(sessionId)
+        }
+        refreshSessions()
+        return result
+    }
+
+    suspend fun consumeArchivedMemoryCandidate(sessionId: String): ArchivedMemoryCandidateMutationResult {
+        val result = withContext(Dispatchers.IO) {
+            sessionManager.consumeArchivedMemoryCandidate(sessionId)
+        }
+        refreshSessions()
+        return result
     }
 
     fun stopSending(): Boolean {
@@ -281,8 +322,23 @@ class ChatViewModel @Inject constructor(
 
     fun loadSession(sessionId: String) {
         if (sessionManager.loadSession(sessionId)) {
+            val currentSessionId = state.value.sessionId
+            sessionManager.replayPendingPrompts()
+            replayTriggerGate.markReplayHandled(currentSessionId)
             refreshSessions()
         }
+    }
+
+    fun replayPendingPrompts(): Boolean = sessionManager.replayPendingPrompts()
+
+    fun onChatScreenAttached() {
+        replayTriggerGate.onScreenAttached(state.value.sessionId)
+    }
+
+    fun onChatScreenActiveStateChanged(isScreenActive: Boolean) {
+        val sessionId = state.value.sessionId
+        if (!replayTriggerGate.shouldReplayOnScreenState(sessionId, isScreenActive)) return
+        sessionManager.replayPendingPrompts()
     }
 
     fun saveSession() {
@@ -306,12 +362,25 @@ class ChatViewModel @Inject constructor(
         return rolledBack
     }
 
-    fun rollbackFileCheckpoint(checkpointId: String): Result<Int> {
-        val result = sessionManager.rollbackFileCheckpoint(checkpointId)
+    fun rollbackCheckpoint(
+        checkpointId: String,
+        scope: ConversationCheckpointScope = ConversationCheckpointScope.CODE
+    ): Result<Int> {
+        val result = sessionManager.rollbackCheckpoint(
+            checkpointId = checkpointId,
+            scope = scope
+        )
         if (result.isSuccess) {
             refreshSessions()
         }
         return result
+    }
+
+    fun rollbackFileCheckpoint(checkpointId: String): Result<Int> {
+        return rollbackCheckpoint(
+            checkpointId = checkpointId,
+            scope = ConversationCheckpointScope.CODE
+        )
     }
 
     fun importConversation(rawText: String, sourceName: String? = null): Result<Int> {
@@ -375,8 +444,9 @@ class ChatViewModel @Inject constructor(
     }
 
     fun deleteSession(sessionId: String) {
-        sessionManager.deleteSession(sessionId)
-        refreshSessions()
+        if (sessionManager.deleteSession(sessionId)) {
+            refreshSessions()
+        }
     }
 
     fun renameSession(sessionId: String, newTitle: String): Boolean {
@@ -475,6 +545,7 @@ class ChatViewModel @Inject constructor(
 
     fun refreshSessions() {
         _sessions.value = sessionManager.listSessions()
+        _archivedMemoryCandidates.value = sessionManager.listArchivedMemoryCandidates()
     }
 
     private fun launchSendingOperation(block: suspend () -> Unit) {
