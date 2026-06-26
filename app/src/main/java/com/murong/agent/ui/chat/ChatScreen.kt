@@ -121,6 +121,7 @@ import com.murong.agent.ui.buildApprovalModeFollowGlobalOptionPresentation
 import com.murong.agent.ui.buildApprovalModeOptionPresentations
 import com.murong.agent.ui.buildProjectKnowledgeOutlines
 import com.murong.agent.ui.rememberMurongAccentColor
+import com.murong.agent.ui.rememberMurongBottomBarScrollPadding
 import com.murong.agent.ui.rememberMurongChromeColor
 import com.murong.agent.ui.rememberMurongMutedTextColor
 import com.murong.agent.ui.rememberMurongSurfaceColor
@@ -328,6 +329,10 @@ internal fun ChatScreen(
     }
     val listState = rememberSaveable(state.sessionId, saver = LazyListState.Saver) {
         LazyListState()
+    }
+    val bottomBarScrollPadding = rememberMurongBottomBarScrollPadding()
+    val messageListBottomPadding = remember(bottomReservedPadding, bottomBarScrollPadding) {
+        (bottomReservedPadding + 16.dp).coerceAtLeast(bottomBarScrollPadding + 12.dp)
     }
     MurongInteractionPerformanceHint(
         active = isScreenActive && listState.isScrollInProgress
@@ -686,7 +691,7 @@ internal fun ChatScreen(
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp),
                     state = listState,
-                    contentPadding = PaddingValues(top = 6.dp, bottom = 12.dp),
+                    contentPadding = PaddingValues(top = 6.dp, bottom = messageListBottomPadding),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     itemsIndexed(
