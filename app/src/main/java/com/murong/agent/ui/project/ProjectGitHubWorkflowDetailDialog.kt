@@ -37,7 +37,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.murong.agent.ui.MurongGlassSurface
+import com.murong.agent.ui.MurongLargeDialogCardShape
 import com.murong.agent.ui.MurongLargeDialogScaffold
+import com.murong.agent.ui.MurongProjectInsetCardShape
 import com.murong.agent.ui.rememberMurongChromeColor
 import com.murong.agent.ui.rememberMurongMutedTextColor
 import com.murong.agent.ui.rememberMurongSurfaceColor
@@ -59,7 +61,7 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            shape = RoundedCornerShape(24.dp),
+            shape = MurongLargeDialogCardShape,
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp)
         ) {
             Row(
@@ -454,7 +456,7 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                     }
                 detail.issueSummaries.takeIf { it.isNotEmpty() }?.let { issues ->
                     ProjectInsetCard(
-                        shape = RoundedCornerShape(12.dp),
+                        shape = MurongProjectInsetCardShape,
                         surfaceColorOverride = chromeColor.copy(alpha = 0.56f),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -476,7 +478,7 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                 }
                 if (issueJobs.isNotEmpty()) {
                     ProjectInsetCard(
-                        shape = RoundedCornerShape(12.dp),
+                        shape = MurongProjectInsetCardShape,
                         surfaceColorOverride = chromeColor.copy(alpha = 0.48f),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -519,7 +521,7 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                             }
                             issueJobs.forEach { job ->
                                 ProjectInsetCard(
-                                    shape = RoundedCornerShape(10.dp),
+                                    shape = MurongProjectInsetCardShape,
                                     surfaceColorOverride = surfaceColor.copy(alpha = 0.46f),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
@@ -600,7 +602,7 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                 when {
                     detail.logsError?.isNotBlank() == true -> {
                         ProjectInsetCard(
-                            shape = RoundedCornerShape(12.dp),
+                            shape = MurongProjectInsetCardShape,
                             surfaceColorOverride = MaterialTheme.colorScheme.errorContainer.copy(
                                 alpha = 0.52f
                             ),
@@ -663,7 +665,7 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                             searchActive
                         ) {
                             ProjectInsetCard(
-                                shape = RoundedCornerShape(12.dp),
+                                shape = MurongProjectInsetCardShape,
                                 surfaceColorOverride = chromeColor.copy(alpha = 0.46f),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
@@ -1103,7 +1105,7 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                     } else {
                         detail.artifacts.forEach { artifact ->
                             ProjectInsetCard(
-                                shape = RoundedCornerShape(12.dp),
+                                shape = MurongProjectInsetCardShape,
                                 surfaceColorOverride = chromeColor.copy(alpha = 0.52f),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
@@ -1144,7 +1146,7 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                     } else {
                         visibleJobs.forEach { job ->
                             ProjectInsetCard(
-                                shape = RoundedCornerShape(12.dp),
+                                shape = MurongProjectInsetCardShape,
                                 surfaceColorOverride = if (job.hasIssue) {
                                     MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.40f)
                                 } else {
@@ -1286,7 +1288,7 @@ internal fun ProjectGitHubWorkflowRunDetailDialog(
                     }
                 }
                 ProjectInsetCard(
-                    shape = RoundedCornerShape(12.dp),
+                    shape = MurongProjectInsetCardShape,
                     surfaceColorOverride = chromeColor.copy(alpha = 0.48f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -1351,7 +1353,7 @@ private fun ProjectGitHubWorkflowStepCard(
         else -> mutedTextColor
     }
     ProjectInsetCard(
-        shape = RoundedCornerShape(10.dp),
+        shape = MurongProjectInsetCardShape,
         surfaceColorOverride = surfaceColor,
         modifier = Modifier
             .fillMaxWidth()
@@ -1445,7 +1447,7 @@ private fun ProjectGitHubWorkflowLogEntryCard(
             )
         }
         ProjectInsetCard(
-            shape = RoundedCornerShape(12.dp),
+            shape = MurongProjectInsetCardShape,
             surfaceColorOverride = if (matchesFocusedStep && isActiveSearchMatch) {
                 MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
             } else if (matchesFocusedStep) {

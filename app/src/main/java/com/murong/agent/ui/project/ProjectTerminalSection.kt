@@ -70,6 +70,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.murong.agent.common.shell.KeepShellPublic
 import com.murong.agent.common.toolchain.ToolchainManager
 import com.murong.agent.ui.MurongGlassSurface
+import com.murong.agent.ui.MurongProjectInsetCardShape
+import com.murong.agent.ui.MurongProjectSectionCardShape
 import com.murong.agent.ui.MurongTransientMessageBus
 import com.murong.agent.ui.rememberMurongMutedTextColor
 import com.murong.agent.ui.rememberMurongSurfaceColor
@@ -1655,7 +1657,7 @@ private fun TerminalToolbarButton(
     Surface(
         onClick = onClick,
         enabled = enabled,
-        shape = RoundedCornerShape(14.dp),
+        shape = MurongProjectSectionCardShape,
         border = BorderStroke(
             1.dp,
             if (highlighted) surfaceColor.copy(alpha = 0.95f) else surfaceColor.copy(alpha = 0.72f)
@@ -1737,7 +1739,7 @@ private fun TerminalAccessoryKey(
     val contentColor = MaterialTheme.colorScheme.onSurface
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(12.dp),
+        shape = MurongProjectInsetCardShape,
         color = if (active) surfaceColor.copy(alpha = 0.28f) else MaterialTheme.colorScheme.background.copy(alpha = 0.82f),
         contentColor = if (active) contentColor else contentColor.copy(alpha = 0.92f),
         border = BorderStroke(1.dp, if (active) surfaceColor.copy(alpha = 0.95f) else surfaceColor.copy(alpha = 0.58f))

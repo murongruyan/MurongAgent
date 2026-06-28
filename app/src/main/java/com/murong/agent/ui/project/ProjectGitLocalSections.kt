@@ -22,6 +22,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.murong.agent.ui.MurongGlassSurface
+import com.murong.agent.ui.MurongProjectInsetCardShape
+import com.murong.agent.ui.MurongProjectSectionCardShape
 import com.murong.agent.ui.rememberMurongChromeColor
 import com.murong.agent.ui.rememberMurongMutedTextColor
 import com.murong.agent.ui.rememberMurongSurfaceColor
@@ -48,7 +50,7 @@ internal fun ProjectGitFileGroup(
         } else {
             items.forEach { change ->
                 ProjectInsetCard(
-                    shape = RoundedCornerShape(12.dp),
+                    shape = MurongProjectInsetCardShape,
                     surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -86,7 +88,7 @@ internal fun ProjectGitBranchSummaryCard(
     val mutedTextColor = rememberMurongMutedTextColor()
     MurongGlassSurface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = MurongProjectInsetCardShape,
         contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
         surfaceColorOverride = chromeColor.copy(alpha = 0.62f)
     ) {
@@ -182,7 +184,7 @@ internal fun ProjectGitLocalOverviewCard(
     val totalChanges = conflictedCount + stagedCount + modifiedCount + untrackedCount
 
     ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
+        shape = MurongProjectSectionCardShape,
         surfaceColorOverride = chromeColor.copy(alpha = 0.36f)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -428,7 +430,7 @@ internal fun ProjectGitLocalPrioritySection(
     }
 
     ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
+        shape = MurongProjectSectionCardShape,
         surfaceColorOverride = chromeColor.copy(alpha = 0.28f)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -442,7 +444,7 @@ internal fun ProjectGitLocalPrioritySection(
             } else {
                 focusItems.forEach { item ->
                     ProjectInsetCard(
-                        shape = RoundedCornerShape(12.dp),
+                        shape = MurongProjectInsetCardShape,
                         surfaceColorOverride = if (item.highlighted) {
                             MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.38f)
                         } else {
@@ -507,7 +509,7 @@ internal fun ProjectGitWorkingTreeSection(
     val totalChanges = conflictedFiles.size + stagedFiles.size + modifiedFiles.size + untrackedFiles.size
 
     ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
+        shape = MurongProjectSectionCardShape,
         surfaceColorOverride = chromeColor.copy(alpha = 0.32f)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -626,7 +628,7 @@ private fun ProjectGitWorkingTreeGroup(
     val mutedTextColor = rememberMurongMutedTextColor()
 
     ProjectInsetCard(
-        shape = RoundedCornerShape(12.dp),
+        shape = MurongProjectInsetCardShape,
         surfaceColorOverride = if (highlighted) {
             MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.30f)
         } else {
@@ -646,7 +648,7 @@ private fun ProjectGitWorkingTreeGroup(
             )
             items.forEach { change ->
                 ProjectInsetCard(
-                    shape = RoundedCornerShape(10.dp),
+                    shape = MurongProjectInsetCardShape,
                     surfaceColorOverride = chromeColor.copy(alpha = 0.18f)
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -708,14 +710,14 @@ internal fun ProjectGitLocalGitHubBridgeCard(
     val mutedTextColor = rememberMurongMutedTextColor()
 
     ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
+        shape = MurongProjectSectionCardShape,
         surfaceColorOverride = chromeColor.copy(alpha = 0.30f)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("GitHub 工作台", style = MaterialTheme.typography.titleSmall)
             if (!repoLabel.isNullOrBlank()) {
                 ProjectInsetCard(
-                    shape = RoundedCornerShape(12.dp),
+                    shape = MurongProjectInsetCardShape,
                     surfaceColorOverride = chromeColor.copy(alpha = 0.18f)
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -744,7 +746,7 @@ internal fun ProjectGitLocalGitHubBridgeCard(
             }
             taskRepositoryLabel?.let { label ->
                 ProjectInsetCard(
-                    shape = RoundedCornerShape(10.dp),
+                    shape = MurongProjectInsetCardShape,
                     surfaceColorOverride = if (taskRepositoryHighlighted) {
                         MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.34f)
                     } else {
@@ -825,7 +827,7 @@ internal fun ProjectGitHistorySection(
     val surfaceColor = rememberMurongSurfaceColor()
     val mutedTextColor = rememberMurongMutedTextColor()
     ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
+        shape = MurongProjectSectionCardShape,
         surfaceColorOverride = chromeColor.copy(alpha = 0.24f)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -839,7 +841,7 @@ internal fun ProjectGitHistorySection(
             } else {
                 commits.forEach { commit ->
                     ProjectInsetCard(
-                        shape = RoundedCornerShape(12.dp),
+                        shape = MurongProjectInsetCardShape,
                         surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -881,7 +883,7 @@ internal fun ProjectGitOperationHistorySection(
         buildProjectGitOperationSummary(records)
     }
     ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
+        shape = MurongProjectSectionCardShape,
         surfaceColorOverride = chromeColor.copy(alpha = 0.24f)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -906,7 +908,7 @@ internal fun ProjectGitOperationHistorySection(
                 )
                 records.forEach { record ->
                     ProjectInsetCard(
-                        shape = RoundedCornerShape(12.dp),
+                        shape = MurongProjectInsetCardShape,
                         surfaceColorOverride = surfaceColor.copy(alpha = 0.58f),
                         modifier = Modifier.fillMaxWidth()
                     ) {

@@ -18,6 +18,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.murong.agent.ui.MarkdownText
 import com.murong.agent.ui.MurongOutlinedActionButton
+import com.murong.agent.ui.MurongProjectInsetCardShape
+import com.murong.agent.ui.MurongProjectSectionCardShape
 import com.murong.agent.ui.rememberMurongChromeColor
 import com.murong.agent.ui.rememberMurongMutedTextColor
 
@@ -41,7 +43,7 @@ internal fun ProjectGitHubReadmeSection(
     val expandedReadme = remember(readme?.path, readme?.content) { mutableStateOf(false) }
 
     ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
+        shape = MurongProjectSectionCardShape,
         surfaceColorOverride = chromeColor.copy(alpha = 0.28f)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -148,7 +150,7 @@ internal fun ProjectGitHubReadmeSection(
                         )
                     }
                     ProjectInsetCard(
-                        shape = RoundedCornerShape(12.dp),
+                        shape = MurongProjectInsetCardShape,
                         surfaceColorOverride = chromeColor.copy(alpha = 0.22f)
                     ) {
                         if (compactPreview) {
