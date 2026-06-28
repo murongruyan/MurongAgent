@@ -1,3 +1,5 @@
+import org.gradle.api.tasks.compile.JavaCompile
+
 plugins {
     alias(libs.plugins.android.library)
 }
@@ -24,6 +26,11 @@ android {
 }
 
 dependencies {
-    api(project(path = ":terminal-emulator"))
+    api(project(":terminal-emulator"))
     implementation("androidx.annotation:annotation:1.9.1")
+}
+
+tasks.withType(JavaCompile::class.java).configureEach {
+    options.encoding = "UTF-8"
+    options.compilerArgs.addAll(listOf("-Xlint:none", "-nowarn"))
 }

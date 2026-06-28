@@ -27,7 +27,7 @@ kotlin {
 }
 
 dependencies {
-    implementation(project(path = ":common"))
+    implementation(project(":common"))
     
     implementation(libs.coroutines.android)
     implementation(libs.serialization.json)

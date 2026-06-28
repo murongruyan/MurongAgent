@@ -24,6 +24,25 @@ val appVersionName = (findProperty("APP_VERSION_NAME") as String?)
 val appVersionCode = (findProperty("APP_VERSION_CODE") as String?)
     ?.toIntOrNull()
     ?: 26062813
+val defaultNdkVersion = "30.0.14904198"
+val localNdkPath = localProperties.getProperty("murong.ndk.dir")?.replace('\\', '/')
+val resolvedNdkVersion = run {
+    if (localNdkPath.isNullOrBlank()) {
+        defaultNdkVersion
+    } else {
+        val sourcePropsFile = File(localNdkPath, "source.properties")
+        if (!sourcePropsFile.exists()) {
+            defaultNdkVersion
+        } else {
+            val ndkProps = Properties().apply {
+                sourcePropsFile.inputStream().use(::load)
+            }
+            ndkProps.getProperty("Pkg.BaseRevision")
+                ?: ndkProps.getProperty("Pkg.Revision")?.replace("-beta1", "")
+                ?: defaultNdkVersion
+        }
+    }
+}
 val bundledToolchainEnabled = ((findProperty("BUNDLED_TOOLCHAIN_ENABLED") as String?)
     ?: System.getenv("BUNDLED_TOOLCHAIN_ENABLED"))
     ?.toBooleanStrictOrNull()
@@ -162,6 +181,10 @@ val prepareBundledToolchainJniLibs = tasks.register("prepareBundledToolchainJniL
 android {
     namespace = "com.murong.agent"
     compileSdk = 37
+    ndkVersion = resolvedNdkVersion
+    if (!localNdkPath.isNullOrBlank()) {
+        ndkPath = localNdkPath
+    }
 
     defaultConfig {
         applicationId = "com.murong.agent"
@@ -274,8 +297,8 @@ android {
     }
 
     if (bundledToolchainEnabled) {
-        sourceSets.getByName("main").assets.srcDir(generatedToolchainAssetsDirFile)
-        sourceSets.getByName("main").jniLibs.srcDir(generatedToolchainJniLibsDirFile)
+        sourceSets.getByName("main").assets.directories.add(generatedToolchainAssetsDirFile.absolutePath)
+        sourceSets.getByName("main").jniLibs.directories.add(generatedToolchainJniLibsDirFile.absolutePath)
     }
 }
 
@@ -308,9 +331,9 @@ kotlin {
 }
 
 dependencies {
-    implementation(project(path = ":core"))
-    implementation(project(path = ":common"))
-    implementation(project(path = ":terminal-view"))
+    implementation(project(":core"))
+    implementation(project(":common"))
+    implementation(project(":terminal-view"))
 
     // Compose
     implementation(platform(libs.compose.bom))
