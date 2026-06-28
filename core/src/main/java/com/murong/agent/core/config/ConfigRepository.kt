@@ -7,10 +7,12 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import java.io.File
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.encodeToString
 
@@ -92,6 +94,66 @@ class ConfigRepository(private val context: Context) {
         saveConfig(config.copy(activeProviderId = providerId))
     }
 
+    fun listDurableGlobalMemories(): List<GlobalMemory> {
+        return loadDurableGlobalMemorySnapshots()
+            .asSequence()
+            .mapNotNull { entry ->
+                val title = entry.title.trim()
+                val content = entry.content.trim()
+                if (title.isBlank() || content.isBlank()) {
+                    null
+                } else {
+                    GlobalMemory(
+                        id = entry.id,
+                        title = title,
+                        content = content,
+                        enabled = entry.enabled
+                    )
+                }
+            }
+            .sortedWith(
+                compareByDescending<GlobalMemory> { it.enabled }
+                    .thenByDescending { memory ->
+                        loadDurableGlobalMemorySnapshots().firstOrNull { it.id == memory.id }?.updatedAt ?: 0L
+                    }
+            )
+            .toList()
+    }
+
+    suspend fun updateDurableGlobalMemory(memory: GlobalMemory): Boolean {
+        val title = memory.title.trim()
+        val content = memory.content.trim()
+        if (memory.id.isBlank() || title.isBlank() || content.isBlank()) return false
+        val existing = loadDurableGlobalMemorySnapshots()
+        var updatedAny = false
+        val updated = existing.map { entry ->
+            if (entry.id != memory.id) {
+                entry
+            } else {
+                updatedAny = true
+                entry.copy(
+                    title = title,
+                    content = content,
+                    enabled = memory.enabled,
+                    updatedAt = System.currentTimeMillis()
+                )
+            }
+        }
+        if (!updatedAny) return false
+        saveDurableGlobalMemorySnapshots(updated)
+        return true
+    }
+
+    suspend fun deleteDurableGlobalMemory(memoryId: String): Boolean {
+        val normalizedId = memoryId.trim()
+        if (normalizedId.isBlank()) return false
+        val existing = loadDurableGlobalMemorySnapshots()
+        val updated = existing.filterNot { it.id == normalizedId }
+        if (existing.size == updated.size) return false
+        saveDurableGlobalMemorySnapshots(updated)
+        return true
+    }
+
     private suspend fun migrateLegacyPlaintextSecretsIfNeeded() {
         val prefs = context.dataStore.data.first()
         val config = decodeConfig(prefs[CONFIG_KEY])
@@ -109,6 +171,24 @@ class ConfigRepository(private val context: Context) {
         } catch (_: Exception) {
             ProviderConfig()
         }
+    }
+
+    private fun durableGlobalMemoryFile(): File {
+        return File(context.filesDir, "memories/global_memories.json")
+    }
+
+    private fun loadDurableGlobalMemorySnapshots(): List<PersistedMemoryEntrySnapshot> {
+        val file = durableGlobalMemoryFile()
+        if (!file.exists()) return emptyList()
+        return runCatching {
+            json.decodeFromString<List<PersistedMemoryEntrySnapshot>>(file.readText())
+        }.getOrDefault(emptyList())
+    }
+
+    private fun saveDurableGlobalMemorySnapshots(entries: List<PersistedMemoryEntrySnapshot>) {
+        val file = durableGlobalMemoryFile()
+        file.parentFile?.mkdirs()
+        file.writeText(json.encodeToString(entries))
     }
 
     private fun readSensitiveSecrets(): SensitiveSecrets {
@@ -176,4 +256,13 @@ class ConfigRepository(private val context: Context) {
             githubBackendSessionToken.isNotBlank() ||
             webSearchBingApiKey.isNotBlank()
     }
+
+    @Serializable
+    private data class PersistedMemoryEntrySnapshot(
+        val id: String,
+        val title: String,
+        val content: String,
+        val enabled: Boolean = true,
+        val updatedAt: Long = 0L
+    )
 }

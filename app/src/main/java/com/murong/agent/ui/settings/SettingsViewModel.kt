@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import com.murong.agent.common.shell.KeepShellPublic
 import com.murong.agent.core.config.ConfigRepository
+import com.murong.agent.core.config.GlobalMemory
 import com.murong.agent.core.config.ProviderConfig
 import com.murong.agent.core.config.ProviderBalanceService
 import com.murong.agent.core.loop.ChatSessionManager
@@ -130,6 +131,9 @@ class SettingsViewModel @Inject constructor(
     private val _sessions = MutableStateFlow<List<SessionSummary>>(emptyList())
     val sessions: StateFlow<List<SessionSummary>> = _sessions.asStateFlow()
 
+    private val _durableGlobalMemories = MutableStateFlow<List<GlobalMemory>>(emptyList())
+    val durableGlobalMemories: StateFlow<List<GlobalMemory>> = _durableGlobalMemories.asStateFlow()
+
     private val _balanceSyncStates = MutableStateFlow<Map<String, BalanceSyncUiState>>(emptyMap())
     val balanceSyncStates: StateFlow<Map<String, BalanceSyncUiState>> = _balanceSyncStates.asStateFlow()
 
@@ -148,6 +152,7 @@ class SettingsViewModel @Inject constructor(
         _mcpServers.value = mcpRegistry.loadConfigs()
         _sessions.value = chatSessionManager.listSessions()
         checkRoot()
+        refreshDurableGlobalMemories()
         viewModelScope.launch {
             configRepository.configFlow.collect { currentConfig ->
                 _gitHubAuthState.value = _gitHubAuthState.value.copy(
@@ -174,7 +179,10 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun updateConfig(newConfig: ProviderConfig) {
-        viewModelScope.launch { configRepository.saveConfig(newConfig) }
+        viewModelScope.launch {
+            configRepository.saveConfig(newConfig)
+            refreshDurableGlobalMemories()
+        }
     }
 
     fun updateApiKey(providerId: String, apiKey: String) {
@@ -203,6 +211,26 @@ class SettingsViewModel @Inject constructor(
             } finally {
                 _isCheckingRoot.value = false
             }
+        }
+    }
+
+    fun refreshDurableGlobalMemories() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _durableGlobalMemories.value = configRepository.listDurableGlobalMemories()
+        }
+    }
+
+    fun updateDurableGlobalMemory(memory: GlobalMemory) {
+        viewModelScope.launch(Dispatchers.IO) {
+            configRepository.updateDurableGlobalMemory(memory)
+            _durableGlobalMemories.value = configRepository.listDurableGlobalMemories()
+        }
+    }
+
+    fun deleteDurableGlobalMemory(memoryId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            configRepository.deleteDurableGlobalMemory(memoryId)
+            _durableGlobalMemories.value = configRepository.listDurableGlobalMemories()
         }
     }
 

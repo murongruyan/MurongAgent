@@ -146,6 +146,44 @@ import java.util.UUID
 import kotlin.math.max
 import kotlin.math.roundToInt
 
+private const val CHAT_COLLAPSE_MIN_ROUNDS = 8
+private const val CHAT_EXPANDED_RECENT_ROUNDS = 4
+private const val CHAT_SHOW_JUMP_ENTRY_MIN_ROUNDS = 4
+private const val CHAT_JUMP_TITLE_MAX_LENGTH = 28
+
+private data class ChatQuestionRoundUi(
+    val order: Int,
+    val userMessageId: Long,
+    val title: String,
+    val startIndex: Int,
+    val endExclusive: Int,
+    val messageCount: Int,
+    val processCount: Int,
+    val containsStreaming: Boolean
+)
+
+private sealed interface ChatTimelineItemUi {
+    val key: String
+    val roundId: Long?
+    val contentType: String
+
+    data class Message(
+        val messageIndex: Int,
+        override val roundId: Long?
+    ) : ChatTimelineItemUi {
+        override val key: String = "msg:$messageIndex"
+        override val contentType: String = "message"
+    }
+
+    data class FoldedRound(
+        val round: ChatQuestionRoundUi
+    ) : ChatTimelineItemUi {
+        override val key: String = "round:${round.userMessageId}"
+        override val roundId: Long = round.userMessageId
+        override val contentType: String = "folded_round"
+    }
+}
+
 @Composable
 internal fun ChatScreen(
     state: SessionState,
@@ -236,6 +274,10 @@ internal fun ChatScreen(
     var showApprovalPostureHint by remember(state.sessionId) { mutableStateOf(true) }
     var showApprovalModeDialog by remember(state.sessionId) { mutableStateOf(false) }
     var showSkillPicker by remember(state.sessionId) { mutableStateOf(false) }
+    var showQuestionJumpDialog by remember(state.sessionId) { mutableStateOf(false) }
+    var showQuickNavigationDialog by remember(state.sessionId) { mutableStateOf(false) }
+    var pendingJumpRoundId by remember(state.sessionId) { mutableStateOf<Long?>(null) }
+    val roundExpansionOverrides = remember(state.sessionId) { mutableStateMapOf<Long, Boolean>() }
     val approvalModeOverride = projectToolPreferences?.approvalMode
     val pendingPromptHostPresentation = remember(chatRuntimeHostPresentation) {
         chatRuntimeHostPresentation.pendingPromptHostPresentation
@@ -294,6 +336,26 @@ internal fun ChatScreen(
             .distinctBy { listOf(it.title.trim(), it.description.trim(), it.content.trim(), it.runAs.name).joinToString("|") }
     }
     val messages = state.messages
+    val questionRounds = remember(messages) {
+        buildChatQuestionRounds(messages)
+    }
+    val enableLongConversationCollapse = remember(questionRounds) {
+        questionRounds.size >= CHAT_COLLAPSE_MIN_ROUNDS
+    }
+    val roundExpansionSnapshot = roundExpansionOverrides.toMap()
+    val timelineItems = remember(
+        messages,
+        questionRounds,
+        enableLongConversationCollapse,
+        roundExpansionSnapshot
+    ) {
+        buildChatTimelineItems(
+            messages = messages,
+            rounds = questionRounds,
+            enableRoundCollapse = enableLongConversationCollapse,
+            expansionOverrides = roundExpansionSnapshot
+        )
+    }
     val subagentRunsById = remember(state.subagentRuns) {
         state.subagentRuns.associateBy { it.runId }
     }
@@ -457,9 +519,71 @@ internal fun ChatScreen(
         previewImages = emptyList()
         previewImageIndex = 0
         showMentionPicker = false
+        showQuestionJumpDialog = false
+        showQuickNavigationDialog = false
     }
 
-    val itemCount = messages.size
+    fun jumpToRound(roundId: Long) {
+        roundExpansionOverrides[roundId] = true
+        pendingJumpRoundId = roundId
+    }
+
+    val itemCount = timelineItems.size
+    val currentVisibleRoundIndex by remember(listState, timelineItems, questionRounds, state.sessionId) {
+        derivedStateOf {
+            findCurrentVisibleRoundIndex(
+                listState = listState,
+                timelineItems = timelineItems,
+                rounds = questionRounds
+            )
+        }
+    }
+    val previousRound = questionRounds.getOrNull(currentVisibleRoundIndex - 1)
+    val nextRound = questionRounds.getOrNull(currentVisibleRoundIndex + 1)
+    val hasRoundQuickNavigation = questionRounds.size >= CHAT_SHOW_JUMP_ENTRY_MIN_ROUNDS
+    val showScrollToTop by remember(listState, state.sessionId) {
+        derivedStateOf { shouldShowScrollToTop(listState) }
+    }
+    val showScrollToBottom by remember(listState, itemCount, state.sessionId) {
+        derivedStateOf { itemCount > 0 && !isMessageListNearBottom(listState) }
+    }
+    val shouldShowQuickNavigation by remember(
+        hasRoundQuickNavigation,
+        previousRound,
+        nextRound,
+        showScrollToTop,
+        showScrollToBottom,
+        state.sessionId
+    ) {
+        derivedStateOf {
+            showScrollToTop ||
+                showScrollToBottom ||
+                (
+                    hasRoundQuickNavigation &&
+                        (previousRound != null || nextRound != null)
+                    )
+        }
+    }
+    fun performQuickNavigateUp() {
+        when {
+            previousRound != null -> jumpToRound(previousRound.userMessageId)
+            showScrollToTop -> coroutineScope.launch { listState.animateScrollToItem(0) }
+        }
+    }
+
+    fun performQuickNavigateDown() {
+        val lastRoundId = questionRounds.lastOrNull()?.userMessageId
+        when {
+            nextRound != null && nextRound.userMessageId != lastRoundId -> {
+                jumpToRound(nextRound.userMessageId)
+            }
+            itemCount > 0 -> coroutineScope.launch {
+                if (itemCount > 0) {
+                    listState.animateScrollToItem(itemCount - 1)
+                }
+            }
+        }
+    }
     val lastMessage = messages.lastOrNull()
     val lastMessageContentLength = lastMessage?.content?.length ?: 0
     val lastMessageReasoningLength = lastMessage?.reasoning?.length ?: 0
@@ -475,6 +599,15 @@ internal fun ChatScreen(
             .collect { nearBottom ->
                 shouldAutoFollowMessages = nearBottom
             }
+    }
+
+    LaunchedEffect(pendingJumpRoundId, timelineItems, state.sessionId) {
+        val targetRoundId = pendingJumpRoundId ?: return@LaunchedEffect
+        val targetIndex = timelineItems.indexOfFirst { item -> item.roundId == targetRoundId }
+        if (targetIndex >= 0) {
+            listState.animateScrollToItem(targetIndex)
+            pendingJumpRoundId = null
+        }
     }
 
     // 只在切会话或本来就接近底部时自动跟随，避免手动上滑时被强行拉回。
@@ -722,55 +855,97 @@ internal fun ChatScreen(
                     modifier = Modifier.weight(1f)
                 )
             } else {
-                LazyColumn(
+                Box(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp),
-                    state = listState,
-                    contentPadding = PaddingValues(top = 6.dp, bottom = messageListBottomPadding),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    itemsIndexed(
-                        items = messages,
-                        key = { _, it -> it.id },
-                        contentType = { _, it -> it.role }
-                    ) { index, msg ->
-                        val subagentRun = msg.subagentRunId?.let(subagentRunsById::get)
-                        val subagentBatch = msg.subagentBatchId?.let(subagentBatchesById::get)
-                        val previousMessage = messages.getOrNull(index - 1)
-                        val nextMessage = messages.getOrNull(index + 1)
-                        MessageBubble(
-                            msg = msg,
-                            isScreenActive = isScreenActive,
-                            previousMessage = previousMessage,
-                            nextMessage = nextMessage,
-                            subagentRun = subagentRun,
-                            subagentBatch = subagentBatch,
-                            onLongPress = { messageActionTarget = msg },
-                            onApplyPrompt = { prompt ->
-                                inputText = listOf(inputText, prompt)
-                                    .filter { it.isNotBlank() }
-                                    .joinToString("\n")
-                            },
-                            onOpenImagePreview = { items, index ->
-                                previewImages = items
-                                previewImageIndex = index
-                            },
-                            onClick = {
-                                if (subagentRun != null) {
-                                    selectedSubagentRun = subagentRun
-                                } else if (subagentBatch != null) {
-                                    selectedSubagentBatch = subagentBatch
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 12.dp),
+                        state = listState,
+                        contentPadding = PaddingValues(top = 6.dp, bottom = messageListBottomPadding),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        items(
+                            items = timelineItems,
+                            key = { it.key },
+                            contentType = { it.contentType }
+                        ) { item ->
+                            when (item) {
+                                is ChatTimelineItemUi.FoldedRound -> {
+                                    FoldedRoundCard(
+                                        round = item.round,
+                                        onExpand = { jumpToRound(item.round.userMessageId) }
+                                    )
+                                }
+
+                                is ChatTimelineItemUi.Message -> {
+                                    val msg = messages[item.messageIndex]
+                                    val subagentRun = msg.subagentRunId?.let(subagentRunsById::get)
+                                    val subagentBatch = msg.subagentBatchId?.let(subagentBatchesById::get)
+                                    val previousMessage = messages.getOrNull(item.messageIndex - 1)
+                                    val nextMessage = messages.getOrNull(item.messageIndex + 1)
+                                    MessageBubble(
+                                        msg = msg,
+                                        isScreenActive = isScreenActive,
+                                        previousMessage = previousMessage,
+                                        nextMessage = nextMessage,
+                                        subagentRun = subagentRun,
+                                        subagentBatch = subagentBatch,
+                                        onLongPress = { messageActionTarget = msg },
+                                        onApplyPrompt = { prompt ->
+                                            inputText = listOf(inputText, prompt)
+                                                .filter { it.isNotBlank() }
+                                                .joinToString("\n")
+                                        },
+                                        onOpenImagePreview = { items, index ->
+                                            previewImages = items
+                                            previewImageIndex = index
+                                        },
+                                        onClick = {
+                                            if (subagentRun != null) {
+                                                selectedSubagentRun = subagentRun
+                                            } else if (subagentBatch != null) {
+                                                selectedSubagentBatch = subagentBatch
+                                            }
+                                        }
+                                    )
                                 }
                             }
+                        }
+
+                        if (state.isProcessing && !hasStreamingMessage(messages)) {
+                            item {
+                                LoadingIndicator()
+                            }
+                        }
+                    }
+
+                    if (questionRounds.size >= CHAT_SHOW_JUMP_ENTRY_MIN_ROUNDS) {
+                        AssistChip(
+                            onClick = { showQuestionJumpDialog = true },
+                            label = { Text("跳题 ${questionRounds.size}") },
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(top = 10.dp, end = 18.dp)
                         )
                     }
 
-                    if (state.isProcessing && !hasStreamingMessage(messages)) {
-                        item {
-                            LoadingIndicator()
-                        }
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = shouldShowQuickNavigation,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 18.dp, bottom = 20.dp),
+                        enter = fadeIn() + scaleIn(initialScale = 0.92f),
+                        exit = fadeOut() + scaleOut(targetScale = 0.92f)
+                    ) {
+                        ChatQuickNavigationButton(
+                            onClick = { performQuickNavigateUp() },
+                            onDoubleClick = { performQuickNavigateDown() },
+                            onLongClick = { showQuickNavigationDialog = true }
+                        )
                     }
                 }
             }
@@ -1064,6 +1239,73 @@ internal fun ChatScreen(
                                 )
                             )
                         )
+                    }
+                )
+            }
+            if (showQuestionJumpDialog && questionRounds.isNotEmpty()) {
+                MurongCompactChoiceDialog(
+                    title = "跳题导航",
+                    subtitle = "按用户问题分段，最近的问题排在前面。",
+                    items = questionRounds
+                        .asReversed()
+                        .map { round ->
+                            MurongChoiceDialogItem(
+                                key = round.userMessageId.toString(),
+                                title = round.title,
+                                subtitle = buildRoundSubtitle(round)
+                            )
+                        },
+                    onDismissRequest = { showQuestionJumpDialog = false },
+                    onSelect = { item ->
+                        val roundId = item.key.toLongOrNull() ?: return@MurongCompactChoiceDialog
+                        jumpToRound(roundId)
+                        showQuestionJumpDialog = false
+                    }
+                )
+            }
+            if (showQuickNavigationDialog && shouldShowQuickNavigation) {
+                MurongCompactChoiceDialog(
+                    title = "聊天导航",
+                    subtitle = "单击默认往上，双击默认往下，长按展开全部导航。",
+                    items = listOf(
+                        MurongChoiceDialogItem(
+                            key = "previous_round",
+                            title = "上一段",
+                            subtitle = "优先跳到上一个问题段落",
+                            enabled = previousRound != null
+                        ),
+                        MurongChoiceDialogItem(
+                            key = "next_round",
+                            title = "下一段",
+                            subtitle = "优先跳到下一个问题段落",
+                            enabled = nextRound != null
+                        ),
+                        MurongChoiceDialogItem(
+                            key = "scroll_top",
+                            title = "到顶",
+                            subtitle = "滚到当前会话最上方",
+                            enabled = showScrollToTop
+                        ),
+                        MurongChoiceDialogItem(
+                            key = "scroll_bottom",
+                            title = "到底",
+                            subtitle = "滚到当前会话最新位置",
+                            enabled = showScrollToBottom
+                        )
+                    ),
+                    onDismissRequest = { showQuickNavigationDialog = false },
+                    onSelect = { item ->
+                        when (item.key) {
+                            "previous_round" -> previousRound?.let { jumpToRound(it.userMessageId) }
+                            "next_round" -> performQuickNavigateDown()
+                            "scroll_top" -> coroutineScope.launch { listState.animateScrollToItem(0) }
+                            "scroll_bottom" -> coroutineScope.launch {
+                                if (itemCount > 0) {
+                                    listState.animateScrollToItem(itemCount - 1)
+                                }
+                            }
+                        }
+                        showQuickNavigationDialog = false
                     }
                 )
             }
@@ -5427,6 +5669,90 @@ private data class ToolResultMessageUi(
 )
 
 @Composable
+private fun FoldedRoundCard(
+    round: ChatQuestionRoundUi,
+    onExpand: () -> Unit
+) {
+    val chromeColor = rememberMurongChromeColor()
+    val mutedTextColor = rememberMurongMutedTextColor()
+    MurongGlassSurface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onExpand),
+        shape = RoundedCornerShape(18.dp),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+        surfaceColorOverride = chromeColor.copy(alpha = 0.52f)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "第 ${round.order + 1} 题",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = mutedTextColor
+                )
+                Text(
+                    text = round.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = buildRoundSubtitle(round),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = mutedTextColor
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            AssistChip(
+                onClick = onExpand,
+                label = { Text("展开") }
+            )
+        }
+    }
+}
+
+@Composable
+private fun ChatQuickNavigationButton(
+    onClick: () -> Unit,
+    onDoubleClick: () -> Unit,
+    onLongClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val chromeColor = rememberMurongChromeColor()
+    MurongGlassSurface(
+        modifier = modifier
+            .size(36.dp)
+            .combinedClickable(
+                onClick = onClick,
+                onDoubleClick = onDoubleClick,
+                onLongClick = onLongClick
+            ),
+        shape = RoundedCornerShape(12.dp),
+        contentPadding = PaddingValues(0.dp),
+        surfaceColorOverride = chromeColor.copy(alpha = 0.64f)
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.KeyboardArrowUp,
+                contentDescription = "聊天导航",
+                tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+    }
+}
+
+@Composable
 private fun ReasoningCard(
     content: String,
     expanded: Boolean,
@@ -5511,7 +5837,7 @@ private fun ToolExecutionCard(
     val mutedTextColor = rememberMurongMutedTextColor()
     val canExpand = tool.args.isNotBlank()
     val expandableArgs = canExpand && !tool.isQuiet
-    var showArgs by rememberSaveable(stateKey) { mutableStateOf(canExpand) }
+    var showArgs by rememberSaveable(stateKey) { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         ToolCardHeader(
             toolName = tool.toolName,
@@ -5545,6 +5871,125 @@ private fun ToolExecutionCard(
             }
         }
     }
+}
+
+private fun buildChatQuestionRounds(messages: List<ChatMessageUi>): List<ChatQuestionRoundUi> {
+    val userMessageIndexes = messages.mapIndexedNotNull { index, message ->
+        index.takeIf { message.role == "user" }
+    }
+    if (userMessageIndexes.isEmpty()) return emptyList()
+    return userMessageIndexes.mapIndexed { order, startIndex ->
+        val endExclusive = userMessageIndexes.getOrNull(order + 1) ?: messages.size
+        val roundMessages = messages.subList(startIndex, endExclusive)
+        val userMessage = messages[startIndex]
+        ChatQuestionRoundUi(
+            order = order,
+            userMessageId = userMessage.id,
+            title = buildQuestionRoundTitle(userMessage.content, order),
+            startIndex = startIndex,
+            endExclusive = endExclusive,
+            messageCount = roundMessages.size,
+            processCount = roundMessages.count { message ->
+                message.role == "tool_exec" ||
+                    message.role == "subagent" ||
+                    message.role == "system" ||
+                    !message.reasoning.isNullOrBlank()
+            },
+            containsStreaming = roundMessages.any { it.isStreaming }
+        )
+    }
+}
+
+private fun buildChatTimelineItems(
+    messages: List<ChatMessageUi>,
+    rounds: List<ChatQuestionRoundUi>,
+    enableRoundCollapse: Boolean,
+    expansionOverrides: Map<Long, Boolean>
+): List<ChatTimelineItemUi> {
+    if (messages.isEmpty()) return emptyList()
+    if (rounds.isEmpty()) {
+        return messages.indices.map { index ->
+            ChatTimelineItemUi.Message(
+                messageIndex = index,
+                roundId = null
+            )
+        }
+    }
+
+    val defaultExpandedRoundIds = if (enableRoundCollapse) {
+        rounds.takeLast(CHAT_EXPANDED_RECENT_ROUNDS).map { it.userMessageId }.toSet()
+    } else {
+        rounds.map { it.userMessageId }.toSet()
+    }
+    val roundByStartIndex = rounds.associateBy { it.startIndex }
+    val roundIdByMessageIndex = buildMap<Int, Long> {
+        rounds.forEach { round ->
+            for (index in round.startIndex until round.endExclusive) {
+                put(index, round.userMessageId)
+            }
+        }
+    }
+
+    val timelineItems = mutableListOf<ChatTimelineItemUi>()
+    var index = 0
+    while (index < messages.size) {
+        val round = roundByStartIndex[index]
+        if (round == null) {
+            timelineItems += ChatTimelineItemUi.Message(
+                messageIndex = index,
+                roundId = roundIdByMessageIndex[index]
+            )
+            index += 1
+            continue
+        }
+
+        val expanded = expansionOverrides[round.userMessageId] ?: defaultExpandedRoundIds.contains(round.userMessageId)
+        if (expanded) {
+            for (messageIndex in round.startIndex until round.endExclusive) {
+                timelineItems += ChatTimelineItemUi.Message(
+                    messageIndex = messageIndex,
+                    roundId = round.userMessageId
+                )
+            }
+        } else {
+            timelineItems += ChatTimelineItemUi.FoldedRound(round)
+        }
+        index = round.endExclusive
+    }
+    return timelineItems
+}
+
+private fun buildQuestionRoundTitle(
+    content: String,
+    order: Int
+): String {
+    val normalized = content
+        .lineSequence()
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .joinToString(" ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+    if (normalized.isBlank()) {
+        return "问题 ${order + 1}"
+    }
+    return if (normalized.length <= CHAT_JUMP_TITLE_MAX_LENGTH) {
+        normalized
+    } else {
+        normalized.take(CHAT_JUMP_TITLE_MAX_LENGTH).trimEnd() + "..."
+    }
+}
+
+private fun buildRoundSubtitle(round: ChatQuestionRoundUi): String {
+    val parts = mutableListOf<String>()
+    parts += "${round.messageCount} 条消息"
+    if (round.processCount > 0) {
+        parts += "${round.processCount} 条过程"
+    }
+    if (round.containsStreaming) {
+        parts += "进行中"
+    }
+    return parts.joinToString(" · ")
 }
 
 @Composable
@@ -8111,4 +8556,62 @@ private fun isMessageListNearBottom(listState: LazyListState, threshold: Int = 2
     if (totalItems == 0) return true
     val lastVisibleIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: return true
     return lastVisibleIndex >= totalItems - threshold
+}
+
+private fun shouldShowScrollToTop(listState: LazyListState): Boolean {
+    return listState.firstVisibleItemIndex > 1 || listState.firstVisibleItemScrollOffset > 160
+}
+
+private fun findCurrentVisibleRoundIndex(
+    listState: LazyListState,
+    timelineItems: List<ChatTimelineItemUi>,
+    rounds: List<ChatQuestionRoundUi>
+): Int {
+    val roundId = findCurrentVisibleRoundId(listState, timelineItems) ?: return -1
+    return rounds.indexOfFirst { it.userMessageId == roundId }
+}
+
+private fun findCurrentVisibleRoundId(
+    listState: LazyListState,
+    timelineItems: List<ChatTimelineItemUi>
+): Long? {
+    if (timelineItems.isEmpty()) return null
+    val layoutInfo = listState.layoutInfo
+    val viewportStart = layoutInfo.viewportStartOffset
+    val viewportEnd = layoutInfo.viewportEndOffset
+    val viewportCenter = (viewportStart + viewportEnd) / 2
+    val visibleRoundStats = linkedMapOf<Long, Pair<Int, Int>>()
+    layoutInfo.visibleItemsInfo.forEach { info ->
+        val roundId = timelineItems.getOrNull(info.index)?.roundId ?: return@forEach
+        val itemStart = info.offset
+        val itemEnd = info.offset + info.size
+        val visibleStart = max(itemStart, viewportStart)
+        val visibleEnd = minOf(itemEnd, viewportEnd)
+        val visibleSize = (visibleEnd - visibleStart).coerceAtLeast(0)
+        if (visibleSize <= 0) return@forEach
+        val itemCenterDistance = kotlin.math.abs(((itemStart + itemEnd) / 2) - viewportCenter)
+        val previous = visibleRoundStats[roundId]
+        if (previous == null) {
+            visibleRoundStats[roundId] = visibleSize to itemCenterDistance
+        } else {
+            visibleRoundStats[roundId] = (previous.first + visibleSize) to minOf(previous.second, itemCenterDistance)
+        }
+    }
+    val visibleRoundId = visibleRoundStats.entries
+        .maxWithOrNull(
+            compareBy<Map.Entry<Long, Pair<Int, Int>>> { it.value.first }
+                .thenByDescending { -it.value.second }
+        )
+        ?.key
+    if (visibleRoundId != null) return visibleRoundId
+    val startIndex = listState.firstVisibleItemIndex.coerceIn(0, timelineItems.lastIndex.coerceAtLeast(0))
+    for (index in startIndex until timelineItems.size) {
+        val roundId = timelineItems[index].roundId
+        if (roundId != null) return roundId
+    }
+    for (index in startIndex downTo 0) {
+        val roundId = timelineItems[index].roundId
+        if (roundId != null) return roundId
+    }
+    return null
 }

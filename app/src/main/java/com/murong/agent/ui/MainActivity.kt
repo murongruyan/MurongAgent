@@ -220,6 +220,7 @@ fun MainScreen() {
     val rootStatus by settingsVm.rootStatus.collectAsState()
     val isCheckingRoot by settingsVm.isCheckingRoot.collectAsState()
     val settingsSessions by settingsVm.sessions.collectAsState()
+    val settingsDurableGlobalMemories by settingsVm.durableGlobalMemories.collectAsState()
     val selectedProjectTaskRepository = remember(
         chatState.remoteTaskRepositoryOwner,
         chatState.remoteTaskRepositoryName
@@ -1143,7 +1144,7 @@ fun MainScreen() {
     }
 
     LaunchedEffect(pendingCrashStore) {
-        val report = pendingCrashStore.loadPendingCrash() ?: return@LaunchedEffect
+        val report = pendingCrashStore.consumePendingCrash() ?: return@LaunchedEffect
         dispatchDialogAction(MainScreenDialogAction.ShowPendingCrashDialog(report))
     }
 
@@ -1589,6 +1590,7 @@ fun MainScreen() {
                     fun SettingsMainPage() {
                         SettingsScreen(
                             config = settingsConfig,
+                            durableGlobalMemories = settingsDurableGlobalMemories,
                             onConfigChanged = { settingsVm.updateConfig(it) },
                             onUpdateApiKey = { providerId, value -> settingsVm.updateApiKey(providerId, value) },
                             onUpdateBaseUrl = { providerId, value -> settingsVm.updateBaseUrl(providerId, value) },
@@ -1611,6 +1613,9 @@ fun MainScreen() {
                             onConnectMcpServers = { settingsVm.connectMcpServers() },
                             onRefreshMcpStatus = { settingsVm.refreshMcpStatus() },
                             onRefreshGitHubAuthStatus = { settingsVm.refreshGitHubAuthStatus() },
+                            onRefreshDurableGlobalMemories = { settingsVm.refreshDurableGlobalMemories() },
+                            onUpdateDurableGlobalMemory = { settingsVm.updateDurableGlobalMemory(it) },
+                            onDeleteDurableGlobalMemory = { settingsVm.deleteDurableGlobalMemory(it) },
                             onStartGitHubOAuthLogin = { settingsVm.startGitHubOAuthLogin() },
                             onClearGitHubToken = { settingsVm.clearGitHubToken() },
                             onOpenThemePage = {

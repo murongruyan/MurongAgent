@@ -180,10 +180,26 @@ android {
             var keystoreFile = rootProject.file("app/release.jks")
             val legacyKeystoreFile = rootProject.file("app/慕容调度.jks")
             val localBase64Keystore = rootProject.file("app/release.jks.b64")
+            val diaoduKeystoreFile = rootProject.file("../murongdiaodu-apk/murong/release.jks")
+            val diaoduBase64Keystore = rootProject.file("../murongdiaodu-apk/murong/release.jks.b64")
             val keystoreBase64 = (findProperty("KEYSTORE_BASE64") as String?)
                 ?: System.getenv("KEYSTORE_BASE64")
             if (!keystoreBase64.isNullOrBlank()) {
                 val cleaned = keystoreBase64
+                    .replace("-----BEGIN CERTIFICATE-----", "")
+                    .replace("-----END CERTIFICATE-----", "")
+                    .replace("\r", "")
+                    .replace("\n", "")
+                    .trim()
+                if (cleaned.isNotEmpty()) {
+                    keystoreFile.parentFile?.mkdirs()
+                    keystoreFile.writeBytes(Base64.getDecoder().decode(cleaned))
+                }
+            } else if (diaoduKeystoreFile.exists()) {
+                keystoreFile = diaoduKeystoreFile
+            } else if (diaoduBase64Keystore.exists()) {
+                val cleaned = diaoduBase64Keystore
+                    .readText(Charsets.UTF_8)
                     .replace("-----BEGIN CERTIFICATE-----", "")
                     .replace("-----END CERTIFICATE-----", "")
                     .replace("\r", "")

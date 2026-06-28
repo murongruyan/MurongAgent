@@ -63,6 +63,7 @@ import kotlinx.coroutines.flow.filter
 @Composable
 fun SettingsScreen(
     config: ProviderConfig,
+    durableGlobalMemories: List<GlobalMemory> = emptyList(),
     onConfigChanged: (ProviderConfig) -> Unit,
     onUpdateApiKey: (String, String) -> Unit = { _, _ -> },
     onUpdateBaseUrl: (String, String) -> Unit = { _, _ -> },
@@ -85,6 +86,9 @@ fun SettingsScreen(
     onConnectMcpServers: () -> Unit = {},
     onRefreshMcpStatus: () -> Unit = {},
     onRefreshGitHubAuthStatus: () -> Unit = {},
+    onRefreshDurableGlobalMemories: () -> Unit = {},
+    onUpdateDurableGlobalMemory: (GlobalMemory) -> Unit = {},
+    onDeleteDurableGlobalMemory: (String) -> Unit = {},
     onStartGitHubOAuthLogin: () -> Unit = {},
     onClearGitHubToken: () -> Unit = {},
     onOpenThemePage: () -> Unit = {},
@@ -113,6 +117,7 @@ fun SettingsScreen(
 
     LaunchedEffect(Unit) {
         onCheckRoot()
+        onRefreshDurableGlobalMemories()
     }
 
     LaunchedEffect(config.githubToken) {
@@ -502,6 +507,9 @@ fun SettingsScreen(
         ) {
             MemorySection(
                 memories = config.globalMemories,
+                durableMemories = durableGlobalMemories,
+                onDurableMemoryChanged = onUpdateDurableGlobalMemory,
+                onDeleteDurableMemory = onDeleteDurableGlobalMemory,
                 onMemoriesChanged = { memories ->
                     onConfigChanged(config.copy(globalMemories = memories))
                 },
@@ -2203,10 +2211,21 @@ private fun SkillCard(
 @Composable
 private fun MemorySection(
     memories: List<GlobalMemory>,
+    durableMemories: List<GlobalMemory> = emptyList(),
+    onDurableMemoryChanged: (GlobalMemory) -> Unit = {},
+    onDeleteDurableMemory: (String) -> Unit = {},
     onMemoriesChanged: (List<GlobalMemory>) -> Unit,
     showHeader: Boolean = true,
     showDivider: Boolean = true
 ) {
+    val visibleDurableMemories = remember(durableMemories, memories) {
+        durableMemories.filterNot { durable ->
+            memories.any { legacy ->
+                legacy.title.trim() == durable.title.trim() &&
+                    legacy.content.trim() == durable.content.trim()
+            }
+        }
+    }
     if (showDivider) {
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
     }
@@ -2267,6 +2286,37 @@ private fun MemorySection(
         },
         buttonLabel = "手动导入记忆"
     )
+
+    if (visibleDurableMemories.isNotEmpty()) {
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = "模型保存的全局记忆",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+                Text(
+                    text = "这里显示通过对话工具写入的 durable memory，已和工具侧真实存储对齐。现在支持直接编辑和删除。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        visibleDurableMemories.forEach { memory ->
+            PersistedMemoryCard(
+                memory = memory,
+                onChanged = onDurableMemoryChanged,
+                onDelete = { onDeleteDurableMemory(memory.id) }
+            )
+        }
+    }
 
     if (memories.isEmpty()) {
         Surface(
@@ -2343,6 +2393,66 @@ private fun MemoryCard(
                 textStyle = MaterialTheme.typography.bodySmall
             )
 
+            OutlinedTextField(
+                value = memory.content,
+                onValueChange = { onChanged(memory.copy(content = it)) },
+                label = { Text("记忆内容") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 100.dp),
+                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                minLines = 4,
+                maxLines = 8
+            )
+        }
+    }
+}
+
+@Composable
+private fun PersistedMemoryCard(
+    memory: GlobalMemory,
+    onChanged: (GlobalMemory) -> Unit,
+    onDelete: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (memory.enabled) "已启用" else "已停用",
+                    color = if (memory.enabled) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(
+                        checked = memory.enabled,
+                        onCheckedChange = { checked ->
+                            onChanged(memory.copy(enabled = checked))
+                        }
+                    )
+                    TextButton(onClick = onDelete) {
+                        Text("删除", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                    }
+                }
+            }
+            OutlinedTextField(
+                value = memory.title,
+                onValueChange = { onChanged(memory.copy(title = it)) },
+                label = { Text("记忆标题") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall
+            )
             OutlinedTextField(
                 value = memory.content,
                 onValueChange = { onChanged(memory.copy(content = it)) },
