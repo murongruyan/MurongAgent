@@ -36,7 +36,8 @@ sealed class AgentEvent {
     data class ReadinessAudit(val audit: FinalReadinessAuditRecord) : AgentEvent()
     data class Error(
         val message: String,
-        val finalReadinessReceipt: FinalReadinessReceipt? = null
+        val finalReadinessReceipt: FinalReadinessReceipt? = null,
+        val userVisibleMessage: String? = message
     ) : AgentEvent()
     data object Done : AgentEvent()
 }
@@ -104,6 +105,8 @@ class AgentLoop(
         var hasExecutedTools = false
         var hasRetriedForPostToolSummary = false
         var hasRetriedForFinalReadiness = false
+        var hasRetriedAfterHighRiskRemoteWriteFailure = false
+        var blockHighRiskRemoteWritesForCurrentTurn = false
         var lastAuditedFinalReadinessReceipt: FinalReadinessReceipt? = null
         val completedToolRuns = mutableListOf<CompletedToolRun>()
         val preferredSummaryLanguage = inferPreferredSummaryLanguage(
@@ -111,7 +114,7 @@ class AgentLoop(
             history = history
         )
 
-        while (toolIteration < maxToolIterations) {
+        toolLoop@ while (toolIteration < maxToolIterations) {
             toolIteration++
             var streamedContentReceived = false
             var streamedReasoningReceived = false
@@ -220,7 +223,10 @@ class AgentLoop(
                                 receipt = finalReadinessReceipt,
                                 language = preferredSummaryLanguage
                             ),
-                            finalReadinessReceipt = finalReadinessReceipt
+                            finalReadinessReceipt = finalReadinessReceipt,
+                            userVisibleMessage = buildFinalReadinessBlockedUserVisibleMessage(
+                                preferredSummaryLanguage.toFinalReadinessLanguage()
+                            )
                         )
                     )
                     onEvent(AgentEvent.Done)
@@ -303,6 +309,13 @@ class AgentLoop(
                 val result = if (tool != null) {
                     try {
                         val guardMessage = toolExecutionGuard?.invoke(toolName, toolArgs)
+                            ?: if (blockHighRiskRemoteWritesForCurrentTurn &&
+                                isHighRiskRemoteWriteToolName(toolName)
+                            ) {
+                                buildHighRiskRemoteWriteRetryBlockMessage(preferredSummaryLanguage)
+                            } else {
+                                null
+                            }
                         if (guardMessage != null) {
                             com.murong.agent.core.tool.ToolExecutionResult(
                                 output = guardMessage
@@ -406,9 +419,27 @@ class AgentLoop(
                 )
 
                 if (shouldStopAfterHighRiskRemoteWriteFailure(postToolContext.toolName, postToolContext.result)) {
+                    if (!hasRetriedAfterHighRiskRemoteWriteFailure) {
+                        hasRetriedAfterHighRiskRemoteWriteFailure = true
+                        blockHighRiskRemoteWritesForCurrentTurn = true
+                        currentMessages.add(
+                            ChatMessage(
+                                role = "system",
+                                content = buildHighRiskRemoteWriteRetryReminder(
+                                    toolName = postToolContext.toolName,
+                                    language = preferredSummaryLanguage
+                                )
+                            )
+                        )
+                        state = AgentState.THINKING
+                        continue@toolLoop
+                    }
                     onEvent(
                         AgentEvent.Error(
-                            buildHighRiskRemoteWriteStopMessage(postToolContext.toolName, preferredSummaryLanguage)
+                            buildHighRiskRemoteWriteStopMessage(postToolContext.toolName, preferredSummaryLanguage),
+                            userVisibleMessage = buildHighRiskRemoteWriteUserVisibleMessage(
+                                preferredSummaryLanguage
+                            )
                         )
                     )
                     onEvent(AgentEvent.Done)
@@ -747,6 +778,43 @@ class AgentLoop(
         }
     }
 
+    private fun isHighRiskRemoteWriteToolName(toolName: String): Boolean {
+        return toolName in HIGH_RISK_REMOTE_WRITE_TOOL_NAMES
+    }
+
+    private fun buildHighRiskRemoteWriteRetryReminder(
+        toolName: String,
+        language: SummaryLanguage
+    ): String {
+        return when (language) {
+            SummaryLanguage.CHINESE -> buildString {
+                appendLine("Remote Write Guard:")
+                appendLine("高风险远端写入工具 `$toolName` 刚刚出现写后校验异常。")
+                append("本轮不要继续调用高风险远端写入工具；先改用 task_repo_read_file、")
+                append("task_repo_search_code、task_repo_list_dir 等只读工具检查远端最新状态，")
+                append("再向用户汇报发现或询问下一步。")
+            }
+            SummaryLanguage.ENGLISH -> buildString {
+                appendLine("Remote Write Guard:")
+                appendLine("High-risk remote write tool `$toolName` just failed post-write verification.")
+                append("Do not call more high-risk remote write tools in this turn. ")
+                append("Inspect the latest remote state with read/search/list tools first, then report the findings or ask the user how to proceed.")
+            }
+        }
+    }
+
+    private fun buildHighRiskRemoteWriteRetryBlockMessage(language: SummaryLanguage): String {
+        return when (language) {
+            SummaryLanguage.CHINESE ->
+                "Blocked by remote write guard: 上一个高风险远端写入已经出现写后校验异常。" +
+                    "本轮剩余时间不要继续调用高风险远端写入工具；请先改用 task_repo_read_file / " +
+                    "task_repo_search_code / task_repo_list_dir 检查现状。"
+            SummaryLanguage.ENGLISH ->
+                "Blocked by remote write guard: a previous high-risk remote write already failed post-write verification. " +
+                    "Do not call more high-risk remote write tools in this turn; inspect the current state with read/search/list tools first."
+        }
+    }
+
     private fun buildHighRiskRemoteWriteStopMessage(
         toolName: String,
         language: SummaryLanguage
@@ -756,6 +824,15 @@ class AgentLoop(
                 "检测到高风险远端写入工具 `$toolName` 出现写后校验异常，已停止继续自动重试，避免把远端文件越写越坏。请先检查工具结果和目标文件状态，再决定是否继续。"
             SummaryLanguage.ENGLISH ->
                 "A high-risk remote write tool `$toolName` failed post-write verification. Automatic retries have been stopped to avoid further corrupting the remote file. Please inspect the tool result and remote file state before continuing."
+        }
+    }
+
+    private fun buildHighRiskRemoteWriteUserVisibleMessage(language: SummaryLanguage): String {
+        return when (language) {
+            SummaryLanguage.CHINESE ->
+                "当前执行已暂停：检测到远端写入校验异常，已停止自动重试。请先确认目标文件状态后再继续。"
+            SummaryLanguage.ENGLISH ->
+                "Execution paused: a remote write verification error was detected and automatic retries were stopped. Confirm the target file state before continuing."
         }
     }
 

@@ -237,6 +237,17 @@ internal fun buildFinalReadinessBlockedMessage(
     }
 }
 
+internal fun buildFinalReadinessBlockedUserVisibleMessage(
+    language: FinalReadinessLanguage
+): String {
+    return when (language) {
+        FinalReadinessLanguage.CHINESE ->
+            "当前执行已暂停：内部收口校验未通过，模型需要先补齐证据签收或继续剩余步骤后再结束。详细原因已记录到工具审计。"
+        FinalReadinessLanguage.ENGLISH ->
+            "Execution paused: internal final-readiness checks did not pass. The model must complete sign-off with evidence or finish the remaining steps before concluding. Detailed diagnostics were recorded in the audit view."
+    }
+}
+
 internal fun buildFinalReadinessAuditRecord(
     receipt: FinalReadinessReceipt,
     result: FinalReadinessAuditResult,

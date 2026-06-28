@@ -7,13 +7,18 @@ import kotlin.test.assertTrue
 class RemoteModePolicyTest {
 
     @Test
-    fun hasRemoteTaskRepositoryContext_returnsTrueWhenOwnerAndRepoPresent() {
+    fun hasRemoteTaskRepositoryContext_keepsOnlyReadOnlyLocalHelpersVisible() {
         val state = SessionState(
             remoteTaskRepositoryOwner = "murong",
             remoteTaskRepositoryName = "agent"
         )
 
         assertTrue(hasRemoteTaskRepositoryContext(state))
+        assertTrue(shouldExposeLocalShellTool(state))
+        assertTrue(shouldExposeLocalFileReadTool(state))
+        assertTrue(shouldExposeLocalCodeSearchTool(state))
+        assertFalse(shouldExposeLocalFileWriteTool(state))
+        assertFalse(shouldExposeLocalCodeEditTool(state))
         assertFalse(shouldExposeLocalProjectTools(state))
     }
 
@@ -30,6 +35,10 @@ class RemoteModePolicyTest {
 
         assertFalse(hasRemoteTaskRepositoryContext(missingRepoState))
         assertFalse(hasRemoteTaskRepositoryContext(missingOwnerState))
+        assertTrue(shouldExposeLocalFileWriteTool(missingRepoState))
+        assertTrue(shouldExposeLocalCodeEditTool(missingRepoState))
+        assertTrue(shouldExposeLocalFileWriteTool(missingOwnerState))
+        assertTrue(shouldExposeLocalCodeEditTool(missingOwnerState))
         assertTrue(shouldExposeLocalProjectTools(missingRepoState))
         assertTrue(shouldExposeLocalProjectTools(missingOwnerState))
     }
@@ -46,8 +55,15 @@ class RemoteModePolicyTest {
         )
 
         assertTrue(hasRemoteTaskRepositoryContext(state))
+        assertTrue(shouldExposeLocalShellTool(state))
+        assertTrue(shouldExposeLocalFileReadTool(state))
+        assertTrue(shouldExposeLocalCodeSearchTool(state))
+        assertFalse(shouldExposeLocalFileWriteTool(state))
+        assertFalse(shouldExposeLocalCodeEditTool(state))
         assertFalse(shouldExposeLocalProjectTools(state))
         assertFalse(hasRemoteTaskRepositoryContext(blankState))
+        assertTrue(shouldExposeLocalFileWriteTool(blankState))
+        assertTrue(shouldExposeLocalCodeEditTool(blankState))
         assertTrue(shouldExposeLocalProjectTools(blankState))
     }
 }

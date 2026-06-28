@@ -2304,6 +2304,17 @@ class ChatSessionManager(
         )
     }
 
+    private fun decorateUserVisibleErrorMessage(message: String): String {
+        return if (message.startsWith("⚠️") ||
+            message.startsWith("⏹️") ||
+            message.startsWith("ℹ️")
+        ) {
+            message
+        } else {
+            "⚠️ $message"
+        }
+    }
+
     private fun recordCheckpointRecovery(record: CheckpointRecoveryRecordUi) {
         _state.value = _state.value.copy(
             recentRecoveryRecords = (listOf(record) + _state.value.recentRecoveryRecords).take(30)
@@ -5018,10 +5029,22 @@ class ChatSessionManager(
                             _state.value = _state.value.copy(
                                 lastFinalReadinessReceipt = event.finalReadinessReceipt
                             )
-                            appendSystemMessage(
-                                content = "⚠️ ${event.message}",
-                                source = "agent_event:error"
+                            recordError(
+                                message = event.message,
+                                kind = if (event.finalReadinessReceipt != null) {
+                                    ErrorRecordKind.FINAL_READINESS
+                                } else {
+                                    ErrorRecordKind.GENERAL
+                                }
                             )
+                            event.userVisibleMessage
+                                ?.takeIf(String::isNotBlank)
+                                ?.let { userVisibleMessage ->
+                                    appendSystemMessage(
+                                        content = decorateUserVisibleErrorMessage(userVisibleMessage),
+                                        source = "agent_event:error"
+                                    )
+                                }
                         }
                         is AgentEvent.Done -> finalizeStreaming()
                     }

@@ -46,6 +46,13 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -4323,6 +4330,20 @@ private fun InputBar(
                         .onFocusChanged { focusState ->
                             textFieldFocused = focusState.isFocused
                             onInputFocusChanged(focusState.isFocused)
+                        }
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown &&
+                                keyEvent.key == Key.Enter &&
+                                (keyEvent.isCtrlPressed || keyEvent.isMetaPressed)
+                            ) {
+                                when {
+                                    isSending -> onStopSending()
+                                    enabled && canSend -> onSend()
+                                }
+                                true
+                            } else {
+                                false
+                            }
                         },
                     placeholder = {
                         Text(
@@ -4343,15 +4364,17 @@ private fun InputBar(
                         disabledContainerColor = surfaceColor.copy(alpha = 0.14f)
                     ),
                     shape = MaterialTheme.shapes.large,
-                    keyboardOptions = KeyboardOptions(imeAction = if (isSending) ImeAction.Default else ImeAction.Send),
-                    keyboardActions = KeyboardActions(
-                        onSend = {
-                            when {
-                                isSending -> onStopSending()
-                                enabled && canSend -> onSend()
-                            }
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+                    supportingText = {
+                        if (textFieldFocused) {
+                            Text(
+                                "回车换行，发送按钮发送；硬件键盘 Ctrl+Enter 发送",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = mutedTextColor
+                            )
                         }
-                    ),
+                    },
+                    singleLine = false,
                     maxLines = 4,
                     textStyle = MaterialTheme.typography.bodyMedium,
                     enabled = enabled

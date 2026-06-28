@@ -20,10 +20,10 @@ val localProperties = Properties().apply {
 
 val appVersionName = (findProperty("APP_VERSION_NAME") as String?)
     ?.takeIf { it.isNotBlank() }
-    ?: "0.9.0-preview"
+    ?: "1.3"
 val appVersionCode = (findProperty("APP_VERSION_CODE") as String?)
     ?.toIntOrNull()
-    ?: 1
+    ?: 26062813
 val bundledToolchainEnabled = ((findProperty("BUNDLED_TOOLCHAIN_ENABLED") as String?)
     ?: System.getenv("BUNDLED_TOOLCHAIN_ENABLED"))
     ?.toBooleanStrictOrNull()

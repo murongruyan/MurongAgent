@@ -321,7 +321,7 @@ class AgentLoopTest {
     }
 
     @Test
-    fun processMessage_whenHighRiskRemoteWriteFails_stopsBeforeRunningFollowingTools() = runBlocking {
+    fun processMessage_whenHighRiskRemoteWriteFails_retriesWithReadOnlyInspectionInsteadOfStoppingImmediately() = runBlocking {
         val provider = FakeModelProvider(
             responses = ArrayDeque(
                 listOf(
@@ -344,6 +344,8 @@ class AgentLoopTest {
                             )
                         )
                     )
+                    ,
+                    ChatResponse(content = "我先读取远端状态，再决定下一步。", toolCalls = null)
                 )
             )
         )
@@ -374,9 +376,13 @@ class AgentLoopTest {
         )
 
         assertEquals(0, followupTool.executionCount, "高风险远端写失败后不应继续执行后续工具")
-        val errorEvent = events.filterIsInstance<AgentEvent.Error>().lastOrNull()
-        assertNotNull(errorEvent, "止损时应发出错误事件")
-        assertTrue(errorEvent.message.contains("已停止继续自动重试"))
+        assertEquals(2, provider.callCount, "写后校验异常后应再给模型一次只读排查机会")
+        val retryRequest = provider.requests.getOrNull(1)
+        assertNotNull(retryRequest, "应存在携带远端写保护提醒的重试请求")
+        val reminder = retryRequest.messages.lastOrNull { it.role == "system" }?.content.orEmpty()
+        assertTrue(reminder.contains("Remote Write Guard"))
+        assertTrue(reminder.contains("task_repo_read_file"))
+        assertTrue(events.filterIsInstance<AgentEvent.Error>().isEmpty(), "首轮高风险远端写失败后不应立刻把错误抛给用户")
         assertTrue(events.last() is AgentEvent.Done)
     }
 
@@ -794,6 +800,9 @@ class AgentLoopTest {
         assertNotNull(errorEvent, "最终收口失败时应发错误事件")
         assertTrue(errorEvent.message.contains("complete_step"))
         assertTrue(errorEvent.message.contains("已成功执行"))
+        assertNotNull(errorEvent.userVisibleMessage)
+        assertTrue(errorEvent.userVisibleMessage.contains("当前执行已暂停"))
+        assertTrue(!errorEvent.userVisibleMessage.contains("complete_step"))
         assertEquals(
             FinalReadinessReceiptKind.MISSING_COMPLETE_STEP_AFTER_WRITE,
             errorEvent.finalReadinessReceipt?.kind
@@ -865,6 +874,8 @@ class AgentLoopTest {
         val errorEvent = events.filterIsInstance<AgentEvent.Error>().lastOrNull()
         assertNotNull(errorEvent)
         assertTrue(errorEvent.message.contains("跨轮次计划仍未完成"))
+        assertNotNull(errorEvent.userVisibleMessage)
+        assertTrue(errorEvent.userVisibleMessage.contains("当前执行已暂停"))
         assertEquals(
             FinalReadinessReceiptKind.INCOMPLETE_CANONICAL_WORKFLOW,
             errorEvent.finalReadinessReceipt?.kind
@@ -914,6 +925,8 @@ class AgentLoopTest {
         assertTrue(reminder.contains("complete_step"))
         val errorEvent = events.filterIsInstance<AgentEvent.Error>().lastOrNull()
         assertNotNull(errorEvent)
+        assertNotNull(errorEvent.userVisibleMessage)
+        assertTrue(errorEvent.userVisibleMessage.contains("当前执行已暂停"))
         assertEquals(
             FinalReadinessReceiptKind.MISSING_COMPLETE_STEP_AFTER_WRITE,
             errorEvent.finalReadinessReceipt?.kind
