@@ -1816,7 +1816,7 @@ private fun ArchivedMemoryDetailSheet(
                             }
                             candidate.sourceFinalReadinessSummary?.let { summary ->
                                 Text(
-                                    text = "最终收口：$summary",
+                                    text = "上次结果：$summary",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = mutedTextColor
                                 )
@@ -6783,7 +6783,7 @@ private fun SessionDrawerItem(
                 )
                 session.toSessionReadinessPresentation()?.let { readiness ->
                     Text(
-                        text = "收口: ${readiness.summary}",
+                        text = "状态: ${readiness.summary}",
                         style = MaterialTheme.typography.bodySmall,
                         color = if (readiness.blocked) {
                             MaterialTheme.colorScheme.error

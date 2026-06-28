@@ -12,23 +12,23 @@ internal data class FinalReadinessPresentation(
 
 internal fun FinalReadinessReceipt.toFinalReadinessPresentation(): FinalReadinessPresentation {
     val title = when (kind) {
-        FinalReadinessReceiptKind.MISSING_COMPLETE_STEP_AFTER_WRITE -> "最终签收"
-        FinalReadinessReceiptKind.INCOMPLETE_CANONICAL_WORKFLOW -> "计划收口"
+        FinalReadinessReceiptKind.MISSING_COMPLETE_STEP_AFTER_WRITE -> "需要继续确认"
+        FinalReadinessReceiptKind.INCOMPLETE_CANONICAL_WORKFLOW -> "还有步骤未完成"
     }
     val lines = buildList {
         add(sanitizeForUiDisplay(message))
         add(
             when (requiredAction) {
                 FinalReadinessRequiredAction.SIGN_OFF_WITH_EVIDENCE ->
-                    "需要动作：先基于真实工具证据调用 complete_step，再继续收口。"
+                    "需要动作：先确认刚才的修改结果，再继续。"
                 FinalReadinessRequiredAction.COMPLETE_REMAINING_PLAN ->
-                    "需要动作：继续推进剩余计划步骤；步骤完成后再用 complete_step 做证据签收。"
+                    "需要动作：先完成剩余步骤，再回来结束本轮任务。"
             }
         )
         latestSuccessfulWriteToolName
             ?.takeIf { it.isNotBlank() }
-            ?.let { add("最近成功写工具：${sanitizeForUiDisplay(it)}") }
-        remainingUnsignedSteps?.let { add("剩余未签收步骤：$it") }
+            ?.let { add("最近成功修改：${sanitizeForUiDisplay(it)}") }
+        remainingUnsignedSteps?.let { add("剩余步骤：$it") }
         nextRequiredStep
             ?.takeIf { it.isNotBlank() }
             ?.let { add("下一步计划：${sanitizeForUiDisplay(it)}") }
@@ -39,12 +39,12 @@ internal fun FinalReadinessReceipt.toFinalReadinessPresentation(): FinalReadines
                     ?.takeIf { it.isNotBlank() }
                     ?.let { "，结果：${sanitizeForUiDisplay(it)}" }
                     .orEmpty()
-                add("最近已签收：${sanitizeForUiDisplay(step)}$summary")
+                add("最近已确认：${sanitizeForUiDisplay(step)}$summary")
             }
         latestSignedOffMatchedTools
             .takeIf { it.isNotEmpty() }
             ?.let { tools ->
-                add("签收工具：${tools.joinToString(", ") { sanitizeForUiDisplay(it) }}")
+                add("相关工具：${tools.joinToString(", ") { sanitizeForUiDisplay(it) }}")
             }
     }
     return FinalReadinessPresentation(

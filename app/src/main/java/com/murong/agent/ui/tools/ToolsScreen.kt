@@ -712,7 +712,7 @@ private fun AuditCard(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text("工具审计", style = MaterialTheme.typography.titleMedium)
-            KeyValueRow("最终收口审计", "${finalReadinessOverview?.totalCount ?: 0}")
+            KeyValueRow("任务完成检查", "${finalReadinessOverview?.totalCount ?: 0}")
             KeyValueRow("最近工具调用", "${recentToolCalls.size}")
             KeyValueRow("最近 Skill 调用", "${skillUsageSummary.totalCount}")
             KeyValueRow("最近错误", "${recentErrors.size}")
