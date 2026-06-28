@@ -6430,29 +6430,33 @@ class ChatSessionManager(
                 ShellTool(
                     scheduleBackgroundExecution = ::scheduleBackgroundShellExecution
                 ),
-                isEnabled = { allowWriteTools && shouldExposeLocalProjectTools() },
-                isPromptExposed = { shouldExposeLocalProjectTools() }
+                isEnabled = { allowWriteTools && shouldExposeLocalShellTool() },
+                isPromptExposed = { shouldExposeLocalShellTool() }
             )
         }
         if (config.isBuiltinToolEnabled("file")) {
+            val fileOps = config.getEnabledFileToolOperations()
+            val filteredOps = if (shouldExposeLocalFileWriteTool()) {
+                fileOps
+            } else {
+                fileOps.filter { it in setOf("read", "list", "exists") }.toSet()
+            }
             registry.register(
-                FileTool(
-                    config.getEnabledFileToolOperations()
-                ),
-                isEnabled = ::shouldExposeLocalProjectTools
+                FileTool(filteredOps),
+                isEnabled = { shouldExposeLocalFileReadTool() }
             )
         }
         if (config.isBuiltinToolEnabled("code_edit")) {
             registry.register(
                 CodeEditTool(),
-                isEnabled = { allowWriteTools && shouldExposeLocalProjectTools() },
-                isPromptExposed = { shouldExposeLocalProjectTools() }
+                isEnabled = { allowWriteTools && shouldExposeLocalCodeEditTool() },
+                isPromptExposed = { shouldExposeLocalCodeEditTool() }
             )
         }
         if (config.isBuiltinToolEnabled("code_search")) {
             registry.register(
                 CodeSearchTool(),
-                isEnabled = ::shouldExposeLocalProjectTools
+                isEnabled = ::shouldExposeLocalCodeSearchTool
             )
         }
         if (config.isBuiltinToolEnabled("web_search")) {
@@ -8411,6 +8415,26 @@ class ChatSessionManager(
 
     private fun shouldExposeLocalProjectTools(): Boolean {
         return shouldExposeLocalProjectTools(_state.value)
+    }
+
+    private fun shouldExposeLocalShellTool(): Boolean {
+        return shouldExposeLocalShellTool(_state.value)
+    }
+
+    private fun shouldExposeLocalFileReadTool(): Boolean {
+        return shouldExposeLocalFileReadTool(_state.value)
+    }
+
+    private fun shouldExposeLocalFileWriteTool(): Boolean {
+        return shouldExposeLocalFileWriteTool(_state.value)
+    }
+
+    private fun shouldExposeLocalCodeSearchTool(): Boolean {
+        return shouldExposeLocalCodeSearchTool(_state.value)
+    }
+
+    private fun shouldExposeLocalCodeEditTool(): Boolean {
+        return shouldExposeLocalCodeEditTool(_state.value)
     }
 
     private fun buildRecentToolExecutionReceipts(): List<ToolExecutionReceipt> {
