@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
@@ -39,8 +40,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -48,6 +51,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -79,11 +83,17 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
@@ -1363,6 +1373,14 @@ data class MurongBottomBarItem(
     val icon: ImageVector
 )
 
+data class MurongChoiceDialogItem(
+    val key: String,
+    val title: String,
+    val subtitle: String? = null,
+    val enabled: Boolean = true,
+    val destructive: Boolean = false
+)
+
 @Composable
 fun MurongSecondaryPageSurface(
     modifier: Modifier = Modifier,
@@ -1552,6 +1570,198 @@ fun MurongPopupSurface(
         shadowElevation = 0.dp
     ) {
         Column(content = content)
+    }
+}
+
+@Composable
+fun MurongCompactChoiceDialog(
+    title: String,
+    items: List<MurongChoiceDialogItem>,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    dialogAlignment: Alignment = Alignment.Center,
+    popupOffset: IntOffset = IntOffset.Zero,
+    showCancelButton: Boolean = true,
+    onSelect: (MurongChoiceDialogItem) -> Unit
+) {
+    val density = LocalDensity.current
+    val popupProperties = PopupProperties(
+        focusable = false,
+        dismissOnBackPress = true,
+        dismissOnClickOutside = true,
+        clippingEnabled = true
+    )
+    val usesAnchoredPopupPosition = dialogAlignment == Alignment.TopStart && popupOffset != IntOffset.Zero
+    val popupModifier = if (usesAnchoredPopupPosition) {
+        Modifier
+    } else {
+        when (dialogAlignment) {
+            Alignment.TopStart -> Modifier.padding(start = 8.dp, top = 12.dp)
+            Alignment.TopCenter -> Modifier.padding(top = 12.dp)
+            Alignment.TopEnd -> Modifier.padding(end = 8.dp, top = 12.dp)
+            Alignment.CenterStart -> Modifier.padding(start = 8.dp)
+            Alignment.CenterEnd -> Modifier.padding(end = 8.dp)
+            Alignment.BottomStart -> Modifier.padding(start = 8.dp, bottom = 8.dp)
+            Alignment.BottomCenter -> Modifier.padding(bottom = 8.dp)
+            Alignment.BottomEnd -> Modifier.padding(end = 8.dp, bottom = 8.dp)
+            else -> Modifier.padding(8.dp)
+        }
+    }
+    val anchoredPopupPositionProvider = remember(popupOffset, density) {
+        object : PopupPositionProvider {
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: androidx.compose.ui.unit.LayoutDirection,
+                popupContentSize: IntSize
+            ): IntOffset {
+                val marginPx = with(density) { 8.dp.roundToPx() }
+                val x = popupOffset.x.coerceIn(
+                    marginPx,
+                    (windowSize.width - popupContentSize.width - marginPx).coerceAtLeast(marginPx)
+                )
+                val y = popupOffset.y.coerceIn(
+                    marginPx,
+                    (windowSize.height - popupContentSize.height - marginPx).coerceAtLeast(marginPx)
+                )
+                return IntOffset(x, y)
+            }
+        }
+    }
+    val popupContent: @Composable () -> Unit = {
+        MurongPopupSurface(
+            modifier = modifier
+                .then(popupModifier)
+                .widthIn(min = 168.dp, max = 240.dp)
+                .heightIn(max = 360.dp),
+            shape = RoundedCornerShape(20.dp),
+            forceOpaque = true
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(horizontal = 8.dp, vertical = 8.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                if (title.isNotBlank()) {
+                    Text(
+                        text = title,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 2.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+                }
+                subtitle?.takeIf { it.isNotBlank() }?.let { helper ->
+                    Text(
+                        text = helper,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 1.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.82f)
+                    )
+                }
+                items.forEachIndexed { index, item ->
+                    val itemShape = when {
+                        items.size == 1 -> RoundedCornerShape(12.dp)
+                        index == 0 -> RoundedCornerShape(
+                            topStart = 12.dp,
+                            topEnd = 12.dp,
+                            bottomStart = 8.dp,
+                            bottomEnd = 8.dp
+                        )
+                        index == items.lastIndex -> RoundedCornerShape(
+                            topStart = 8.dp,
+                            topEnd = 8.dp,
+                            bottomStart = 12.dp,
+                            bottomEnd = 12.dp
+                        )
+                        else -> RoundedCornerShape(8.dp)
+                    }
+                    val titleColor = when {
+                        !item.enabled -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f)
+                        item.destructive -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.onSurface
+                    }
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(itemShape)
+                            .clickable(enabled = item.enabled) {
+                                onSelect(item)
+                                onDismissRequest()
+                            },
+                        shape = itemShape,
+                        color = if (item.enabled) {
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f)
+                        },
+                        border = BorderStroke(
+                            1.dp,
+                            if (item.destructive && item.enabled) {
+                                MaterialTheme.colorScheme.error.copy(alpha = 0.24f)
+                            } else {
+                                MaterialTheme.colorScheme.outline.copy(alpha = 0.14f)
+                            }
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 9.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = item.title,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = titleColor,
+                                fontWeight = FontWeight.Medium
+                            )
+                            item.subtitle?.takeIf { it.isNotBlank() }?.let { detail ->
+                                Text(
+                                    text = detail,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                                        alpha = if (item.enabled) 0.82f else 0.6f
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+                if (showCancelButton) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(onClick = onDismissRequest) {
+                            Text("取消")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (usesAnchoredPopupPosition) {
+        Popup(
+            popupPositionProvider = anchoredPopupPositionProvider,
+            onDismissRequest = onDismissRequest,
+            properties = popupProperties,
+            content = popupContent
+        )
+    } else {
+        Popup(
+            alignment = dialogAlignment,
+            offset = popupOffset,
+            onDismissRequest = onDismissRequest,
+            properties = popupProperties,
+            content = popupContent
+        )
     }
 }
 

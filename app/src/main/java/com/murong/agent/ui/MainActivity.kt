@@ -1259,7 +1259,21 @@ fun MainScreen() {
                                         preferences
                                     )
                                 },
-                                onEditMessage = { messageId ->
+                                onUndoMessageKeepCode = { messageId ->
+                                    chatVm.rollbackConversationAfterUserMessage(messageId)
+                                },
+                                onUndoCodeKeepMessage = { messageId ->
+                                    chatVm.rollbackCodeAfterUserMessage(messageId).also { result ->
+                                        val message = result.fold(
+                                            onSuccess = { count -> "已撤回 $count 处代码改动" },
+                                            onFailure = { error -> error.message ?: "撤回代码改动失败" }
+                                        )
+                                        scope.launch {
+                                            snackbarHostState.showSnackbar(message)
+                                        }
+                                    }
+                                },
+                                onUndoMessageAndCode = { messageId ->
                                     chatVm.rollbackToUserMessage(messageId)
                                 },
                                 onCompressContext = {
@@ -1319,6 +1333,9 @@ fun MainScreen() {
                                     scope.launch {
                                         snackbarHostState.showSnackbar(message)
                                     }
+                                },
+                                onUpdateWorkspaceMode = { mode ->
+                                    chatVm.updateWorkspaceMode(mode)
                                 },
                                 onRollbackCheckpoint = { checkpointId, checkpointScope ->
                                     val message = chatVm.rollbackCheckpoint(

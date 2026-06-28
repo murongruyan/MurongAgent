@@ -1,9 +1,31 @@
 package com.murong.agent.core.loop
 
+import kotlinx.serialization.Serializable
+
+@Serializable
+enum class WorkspaceMode {
+    REMOTE_PREFERRED,
+    HYBRID,
+    LOCAL_ONLY
+}
+
 internal fun hasRemoteTaskRepositoryContext(state: SessionState): Boolean {
     val owner = state.remoteTaskRepositoryOwner?.trim().orEmpty()
     val repo = state.remoteTaskRepositoryName?.trim().orEmpty()
     return owner.isNotBlank() && repo.isNotBlank()
+}
+
+internal fun hasLocalProjectContext(state: SessionState): Boolean {
+    return !state.projectPath.isNullOrBlank()
+}
+
+fun resolveWorkspaceMode(state: SessionState): WorkspaceMode {
+    if (!hasRemoteTaskRepositoryContext(state)) return WorkspaceMode.LOCAL_ONLY
+    return when (state.workspaceMode) {
+        WorkspaceMode.REMOTE_PREFERRED -> WorkspaceMode.REMOTE_PREFERRED
+        WorkspaceMode.HYBRID -> if (hasLocalProjectContext(state)) WorkspaceMode.HYBRID else WorkspaceMode.REMOTE_PREFERRED
+        WorkspaceMode.LOCAL_ONLY -> if (hasLocalProjectContext(state)) WorkspaceMode.LOCAL_ONLY else WorkspaceMode.REMOTE_PREFERRED
+    }
 }
 
 /**
@@ -29,7 +51,8 @@ internal fun shouldExposeLocalFileReadTool(state: SessionState): Boolean {
  * 远端模式下应避免写入本地文件，除非用户显式切回本地项目。
  */
 internal fun shouldExposeLocalFileWriteTool(state: SessionState): Boolean {
-    return !hasRemoteTaskRepositoryContext(state)
+    return !hasRemoteTaskRepositoryContext(state) ||
+        resolveWorkspaceMode(state) != WorkspaceMode.REMOTE_PREFERRED
 }
 
 /**
@@ -45,12 +68,14 @@ internal fun shouldExposeLocalCodeSearchTool(state: SessionState): Boolean {
  * 远端模式下应避免直接修改本地文件，优先使用 task_repo_* 编辑远端仓库。
  */
 internal fun shouldExposeLocalCodeEditTool(state: SessionState): Boolean {
-    return !hasRemoteTaskRepositoryContext(state)
+    return !hasRemoteTaskRepositoryContext(state) ||
+        resolveWorkspaceMode(state) != WorkspaceMode.REMOTE_PREFERRED
 }
 
 /**
  * 兼容旧函数——判断是否完全隐藏所有本地工具（旧行为）。
  */
 internal fun shouldExposeLocalProjectTools(state: SessionState): Boolean {
-    return !hasRemoteTaskRepositoryContext(state)
+    return !hasRemoteTaskRepositoryContext(state) ||
+        resolveWorkspaceMode(state) != WorkspaceMode.REMOTE_PREFERRED
 }

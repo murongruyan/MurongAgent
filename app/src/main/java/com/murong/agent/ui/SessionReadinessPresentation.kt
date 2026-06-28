@@ -26,16 +26,24 @@ internal fun SessionSummary.toSessionReadinessPresentation(): SessionReadinessPr
         blocked = statusKind == FinalReadinessSessionStatusKind.BLOCKED,
         recovered = statusKind == FinalReadinessSessionStatusKind.RECOVERED,
         statusLabel = when (statusKind) {
-            FinalReadinessSessionStatusKind.BLOCKED -> "当前仍阻塞"
-            FinalReadinessSessionStatusKind.RECOVERED -> "提醒后已恢复"
-            FinalReadinessSessionStatusKind.NONE -> "最近收口记录"
+            FinalReadinessSessionStatusKind.BLOCKED -> "待继续"
+            FinalReadinessSessionStatusKind.RECOVERED -> "已恢复"
+            FinalReadinessSessionStatusKind.NONE -> "最近状态"
         },
         actionLabel = when (statusKind) {
-            FinalReadinessSessionStatusKind.BLOCKED -> "去处理阻塞"
-            FinalReadinessSessionStatusKind.RECOVERED -> "查看恢复记录"
+            FinalReadinessSessionStatusKind.BLOCKED -> "打开聊天"
+            FinalReadinessSessionStatusKind.RECOVERED -> "打开聊天"
             FinalReadinessSessionStatusKind.NONE -> "打开聊天"
         },
-        summary = summary,
-        reasonSummary = latestFinalReadinessReasonSummary
+        summary = when (statusKind) {
+            FinalReadinessSessionStatusKind.BLOCKED -> "还有收尾动作没完成，回到聊天继续即可。"
+            FinalReadinessSessionStatusKind.RECOVERED -> "上次中断已恢复，可以继续当前任务。"
+            FinalReadinessSessionStatusKind.NONE -> "最近有一次收尾记录。"
+        },
+        reasonSummary = when (statusKind) {
+            FinalReadinessSessionStatusKind.BLOCKED -> "建议继续当前会话，让模型补完剩余动作。"
+            FinalReadinessSessionStatusKind.RECOVERED -> "最近一次提醒后已恢复。"
+            FinalReadinessSessionStatusKind.NONE -> null
+        }
     )
 }

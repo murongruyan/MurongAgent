@@ -732,7 +732,7 @@ private fun AuditCard(
             }
             finalReadinessOverview?.let { overview ->
                 Text(
-                    text = "最近收口: ${overview.latestStatusSummary}",
+                    text = "最近状态: ${summarizeFinalReadinessOverviewStatus(overview)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = if (overview.currentlyBlocked) {
                         MaterialTheme.colorScheme.error
@@ -756,7 +756,7 @@ private fun AuditCard(
             val finalReadinessErrorCount = recentErrors.count { it.kind == ErrorRecordKind.FINAL_READINESS }
             if (finalReadinessErrorCount > 0) {
                 Text(
-                    text = "其中 $finalReadinessErrorCount 条属于最终收口阻塞，可点开查看具体 receipt 文案。",
+                    text = "其中 $finalReadinessErrorCount 条是收尾提醒，可点开查看详情。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error
                 )
@@ -1906,7 +1906,7 @@ private fun formatTime(timestamp: Long): String {
 
 internal fun errorRecordTypeLabel(record: ErrorRecordUi): String {
     return when (record.kind) {
-        ErrorRecordKind.FINAL_READINESS -> "最终收口阻塞"
+        ErrorRecordKind.FINAL_READINESS -> "收尾提醒"
         ErrorRecordKind.GENERAL -> "错误"
     }
 }
@@ -1914,7 +1914,7 @@ internal fun errorRecordTypeLabel(record: ErrorRecordUi): String {
 internal fun buildFinalReadinessAuditOverviewHeadline(
     overview: FinalReadinessAuditOverview
 ): String {
-    return "阻塞 ${overview.blockedCount} · 恢复 ${overview.recoveredCount} · 允许 ${overview.allowedCount}"
+    return "待继续 ${overview.blockedCount} · 已恢复 ${overview.recoveredCount} · 已完成 ${overview.allowedCount}"
 }
 
 internal fun buildFinalReadinessAuditOverviewBreakdown(
@@ -1922,11 +1922,22 @@ internal fun buildFinalReadinessAuditOverviewBreakdown(
 ): String? {
     val parts = buildList {
         if (overview.writeSignOffBlockCount > 0) {
-            add("写后待签收 ${overview.writeSignOffBlockCount}")
+            add("代码改动后待补充确认 ${overview.writeSignOffBlockCount}")
         }
         if (overview.canonicalWorkflowBlockCount > 0) {
-            add("计划未收口 ${overview.canonicalWorkflowBlockCount}")
+            add("计划仍有剩余步骤 ${overview.canonicalWorkflowBlockCount}")
         }
     }
     return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+}
+
+private fun summarizeFinalReadinessOverviewStatus(
+    overview: FinalReadinessAuditOverview
+): String {
+    return when {
+        overview.currentlyBlocked -> "还有收尾动作待继续"
+        overview.recoveredCount > 0 -> "最近一次异常已恢复"
+        overview.allowedCount > 0 -> "最近处理正常"
+        else -> "最近有收尾记录"
+    }
 }

@@ -2935,6 +2935,65 @@ internal suspend fun searchProjectGitHubFileNames(
     )
 }
 
+internal suspend fun listProjectGitHubFileNames(
+    repo: ProjectGitHubRepoRef,
+    token: String,
+    apiBaseUrl: String,
+    ref: String = "",
+    limit: Int = 12
+): List<ProjectGitHubGlobalSearchResultUi> {
+    val effectiveRef = ref.trim().ifBlank {
+        val repoResult = runProjectGitHubApiRequest(
+            apiBaseUrl = apiBaseUrl,
+            token = token,
+            path = "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}"
+        )
+        if (!repoResult.success) return emptyList()
+        parseProjectGitHubJsonObject(repoResult.body)
+            ?.string("default_branch")
+            .orEmpty()
+            .ifBlank { "main" }
+    }
+    val treeResult = runProjectGitHubApiRequest(
+        apiBaseUrl = apiBaseUrl,
+        token = token,
+        path = "/repos/${Uri.encode(repo.owner)}/${Uri.encode(repo.repo)}/git/trees/${Uri.encode(effectiveRef)}?recursive=1"
+    )
+    if (!treeResult.success) return emptyList()
+
+    return parseProjectGitHubJsonObject(treeResult.body)
+        ?.jsonArrayOrEmpty("tree")
+        ?.mapNotNull { item ->
+            val obj = item.jsonObjectOrNull() ?: return@mapNotNull null
+            if (!obj.string("type").orEmpty().equals("blob", ignoreCase = true)) {
+                return@mapNotNull null
+            }
+            val path = obj.string("path").orEmpty()
+            if (path.isBlank()) return@mapNotNull null
+            val name = path.substringAfterLast('/')
+            ProjectGitHubGlobalSearchResultUi(
+                type = ProjectGitHubGlobalSearchResultType.FILE,
+                title = name,
+                subtitle = path,
+                repoOwner = repo.owner,
+                repoName = repo.repo,
+                rootPath = null,
+                url = "https://github.com/${repo.owner}/${repo.repo}/blob/${Uri.encode(effectiveRef)}/${path}",
+                filePath = path,
+                matchLabel = "远端文件"
+            )
+        }
+        .orEmpty()
+        .sortedWith(
+            compareBy<ProjectGitHubGlobalSearchResultUi>(
+                { result -> result.filePath.orEmpty().count { it == '/' } },
+                { result -> result.title.length },
+                { result -> result.filePath?.length ?: Int.MAX_VALUE }
+            )
+        )
+        .take(limit.coerceAtLeast(1))
+}
+
 internal suspend fun searchProjectGitHubCodeMatches(
     query: String,
     repo: ProjectGitHubRepoRef,

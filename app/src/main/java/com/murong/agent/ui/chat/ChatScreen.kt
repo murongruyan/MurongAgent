@@ -25,7 +25,6 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -47,12 +46,10 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.isCtrlPressed
-import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -67,6 +64,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -98,8 +96,10 @@ import com.murong.agent.core.loop.SessionSummary
 import com.murong.agent.core.loop.SubagentBatchUi
 import com.murong.agent.core.loop.SubagentRunUi
 import com.murong.agent.core.loop.UsageSummarySnapshot
+import com.murong.agent.core.loop.WorkspaceMode
 import com.murong.agent.core.loop.formatCurrencyAmount
 import com.murong.agent.core.loop.estimateContextCompressionPreview
+import com.murong.agent.core.loop.resolveWorkspaceMode
 import com.murong.agent.core.loop.MIN_MESSAGES_FOR_COMPRESSION
 import com.murong.agent.core.loop.MIN_MESSAGES_TO_COMPRESS
 import com.murong.agent.core.loop.RECENT_MESSAGES_TO_KEEP
@@ -113,6 +113,8 @@ import com.murong.agent.core.config.approvalModeDescription
 import com.murong.agent.core.config.approvalModeLabel
 import com.murong.agent.core.provider.ProviderRegistry
 import com.murong.agent.ui.MurongDialog
+import com.murong.agent.ui.MurongChoiceDialogItem
+import com.murong.agent.ui.MurongCompactChoiceDialog
 import com.murong.agent.ui.MurongGlassSurface
 import com.murong.agent.ui.MurongInteractionPerformanceHint
 import com.murong.agent.ui.MurongOutlinedActionButton
@@ -142,6 +144,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 @Composable
 internal fun ChatScreen(
@@ -169,7 +172,9 @@ internal fun ChatScreen(
     projectToolPreferences: ProjectToolPreferences? = null,
     onNavigateToSettings: () -> Unit = {},
     onUpdateProjectToolPreferences: (ProjectToolPreferences?) -> Unit = {},
-    onEditMessage: (Long) -> Boolean = { false },
+    onUndoMessageKeepCode: (Long) -> Boolean = { false },
+    onUndoCodeKeepMessage: (Long) -> Result<Int> = { Result.failure(IllegalStateException("未配置仅撤回改动动作。")) },
+    onUndoMessageAndCode: (Long) -> Boolean = { false },
     onCompressContext: suspend () -> Result<ContextCompressionUi> = {
         Result.failure(IllegalStateException("未配置上下文压缩动作。"))
     },
@@ -191,7 +196,8 @@ internal fun ChatScreen(
     onScreenActiveStateChanged: (Boolean) -> Unit = {},
     onSearchFiles: suspend (String) -> List<FileMentionUi> = { emptyList() },
     onRetrySubagent: (String) -> Unit = {},
-    onCancelSubagent: (String) -> Unit = {}
+    onCancelSubagent: (String) -> Unit = {},
+    onUpdateWorkspaceMode: (WorkspaceMode) -> Unit = {}
 ) {
     var inputText by remember { mutableStateOf("") }
     val inputHistory = remember(state.sessionId) { mutableStateListOf<String>() }
@@ -344,13 +350,37 @@ internal fun ChatScreen(
     MurongInteractionPerformanceHint(
         active = isScreenActive && listState.isScrollInProgress
     )
-    val currentProjectLabel = state.projectPath?.takeIf { it.isNotBlank() }
-        ?: state.remoteTaskRepositoryLabel?.takeIf { it.isNotBlank() }
-    val currentWorkspaceTitle = if (state.projectPath.isNullOrBlank()) "当前远端任务仓库" else "当前项目"
+    val hasLocalProject = !state.projectPath.isNullOrBlank()
+    val hasRemoteTaskRepository = !state.remoteTaskRepositoryLabel.isNullOrBlank()
+    val effectiveWorkspaceMode = remember(
+        state.projectPath,
+        state.remoteTaskRepositoryOwner,
+        state.remoteTaskRepositoryName,
+        state.workspaceMode
+    ) {
+        resolveWorkspaceMode(state)
+    }
+    val currentWorkspaceLabel = when {
+        hasLocalProject && hasRemoteTaskRepository ->
+            "本地项目: ${state.projectPath}\n远端仓库: ${state.remoteTaskRepositoryLabel}"
+        hasLocalProject -> state.projectPath
+        else -> state.remoteTaskRepositoryLabel
+    }
+    val currentWorkspaceTitle = when {
+        hasLocalProject && hasRemoteTaskRepository -> "当前工作区"
+        hasLocalProject -> "当前项目"
+        else -> "当前远端任务仓库"
+    }
     val currentWorkspaceHelperText = when {
-        state.projectPath.isNullOrBlank() && state.remoteTaskRepositoryEditable ->
+        hasLocalProject && hasRemoteTaskRepository && effectiveWorkspaceMode == WorkspaceMode.REMOTE_PREFERRED ->
+            "当前模式: 远端优先。模型优先走 GitHub/MCP 远端能力，本地搜索可用，但本地写入和本地代码编辑会收紧。"
+        hasLocalProject && hasRemoteTaskRepository && effectiveWorkspaceMode == WorkspaceMode.HYBRID ->
+            "当前模式: 混合模式。远端仓库和本地项目都可操作；模型需要区分本地修改和远端修改，避免写错边。"
+        hasLocalProject && hasRemoteTaskRepository && effectiveWorkspaceMode == WorkspaceMode.LOCAL_ONLY ->
+            "当前模式: 仅本地。默认优先本地搜索、编辑和验证；远端任务仓库保留作参考，除非你明确要求改远端。"
+        !hasLocalProject && state.remoteTaskRepositoryEditable ->
             "已设为任务仓库，可在项目页直接搜索和编辑。让模型处理远端仓库时会优先参考 GitHub/MCP 远端能力。"
-        state.projectPath.isNullOrBlank() ->
+        !hasLocalProject ->
             "当前没有本地项目路径，模型处理这个仓库时会优先走 GitHub/MCP 远端能力。"
         projectKnowledgeMentions.isNotEmpty() ->
             "已接入知识文件 ${projectKnowledgeMentions.size} 个，可在 @文件 中直接选择。"
@@ -501,11 +531,11 @@ internal fun ChatScreen(
 
     LaunchedEffect(
         state.sessionId,
-        currentProjectLabel,
+        currentWorkspaceLabel,
         currentWorkspaceTitle,
         currentWorkspaceHelperText
     ) {
-        if (currentProjectLabel == null) return@LaunchedEffect
+        if (currentWorkspaceLabel == null) return@LaunchedEffect
         showCurrentWorkspaceHint = true
         delay(2600)
         showCurrentWorkspaceHint = false
@@ -994,7 +1024,11 @@ internal fun ChatScreen(
                 enabled = true,
                 isSending = state.isProcessing,
                 bottomReservedPadding = bottomReservedPadding,
-                onStopSending = onStopSending
+                onStopSending = onStopSending,
+                workspaceMode = effectiveWorkspaceMode,
+                hasRemoteTaskRepository = hasRemoteTaskRepository,
+                hasLocalProject = hasLocalProject,
+                onUpdateWorkspaceMode = onUpdateWorkspaceMode
             )
 
             if (showSkillPicker) {
@@ -1042,10 +1076,10 @@ internal fun ChatScreen(
             verticalArrangement = Arrangement.spacedBy(6.dp),
             horizontalAlignment = Alignment.End
         ) {
-            if (currentProjectLabel != null) {
+            if (currentWorkspaceLabel != null) {
                 CurrentWorkspaceHint(
                     title = currentWorkspaceTitle,
-                    workspaceLabel = currentProjectLabel,
+                    workspaceLabel = currentWorkspaceLabel,
                     helperText = currentWorkspaceHelperText,
                     expanded = showCurrentWorkspaceHint,
                     onToggleExpanded = { showCurrentWorkspaceHint = !showCurrentWorkspaceHint }
@@ -1194,9 +1228,28 @@ internal fun ChatScreen(
                 copyTextToClipboard(context, roundText)
                 messageActionTarget = null
             },
-            onEditMessage = if (target.role == "user") {
+            onUndoMessageKeepCode = if (target.role == "user") {
                 {
-                    if (onEditMessage(target.id)) {
+                    if (onUndoMessageKeepCode(target.id)) {
+                        inputText = target.content
+                        editingMessageId = target.id
+                    }
+                    messageActionTarget = null
+                }
+            } else {
+                null
+            },
+            onUndoCodeKeepMessage = if (target.role == "user") {
+                {
+                    onUndoCodeKeepMessage(target.id)
+                    messageActionTarget = null
+                }
+            } else {
+                null
+            },
+            onUndoMessageAndCode = if (target.role == "user") {
+                {
+                    if (onUndoMessageAndCode(target.id)) {
                         inputText = target.content
                         editingMessageId = target.id
                     }
@@ -2593,8 +2646,11 @@ private fun MentionFilePickerDialog(
     val knowledgeResults = remember(localQuery, results, knowledgePaths) {
         if (localQuery.isBlank()) emptyList() else results.filter { it.path in knowledgePaths }
     }
-    val regularResults = remember(localQuery, results, knowledgePaths) {
-        if (localQuery.isBlank()) results else results.filterNot { it.path in knowledgePaths }
+    val remoteResults = remember(results, knowledgePaths) {
+        results.filter { it.path.startsWith("github://") && it.path !in knowledgePaths }
+    }
+    val localProjectResults = remember(results, knowledgePaths) {
+        results.filterNot { it.path in knowledgePaths || it.path.startsWith("github://") }
     }
     MurongDialog(onDismissRequest = onDismiss) {
         MurongPopupSurface(
@@ -2682,17 +2738,36 @@ private fun MentionFilePickerDialog(
                     } else {
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             if (localQuery.isBlank()) {
-                                results.take(8).forEach { mention ->
-                                    MentionCandidateRow(
-                                        mention = mention,
-                                        query = localQuery,
-                                        containerColor = surfaceColor.copy(alpha = 0.66f),
-                                        isKnowledge = mention.path in knowledgePaths,
-                                        knowledgeOutline = knowledgeOutlines[mention.path],
-                                        snapshotNames = snapshotNamesByPath[mention.path].orEmpty(),
-                                        onClick = { onSelect(mention) }
-                                    )
-                                }
+                                MentionCandidateSection(
+                                    title = "知识文件",
+                                    results = projectKnowledgeMentions.take(6),
+                                    query = localQuery,
+                                    knowledgePaths = knowledgePaths,
+                                    knowledgeOutlines = knowledgeOutlines,
+                                    snapshotNamesByPath = snapshotNamesByPath,
+                                    containerColor = chromeColor.copy(alpha = 0.52f),
+                                    onSelect = onSelect
+                                )
+                                MentionCandidateSection(
+                                    title = "远端仓库",
+                                    results = remoteResults.take(8),
+                                    query = localQuery,
+                                    knowledgePaths = knowledgePaths,
+                                    knowledgeOutlines = knowledgeOutlines,
+                                    snapshotNamesByPath = snapshotNamesByPath,
+                                    containerColor = chromeColor.copy(alpha = 0.42f),
+                                    onSelect = onSelect
+                                )
+                                MentionCandidateSection(
+                                    title = "本地项目",
+                                    results = localProjectResults.take(8),
+                                    query = localQuery,
+                                    knowledgePaths = knowledgePaths,
+                                    knowledgeOutlines = knowledgeOutlines,
+                                    snapshotNamesByPath = snapshotNamesByPath,
+                                    containerColor = surfaceColor.copy(alpha = 0.66f),
+                                    onSelect = onSelect
+                                )
                             } else {
                                 MentionCandidateSection(
                                     title = "知识文件",
@@ -2705,8 +2780,18 @@ private fun MentionFilePickerDialog(
                                     onSelect = onSelect
                                 )
                                 MentionCandidateSection(
-                                    title = "其他文件",
-                                    results = regularResults.take(8),
+                                    title = "远端仓库",
+                                    results = remoteResults.take(8),
+                                    query = localQuery,
+                                    knowledgePaths = knowledgePaths,
+                                    knowledgeOutlines = knowledgeOutlines,
+                                    snapshotNamesByPath = snapshotNamesByPath,
+                                    containerColor = chromeColor.copy(alpha = 0.42f),
+                                    onSelect = onSelect
+                                )
+                                MentionCandidateSection(
+                                    title = "本地项目",
+                                    results = localProjectResults.take(8),
                                     query = localQuery,
                                     knowledgePaths = knowledgePaths,
                                     knowledgeOutlines = knowledgeOutlines,
@@ -2738,7 +2823,8 @@ private fun MentionCandidateSection(
     val description = remember(title) {
         when (title) {
             "知识文件" -> "来自当前项目知识挂载，会优先展示。"
-            "其他文件" -> "来自项目搜索结果，按当前关键字匹配度排序。"
+            "远端仓库" -> "来自当前绑定的 GitHub 仓库，可直接引用远端文件。"
+            "本地项目" -> "来自当前本地项目搜索结果，按匹配度排序。"
             else -> null
         }
     }
@@ -4060,54 +4146,203 @@ private fun MessageActionSheet(
     onDismiss: () -> Unit,
     onCopyMessage: () -> Unit,
     onCopyRound: () -> Unit,
-    onEditMessage: (() -> Unit)? = null
+    onUndoMessageKeepCode: (() -> Unit)? = null,
+    onUndoCodeKeepMessage: (() -> Unit)? = null,
+    onUndoMessageAndCode: (() -> Unit)? = null
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-        ) {
-            Text(
-                text = "消息操作",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            SheetActionItem(label = "复制消息", onClick = onCopyMessage)
-            SheetActionItem(label = "复制本轮", onClick = onCopyRound)
-            if (onEditMessage != null) {
-                SheetActionItem(
-                    label = "重新编辑这条消息",
-                    onClick = onEditMessage
+    val items = buildList {
+        add(MurongChoiceDialogItem(key = "copy_message", title = "复制消息", subtitle = "只复制这一条消息的内容"))
+        add(MurongChoiceDialogItem(key = "copy_round", title = "复制本轮", subtitle = "复制这条消息所在的一整轮对话"))
+        if (onUndoMessageKeepCode != null) {
+            add(
+                MurongChoiceDialogItem(
+                    key = "undo_message",
+                    title = "撤回消息",
+                    subtitle = "只撤回这条消息之后的对话，不恢复代码改动"
                 )
-            }
-            Spacer(modifier = Modifier.height(16.dp))
+            )
+        }
+        if (onUndoCodeKeepMessage != null) {
+            add(
+                MurongChoiceDialogItem(
+                    key = "undo_code",
+                    title = "撤回改动",
+                    subtitle = "只恢复这条消息之后的代码改动，不撤回消息"
+                )
+            )
+        }
+        if (onUndoMessageAndCode != null) {
+            add(
+                MurongChoiceDialogItem(
+                    key = "undo_all",
+                    title = "撤回",
+                    subtitle = "同时撤回这条消息之后的消息和改动",
+                    destructive = true
+                )
+            )
         }
     }
+    MurongCompactChoiceDialog(
+        title = "消息操作",
+        subtitle = msg.content.takeIf { it.isNotBlank() }?.replace('\n', ' ')?.take(48),
+        items = items,
+        onDismissRequest = onDismiss,
+        onSelect = { item ->
+            when (item.key) {
+                "copy_message" -> onCopyMessage()
+                "copy_round" -> onCopyRound()
+                "undo_message" -> onUndoMessageKeepCode?.invoke()
+                "undo_code" -> onUndoCodeKeepMessage?.invoke()
+                "undo_all" -> onUndoMessageAndCode?.invoke()
+            }
+        }
+    )
 }
 
-@Composable
-private fun SheetActionItem(
-    label: String,
-    onClick: () -> Unit
-) {
-    val surfaceColor = rememberMurongSurfaceColor()
-    Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = surfaceColor.copy(alpha = 0.68f),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp)
-            .clickable(onClick = onClick)
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 16.dp)
+private data class ComposerMoreAction(
+    val item: MurongChoiceDialogItem,
+    val onClick: () -> Unit
+)
+
+private fun buildComposerMoreActions(
+    currentApprovalModeLabel: String,
+    selectedSkillCount: Int,
+    availableSkills: List<GlobalSkill>,
+    canUseMultimodal: Boolean,
+    actionsEnabled: Boolean,
+    enabled: Boolean,
+    allowStructuredActions: Boolean,
+    planModeEnabled: Boolean,
+    goalModeEnabled: Boolean,
+    hasSessionGoal: Boolean,
+    hasPendingImages: Boolean,
+    hasRemoteTaskRepository: Boolean,
+    hasLocalProject: Boolean,
+    workspaceMode: WorkspaceMode,
+    onCaptureImage: () -> Unit,
+    onPickImages: () -> Unit,
+    onMention: () -> Unit,
+    onOpenSkillPicker: () -> Unit,
+    onOpenApprovalMode: () -> Unit,
+    onUpdateWorkspaceMode: (WorkspaceMode) -> Unit,
+    onPlanModeChange: (Boolean) -> Unit,
+    onGoalModeChange: (Boolean) -> Unit
+): List<ComposerMoreAction> {
+    val actions = mutableListOf<ComposerMoreAction>()
+    if (canUseMultimodal) {
+        actions += ComposerMoreAction(
+            item = MurongChoiceDialogItem(
+                key = "capture",
+                title = "拍照",
+                subtitle = "直接调用相机拍照后发送",
+                enabled = actionsEnabled
+            ),
+            onClick = onCaptureImage
+        )
+        actions += ComposerMoreAction(
+            item = MurongChoiceDialogItem(
+                key = "pick_images",
+                title = "选图",
+                subtitle = "从相册选择图片发送",
+                enabled = actionsEnabled
+            ),
+            onClick = onPickImages
         )
     }
+    actions += ComposerMoreAction(
+        item = MurongChoiceDialogItem(
+            key = "mention",
+            title = "@文件",
+            subtitle = "插入本地文件或知识文件引用",
+            enabled = actionsEnabled
+        ),
+        onClick = onMention
+    )
+    actions += ComposerMoreAction(
+        item = MurongChoiceDialogItem(
+            key = "skills",
+            title = if (selectedSkillCount > 0) "Skills ($selectedSkillCount)" else "选择 Skills",
+            subtitle = if (availableSkills.isNotEmpty()) "给当前消息附加可执行 Skill" else "当前还没有可用 Skill",
+            enabled = actionsEnabled && availableSkills.isNotEmpty()
+        ),
+        onClick = onOpenSkillPicker
+    )
+    actions += ComposerMoreAction(
+        item = MurongChoiceDialogItem(
+            key = "approval",
+            title = currentApprovalModeLabel,
+            subtitle = "调整当前会话的工具审批方式",
+            enabled = enabled
+        ),
+        onClick = onOpenApprovalMode
+    )
+    if (hasRemoteTaskRepository) {
+        WorkspaceMode.entries.forEach { mode ->
+            val isSupported = hasLocalProject || mode == WorkspaceMode.REMOTE_PREFERRED
+            actions += ComposerMoreAction(
+                item = MurongChoiceDialogItem(
+                    key = "workspace_${mode.name}",
+                    title = buildString {
+                        append(if (mode == workspaceMode) "当前模式: " else "切换到: ")
+                        append(workspaceModeMenuLabel(mode))
+                    },
+                    subtitle = when (mode) {
+                        WorkspaceMode.REMOTE_PREFERRED -> "优先远端仓库；本地搜索可用，本地写入更谨慎"
+                        WorkspaceMode.HYBRID -> "远端和本地都可操作，适合对照修改"
+                        WorkspaceMode.LOCAL_ONLY -> "默认只操作本地项目，远端仓库仅作参考"
+                    },
+                    enabled = actionsEnabled && isSupported
+                ),
+                onClick = { onUpdateWorkspaceMode(mode) }
+            )
+        }
+        if (!hasLocalProject) {
+            actions += ComposerMoreAction(
+                item = MurongChoiceDialogItem(
+                    key = "workspace_hint",
+                    title = "绑定本地项目后可切到混合模式或仅本地",
+                    subtitle = "当前只有远端仓库上下文，所以先保留远端优先",
+                    enabled = false
+                ),
+                onClick = {}
+            )
+        }
+    }
+    actions += ComposerMoreAction(
+        item = MurongChoiceDialogItem(
+            key = "plan_mode",
+            title = if (planModeEnabled) "计划模式: 开" else "计划模式: 关",
+            subtitle = "让模型先产出步骤计划再执行",
+            enabled = actionsEnabled && allowStructuredActions
+        ),
+        onClick = { onPlanModeChange(!planModeEnabled) }
+    )
+    actions += ComposerMoreAction(
+        item = MurongChoiceDialogItem(
+            key = "goal_mode",
+            title = when {
+                goalModeEnabled && hasSessionGoal -> "更新目标: 开"
+                goalModeEnabled -> "设置目标: 开"
+                hasSessionGoal -> "更新目标: 关"
+                else -> "设置目标: 关"
+            },
+            subtitle = "给当前会话设置或更新长期目标",
+            enabled = actionsEnabled && allowStructuredActions
+        ),
+        onClick = { onGoalModeChange(!goalModeEnabled) }
+    )
+    if (hasPendingImages && (planModeEnabled || goalModeEnabled)) {
+        actions += ComposerMoreAction(
+            item = MurongChoiceDialogItem(
+                key = "pending_images_hint",
+                title = "当前模式下图片不会发送",
+                subtitle = "先关闭计划模式或目标模式，再发送图片",
+                enabled = false
+            ),
+            onClick = {}
+        )
+    }
+    return actions
 }
 
 private fun buildGoalModeMessage(goal: String): String {
@@ -4281,14 +4516,65 @@ private fun InputBar(
     enabled: Boolean,
     isSending: Boolean,
     bottomReservedPadding: Dp,
-    onStopSending: () -> Unit
+    onStopSending: () -> Unit,
+    workspaceMode: WorkspaceMode,
+    hasRemoteTaskRepository: Boolean,
+    hasLocalProject: Boolean,
+    onUpdateWorkspaceMode: (WorkspaceMode) -> Unit
 ) {
     var showMoreActions by remember { mutableStateOf(false) }
+    var moreMenuOffset by remember { mutableStateOf(IntOffset.Zero) }
     var inputBarHeightPx by remember { mutableIntStateOf(0) }
     var textFieldHeightPx by remember { mutableIntStateOf(0) }
     var actionRowHeightPx by remember { mutableIntStateOf(0) }
     var textFieldFocused by remember { mutableStateOf(false) }
     val actionsEnabled = enabled && !isSending
+    val moreActions = remember(
+        currentApprovalModeLabel,
+        selectedSkillCount,
+        availableSkills,
+        canUseMultimodal,
+        actionsEnabled,
+        enabled,
+        allowStructuredActions,
+        planModeEnabled,
+        goalModeEnabled,
+        hasSessionGoal,
+        hasPendingImages,
+        hasRemoteTaskRepository,
+        hasLocalProject,
+        workspaceMode
+    ) {
+        buildComposerMoreActions(
+            currentApprovalModeLabel = currentApprovalModeLabel,
+            selectedSkillCount = selectedSkillCount,
+            availableSkills = availableSkills,
+            canUseMultimodal = canUseMultimodal,
+            actionsEnabled = actionsEnabled,
+            enabled = enabled,
+            allowStructuredActions = allowStructuredActions,
+            planModeEnabled = planModeEnabled,
+            goalModeEnabled = goalModeEnabled,
+            hasSessionGoal = hasSessionGoal,
+            hasPendingImages = hasPendingImages,
+            hasRemoteTaskRepository = hasRemoteTaskRepository,
+            hasLocalProject = hasLocalProject,
+            workspaceMode = workspaceMode,
+            onCaptureImage = onCaptureImage,
+            onPickImages = onPickImages,
+            onMention = onMention,
+            onOpenSkillPicker = onOpenSkillPicker,
+            onOpenApprovalMode = onOpenApprovalMode,
+            onUpdateWorkspaceMode = onUpdateWorkspaceMode,
+            onPlanModeChange = onPlanModeChange,
+            onGoalModeChange = onGoalModeChange
+        )
+    }
+    val compactMoreActions = remember(moreActions) {
+        moreActions.map { action ->
+            action.item.copy(subtitle = null)
+        }
+    }
     val accent = rememberMurongAccentColor()
     val surfaceColor = rememberMurongSurfaceColor()
     val mutedTextColor = rememberMurongMutedTextColor()
@@ -4297,6 +4583,11 @@ private fun InputBar(
     val imeVisible = imeBottomInsetPx > 0
     val baseBottomGapPx = with(density) { (10.dp + bottomReservedPadding).toPx() }
     val appliedBottomGap = with(density) { max(imeBottomInsetPx.toFloat(), baseBottomGapPx).toDp() }
+    val compactMoreMenuWidthPx = with(density) { 212.dp.roundToPx() }
+    val compactMoreMenuHeightPx = with(density) {
+        ((compactMoreActions.size.coerceAtMost(6) * 42) + 28).dp.roundToPx()
+    }
+    val compactMoreMenuGapPx = with(density) { 8.dp.roundToPx() }
 
     Box(
         modifier = Modifier
@@ -4330,20 +4621,6 @@ private fun InputBar(
                         .onFocusChanged { focusState ->
                             textFieldFocused = focusState.isFocused
                             onInputFocusChanged(focusState.isFocused)
-                        }
-                        .onPreviewKeyEvent { keyEvent ->
-                            if (keyEvent.type == KeyEventType.KeyDown &&
-                                keyEvent.key == Key.Enter &&
-                                (keyEvent.isCtrlPressed || keyEvent.isMetaPressed)
-                            ) {
-                                when {
-                                    isSending -> onStopSending()
-                                    enabled && canSend -> onSend()
-                                }
-                                true
-                            } else {
-                                false
-                            }
                         },
                     placeholder = {
                         Text(
@@ -4368,7 +4645,7 @@ private fun InputBar(
                     supportingText = {
                         if (textFieldFocused) {
                             Text(
-                                "回车换行，发送按钮发送；硬件键盘 Ctrl+Enter 发送",
+                                "回车换行，发送按钮发送",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = mutedTextColor
                             )
@@ -4386,102 +4663,21 @@ private fun InputBar(
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box {
-                        MurongTagButton(
-                            text = if (text.isBlank()) "更多" else "操作",
-                            onClick = {
-                                if (actionsEnabled) {
-                                    showMoreActions = true
-                                }
+                    MurongTagButton(
+                        text = if (text.isBlank()) "更多" else "操作",
+                        onClick = {
+                            if (actionsEnabled) {
+                                showMoreActions = true
                             }
-                        )
-                        DropdownMenu(
-                            expanded = showMoreActions,
-                            onDismissRequest = { showMoreActions = false }
-                        ) {
-                            if (canUseMultimodal) {
-                                DropdownMenuItem(
-                                    text = { Text("拍照") },
-                                    onClick = {
-                                        showMoreActions = false
-                                        onCaptureImage()
-                                    },
-                                    enabled = actionsEnabled
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("选图") },
-                                    onClick = {
-                                        showMoreActions = false
-                                        onPickImages()
-                                    },
-                                    enabled = actionsEnabled
-                                )
-                            }
-                            DropdownMenuItem(
-                                text = { Text("@文件") },
-                                onClick = {
-                                    showMoreActions = false
-                                    onMention()
-                                },
-                                enabled = actionsEnabled
+                        },
+                        modifier = Modifier.onGloballyPositioned { coordinates ->
+                            val bounds = coordinates.boundsInWindow()
+                            moreMenuOffset = IntOffset(
+                                x = bounds.right.roundToInt() - compactMoreMenuWidthPx,
+                                y = bounds.top.roundToInt() - compactMoreMenuHeightPx - compactMoreMenuGapPx
                             )
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        if (selectedSkillCount > 0) {
-                                            "Skills ($selectedSkillCount)"
-                                        } else {
-                                            "选择 Skills"
-                                        }
-                                    )
-                                },
-                                onClick = {
-                                    showMoreActions = false
-                                    onOpenSkillPicker()
-                                },
-                                enabled = actionsEnabled && availableSkills.isNotEmpty()
-                            )
-                            DropdownMenuItem(
-                                text = { Text(currentApprovalModeLabel) },
-                                onClick = {
-                                    showMoreActions = false
-                                    onOpenApprovalMode()
-                                },
-                                enabled = enabled
-                            )
-                            DropdownMenuItem(
-                                text = {
-                                    Text(if (planModeEnabled) "计划: 开" else "计划: 关")
-                                },
-                                onClick = {
-                                    onPlanModeChange(!planModeEnabled)
-                                },
-                                enabled = actionsEnabled && allowStructuredActions
-                            )
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        if (goalModeEnabled) {
-                                            if (hasSessionGoal) "更新目标: 开" else "设置目标: 开"
-                                        } else {
-                                            if (hasSessionGoal) "更新目标: 关" else "设置目标: 关"
-                                        }
-                                    )
-                                },
-                                onClick = {
-                                    onGoalModeChange(!goalModeEnabled)
-                                },
-                                enabled = actionsEnabled && allowStructuredActions
-                            )
-                            if (hasPendingImages && (planModeEnabled || goalModeEnabled)) {
-                                DropdownMenuItem(
-                                    text = { Text("当前模式下图片不会发送") },
-                                    onClick = { showMoreActions = false },
-                                    enabled = false
-                                )
-                            }
                         }
-                    }
+                    )
                     MurongTagButton(
                         text = "上一条",
                         onClick = {
@@ -4531,6 +4727,22 @@ private fun InputBar(
                 }
             }
         }
+    }
+    if (showMoreActions) {
+        MurongCompactChoiceDialog(
+            title = if (text.isBlank()) "更多" else "操作",
+            subtitle = null,
+            items = compactMoreActions,
+            modifier = Modifier.widthIn(min = 168.dp, max = 212.dp),
+            dialogAlignment = Alignment.TopStart,
+            popupOffset = moreMenuOffset,
+            showCancelButton = false,
+            onDismissRequest = { showMoreActions = false },
+            onSelect = { selectedItem ->
+                showMoreActions = false
+                moreActions.firstOrNull { it.item.key == selectedItem.key }?.onClick?.invoke()
+            }
+        )
     }
 }
 
@@ -6514,9 +6726,27 @@ private fun SessionDrawerItem(
     onDelete: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    var menuOffset by remember { mutableStateOf(IntOffset.Zero) }
     val surfaceColor = rememberMurongSurfaceColor()
     val mutedTextColor = rememberMurongMutedTextColor()
     val accent = rememberMurongAccentColor()
+    val density = LocalDensity.current
+    val menuWidthPx = with(density) { 168.dp.roundToPx() }
+    val menuHeightPx = with(density) { 100.dp.roundToPx() }
+    val menuGapPx = with(density) { 6.dp.roundToPx() }
+    val menuItems = remember {
+        listOf(
+            MurongChoiceDialogItem(
+                key = "rename",
+                title = "重命名"
+            ),
+            MurongChoiceDialogItem(
+                key = "delete",
+                title = "删除会话",
+                destructive = true
+            )
+        )
+    }
 
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -6584,41 +6814,38 @@ private fun SessionDrawerItem(
                 }
             }
             Box {
-                IconButton(onClick = { showMenu = true }) {
+                IconButton(
+                    onClick = { showMenu = true },
+                    modifier = Modifier.onGloballyPositioned { coordinates ->
+                        val bounds = coordinates.boundsInWindow()
+                        menuOffset = IntOffset(
+                            x = bounds.right.roundToInt() - menuWidthPx,
+                            y = bounds.bottom.roundToInt() + menuGapPx
+                        )
+                    }
+                ) {
                     Icon(
                         imageVector = Icons.Outlined.MoreVert,
                         contentDescription = "会话操作",
                         tint = mutedTextColor
                     )
                 }
-                DropdownMenu(
-                    expanded = showMenu,
-                    onDismissRequest = { showMenu = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("重命名") },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Outlined.Edit,
-                                contentDescription = null
-                            )
-                        },
-                        onClick = {
+                if (showMenu) {
+                    MurongCompactChoiceDialog(
+                        title = "",
+                        subtitle = null,
+                        items = menuItems,
+                        modifier = Modifier.widthIn(min = 148.dp, max = 168.dp),
+                        dialogAlignment = Alignment.TopStart,
+                        popupOffset = menuOffset,
+                        showCancelButton = false,
+                        onDismissRequest = { showMenu = false },
+                        onSelect = { item ->
                             showMenu = false
-                            onRename()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("删除会话") },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Outlined.Delete,
-                                contentDescription = null
-                            )
-                        },
-                        onClick = {
-                            showMenu = false
-                            onDelete()
+                            when (item.key) {
+                                "rename" -> onRename()
+                                "delete" -> onDelete()
+                            }
                         }
                     )
                 }
@@ -6746,6 +6973,14 @@ private fun CurrentWorkspaceHint(
         expanded = expanded,
         onToggleExpanded = onToggleExpanded
     )
+}
+
+private fun workspaceModeMenuLabel(mode: WorkspaceMode): String {
+    return when (mode) {
+        WorkspaceMode.REMOTE_PREFERRED -> "远端优先"
+        WorkspaceMode.HYBRID -> "混合模式"
+        WorkspaceMode.LOCAL_ONLY -> "仅本地"
+    }
 }
 
 @Composable

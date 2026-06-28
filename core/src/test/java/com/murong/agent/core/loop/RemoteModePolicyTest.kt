@@ -23,6 +23,36 @@ class RemoteModePolicyTest {
     }
 
     @Test
+    fun hybridWorkspaceMode_keepsLocalWriteToolsAvailableWhileRemoteRepoIsBound() {
+        val state = SessionState(
+            projectPath = "C:/workspace/murongagent",
+            remoteTaskRepositoryOwner = "murong",
+            remoteTaskRepositoryName = "agent",
+            workspaceMode = WorkspaceMode.HYBRID
+        )
+
+        assertTrue(hasRemoteTaskRepositoryContext(state))
+        assertTrue(shouldExposeLocalFileWriteTool(state))
+        assertTrue(shouldExposeLocalCodeEditTool(state))
+        assertTrue(shouldExposeLocalProjectTools(state))
+        assertTrue(resolveWorkspaceMode(state) == WorkspaceMode.HYBRID)
+    }
+
+    @Test
+    fun localOnlyWorkspaceMode_withoutLocalProjectFallsBackToRemotePreferred() {
+        val state = SessionState(
+            remoteTaskRepositoryOwner = "murong",
+            remoteTaskRepositoryName = "agent",
+            workspaceMode = WorkspaceMode.LOCAL_ONLY
+        )
+
+        assertTrue(hasRemoteTaskRepositoryContext(state))
+        assertTrue(resolveWorkspaceMode(state) == WorkspaceMode.REMOTE_PREFERRED)
+        assertFalse(shouldExposeLocalFileWriteTool(state))
+        assertFalse(shouldExposeLocalCodeEditTool(state))
+    }
+
+    @Test
     fun hasRemoteTaskRepositoryContext_returnsFalseWhenRemoteRepoIncomplete() {
         val missingRepoState = SessionState(
             remoteTaskRepositoryOwner = "murong",

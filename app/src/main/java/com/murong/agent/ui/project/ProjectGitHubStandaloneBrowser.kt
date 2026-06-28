@@ -344,7 +344,7 @@ private fun ProjectGitHubStandaloneRepoListContent(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         ProjectSectionCard(
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(20.dp),
             surfaceColorOverride = chromeColor.copy(alpha = 0.38f)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -394,7 +394,7 @@ private fun ProjectGitHubStandaloneRepoListContent(
         }
         if (repoListState.repositories.isEmpty() && !isRepoListLoading && tokenConfigured) {
             ProjectSectionCard(
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(20.dp),
                 surfaceColorOverride = surfaceColor.copy(alpha = 0.55f)
             ) {
                 Text(
@@ -451,7 +451,7 @@ private fun ProjectGitHubStandaloneOverviewPage(
                     onShowPullRequests = onShowPullRequests
                 )
                 ProjectSectionCard(
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(20.dp),
                     surfaceColorOverride = rememberMurongSurfaceColor().copy(alpha = 0.58f)
                 ) {
                     ProjectGitHubReadmeSection(
@@ -922,14 +922,14 @@ private fun ProjectGitHubStandaloneWorkflowJobSection(
     val mutedTextColor = rememberMurongMutedTextColor()
     val chromeColor = rememberMurongChromeColor()
     ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(20.dp),
         surfaceColorOverride = rememberMurongSurfaceColor().copy(alpha = 0.58f)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("作业", style = MaterialTheme.typography.titleSmall)
             detail.jobs.forEach { job ->
                 ProjectInsetCard(
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(16.dp),
                     surfaceColorOverride = chromeColor.copy(
                         alpha = if (job.hasIssue) 0.34f else 0.22f
                     ),
@@ -979,7 +979,7 @@ private fun ProjectGitHubStandaloneWorkflowJobDetailSection(
     }
     ProjectGitHubStandaloneScrollableContent {
         ProjectSectionCard(
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(20.dp),
             surfaceColorOverride = rememberMurongChromeColor().copy(alpha = 0.28f)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1028,7 +1028,7 @@ private fun ProjectGitHubStandaloneWorkflowStepLogSection(
         buildProjectGitHubStandaloneWorkflowStepLogGroups(detail, job)
     }
     ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(20.dp),
         surfaceColorOverride = rememberMurongSurfaceColor().copy(alpha = 0.58f)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1061,7 +1061,7 @@ private fun ProjectGitHubStandaloneWorkflowStepLogSection(
             stepGroups.forEach { stepGroup ->
                 val stepExpanded = expandedStepKeys.contains(stepGroup.key)
                 ProjectInsetCard(
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(16.dp),
                     surfaceColorOverride = chromeColor.copy(
                         alpha = if (stepGroup.hasIssue || stepGroup.isActive) 0.30f else 0.18f
                     ),
@@ -1476,13 +1476,13 @@ private fun ProjectGitHubStandaloneHeaderCard(
     val surfaceColor = rememberMurongSurfaceColor()
     val mutedTextColor = rememberMurongMutedTextColor()
     ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(20.dp),
         surfaceColorOverride = surfaceColor.copy(alpha = 0.58f)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(selectedRepo.fullName, style = MaterialTheme.typography.titleSmall)
             ProjectInsetCard(
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(16.dp),
                 surfaceColorOverride = surfaceColor.copy(alpha = 0.42f),
                 modifier = Modifier.combinedClickable(
                     onClick = {},
@@ -1529,7 +1529,7 @@ private fun ProjectGitHubStandaloneTopActions(
         listOf(ProjectGitHubStandaloneSection.ISSUES.label to onShowIssues, ProjectGitHubStandaloneSection.PULL_REQUESTS.label to onShowPullRequests)
     )
     ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(20.dp),
         surfaceColorOverride = rememberMurongSurfaceColor().copy(alpha = 0.58f)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1581,7 +1581,7 @@ private fun ProjectGitHubStandaloneRepoRow(
     val surfaceColor = rememberMurongSurfaceColor()
     val mutedTextColor = rememberMurongMutedTextColor()
     ProjectInsetCard(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(16.dp),
         surfaceColorOverride = surfaceColor.copy(alpha = 0.56f),
         modifier = Modifier
             .fillMaxWidth()

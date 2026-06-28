@@ -11,6 +11,7 @@ import com.murong.agent.core.config.GlobalRule
 import com.murong.agent.core.config.ProjectToolPreferences
 import com.murong.agent.core.loop.*
 import com.murong.agent.ui.project.ProjectGitHubRepoRef
+import com.murong.agent.ui.project.listProjectGitHubFileNames
 import com.murong.agent.ui.project.loadProjectGitHubRemoteFile
 import com.murong.agent.ui.project.searchProjectGitHubFileNames
 import kotlinx.coroutines.Job
@@ -213,7 +214,7 @@ class ChatViewModel @Inject constructor(
         val localResults = withContext(Dispatchers.IO) {
             sessionManager.searchProjectFiles(query, limit)
         }
-        val remoteRepo = currentRemoteTaskRepository
+        val remoteRepo = resolveCurrentRemoteTaskRepository()
         if (remoteRepo == null) {
             return localResults
         }
@@ -227,6 +228,19 @@ class ChatViewModel @Inject constructor(
         return (localResults + remoteResults)
             .distinctBy { it.path }
             .take(limit)
+    }
+
+    private fun resolveCurrentRemoteTaskRepository(): ProjectGitHubRepoRef? {
+        currentRemoteTaskRepository?.let { return it }
+        val currentState = state.value
+        val owner = currentState.remoteTaskRepositoryOwner?.trim().orEmpty()
+        val repo = currentState.remoteTaskRepositoryName?.trim().orEmpty()
+        if (owner.isBlank() || repo.isBlank()) {
+            return null
+        }
+        return ProjectGitHubRepoRef(owner = owner, repo = repo).also {
+            currentRemoteTaskRepository = it
+        }
     }
 
     fun clear() {
@@ -267,17 +281,25 @@ class ChatViewModel @Inject constructor(
         limit: Int
     ): List<FileMentionUi> {
         val normalizedQuery = query.trim()
-        if (normalizedQuery.isBlank()) return emptyList()
         val activeConfig = config.value
         val token = activeConfig.githubToken.trim()
         if (token.isBlank()) return emptyList()
         val apiBaseUrl = activeConfig.githubApiBaseUrl
-        val fileMatches = searchProjectGitHubFileNames(
-            query = normalizedQuery,
-            repo = repo,
-            token = token,
-            apiBaseUrl = apiBaseUrl
-        )
+        val fileMatches = if (normalizedQuery.isBlank()) {
+            listProjectGitHubFileNames(
+                repo = repo,
+                token = token,
+                apiBaseUrl = apiBaseUrl,
+                limit = limit.coerceAtMost(REMOTE_MENTION_LIMIT)
+            )
+        } else {
+            searchProjectGitHubFileNames(
+                query = normalizedQuery,
+                repo = repo,
+                token = token,
+                apiBaseUrl = apiBaseUrl
+            )
+        }
         return fileMatches
             .asSequence()
             .mapNotNull { it.filePath?.takeIf(String::isNotBlank) }
@@ -312,6 +334,11 @@ class ChatViewModel @Inject constructor(
 
     fun clearCurrentSessionGoal() {
         sessionManager.clearCurrentSessionGoal()
+        refreshSessions()
+    }
+
+    fun updateWorkspaceMode(mode: WorkspaceMode) {
+        sessionManager.updateWorkspaceMode(mode)
         refreshSessions()
     }
 
@@ -360,6 +387,22 @@ class ChatViewModel @Inject constructor(
             refreshSessions()
         }
         return rolledBack
+    }
+
+    fun rollbackConversationAfterUserMessage(messageId: Long): Boolean {
+        val rolledBack = sessionManager.rollbackConversationAfterUserMessage(messageId)
+        if (rolledBack) {
+            refreshSessions()
+        }
+        return rolledBack
+    }
+
+    fun rollbackCodeAfterUserMessage(messageId: Long): Result<Int> {
+        val result = sessionManager.rollbackCodeAfterUserMessage(messageId)
+        if (result.isSuccess) {
+            refreshSessions()
+        }
+        return result
     }
 
     fun rollbackCheckpoint(

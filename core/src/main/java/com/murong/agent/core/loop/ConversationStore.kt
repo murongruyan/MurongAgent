@@ -481,6 +481,7 @@ data class PersistedSession(
     val remoteTaskRepositoryName: String? = null,
     val remoteTaskRepositoryLabel: String? = null,
     val remoteTaskRepositoryEditable: Boolean = false,
+    val workspaceMode: WorkspaceMode = WorkspaceMode.REMOTE_PREFERRED,
     val activeProjectScopePath: String? = null,
     val projectRules: List<GlobalRule> = emptyList(),
     val projectMemories: List<GlobalMemory> = emptyList(),

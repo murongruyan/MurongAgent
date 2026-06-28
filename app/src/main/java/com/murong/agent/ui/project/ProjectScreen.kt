@@ -2094,7 +2094,7 @@ private fun ProjectEditorSection(
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 Text(
-                                    text = "最近会话收口",
+                                    text = "最近会话状态",
                                     style = MaterialTheme.typography.labelLarge
                                 )
                                 Text(
@@ -2133,7 +2133,7 @@ private fun ProjectEditorSection(
                                 )
                                 cardModel.readinessReasonSummary?.let { reasonSummary ->
                                     Text(
-                                        text = "原因：$reasonSummary",
+                                        text = "说明：$reasonSummary",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = editorMutedTextColor,
                                         maxLines = 2,
@@ -3513,7 +3513,7 @@ private fun ProjectSkillEditorInline(skills: List<GlobalSkill>, onSkillsChanged:
 @Composable
 internal fun ProjectSectionCard(
     modifier: Modifier = Modifier,
-    shape: RoundedCornerShape = RoundedCornerShape(18.dp),
+    shape: RoundedCornerShape = RoundedCornerShape(20.dp),
     surfaceColorOverride: Color? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
@@ -3529,7 +3529,7 @@ internal fun ProjectSectionCard(
 @Composable
 internal fun ProjectInsetCard(
     modifier: Modifier = Modifier,
-    shape: RoundedCornerShape = RoundedCornerShape(12.dp),
+    shape: RoundedCornerShape = RoundedCornerShape(16.dp),
     surfaceColorOverride: Color? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {

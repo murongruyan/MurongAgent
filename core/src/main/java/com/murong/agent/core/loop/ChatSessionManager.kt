@@ -1039,6 +1039,7 @@ data class SessionState(
     val remoteTaskRepositoryName: String? = null,
     val remoteTaskRepositoryLabel: String? = null,
     val remoteTaskRepositoryEditable: Boolean = false,
+    val workspaceMode: WorkspaceMode = WorkspaceMode.REMOTE_PREFERRED,
     val activeProjectScopePath: String? = null,
     val projectRules: List<GlobalRule> = emptyList(),
     val projectMemories: List<GlobalMemory> = emptyList(),
@@ -3128,6 +3129,7 @@ class ChatSessionManager(
             remoteTaskRepositoryName = session.remoteTaskRepositoryName,
             remoteTaskRepositoryLabel = session.remoteTaskRepositoryLabel,
             remoteTaskRepositoryEditable = session.remoteTaskRepositoryEditable,
+            workspaceMode = session.workspaceMode,
             projectKnowledgePaths = session.projectKnowledgePaths,
             projectKnowledgeSnapshots = session.projectKnowledgeSnapshots.map { snapshot ->
                 ProjectKnowledgeSnapshotUi(
@@ -3289,6 +3291,11 @@ class ChatSessionManager(
             sessionId = currentSessionId,
             sessionTitle = buildTaskTitle(normalizedPath),
             projectPath = normalizedPath,
+            remoteTaskRepositoryOwner = previousState.remoteTaskRepositoryOwner,
+            remoteTaskRepositoryName = previousState.remoteTaskRepositoryName,
+            remoteTaskRepositoryLabel = previousState.remoteTaskRepositoryLabel,
+            remoteTaskRepositoryEditable = previousState.remoteTaskRepositoryEditable,
+            workspaceMode = previousState.workspaceMode,
             projectKnowledgePaths = inheritedProjectSession?.projectKnowledgePaths.orEmpty(),
             projectKnowledgeSnapshots = inheritedProjectSession?.projectKnowledgeSnapshots.orEmpty().map { snapshot ->
                 ProjectKnowledgeSnapshotUi(
@@ -3390,6 +3397,12 @@ class ChatSessionManager(
             remoteTaskRepositoryLabel = normalizedLabel,
             remoteTaskRepositoryEditable = normalizedEditable
         )
+        saveCurrentSession()
+    }
+
+    fun updateWorkspaceMode(mode: WorkspaceMode) {
+        if (_state.value.workspaceMode == mode) return
+        _state.value = _state.value.copy(workspaceMode = mode)
         saveCurrentSession()
     }
 
@@ -5186,6 +5199,111 @@ class ChatSessionManager(
         return rollbackConversationToMessageIndex(targetIndex)
     }
 
+    fun rollbackConversationAfterUserMessage(messageId: Long): Boolean {
+        val state = _state.value
+        if (state.isProcessing) return false
+        val targetIndex = state.messages.indexOfFirst { it.id == messageId && it.role == "user" }
+        if (targetIndex == -1) return false
+        val projection = projectConversationRollbackState(
+            state = state,
+            targetExclusiveIndex = targetIndex
+        )
+        pendingAskDecision = null
+        _state.value = state.copy(
+            messages = projection.messages,
+            subagentRuns = projection.subagentRuns,
+            subagentBatches = projection.subagentBatches,
+            isProcessing = false,
+            error = null,
+            compressionSnapshot = projection.compressionSnapshot,
+            compressionSnapshots = projection.compressionSnapshots,
+            pendingAskRequest = projection.pendingAskRequest,
+            pendingWorkflowPlan = projection.pendingWorkflowPlan,
+            canonicalWorkflowPlan = projection.canonicalWorkflowPlan,
+            workflowPlanningInProgress = projection.workflowPlanningInProgress,
+            pendingClarificationRequest = projection.pendingClarificationRequest,
+            clarificationInProgress = projection.clarificationInProgress,
+            pendingApproval = null
+        )
+        currentStreamingId = null
+        clearPendingApproval()
+        saveCurrentSession()
+        return true
+    }
+
+    fun rollbackCodeAfterUserMessage(messageId: Long): Result<Int> {
+        return runCatching {
+            val state = _state.value
+            require(!state.isProcessing) { "处理中暂时不能执行恢复" }
+
+            val targetIndex = state.messages.indexOfFirst { it.id == messageId && it.role == "user" }
+            require(targetIndex != -1) { "未找到对应的用户消息" }
+
+            val targetExclusiveIndex = (targetIndex + 1).coerceIn(0, state.messages.size)
+            val records = collectFutureCheckpointRollbackRecords(
+                state = state,
+                targetExclusiveIndex = targetExclusiveIndex
+            )
+            require(records.isNotEmpty()) { "这条消息之后没有可撤回的代码改动" }
+
+            val rollbackCheckpointId = "chk-${System.currentTimeMillis()}"
+            val rollbackRecords = records.mapIndexed { index, record ->
+                val currentContent = restoreFileRecord(record).getOrThrow()
+                FileChangeRecordUi(
+                    id = "$rollbackCheckpointId-$index",
+                    path = record.path,
+                    operation = "rollback",
+                    beforeContent = currentContent,
+                    afterContent = record.beforeContent,
+                    diffPreview = buildDiffPreview(currentContent, record.beforeContent),
+                    changedAt = System.currentTimeMillis(),
+                    checkpointId = rollbackCheckpointId
+                )
+            }
+
+            val targetMessage = state.messages[targetIndex]
+            val checkpointSummary = buildMessageRollbackSummary(
+                userMessageContent = targetMessage.content,
+                includeConversation = false
+            )
+            val rollbackCheckpoint = ConversationCheckpointUi(
+                id = rollbackCheckpointId,
+                messageIndex = state.messages.lastIndex,
+                createdAt = rollbackRecords.maxOfOrNull { it.changedAt } ?: System.currentTimeMillis(),
+                summary = checkpointSummary,
+                changedFiles = rollbackRecords.map { it.path },
+                kind = ConversationCheckpointKind.ROLLBACK,
+                scope = ConversationCheckpointScope.CODE,
+                source = ConversationCheckpointSource.ROLLBACK,
+                toolNames = listOf("rollback")
+            )
+
+            _state.value = state.copy(
+                fileChanges = (rollbackRecords + state.fileChanges).take(MAX_FILE_CHANGE_HISTORY),
+                checkpoints = upsertCheckpointHistory(
+                    checkpoints = state.checkpoints,
+                    checkpoint = rollbackCheckpoint,
+                    maxSize = MAX_CHECKPOINT_HISTORY
+                )
+            )
+            recordCheckpointRecovery(
+                CheckpointRecoveryRecordUi(
+                    checkpointId = rollbackCheckpoint.id,
+                    checkpointSummary = checkpointSummary,
+                    scope = ConversationCheckpointScope.CODE,
+                    restoredFileCount = rollbackRecords.size,
+                    targetMessageIndex = targetIndex
+                )
+            )
+            appendSystemMessage(
+                content = "已恢复这条消息之后的代码改动：${targetMessage.content.rollbackPreview()}",
+                source = "message_rollback:file_scope"
+            )
+            saveCurrentSession()
+            rollbackRecords.size
+        }
+    }
+
     fun rollbackCheckpoint(
         checkpointId: String,
         scope: ConversationCheckpointScope = ConversationCheckpointScope.CODE
@@ -5467,6 +5585,26 @@ class ChatSessionManager(
         } else {
             RootFile.writeFileChecked(path, targetContent)
         }
+    }
+
+    private fun buildMessageRollbackSummary(
+        userMessageContent: String,
+        includeConversation: Boolean
+    ): String {
+        val preview = userMessageContent.rollbackPreview()
+        return if (includeConversation) {
+            "已撤回消息与改动：$preview"
+        } else {
+            "已撤回消息后的代码改动：$preview"
+        }
+    }
+
+    private fun String.rollbackPreview(): String {
+        return replace('\n', ' ')
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .ifBlank { "该消息" }
+            .take(24)
     }
 
     fun importConversation(rawText: String, sourceName: String? = null): Int {
@@ -8348,6 +8486,7 @@ class ChatSessionManager(
                 appendLine("Active scope: $it")
             }
             if (remoteTaskRepositoryLabel != null) {
+                val workspaceMode = resolveWorkspaceMode(state)
                 appendLine("Primary target: remote task repository $remoteTaskRepositoryLabel")
                 appendLine(
                     if (state.remoteTaskRepositoryEditable) {
@@ -8356,16 +8495,36 @@ class ChatSessionManager(
                         "This repository is visible in the Project page, but write actions may still need explicit confirmation."
                     }
                 )
-                appendLine("When the user asks about this repository, prefer enabled GitHub/MCP remote tools instead of assuming local file access.")
-                appendLine("Do not substitute similarly named local directories for this remote repository unless the user explicitly switches back to a local project.")
-                appendLine("While a remote task repository is active, some local tools have restricted availability:")
-                appendLine("- shell: still available (risk-controlled via approval)")
-                appendLine("- file(read/list/exists): still available for local project inspection")
-                appendLine("- file(write/delete): restricted; use task_repo_* for remote repository file edits")
-                appendLine("- code_search: still available for local code reference")
-                appendLine("- code_edit: restricted; use task_repo_* for remote repository edits instead")
-                appendLine("Prefer task_repo_* tool aliases for remote repository operations.")
-                appendLine("For the current task repository, prefer tool aliases task_repo_list_dir, task_repo_list_branches, task_repo_create_branch, task_repo_create_pr, task_repo_close_pr, task_repo_delete_branch, task_repo_search_code, task_repo_read_file, task_repo_search_replace, task_repo_apply_patch, task_repo_update_file, task_repo_delete_file, and task_repo_commit_files before generic mcp_* tools.")
+                appendLine("Workspace mode: ${workspaceMode.name}")
+                when (workspaceMode) {
+                    WorkspaceMode.REMOTE_PREFERRED -> {
+                        appendLine("When the user asks about this repository, prefer enabled GitHub/MCP remote tools instead of assuming local file access.")
+                        appendLine("Do not substitute similarly named local directories for this remote repository unless the user explicitly switches back to a local project.")
+                        appendLine("While a remote task repository is active, some local tools have restricted availability:")
+                        appendLine("- shell: still available (risk-controlled via approval)")
+                        appendLine("- file(read/list/exists): still available for local project inspection")
+                        appendLine("- file(write/delete): restricted; use task_repo_* for remote repository file edits")
+                        appendLine("- code_search: still available for local code reference")
+                        appendLine("- code_edit: restricted; use task_repo_* for remote repository edits instead")
+                        appendLine("Prefer task_repo_* tool aliases for remote repository operations.")
+                    }
+                    WorkspaceMode.HYBRID -> {
+                        appendLine("The user selected hybrid mode. Both the local project and the remote task repository are valid working targets.")
+                        appendLine("Local shell/file/code_search/code_edit tools remain available, and task_repo_* tools remain available for remote edits.")
+                        appendLine("Before any write, infer whether the user means local files or the remote repository. If ambiguous, ask or inspect first instead of guessing.")
+                        appendLine("Do not silently substitute a local directory for a remote edit request, and do not silently use remote edits for a local-file request.")
+                    }
+                    WorkspaceMode.LOCAL_ONLY -> {
+                        appendLine("The user selected local-only mode. Prefer local project tools for search, edits, verification, and summaries.")
+                        appendLine("Treat the remote task repository as reference context only unless the user explicitly asks to inspect or edit the remote repository.")
+                        appendLine("Local shell/file/code_search/code_edit tools remain available in this mode.")
+                    }
+                }
+                if (workspaceMode == WorkspaceMode.LOCAL_ONLY) {
+                    appendLine("If the user explicitly asks to inspect or modify the remote repository anyway, prefer task_repo_* aliases over generic mcp_* tools.")
+                } else {
+                    appendLine("For the current task repository, prefer tool aliases task_repo_list_dir, task_repo_list_branches, task_repo_create_branch, task_repo_create_pr, task_repo_close_pr, task_repo_delete_branch, task_repo_search_code, task_repo_read_file, task_repo_search_replace, task_repo_apply_patch, task_repo_update_file, task_repo_delete_file, and task_repo_commit_files before generic mcp_* tools.")
+                }
                 appendLine("If the exact remote path is still unclear, use task_repo_list_dir first to browse the repository structure before reading or editing files.")
                 appendLine("Remote task_repo_read_file may auto-window large files; if you need a later section, continue with explicit startLine/endLine instead of assuming the whole file is already in context.")
                 appendLine("If the edit is a small, exact replacement in one remote file, prefer task_repo_search_replace before task_repo_update_file.")
@@ -8380,11 +8539,21 @@ class ChatSessionManager(
                 appendLine("Before claiming that a plan step, verification step, or critical execution step is complete, call complete_step with real tool evidence instead of only stating it in natural language.")
             }
             if (projectPath != null) {
+                val workspaceMode = resolveWorkspaceMode(state)
                 if (remoteTaskRepositoryLabel != null) {
                     appendLine()
                 }
                 appendLine("Local root: $projectPath")
-                appendLine("Only use this as the working directory when the user is explicitly talking about the local project.")
+                appendLine(
+                    when (workspaceMode) {
+                        WorkspaceMode.REMOTE_PREFERRED ->
+                            "Only use this as the working directory when the user is explicitly talking about the local project."
+                        WorkspaceMode.HYBRID ->
+                            "This local root stays available in hybrid mode. Match local-vs-remote writes carefully before changing files."
+                        WorkspaceMode.LOCAL_ONLY ->
+                            "This is the default working directory in local-only mode. Prefer it unless the user explicitly asks to work on the remote repository."
+                    }
+                )
                 appendLine("Prefer paths relative to this root for local-project work only.")
             }
             if (mountedKnowledge.isNotEmpty()) {
@@ -9561,6 +9730,7 @@ class ChatSessionManager(
             remoteTaskRepositoryName = state.remoteTaskRepositoryName,
             remoteTaskRepositoryLabel = state.remoteTaskRepositoryLabel,
             remoteTaskRepositoryEditable = state.remoteTaskRepositoryEditable,
+            workspaceMode = state.workspaceMode,
             activeProjectScopePath = normalizedActiveScopePath,
             projectRules = persistedProjectProjection.legacyProjectConfig.projectRules,
             projectMemories = persistedProjectProjection.legacyProjectConfig.projectMemories,
