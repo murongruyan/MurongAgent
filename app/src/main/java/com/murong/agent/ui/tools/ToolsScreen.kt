@@ -75,9 +75,11 @@ import com.murong.agent.ui.MurongDialog
 import com.murong.agent.ui.MurongGlassSurface
 import com.murong.agent.ui.MurongInfoCard
 import com.murong.agent.ui.MurongInteractionPerformanceHint
+import com.murong.agent.ui.MurongLargeDialogCardShape
 import com.murong.agent.ui.MurongLargeDialogScaffold
 import com.murong.agent.ui.rememberMurongBottomBarScrollPadding
 import com.murong.agent.ui.MurongPopupSurface
+import com.murong.agent.ui.MurongPopupCardShape
 import com.murong.agent.ui.MurongPrimaryPageSurface
 import com.murong.agent.ui.buildApprovalModeOptionPresentations
 import com.murong.agent.ui.buildApprovalPostureCopyPresentation
@@ -1010,7 +1012,7 @@ private fun ToolsPopupDialog(
 ) {
     MurongDialog(onDismissRequest = onDismissRequest) {
         MurongPopupSurface(
-            shape = RoundedCornerShape(24.dp),
+            shape = MurongPopupCardShape,
             modifier = modifier
                 .fillMaxWidth()
                 .padding(16.dp)
@@ -1072,7 +1074,7 @@ private fun ToolsLargeDialog(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            shape = RoundedCornerShape(24.dp),
+            shape = MurongLargeDialogCardShape,
             contentPadding = PaddingValues(16.dp)
         ) {
             Row(

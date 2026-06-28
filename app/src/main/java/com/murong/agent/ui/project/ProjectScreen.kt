@@ -135,10 +135,13 @@ import com.murong.agent.ui.ProjectSecondaryChromeState
 import com.murong.agent.ui.MurongDialog
 import com.murong.agent.ui.MurongGlassSurface
 import com.murong.agent.ui.MurongInfoCard
+import com.murong.agent.ui.MurongLargeDialogCardShape
 import com.murong.agent.ui.MurongLargeDialogScaffold
 import com.murong.agent.ui.MurongPopupSurface
 import com.murong.agent.ui.MurongSecondaryPageFrame
 import com.murong.agent.ui.MurongPrimaryPageSurface
+import com.murong.agent.ui.MurongProjectInsetCardShape
+import com.murong.agent.ui.MurongProjectSectionCardShape
 import com.murong.agent.ui.MurongTagButton
 import com.murong.agent.ui.MemoryDraftImportCard
 import com.murong.agent.ui.RuleDraftImportCard
@@ -199,68 +202,57 @@ private fun ProjectScreenLargeDialog(
     actions: @Composable RowScope.() -> Unit = {},
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val tokens = rememberMurongSurfaceTokens()
-    LaunchedEffect(title, subtitle, tokens.popupContainerColor, tokens.popupGlassColor, tokens.popupBlurRadius) {
-    }
-    MurongDialog(onDismissRequest = onDismissRequest) {
-        Box(
+    MurongLargeDialogScaffold(
+        onDismissRequest = onDismissRequest,
+        modifier = modifier
+    ) {
+        MurongGlassSurface(
             modifier = Modifier
-                .fillMaxSize()
-                .imePadding()
-                .navigationBarsPadding()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            contentAlignment = Alignment.BottomCenter
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = MurongLargeDialogCardShape,
+            contentPadding = PaddingValues(16.dp)
         ) {
-            MurongPopupSurface(
-                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp, bottomStart = 24.dp, bottomEnd = 24.dp),
-                forceOpaque = true,
-                modifier = modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.74f)
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text(
-                                text = title,
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                            subtitle?.takeIf { it.isNotBlank() }?.let {
-                                Text(
-                                    text = it,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                        Row(
-                            modifier = Modifier.horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            content = actions
-                        )
-                    }
-                    HorizontalDivider()
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                        content = content
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        subtitle?.takeIf { it.isNotBlank() }?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        content = actions
                     )
                 }
+                HorizontalDivider()
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    content = content
+                )
             }
         }
     }
@@ -3513,7 +3505,7 @@ private fun ProjectSkillEditorInline(skills: List<GlobalSkill>, onSkillsChanged:
 @Composable
 internal fun ProjectSectionCard(
     modifier: Modifier = Modifier,
-    shape: RoundedCornerShape = RoundedCornerShape(20.dp),
+    shape: RoundedCornerShape = MurongProjectSectionCardShape,
     surfaceColorOverride: Color? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
@@ -3529,7 +3521,7 @@ internal fun ProjectSectionCard(
 @Composable
 internal fun ProjectInsetCard(
     modifier: Modifier = Modifier,
-    shape: RoundedCornerShape = RoundedCornerShape(16.dp),
+    shape: RoundedCornerShape = MurongProjectInsetCardShape,
     surfaceColorOverride: Color? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
@@ -3621,7 +3613,6 @@ private fun ProjectLocalGitRepositoryCard(
         buildProjectGitOperationSummary(recentOperationRecords)
     }
     ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
         surfaceColorOverride = if (isActive) {
             chromeColor.copy(alpha = 0.46f)
         } else {

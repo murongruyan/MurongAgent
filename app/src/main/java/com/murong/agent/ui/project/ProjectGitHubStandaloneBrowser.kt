@@ -46,6 +46,8 @@ import androidx.compose.ui.unit.dp
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import com.murong.agent.ui.MurongOutlinedActionButton
+import com.murong.agent.ui.MurongProjectInsetCardShape
+import com.murong.agent.ui.MurongProjectSectionCardShape
 import com.murong.agent.ui.MurongSecondaryPageFrame
 import com.murong.agent.ui.rememberMurongBottomBarScrollPadding
 import com.murong.agent.ui.rememberMurongChromeColor
@@ -835,7 +837,7 @@ private fun ProjectGitHubStandaloneWorkflowRunDetailSection(
     val surfaceColor = rememberMurongSurfaceColor()
     ProjectGitHubStandaloneScrollableContent {
         ProjectSectionCard(
-            shape = RoundedCornerShape(14.dp),
+            shape = MurongProjectSectionCardShape,
             surfaceColorOverride = rememberMurongChromeColor().copy(alpha = 0.28f)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -867,7 +869,7 @@ private fun ProjectGitHubStandaloneWorkflowRunDetailSection(
             ProjectGitHubStandaloneLoadingCard("正在读取运行详情与日志...")
         } else if (detail == null) {
             ProjectSectionCard(
-                shape = RoundedCornerShape(14.dp),
+                shape = MurongProjectSectionCardShape,
                 surfaceColorOverride = surfaceColor.copy(alpha = 0.58f)
             ) {
                 Text(
@@ -879,7 +881,7 @@ private fun ProjectGitHubStandaloneWorkflowRunDetailSection(
         } else {
             if (detail.artifacts.isNotEmpty()) {
                 ProjectSectionCard(
-                    shape = RoundedCornerShape(14.dp),
+                    shape = MurongProjectSectionCardShape,
                     surfaceColorOverride = surfaceColor.copy(alpha = 0.58f)
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1143,7 +1145,7 @@ private fun ProjectGitHubStandaloneWorkflowStepLogSection(
                                     val entryExpanded = expandedLogEntries.contains(entry.entryName)
                                     val activeLineNumber = issueSearchHit.matchedLineNumbers.firstOrNull()
                                     ProjectInsetCard(
-                                        shape = RoundedCornerShape(10.dp),
+                                        shape = MurongProjectInsetCardShape,
                                         surfaceColorOverride = chromeColor.copy(
                                             alpha = if (issueSearchHit.hasMatch) 0.28f else 0.14f
                                         ),
@@ -1237,7 +1239,7 @@ private fun ProjectGitHubStandaloneWorkflowLogsSection(
         )
     }
     ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
+        shape = MurongProjectSectionCardShape,
         surfaceColorOverride = rememberMurongSurfaceColor().copy(alpha = 0.58f)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1270,7 +1272,7 @@ private fun ProjectGitHubStandaloneWorkflowLogsSection(
             logGroups.forEach { group ->
                 val jobExpanded = expandedJobNames.contains(group.key)
                 ProjectInsetCard(
-                    shape = RoundedCornerShape(12.dp),
+                    shape = MurongProjectInsetCardShape,
                     surfaceColorOverride = rememberMurongChromeColor().copy(
                         alpha = if (group.hasIssue || group.isActive) 0.30f else 0.18f
                     ),
@@ -1341,7 +1343,7 @@ private fun ProjectGitHubStandaloneWorkflowLogsSection(
                                     val expanded = expandedLogEntries.contains(entry.entryName)
                                     val activeLineNumber = issueSearchHit.matchedLineNumbers.firstOrNull()
                                     ProjectInsetCard(
-                                        shape = RoundedCornerShape(10.dp),
+                                        shape = MurongProjectInsetCardShape,
                                         surfaceColorOverride = rememberMurongChromeColor().copy(
                                             alpha = if (issueSearchHit.hasMatch) 0.28f else 0.14f
                                         ),
@@ -1633,7 +1635,7 @@ private fun ProjectGitHubStandaloneReleaseSection(
     onOpenReleaseAssets: (ProjectGitHubReleaseUi) -> Unit
 ) {
     ProjectSectionCard(
-        shape = RoundedCornerShape(14.dp),
+        shape = MurongProjectSectionCardShape,
         surfaceColorOverride = rememberMurongSurfaceColor().copy(alpha = 0.58f)
     ) {
         ProjectGitHubReleaseSection(
@@ -1663,7 +1665,7 @@ private fun ProjectGitHubStandaloneWorkflowListSection(
     val mutedTextColor = rememberMurongMutedTextColor()
     ProjectGitHubStandaloneScrollableContent {
         ProjectSectionCard(
-            shape = RoundedCornerShape(14.dp),
+            shape = MurongProjectSectionCardShape,
             surfaceColorOverride = rememberMurongChromeColor().copy(alpha = 0.28f)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1703,7 +1705,7 @@ private fun ProjectGitHubStandaloneWorkflowListSection(
         }
         state.workflows.forEach { workflow ->
             ProjectInsetCard(
-                shape = RoundedCornerShape(12.dp),
+                shape = MurongProjectInsetCardShape,
                 surfaceColorOverride = rememberMurongSurfaceColor().copy(alpha = 0.56f),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1740,7 +1742,7 @@ private fun ProjectGitHubStandaloneWorkflowRunsSection(
     val mutedTextColor = rememberMurongMutedTextColor()
     ProjectGitHubStandaloneScrollableContent(bottomPadding = 88.dp) {
         ProjectSectionCard(
-            shape = RoundedCornerShape(14.dp),
+            shape = MurongProjectSectionCardShape,
             surfaceColorOverride = rememberMurongChromeColor().copy(alpha = 0.28f)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1757,7 +1759,7 @@ private fun ProjectGitHubStandaloneWorkflowRunsSection(
         }
         if (!isLoading && runs.isEmpty()) {
             ProjectSectionCard(
-                shape = RoundedCornerShape(14.dp),
+                shape = MurongProjectSectionCardShape,
                 surfaceColorOverride = rememberMurongSurfaceColor().copy(alpha = 0.58f)
             ) {
                 Text(
@@ -1769,7 +1771,7 @@ private fun ProjectGitHubStandaloneWorkflowRunsSection(
         }
         runs.forEach { run ->
             ProjectInsetCard(
-                shape = RoundedCornerShape(12.dp),
+                shape = MurongProjectInsetCardShape,
                 surfaceColorOverride = rememberMurongSurfaceColor().copy(alpha = 0.56f),
                 modifier = Modifier
                     .fillMaxWidth()

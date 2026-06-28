@@ -130,6 +130,11 @@ enum class MurongBackgroundMode {
     CUSTOM_IMAGE
 }
 
+internal val MurongPopupCardShape = RoundedCornerShape(24.dp)
+internal val MurongLargeDialogCardShape = RoundedCornerShape(24.dp)
+internal val MurongProjectSectionCardShape = RoundedCornerShape(20.dp)
+internal val MurongProjectInsetCardShape = RoundedCornerShape(16.dp)
+
 data class MurongAccentPreset(
     val label: String,
     val color: Color
