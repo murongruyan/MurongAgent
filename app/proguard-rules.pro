@@ -57,3 +57,12 @@
 -keep class com.murong.agent.core.provider.** { *; }
 -keep class com.murong.agent.core.config.** { *; }
 -keep class com.murong.agent.core.loop.** { *; }
+
+# Project terminal history uses kotlinx.serialization models declared in the app UI layer.
+# Keep them for release so ProjectTerminalSection can restore persisted state during startup.
+-keep class com.murong.agent.ui.project.PersistedProjectTerminal** { *; }
+
+# Release startup can crash inside Compose attachComposition when R8 strips runtime
+# source-information helpers that compiled composables still call.
+-keep class androidx.compose.runtime.ComposerKt { *; }
+-keep class androidx.compose.runtime.internal.ComposableLambdaImpl { *; }

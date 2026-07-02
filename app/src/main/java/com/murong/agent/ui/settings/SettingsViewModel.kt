@@ -148,7 +148,6 @@ class SettingsViewModel @Inject constructor(
     val extensionUpdateState: StateFlow<AppUpdateUiState> = _extensionUpdateState.asStateFlow()
 
     init {
-        // 加载已保存的 MCP 配置
         _mcpServers.value = mcpRegistry.loadConfigs()
         _sessions.value = chatSessionManager.listSessions()
         checkRoot()
