@@ -184,7 +184,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x ./gradlew
-          ./gradlew --no-daemon --no-build-cache \
+          ./gradlew --no-daemon \
             :app:assembleRelease \
             -PAPP_VERSION_NAME="${APP_VERSION}" \
             -PAPP_VERSION_CODE="${APP_VERSION_CODE}" \
