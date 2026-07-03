@@ -5,9 +5,9 @@ import java.io.File
 /**
  * Loads custom slash commands from Markdown files in convention directories.
  *
- * Search order (same as Reasonix):
- * 1. Project-level: {projectRoot}/.reasonix/commands/
- * 2. Also scans: .claude/commands/, .agent/commands/, .agents/commands/
+ * Search order:
+ * 1. Project-level: {projectRoot}/.murong/commands/ (primary)
+ * 2. Also scans: .reasonix/commands/, .claude/commands/, .agent/commands/, .agents/commands/
  *
  * Each *.md file should have optional frontmatter:
  * ---
@@ -22,9 +22,10 @@ import java.io.File
  */
 object CustomCommandLoader {
 
-    private const val REASONIX_DIR = ".reasonix/commands"
+    private const val MURONG_DIR = ".murong/commands"
     private val conventionDirs = listOf(
-        REASONIX_DIR,
+        MURONG_DIR,
+        ".reasonix/commands",
         ".claude/commands",
         ".agent/commands",
         ".agents/commands"
