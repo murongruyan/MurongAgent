@@ -7986,6 +7986,7 @@ private fun normalizeProjectToolPreferences(
         preferences.allowedMcpTools == null &&
         preferences.allowedShellCommandPrefixes == null &&
         preferences.allowedPathPrefixes == null &&
+        preferences.planModeEnabled == null &&
         preferences.subagentTemplates == null
     ) {
         null

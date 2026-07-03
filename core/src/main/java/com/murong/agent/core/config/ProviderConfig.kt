@@ -63,6 +63,7 @@ data class ProjectToolPreferences(
     val allowedMcpTools: List<String>? = null,
     val allowedShellCommandPrefixes: List<String>? = null,
     val allowedPathPrefixes: List<String>? = null,
+    val planModeEnabled: Boolean? = null,
     val subagentTemplates: List<ProjectSubagentTemplate>? = null
 )
 
@@ -603,6 +604,7 @@ Global configuration management:
             allowedMcpTools = preferences.allowedMcpTools ?: projectToolPreferences?.allowedMcpTools,
             allowedShellCommandPrefixes = preferences.allowedShellCommandPrefixes ?: projectToolPreferences?.allowedShellCommandPrefixes,
             allowedPathPrefixes = preferences.allowedPathPrefixes ?: projectToolPreferences?.allowedPathPrefixes,
+            planModeEnabled = preferences.planModeEnabled ?: projectToolPreferences?.planModeEnabled,
             subagentTemplates = preferences.subagentTemplates ?: projectToolPreferences?.subagentTemplates
         )
         return copy(

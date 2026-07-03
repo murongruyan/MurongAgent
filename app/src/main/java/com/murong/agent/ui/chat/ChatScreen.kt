@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.murong.agent.common.project.resolveProjectKnowledgeFiles
 import com.murong.agent.core.mcp.McpServerConfig
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -213,13 +214,16 @@ internal fun ChatScreen(
     onUndoMessageKeepCode: (Long) -> Boolean = { false },
     onUndoCodeKeepMessage: (Long) -> Result<Int> = { Result.failure(IllegalStateException("未配置仅撤回改动动作。")) },
     onUndoMessageAndCode: (Long) -> Boolean = { false },
+    onForkMessageSession: (Long) -> Unit = {},
     onCompressContext: suspend () -> Result<ContextCompressionUi> = {
         Result.failure(IllegalStateException("未配置上下文压缩动作。"))
     },
     onRollbackCheckpoint: (String, ConversationCheckpointScope) -> Unit = { _, _ -> },
+    onForkCheckpointSession: (String) -> Unit = {},
     onGeneratePlan: (String, List<FileMentionUi>) -> Unit = { _, _ -> },
     onExecutePlan: () -> Unit = {},
     onDismissPlan: () -> Unit = {},
+    onForkWorkflowPlanSession: () -> Unit = {},
     onSubmitClarificationAnswer: (String) -> Unit = {},
     onDismissClarification: () -> Unit = {},
     onSubmitAskAnswers: (List<AskAnswerUi>) -> Unit = {},
@@ -262,7 +266,7 @@ internal fun ChatScreen(
     var previewImages by remember(state.sessionId) { mutableStateOf<List<ImagePreviewItemUi>>(emptyList()) }
     var previewImageIndex by remember(state.sessionId) { mutableIntStateOf(0) }
     var inputHasFocus by remember(state.sessionId) { mutableStateOf(false) }
-    var planModeEnabled by remember(state.sessionId) { mutableStateOf(false) }
+    val planModeEnabled = projectToolPreferences?.planModeEnabled ?: false
     var goalModeEnabled by remember(state.sessionId) { mutableStateOf(false) }
     var showSubagentHint by remember(state.sessionId) { mutableStateOf(true) }
     var showWorkflowPreferenceHint by remember(state.sessionId) { mutableStateOf(true) }
@@ -293,11 +297,17 @@ internal fun ChatScreen(
     }
     var lastAutoScrolledSessionId by remember { mutableStateOf<String?>(null) }
     var shouldAutoFollowMessages by remember(state.sessionId) { mutableStateOf(true) }
+    val projectKnowledgeResolution = remember(state.projectPath, projectKnowledgePaths) {
+        resolveProjectKnowledgeFiles(
+            projectPath = state.projectPath,
+            configuredPaths = projectKnowledgePaths
+        )
+    }
     val projectKnowledgeMentions = remember(state.projectPath, projectKnowledgePaths) {
-        buildProjectKnowledgeMentions(state.projectPath, projectKnowledgePaths)
+        buildProjectKnowledgeMentions(state.projectPath, projectKnowledgeResolution.mergedPaths)
     }
     val projectKnowledgeOutlines = remember(state.projectPath, projectKnowledgePaths) {
-        buildProjectKnowledgeOutlines(state.projectPath, projectKnowledgePaths)
+        buildProjectKnowledgeOutlines(state.projectPath, projectKnowledgeResolution.mergedPaths)
     }
     val projectKnowledgeOutlineMap = remember(projectKnowledgeOutlines) {
         projectKnowledgeOutlines.associateBy { it.path }
@@ -444,6 +454,8 @@ internal fun ChatScreen(
             "已设为任务仓库，可在项目页直接搜索和编辑。让模型处理远端仓库时会优先参考 GitHub/MCP 远端能力。"
         !hasLocalProject ->
             "当前没有本地项目路径，模型处理这个仓库时会优先走 GitHub/MCP 远端能力。"
+        projectKnowledgeResolution.autoGuidePaths.isNotEmpty() ->
+            "已接入知识文件 ${projectKnowledgeMentions.size} 个，其中自动发现项目指导文件 ${projectKnowledgeResolution.autoGuidePaths.size} 个，可在 @文件 中直接选择。"
         projectKnowledgeMentions.isNotEmpty() ->
             "已接入知识文件 ${projectKnowledgeMentions.size} 个，可在 @文件 中直接选择。"
         else -> null
@@ -789,6 +801,7 @@ internal fun ChatScreen(
                     interactionState = pendingPromptHostPresentation.workflowPlanHostSurface.interactionState,
                     onInteractionStateChange = onPendingWorkflowPlanInteractionStateChange,
                     isProcessing = state.isProcessing,
+                    onFork = onForkWorkflowPlanSession,
                     onExecute = onExecutePlan,
                     onDismiss = onDismissPlan
                 )
@@ -1090,7 +1103,11 @@ internal fun ChatScreen(
                 },
                 currentApprovalModeLabel = chatRuntimeHostPresentation.currentApprovalModeLabel,
                 onPlanModeChange = { enabled ->
-                    planModeEnabled = enabled
+                    onUpdateProjectToolPreferences(
+                        normalizeChatProjectToolPreferences(
+                            (projectToolPreferences ?: ProjectToolPreferences()).copy(planModeEnabled = enabled)
+                        )
+                    )
                 },
                 onGoalModeChange = { enabled ->
                     goalModeEnabled = enabled
@@ -1499,6 +1516,14 @@ internal fun ChatScreen(
                 }
             } else {
                 null
+            },
+            onForkSession = if (target.role == "user") {
+                {
+                    onForkMessageSession(target.id)
+                    messageActionTarget = null
+                }
+            } else {
+                null
             }
         )
     }
@@ -1571,6 +1596,10 @@ internal fun ChatScreen(
             onRollbackCheckpoint = {
                 selectedCheckpoint = null
                 onRollbackCheckpoint(checkpoint.id, checkpoint.scope)
+            },
+            onForkCheckpoint = {
+                selectedCheckpoint = null
+                onForkCheckpointSession(checkpoint.id)
             },
             onOpenRecord = { record ->
                 selectedFileChange = record
@@ -4390,11 +4419,21 @@ private fun MessageActionSheet(
     onCopyRound: () -> Unit,
     onUndoMessageKeepCode: (() -> Unit)? = null,
     onUndoCodeKeepMessage: (() -> Unit)? = null,
-    onUndoMessageAndCode: (() -> Unit)? = null
+    onUndoMessageAndCode: (() -> Unit)? = null,
+    onForkSession: (() -> Unit)? = null
 ) {
     val items = buildList {
         add(MurongChoiceDialogItem(key = "copy_message", title = "复制消息", subtitle = "只复制这一条消息的内容"))
         add(MurongChoiceDialogItem(key = "copy_round", title = "复制本轮", subtitle = "复制这条消息所在的一整轮对话"))
+        if (onForkSession != null) {
+            add(
+                MurongChoiceDialogItem(
+                    key = "fork_session",
+                    title = "分叉会话",
+                    subtitle = "从这条消息开始创建一条新的继续分支"
+                )
+            )
+        }
         if (onUndoMessageKeepCode != null) {
             add(
                 MurongChoiceDialogItem(
@@ -4433,6 +4472,7 @@ private fun MessageActionSheet(
             when (item.key) {
                 "copy_message" -> onCopyMessage()
                 "copy_round" -> onCopyRound()
+                "fork_session" -> onForkSession?.invoke()
                 "undo_message" -> onUndoMessageKeepCode?.invoke()
                 "undo_code" -> onUndoCodeKeepMessage?.invoke()
                 "undo_all" -> onUndoMessageAndCode?.invoke()
@@ -7248,6 +7288,24 @@ private fun SessionDrawerItem(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+                session.forkSourceSummary?.takeIf { it.isNotBlank() }?.let { forkSummary ->
+                    Text(
+                        text = "${session.forkSourceLabel ?: "分叉"}: $forkSummary",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = accent,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                session.latestRecoverySummary?.takeIf { it.isNotBlank() }?.let { recoverySummary ->
+                    Text(
+                        text = recoverySummary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 session.projectPath?.takeIf { it.isNotBlank() }?.let { projectPath ->
                     Text(
                         text = projectPath,
@@ -7389,6 +7447,7 @@ private fun normalizeChatProjectToolPreferences(
         preferences.allowedMcpTools == null &&
         preferences.allowedShellCommandPrefixes == null &&
         preferences.allowedPathPrefixes == null &&
+        preferences.planModeEnabled == null &&
         preferences.subagentTemplates == null
     ) {
         null
@@ -7647,37 +7706,51 @@ private fun FileChangeBatchSheet(
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary
                     )
-                    presentation.recoveries.forEach { recovery ->
-                        Surface(
-                            shape = RoundedCornerShape(16.dp),
-                            color = surfaceColor.copy(alpha = 0.56f),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onOpenRecovery(recovery.id) }
-                        ) {
-                            Column(
+                    presentation.recoveryOverviewLabel?.let { overview ->
+                        Text(
+                            text = overview,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor
+                        )
+                    }
+                    presentation.recoveryTimelineGroups.forEach { group ->
+                        Text(
+                            text = "${group.dayLabel} · ${group.summaryLabel}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        group.records.forEach { recovery ->
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = surfaceColor.copy(alpha = 0.56f),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(14.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    .clickable { onOpenRecovery(recovery.id) }
                             ) {
-                                Text(
-                                    text = recovery.title,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Text(
-                                    text = recovery.subtitle,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = mutedTextColor
-                                )
-                                Text(
-                                    text = recovery.detailContent,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 3,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = "${recovery.title} · ${recovery.subtitle.substringAfterLast(" · ", recovery.subtitle)}",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Text(
+                                        text = recovery.summaryPreview,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = mutedTextColor
+                                    )
+                                    Text(
+                                        text = recovery.detailContent,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 3,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
                         }
                     }
@@ -7779,6 +7852,7 @@ private fun FileChangeBatchDetailSheet(
     records: List<FileChangeRecordUi>,
     onDismiss: () -> Unit,
     onRollbackCheckpoint: () -> Unit,
+    onForkCheckpoint: () -> Unit,
     onOpenRecord: (FileChangeRecordUi) -> Unit
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -7835,6 +7909,9 @@ private fun FileChangeBatchDetailSheet(
                     enabled = checkpoint.scope != ConversationCheckpointScope.CODE || records.isNotEmpty()
                 ) {
                     Text(formatCheckpointRollbackActionLabel(checkpoint.scope))
+                }
+                OutlinedButton(onClick = onForkCheckpoint) {
+                    Text("分叉会话")
                 }
                 TextButton(onClick = onDismiss) {
                     Text("稍后处理")
