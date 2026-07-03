@@ -179,18 +179,12 @@ jobs:
               handle.write("\nEOF\n")
           PY
 
-      - name: Clean Build Artifacts
-        shell: bash
-        run: |
-          chmod +x ./gradlew
-          ./gradlew --no-daemon clean
-
       - name: Build Release APK
         shell: bash
         run: |
           set -euo pipefail
           chmod +x ./gradlew
-          ./gradlew --no-daemon \
+          ./gradlew --no-daemon --no-build-cache \
             :app:assembleRelease \
             -PAPP_VERSION_NAME="${APP_VERSION}" \
             -PAPP_VERSION_CODE="${APP_VERSION_CODE}" \
