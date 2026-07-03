@@ -430,6 +430,18 @@ data class PersistedFinalReadinessReceipt(
 )
 
 @Serializable
+data class PersistedSessionForkOrigin(
+    val parentSessionId: String,
+    val parentSessionTitle: String = "",
+    val sourceKind: String,
+    val sourceMessageId: Long? = null,
+    val sourceCheckpointId: String? = null,
+    val sourceWorkflowPlanId: String? = null,
+    val sourceSummary: String = "",
+    val forkedAt: Long = System.currentTimeMillis()
+)
+
+@Serializable
 data class PersistedPendingApproval(
     val toolName: String,
     val summary: String,
@@ -515,6 +527,7 @@ data class PersistedSession(
     val lastAutoRouteDecision: PersistedAutoRouteDecision? = null,
     val lastWorkflowFallback: PersistedWorkflowFallback? = null,
     val lastFinalReadinessReceipt: PersistedFinalReadinessReceipt? = null,
+    val forkOrigin: PersistedSessionForkOrigin? = null,
     val messages: List<PersistedMessage>
 )
 
@@ -1790,6 +1803,7 @@ class ConversationStore internal constructor(
         val latestFinalReadinessTelemetry = buildLatestFinalReadinessSessionTelemetry(
             restoreFinalReadinessAuditRecords(session.recentFinalReadinessAudits)
         )
+        val forkSummary = session.forkOrigin?.toSessionForkSummary()
         val summary = SessionSummary(
             id = session.id,
             title = session.title,
@@ -1805,7 +1819,11 @@ class ConversationStore internal constructor(
             latestFinalReadinessAuditSummary = latestFinalReadinessTelemetry?.statusSummary,
             latestFinalReadinessStatusKind = latestFinalReadinessTelemetry?.statusKind
                 ?: FinalReadinessSessionStatusKind.NONE,
-            latestFinalReadinessReasonSummary = latestFinalReadinessTelemetry?.reasonSummary
+            latestFinalReadinessReasonSummary = latestFinalReadinessTelemetry?.reasonSummary,
+            forkSourceLabel = forkSummary?.label,
+            forkSourceSummary = forkSummary?.summary,
+            latestRecoverySummary = session.recentRecoveryRecords.firstOrNull()
+                ?.toSessionRecoverySummary()
         )
         if (existing >= 0) {
             summaries[existing] = summary
@@ -1834,6 +1852,7 @@ class ConversationStore internal constructor(
                     val latestFinalReadinessTelemetry = buildLatestFinalReadinessSessionTelemetry(
                         restoreFinalReadinessAuditRecords(session.recentFinalReadinessAudits)
                     )
+                    val forkSummary = session.forkOrigin?.toSessionForkSummary()
                     SessionSummary(
                         id = session.id,
                         title = session.title,
@@ -1849,7 +1868,11 @@ class ConversationStore internal constructor(
                         latestFinalReadinessAuditSummary = latestFinalReadinessTelemetry?.statusSummary,
                         latestFinalReadinessStatusKind = latestFinalReadinessTelemetry?.statusKind
                             ?: FinalReadinessSessionStatusKind.NONE,
-                        latestFinalReadinessReasonSummary = latestFinalReadinessTelemetry?.reasonSummary
+                        latestFinalReadinessReasonSummary = latestFinalReadinessTelemetry?.reasonSummary,
+                        forkSourceLabel = forkSummary?.label,
+                        forkSourceSummary = forkSummary?.summary,
+                        latestRecoverySummary = session.recentRecoveryRecords.firstOrNull()
+                            ?.toSessionRecoverySummary()
                     )
                 } catch (_: Exception) { null }
             }
@@ -2106,6 +2129,42 @@ class ConversationStore internal constructor(
         }
     }
 
+    private fun PersistedSessionForkOrigin.toSessionForkSummary(): SessionForkSummary {
+        val sourceLabel = when (sourceKind.trim().uppercase()) {
+            "MESSAGE" -> "消息分叉"
+            "CHECKPOINT" -> "检查点分叉"
+            "WORKFLOW_PLAN" -> "计划分叉"
+            else -> "会话分叉"
+        }
+        val sourceTitle = parentSessionTitle.trim().ifBlank { "原会话" }
+        val detail = sourceSummary.trim().ifBlank {
+            when {
+                sourceMessageId != null -> "从消息节点继续"
+                !sourceCheckpointId.isNullOrBlank() -> "从检查点继续"
+                !sourceWorkflowPlanId.isNullOrBlank() -> "从当前计划继续"
+                else -> "从当前上下文继续"
+            }
+        }
+        return SessionForkSummary(
+            label = sourceLabel,
+            summary = "$sourceTitle · $detail"
+        )
+    }
+
+    private fun PersistedCheckpointRecoveryRecord.toSessionRecoverySummary(): String {
+        val scopeLabel = when (scope.trim().uppercase()) {
+            ConversationCheckpointScope.CONVERSATION.name -> "最近恢复对话"
+            ConversationCheckpointScope.BOTH.name -> "最近恢复全部"
+            else -> "最近恢复代码"
+        }
+        val detail = checkpointSummary
+            .substringAfter(": ", checkpointSummary)
+            .trim()
+            .ifBlank { "已回到较早节点继续" }
+            .take(48)
+        return "$scopeLabel · $detail"
+    }
+
     private companion object {
         const val INDEX_FILE_NAME = "index.json"
         const val DELETED_SESSIONS_FILE_NAME = "deleted_sessions.json"
@@ -2132,7 +2191,16 @@ data class SessionSummary(
     val finalReadinessAuditCount: Int = 0,
     val latestFinalReadinessAuditSummary: String? = null,
     val latestFinalReadinessStatusKind: FinalReadinessSessionStatusKind = FinalReadinessSessionStatusKind.NONE,
-    val latestFinalReadinessReasonSummary: String? = null
+    val latestFinalReadinessReasonSummary: String? = null,
+    val forkSourceLabel: String? = null,
+    val forkSourceSummary: String? = null,
+    val latestRecoverySummary: String? = null
+)
+
+@Serializable
+data class SessionForkSummary(
+    val label: String,
+    val summary: String
 )
 
 @Serializable

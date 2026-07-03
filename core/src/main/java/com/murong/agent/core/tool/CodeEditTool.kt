@@ -97,24 +97,31 @@ class CodeEditTool : Tool {
                     if (!RootFile.exists(path)) {
                         return ToolExecutionResult("File not found: $path")
                     }
-                    val content = RootFile.readFile(path)
-                    if (content.startsWith("error:")) return ToolExecutionResult("Error reading $path")
-
                     val startLine = obj["startLine"]?.jsonPrimitive?.intOrNull
                     val endLine = obj["endLine"]?.jsonPrimitive?.intOrNull
 
                     if (startLine != null || endLine != null) {
-                        val lines = content.lines()
-                        val s = (startLine ?: 1).coerceAtLeast(1) - 1
-                        val e = (endLine ?: lines.size).coerceAtMost(lines.size)
-                        if (s >= lines.size || s >= e) {
+                        val lineLimit = if (startLine != null && endLine != null)
+                            (endLine - startLine + 1).coerceAtLeast(1) else 200
+                        val result = RootFile.readFilePaged(
+                            path,
+                            offsetLines = (startLine ?: 1).coerceAtLeast(1) - 1,
+                            lineLimit = lineLimit
+                        )
+                        if (result.content.isEmpty()) {
                             return ToolExecutionResult(
-                                "Error: invalid line range for $path (start=${startLine ?: 1}, end=${endLine ?: lines.size})"
+                                "Error: invalid line range for $path (start=${startLine ?: 1}, end=${endLine ?: "?"})"
                             )
                         }
-                        ToolExecutionResult(lines.subList(s, e).joinToString("\n"))
+                        val truncatedHint = if (result.truncated) "\n\n...(truncated)" else ""
+                        ToolExecutionResult(result.content + truncatedHint)
                     } else {
-                        ToolExecutionResult(content)
+                        val result = RootFile.readFilePaged(path, offsetLines = 0, lineLimit = 200)
+                        if (result.status != RootFile.ReadStatus.OK) {
+                            return ToolExecutionResult("Error reading $path")
+                        }
+                        val truncatedHint = if (result.truncated) "\n\n...(truncated, first 200 lines)" else ""
+                        ToolExecutionResult(result.content + truncatedHint)
                     }
                 }
                 "search_replace" -> {

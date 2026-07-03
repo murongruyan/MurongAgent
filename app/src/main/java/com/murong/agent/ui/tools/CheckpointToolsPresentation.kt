@@ -17,6 +17,7 @@ internal data class CheckpointToolsPresentation(
     val checkpointCountLabel: String,
     val fileChangeCountLabel: String,
     val recoveryCountLabel: String,
+    val recoveryOverviewLabel: String? = null,
     val checkpoints: List<CheckpointToolPresentation>,
     val recoveries: List<CheckpointRecoveryToolPresentation>,
     val fileChanges: List<FileChangeToolPresentation>
@@ -54,7 +55,17 @@ internal data class CheckpointRecoveryToolPresentation(
     val subtitle: String,
     val detailTitle: String,
     val detailSubtitle: String,
-    val detailContent: String
+    val detailContent: String,
+    val scope: ConversationCheckpointScope,
+    val checkpointId: String? = null,
+    val summaryPreview: String = "",
+    val timestamp: Long = 0L
+)
+
+internal data class CheckpointRecoveryTimelineGroup(
+    val dayLabel: String,
+    val summaryLabel: String,
+    val records: List<CheckpointRecoveryToolPresentation>
 )
 
 internal fun buildCheckpointToolsPresentation(
@@ -105,9 +116,12 @@ internal fun buildCheckpointToolsPresentation(
             recordIds = matchingRecords.map { it.id }
         )
     }
-    val recoveryPresentations = recentRecoveryRecords.map { record ->
+    val recoveryPresentations = recentRecoveryRecords
+        .sortedByDescending { it.timestamp }
+        .map { record ->
         val sourceCheckpoint = checkpointsById[record.checkpointId]
         val scopeLabel = formatCheckpointScopeLabel(record.scope)
+        val summaryPreview = formatCheckpointRecoveryPresentationSummary(record, sourceCheckpoint)
         val restoredFilesLabel = when (record.scope) {
             ConversationCheckpointScope.CONVERSATION -> "文件恢复 0"
             ConversationCheckpointScope.CODE,
@@ -116,20 +130,25 @@ internal fun buildCheckpointToolsPresentation(
         CheckpointRecoveryToolPresentation(
             id = record.id,
             title = formatCheckpointRecoveryActionLabel(record.scope),
-            subtitle = "$scopeLabel · $restoredFilesLabel · ${
+            subtitle = "$scopeLabel · $restoredFilesLabel · $summaryPreview · ${
                 formatCheckpointPresentationTime(record.timestamp)
             }",
             detailTitle = formatCheckpointRecoveryActionLabel(record.scope),
             detailSubtitle = "恢复域: $scopeLabel · 目标消息位置: ${record.targetMessageIndex + 1} · 时间: ${
                 formatCheckpointPresentationTime(record.timestamp)
             }",
-            detailContent = buildCheckpointRecoveryDetailContent(record, sourceCheckpoint)
+            detailContent = buildCheckpointRecoveryDetailContent(record, sourceCheckpoint),
+            scope = record.scope,
+            checkpointId = sourceCheckpoint?.id,
+            summaryPreview = summaryPreview,
+            timestamp = record.timestamp
         )
     }
     return CheckpointToolsPresentation(
         checkpointCountLabel = checkpoints.size.toString(),
         fileChangeCountLabel = fileChanges.size.toString(),
         recoveryCountLabel = recentRecoveryRecords.size.toString(),
+        recoveryOverviewLabel = buildCheckpointRecoveryOverviewLabel(recentRecoveryRecords),
         checkpoints = checkpointPresentations,
         recoveries = recoveryPresentations,
         fileChanges = fileChangePresentations
@@ -214,6 +233,58 @@ internal fun formatCheckpointRecoveryActionLabel(scope: ConversationCheckpointSc
         ConversationCheckpointScope.CONVERSATION -> "最近恢复对话"
         ConversationCheckpointScope.BOTH -> "最近恢复全部"
     }
+}
+
+internal fun buildCheckpointRecoveryOverviewLabel(
+    recentRecoveryRecords: List<CheckpointRecoveryRecordUi>
+): String? {
+    if (recentRecoveryRecords.isEmpty()) return null
+    val codeCount = recentRecoveryRecords.count { it.scope == ConversationCheckpointScope.CODE }
+    val conversationCount = recentRecoveryRecords.count { it.scope == ConversationCheckpointScope.CONVERSATION }
+    val bothCount = recentRecoveryRecords.count { it.scope == ConversationCheckpointScope.BOTH }
+    val parts = buildList {
+        if (bothCount > 0) add("全部 $bothCount")
+        if (conversationCount > 0) add("对话 $conversationCount")
+        if (codeCount > 0) add("代码 $codeCount")
+    }
+    return when {
+        parts.isEmpty() -> null
+        parts.size == 1 -> "最近恢复以 ${parts.single()} 为主"
+        else -> "最近恢复分布: ${parts.joinToString(" · ")}"
+    }
+}
+
+internal fun buildCheckpointRecoveryTimelineGroups(
+    records: List<CheckpointRecoveryToolPresentation>
+): List<CheckpointRecoveryTimelineGroup> {
+    return records
+        .sortedByDescending { it.timestamp }
+        .groupBy { formatCheckpointTimelineDayLabel(it.timestamp) }
+        .map { (dayLabel, dayRecords) ->
+            CheckpointRecoveryTimelineGroup(
+                dayLabel = dayLabel,
+                summaryLabel = buildCheckpointRecoveryTimelineSummary(dayRecords),
+                records = dayRecords
+            )
+        }
+}
+
+private fun buildCheckpointRecoveryTimelineSummary(
+    records: List<CheckpointRecoveryToolPresentation>
+): String {
+    val bothCount = records.count { it.scope == ConversationCheckpointScope.BOTH }
+    val conversationCount = records.count { it.scope == ConversationCheckpointScope.CONVERSATION }
+    val codeCount = records.count { it.scope == ConversationCheckpointScope.CODE }
+    val parts = buildList {
+        if (bothCount > 0) add("全部 $bothCount")
+        if (conversationCount > 0) add("对话 $conversationCount")
+        if (codeCount > 0) add("代码 $codeCount")
+    }
+    return parts.joinToString(" · ")
+}
+
+internal fun formatCheckpointTimelineDayLabel(timestamp: Long): String {
+    return SimpleDateFormat("MM-dd", Locale.getDefault()).format(Date(timestamp))
 }
 
 private fun formatCheckpointSourceLabel(source: ConversationCheckpointSource): String {

@@ -426,6 +426,30 @@ class ChatViewModel @Inject constructor(
         )
     }
 
+    fun forkSessionFromUserMessage(messageId: Long): Result<String> {
+        val result = sessionManager.forkSessionFromUserMessage(messageId)
+        if (result.isSuccess) {
+            refreshSessions()
+        }
+        return result
+    }
+
+    fun forkSessionFromCheckpoint(checkpointId: String): Result<String> {
+        val result = sessionManager.forkSessionFromCheckpoint(checkpointId)
+        if (result.isSuccess) {
+            refreshSessions()
+        }
+        return result
+    }
+
+    fun forkSessionFromWorkflowPlan(): Result<String> {
+        val result = sessionManager.forkSessionFromWorkflowPlan()
+        if (result.isSuccess) {
+            refreshSessions()
+        }
+        return result
+    }
+
     fun importConversation(rawText: String, sourceName: String? = null): Result<Int> {
         return runCatching {
             val importedCount = sessionManager.importConversation(rawText, sourceName)

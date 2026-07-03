@@ -51,6 +51,7 @@ internal fun WorkflowPlanDialog(
     interactionState: WorkflowPlanInteractionState? = null,
     onInteractionStateChange: ((WorkflowPlanInteractionState) -> Unit)? = null,
     isProcessing: Boolean,
+    onFork: () -> Unit,
     onExecute: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -66,6 +67,7 @@ internal fun WorkflowPlanDialog(
                 onInteractionStateChange = onInteractionStateChange,
                 showDetailedHistory = true,
                 isProcessing = isProcessing,
+                onFork = onFork,
                 onExecute = onExecute,
                 onDismiss = onDismiss
             )
@@ -79,6 +81,7 @@ internal fun WorkflowPlanPromptCard(
     interactionState: WorkflowPlanInteractionState? = null,
     onInteractionStateChange: ((WorkflowPlanInteractionState) -> Unit)? = null,
     isProcessing: Boolean,
+    onFork: () -> Unit,
     onExecute: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -97,6 +100,7 @@ internal fun WorkflowPlanPromptCard(
             onInteractionStateChange = onInteractionStateChange,
             showDetailedHistory = false,
             isProcessing = isProcessing,
+            onFork = onFork,
             onExecute = onExecute,
             onDismiss = onDismiss
         )
@@ -110,6 +114,7 @@ private fun WorkflowPlanPromptContainer(
     onInteractionStateChange: ((WorkflowPlanInteractionState) -> Unit)? = null,
     showDetailedHistory: Boolean,
     isProcessing: Boolean,
+    onFork: () -> Unit,
     onExecute: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -127,6 +132,7 @@ private fun WorkflowPlanPromptContainer(
                 onInteractionStateChange = onInteractionStateChange,
                 showDetailedHistory = showDetailedHistory,
                 isProcessing = isProcessing,
+                onFork = onFork,
                 onExecute = onExecute,
                 onDismiss = onDismiss
             )
@@ -141,6 +147,7 @@ private fun WorkflowPlanPromptContent(
     onInteractionStateChange: ((WorkflowPlanInteractionState) -> Unit)? = null,
     showDetailedHistory: Boolean,
     isProcessing: Boolean,
+    onFork: () -> Unit,
     onExecute: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -364,6 +371,12 @@ private fun WorkflowPlanPromptContent(
             MurongOutlinedActionButton(
                 text = sessionPresentation.dismissLabel,
                 onClick = onDismiss,
+                enabled = !isProcessing,
+                modifier = Modifier.weight(1f)
+            )
+            MurongOutlinedActionButton(
+                text = "分叉会话",
+                onClick = onFork,
                 enabled = !isProcessing,
                 modifier = Modifier.weight(1f)
             )

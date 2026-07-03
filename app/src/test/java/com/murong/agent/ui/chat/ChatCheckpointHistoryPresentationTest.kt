@@ -136,12 +136,15 @@ class ChatCheckpointHistoryPresentationTest {
 
         assertEquals("本轮修改与恢复", presentation.title)
         assertTrue(hasChatCheckpointActivity(presentation))
+        assertEquals("最近恢复以 全部 1 为主", presentation.recoveryOverviewLabel)
         assertEquals("修改 2 个文件", presentation.checkpoints.single().title)
         assertTrue(presentation.checkpoints.single().subtitle.contains("恢复全部"))
         assertTrue(presentation.checkpoints.single().changedFilesPreview.contains("A.kt"))
 
         val recovery = assertNotNull(findChatCheckpointRecoveryPresentation(presentation, "recovery-1"))
         assertEquals("最近恢复全部", recovery.title)
+        assertEquals("修改 2 个文件", recovery.summaryPreview)
+        assertEquals(ConversationCheckpointScope.BOTH, recovery.scope)
         assertTrue(recovery.detailSubtitle.contains("目标消息位置 4"))
         assertTrue(recovery.detailContent.contains("来源检查点: chk-1"))
     }
@@ -257,6 +260,55 @@ class ChatCheckpointHistoryPresentationTest {
         assertTrue(recovery.subtitle.contains("等待用户确认"))
         assertTrue(recovery.subtitle.contains("提问卡片: 是否继续执行数据库迁移？"))
         assertTrue(recovery.detailContent.contains("恢复摘要: 等待用户确认"))
+    }
+
+    @Test
+    fun buildChatCheckpointHistoryPresentation_buildsRecoveryTimelineGroupsInDescendingOrder() {
+        val presentation = buildChatCheckpointHistoryPresentation(
+            checkpoints = emptyList(),
+            fileChanges = emptyList(),
+            recentRecoveryRecords = listOf(
+                CheckpointRecoveryRecordUi(
+                    id = "recovery-old",
+                    checkpointId = "chk-1",
+                    checkpointSummary = "恢复对话: 较早记录",
+                    scope = ConversationCheckpointScope.CONVERSATION,
+                    restoredFileCount = 0,
+                    targetMessageIndex = 1,
+                    timestamp = 1720051200000L
+                ),
+                CheckpointRecoveryRecordUi(
+                    id = "recovery-new",
+                    checkpointId = "chk-2",
+                    checkpointSummary = "恢复代码/对话: 最新记录",
+                    scope = ConversationCheckpointScope.BOTH,
+                    restoredFileCount = 2,
+                    targetMessageIndex = 2,
+                    timestamp = 1720137601000L
+                ),
+                CheckpointRecoveryRecordUi(
+                    id = "recovery-mid",
+                    checkpointId = "chk-3",
+                    checkpointSummary = "恢复代码: 同日较早",
+                    scope = ConversationCheckpointScope.CODE,
+                    restoredFileCount = 1,
+                    targetMessageIndex = 3,
+                    timestamp = 1720137600000L
+                )
+            )
+        )
+
+        assertEquals("最近恢复分布: 全部 1 · 对话 1 · 代码 1", presentation.recoveryOverviewLabel)
+        assertEquals(listOf("recovery-new", "recovery-mid", "recovery-old"), presentation.recoveries.map { it.id })
+        assertEquals(2, presentation.recoveryTimelineGroups.size)
+        assertEquals("07-05", presentation.recoveryTimelineGroups[0].dayLabel)
+        assertEquals("全部 1 · 代码 1", presentation.recoveryTimelineGroups[0].summaryLabel)
+        assertEquals(
+            listOf("recovery-new", "recovery-mid"),
+            presentation.recoveryTimelineGroups[0].records.map { it.id }
+        )
+        assertEquals("07-04", presentation.recoveryTimelineGroups[1].dayLabel)
+        assertEquals("对话 1", presentation.recoveryTimelineGroups[1].summaryLabel)
     }
 
     @Test

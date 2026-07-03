@@ -1273,4 +1273,111 @@ class ConversationStoreTest {
             tempDir.toFile().deleteRecursively()
         }
     }
+
+    @Test
+    fun saveSession_withForkOriginAndRecoverySummary_exposesSessionListHints() {
+        val tempDir = Files.createTempDirectory("conversation-store-fork-summary-test")
+        try {
+            val store = ConversationStore(tempDir.toFile())
+            val session = PersistedSession(
+                id = "forked-session-01",
+                title = "登录修复分支",
+                createdAt = 1L,
+                updatedAt = 2L,
+                providerId = "test-provider",
+                modelName = "test-model",
+                forkOrigin = PersistedSessionForkOrigin(
+                    parentSessionId = "parent-01",
+                    parentSessionTitle = "原始登录会话",
+                    sourceKind = "MESSAGE",
+                    sourceMessageId = 7L,
+                    sourceSummary = "定位登录按钮点击后无响应"
+                ),
+                recentRecoveryRecords = listOf(
+                    PersistedCheckpointRecoveryRecord(
+                        id = "recovery-1",
+                        checkpointId = "chk-1",
+                        checkpointSummary = "恢复代码/对话: 修改 2 个文件",
+                        scope = ConversationCheckpointScope.BOTH.name,
+                        restoredFileCount = 2,
+                        targetMessageIndex = 3,
+                        timestamp = 123L
+                    )
+                ),
+                messages = listOf(
+                    PersistedMessage(
+                        id = 1L,
+                        role = "user",
+                        content = "继续从这里排查"
+                    )
+                )
+            )
+
+            assertTrue(store.saveSession(session))
+
+            val summary = store.listSessions().single()
+
+            assertEquals("消息分叉", summary.forkSourceLabel)
+            assertEquals(
+                "原始登录会话 · 定位登录按钮点击后无响应",
+                summary.forkSourceSummary
+            )
+            assertEquals("最近恢复全部 · 修改 2 个文件", summary.latestRecoverySummary)
+        } finally {
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun listSessions_rebuildIndex_preservesForkAndRecoveryHints() {
+        val tempDir = Files.createTempDirectory("conversation-store-fork-summary-rebuild-test")
+        try {
+            val store = ConversationStore(tempDir.toFile())
+            val session = PersistedSession(
+                id = "forked-session-02",
+                title = "检查点恢复分支",
+                createdAt = 1L,
+                updatedAt = 3L,
+                providerId = "test-provider",
+                modelName = "test-model",
+                forkOrigin = PersistedSessionForkOrigin(
+                    parentSessionId = "parent-02",
+                    parentSessionTitle = "发布回归会话",
+                    sourceKind = "CHECKPOINT",
+                    sourceCheckpointId = "chk-9",
+                    sourceSummary = "恢复发布前状态"
+                ),
+                recentRecoveryRecords = listOf(
+                    PersistedCheckpointRecoveryRecord(
+                        id = "recovery-2",
+                        checkpointId = "chk-9",
+                        checkpointSummary = "恢复对话: 发布回归确认",
+                        scope = ConversationCheckpointScope.CONVERSATION.name,
+                        restoredFileCount = 0,
+                        targetMessageIndex = 5,
+                        timestamp = 456L
+                    )
+                ),
+                messages = listOf(
+                    PersistedMessage(
+                        id = 1L,
+                        role = "assistant",
+                        content = "从检查点继续推进"
+                    )
+                )
+            )
+
+            assertTrue(store.saveSession(session))
+            assertTrue(tempDir.resolve("index.json").toFile().delete())
+
+            val recreatedStore = ConversationStore(tempDir.toFile())
+            val summary = recreatedStore.listSessions().single()
+
+            assertEquals("检查点分叉", summary.forkSourceLabel)
+            assertEquals("发布回归会话 · 恢复发布前状态", summary.forkSourceSummary)
+            assertEquals("最近恢复对话 · 发布回归确认", summary.latestRecoverySummary)
+        } finally {
+            tempDir.toFile().deleteRecursively()
+        }
+    }
 }

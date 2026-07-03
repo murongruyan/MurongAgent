@@ -122,6 +122,7 @@ internal fun ToolsScreen(
     onApprovePendingTool: () -> Unit,
     onRejectPendingTool: () -> Unit,
     onRollbackCheckpoint: (String, ConversationCheckpointScope) -> Unit,
+    onForkCheckpointSession: (String) -> Unit,
     mcpServers: List<McpServerConfig>,
     mcpStatuses: List<McpServerStatus>,
     mcpConnectError: String?,
@@ -140,6 +141,7 @@ internal fun ToolsScreen(
     var selectedCheckpointId by remember { mutableStateOf<String?>(null) }
     var selectedRecordId by remember { mutableStateOf<String?>(null) }
     var selectedRecoveryId by remember { mutableStateOf<String?>(null) }
+    var showRecoveryTimeline by remember { mutableStateOf(false) }
     var selectedToolCall by remember { mutableStateOf<ToolCallRecordUi?>(null) }
     var selectedError by remember { mutableStateOf<ErrorRecordUi?>(null) }
     var selectedMcpServerName by remember { mutableStateOf<String?>(null) }
@@ -383,6 +385,7 @@ internal fun ToolsScreen(
                     onOpenCheckpoint = { selectedCheckpointId = it },
                     onOpenRecord = { selectedRecordId = it },
                     onOpenRecovery = { selectedRecoveryId = it },
+                    onOpenRecoveryTimeline = { showRecoveryTimeline = true },
                     onRollbackCheckpoint = onRollbackCheckpoint
                 )
             }
@@ -443,6 +446,10 @@ internal fun ToolsScreen(
                     selectedCheckpointId = null
                     onRollbackCheckpoint(checkpoint.id, checkpoint.rollbackScope)
                 },
+                onForkCheckpoint = {
+                    selectedCheckpointId = null
+                    onForkCheckpointSession(checkpoint.id)
+                },
                 onOpenRecord = { recordId -> selectedRecordId = recordId }
             )
         }
@@ -454,8 +461,27 @@ internal fun ToolsScreen(
     selectedRecoveryId
         ?.let { recordId -> findCheckpointRecoveryToolPresentation(checkpointPresentation, recordId) }
         ?.let { record ->
-            RecoveryDetailSheet(record = record, onDismiss = { selectedRecoveryId = null })
+            RecoveryDetailSheet(
+                record = record,
+                onDismiss = { selectedRecoveryId = null },
+                onOpenCheckpoint = record.checkpointId?.let { checkpointId ->
+                    {
+                        selectedRecoveryId = null
+                        selectedCheckpointId = checkpointId
+                    }
+                }
+            )
         }
+    if (showRecoveryTimeline && checkpointPresentation.recoveries.isNotEmpty()) {
+        RecoveryTimelineSheet(
+            records = checkpointPresentation.recoveries,
+            onDismiss = { showRecoveryTimeline = false },
+            onOpenRecovery = { recoveryId ->
+                showRecoveryTimeline = false
+                selectedRecoveryId = recoveryId
+            }
+        )
+    }
     selectedToolCall?.let { record ->
         ToolCallDetailSheet(record = record, onDismiss = { selectedToolCall = null })
     }
@@ -787,6 +813,7 @@ private fun FileChangeCard(
     onOpenCheckpoint: (String) -> Unit,
     onOpenRecord: (String) -> Unit,
     onOpenRecovery: (String) -> Unit,
+    onOpenRecoveryTimeline: () -> Unit,
     onRollbackCheckpoint: (String, ConversationCheckpointScope) -> Unit
 ) {
     ToolsPanelCard {
@@ -798,6 +825,25 @@ private fun FileChangeCard(
             KeyValueRow("检查点", presentation.checkpointCountLabel)
             KeyValueRow("文件改动", presentation.fileChangeCountLabel)
             KeyValueRow("最近恢复", presentation.recoveryCountLabel)
+            presentation.recoveryOverviewLabel?.let { overview ->
+                Text(
+                    text = overview,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            presentation.recoveries.firstOrNull()?.let { latestRecovery ->
+                Text(
+                    text = "最近一次: ${latestRecovery.summaryPreview}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            if (presentation.recoveries.size > 3) {
+                TextButton(onClick = onOpenRecoveryTimeline) {
+                    Text("查看时间线")
+                }
+            }
             presentation.recoveries.take(3).forEach { record ->
                 ClickableListRow(
                     title = record.title,
@@ -1324,6 +1370,7 @@ private fun CheckpointDetailSheet(
     records: List<FileChangeToolPresentation>,
     onDismiss: () -> Unit,
     onRollbackCheckpoint: () -> Unit,
+    onForkCheckpoint: () -> Unit,
     onOpenRecord: (String) -> Unit
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -1350,6 +1397,9 @@ private fun CheckpointDetailSheet(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            TextButton(onClick = onForkCheckpoint) {
+                Text("分叉会话")
+            }
             FilledTonalButton(onClick = onRollbackCheckpoint) { Text(checkpoint.rollbackLabel) }
             if (records.isNotEmpty()) {
                 Text(
@@ -1381,13 +1431,66 @@ private fun FileChangeDetailSheet(record: FileChangeToolPresentation, onDismiss:
 }
 
 @Composable
-private fun RecoveryDetailSheet(record: CheckpointRecoveryToolPresentation, onDismiss: () -> Unit) {
+private fun RecoveryDetailSheet(
+    record: CheckpointRecoveryToolPresentation,
+    onDismiss: () -> Unit,
+    onOpenCheckpoint: (() -> Unit)? = null
+) {
+    ToolsPopupDialog(
+        title = record.detailTitle,
+        subtitle = record.detailSubtitle,
+        onDismissRequest = onDismiss,
+        actions = {
+            if (onOpenCheckpoint != null) {
+                TextButton(onClick = onOpenCheckpoint) { Text("查看来源检查点") }
+            }
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        }
+    ) {
+        SelectionContainer {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                CodeBlock(record.detailContent)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecoveryTimelineSheet(
+    records: List<CheckpointRecoveryToolPresentation>,
+    onDismiss: () -> Unit,
+    onOpenRecovery: (String) -> Unit
+) {
+    val timelineGroups = remember(records) { buildCheckpointRecoveryTimelineGroups(records) }
     ModalBottomSheet(onDismissRequest = onDismiss) {
-        DetailSheetContent(
-            title = record.detailTitle,
-            subtitle = record.detailSubtitle,
-            content = record.detailContent
-        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text("恢复时间线", style = MaterialTheme.typography.titleMedium)
+            timelineGroups.forEach { group ->
+                Text(
+                    text = group.dayLabel,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = group.summaryLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                group.records.forEach { record ->
+                    ClickableListRow(
+                        title = "${record.title} · ${formatTime(record.timestamp)}",
+                        subtitle = record.summaryPreview,
+                        onClick = { onOpenRecovery(record.id) }
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+        }
     }
 }
 

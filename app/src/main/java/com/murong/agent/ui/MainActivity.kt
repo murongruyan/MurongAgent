@@ -1277,6 +1277,16 @@ fun MainScreen() {
                                 onUndoMessageAndCode = { messageId ->
                                     chatVm.rollbackToUserMessage(messageId)
                                 },
+                                onForkMessageSession = { messageId ->
+                                    val message = chatVm.forkSessionFromUserMessage(messageId)
+                                        .fold(
+                                            onSuccess = { it },
+                                            onFailure = { error -> error.message ?: "分叉会话失败" }
+                                        )
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar(message)
+                                    }
+                                },
                                 onCompressContext = {
                                     chatVm.compressCurrentContext()
                                 },
@@ -1288,6 +1298,16 @@ fun MainScreen() {
                                 },
                                 onDismissPlan = {
                                     chatVm.dismissPendingWorkflowPlan()
+                                },
+                                onForkWorkflowPlanSession = {
+                                    val message = chatVm.forkSessionFromWorkflowPlan()
+                                        .fold(
+                                            onSuccess = { it },
+                                            onFailure = { error -> error.message ?: "分叉计划会话失败" }
+                                        )
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar(message)
+                                    }
                                 },
                                 onSubmitClarificationAnswer = { answer ->
                                     chatVm.submitClarificationAnswer(answer)
@@ -1350,6 +1370,16 @@ fun MainScreen() {
                                             onFailure = { error ->
                                                 error.message ?: "恢复检查点失败"
                                             }
+                                        )
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar(message)
+                                    }
+                                },
+                                onForkCheckpointSession = { checkpointId ->
+                                    val message = chatVm.forkSessionFromCheckpoint(checkpointId)
+                                        .fold(
+                                            onSuccess = { it },
+                                            onFailure = { error -> error.message ?: "分叉检查点会话失败" }
                                         )
                                     scope.launch {
                                         snackbarHostState.showSnackbar(message)
@@ -1571,6 +1601,16 @@ fun MainScreen() {
                                     onFailure = { error ->
                                         error.message ?: "恢复检查点失败"
                                     }
+                                )
+                            scope.launch {
+                                snackbarHostState.showSnackbar(message)
+                            }
+                        },
+                        onForkCheckpointSession = { checkpointId ->
+                            val message = chatVm.forkSessionFromCheckpoint(checkpointId)
+                                .fold(
+                                    onSuccess = { it },
+                                    onFailure = { error -> error.message ?: "分叉检查点会话失败" }
                                 )
                             scope.launch {
                                 snackbarHostState.showSnackbar(message)
@@ -2393,6 +2433,16 @@ fun MainScreen() {
                         )
                 },
                 isProcessing = chatState.isProcessing,
+                onFork = {
+                    val message = chatVm.forkSessionFromWorkflowPlan()
+                        .fold(
+                            onSuccess = { it },
+                            onFailure = { error -> error.message ?: "分叉计划会话失败" }
+                        )
+                    scope.launch {
+                        snackbarHostState.showSnackbar(message)
+                    }
+                },
                 onExecute = { chatVm.executePendingWorkflowPlan() },
                 onDismiss = { chatVm.dismissPendingWorkflowPlan() }
             )
