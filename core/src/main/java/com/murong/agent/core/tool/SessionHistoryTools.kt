@@ -396,24 +396,45 @@ internal fun searchSessionHistory(
     limit: Int
 ): List<SessionHistoryMatch> {
     val normalizedQuery = query.trim()
+    if (normalizedQuery.isBlank()) return emptyList()
     val normalizedCurrentProjectPath = normalizeSessionHistoryProjectPath(currentProjectPath)
-    return sessions
+
+    // Build a combined text per session for BM25 scoring
+    val candidates = sessions
         .asSequence()
         .filter { includeCurrentSession || it.id != currentSessionId }
         .filter { summary ->
-            if (!projectOnly) return@filter true
-            normalizeSessionHistoryProjectPath(summary.projectPath) == normalizedCurrentProjectPath
+            !projectOnly || normalizeSessionHistoryProjectPath(summary.projectPath) == normalizedCurrentProjectPath
         }
         .mapNotNull { summary ->
             val session = sessionLoader(summary.id)
-            buildSessionHistoryMatch(summary, session, normalizedQuery)
+            val texts = buildList {
+                add(summary.title.trim())
+                session?.sessionGoal?.trim()?.takeIf { it.isNotBlank() }?.let { add(it) }
+                summary.projectPath?.trim()?.takeIf { it.isNotBlank() }?.let { add(it) }
+                summary.latestFinalReadinessAuditSummary?.trim()?.takeIf { it.isNotBlank() }?.let { add(it) }
+                session?.messages?.joinToString(" ") { msg ->
+                    listOfNotNull(msg.content, msg.reasoning).joinToString(" ")
+                }?.takeIf { it.isNotBlank() }?.let { add(it) }
+            }
+            if (texts.isEmpty()) return@mapNotNull null
+            SessionDoc(summary, session, texts.joinToString(" "))
         }
-        .sortedWith(
-            compareByDescending<SessionHistoryMatch> { sessionHistoryMatchScore(it, normalizedQuery) }
-                .thenByDescending { it.summary.updatedAt }
-        )
-        .take(limit)
         .toList()
+
+    if (candidates.isEmpty()) return emptyList()
+
+    val queryTokens = tokenizeForBm25(normalizedQuery)
+    if (queryTokens.isEmpty()) return emptyList()
+
+    // BM25 score all candidates
+    val scored = bm25ScoreSessionHistory(candidates, queryTokens)
+    if (scored.isEmpty()) return emptyList()
+
+    return scored.mapNotNull { (index, _) ->
+        val doc = candidates[index]
+        buildSessionHistoryMatch(doc.summary, doc.session, normalizedQuery)
+    }.take(limit.coerceIn(1, 20))
 }
 
 internal fun formatSessionHistorySearchResult(
@@ -816,6 +837,72 @@ private fun sessionHistoryMatchScore(match: SessionHistoryMatch, query: String):
         "消息正文" -> 100
         else -> 0
     }
+}
+
+// ── BM25 scoring for session history search ──
+
+private fun tokenizeForBm25(text: String): List<String> {
+    val result = mutableListOf<String>()
+    val latinBuf = StringBuilder()
+    for (ch in text.lowercase()) {
+        when {
+            ch in '\u4E00'..'\u9FFF' || ch in '\uAC00'..'\uD7AF' ||
+                ch in '\u3040'..'\u309F' || ch in '\u30A0'..'\u30FF' -> {
+                if (latinBuf.isNotEmpty()) { result.add(latinBuf.toString()); latinBuf.clear() }
+                result.add(ch.toString())
+            }
+            ch.isLetterOrDigit() || ch == '_' || ch == '-' -> latinBuf.append(ch)
+            else -> {
+                if (latinBuf.isNotEmpty()) { result.add(latinBuf.toString()); latinBuf.clear() }
+            }
+        }
+    }
+    if (latinBuf.isNotEmpty()) result.add(latinBuf.toString())
+    return result
+}
+
+private data class SessionDoc(
+    val summary: SessionSummary,
+    val session: PersistedSession?,
+    val combinedText: String
+)
+
+private fun bm25ScoreSessionHistory(
+    docs: List<SessionDoc>,
+    queryTokens: List<String>,
+    k1: Double = 1.2,
+    b: Double = 0.75
+): List<Pair<Int, Double>> {
+    if (queryTokens.isEmpty() || docs.isEmpty()) return emptyList()
+
+    data class DocTokens(val index: Int, val tokens: List<String>, val termFreq: Map<String, Int>)
+    val tokenized = docs.mapIndexed { index, doc ->
+        val tokens = tokenizeForBm25(doc.combinedText)
+        val termFreq = tokens.groupingBy { it }.eachCount()
+        DocTokens(index, tokens, termFreq)
+    }
+
+    val numDocs = tokenized.size.toDouble()
+    val avgDocLen = tokenized.map { it.tokens.size }.average().coerceAtLeast(1.0)
+    val uniqueTerms = queryTokens.toSet()
+
+    val docFreqs = mutableMapOf<String, Int>()
+    for (term in uniqueTerms) {
+        docFreqs[term] = tokenized.count { it.termFreq.containsKey(term) }
+    }
+
+    return tokenized.mapNotNull { doc ->
+        val docLen = doc.tokens.size.coerceAtLeast(1).toDouble()
+        var score = 0.0
+        for (term in queryTokens) {
+            val tf = doc.termFreq[term]?.toDouble() ?: continue
+            val df = docFreqs[term] ?: continue
+            if (df <= 0) continue
+            val idf = Math.log(1.0 + (numDocs - df + 0.5) / (df + 0.5))
+            score += idf * (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * docLen / avgDocLen))
+        }
+        if (score <= 0.0) null else doc.index to score
+    }.sortedByDescending { it.second }
 }
 
 private fun buildSessionHistorySessionSummary(session: PersistedSession): SessionSummary {
