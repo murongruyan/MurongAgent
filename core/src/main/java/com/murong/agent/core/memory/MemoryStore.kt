@@ -44,7 +44,7 @@ internal data class MemoryRecord(
 
 internal data class MemorySearchHit(
     val memory: MemoryRecord,
-    val score: Int,
+    val score: Double,
     val snippet: String
 )
 
@@ -128,15 +128,16 @@ internal class PersistedMemoryStore(
     override fun search(query: String, scope: MemoryScope, limit: Int): List<MemorySearchHit> {
         val normalizedQuery = normalizeSearchText(query)
         if (normalizedQuery.isBlank()) return emptyList()
-        val tokens = tokenize(normalizedQuery)
-        return collectRecords(scope).mapNotNull { record ->
-            scoreRecord(record, normalizedQuery, tokens)?.let { score ->
-                MemorySearchHit(
-                    memory = record,
-                    score = score,
-                    snippet = buildSnippet(record.content, normalizedQuery, tokens)
-                )
-            }
+        val queryTokens = tokenizeForBm25(normalizedQuery)
+        if (queryTokens.isEmpty()) return emptyList()
+        val records = collectRecords(scope)
+        return bm25Score(records, queryTokens).mapNotNull { (index, score) ->
+            val record = records[index]
+            MemorySearchHit(
+                memory = record,
+                score = score,
+                snippet = buildSnippet(record.content, normalizedQuery, queryTokens.distinct())
+            )
         }.sortedWith(
             compareByDescending<MemorySearchHit> { it.score }
                 .thenByDescending { scopePriority(it.memory.scope) }
@@ -412,65 +413,74 @@ private fun MemoryRecord.deduplicationKey(): String {
     ).joinToString(separator = "\u0000")
 }
 
-private fun scoreRecord(
-    record: MemoryRecord,
-    rawQuery: String,
-    tokens: List<String>
-): Int? {
-    val normalizedQuery = normalizeSearchText(rawQuery)
-    val title = normalizeSearchText(record.title)
-    val content = normalizeSearchText(record.content)
-    val titleTokens = tokenize(title).toSet()
-    val contentTokens = tokenize(content).toSet()
-    var score = 0
-    when {
-        title == normalizedQuery -> score += 140
-        title.startsWith(normalizedQuery) -> score += 120
-        title.contains(normalizedQuery) -> score += 90
+/**
+ * BM25 Okapi scoring over the full record collection.
+ * Standard parameters: k1=1.2, b=0.75
+ */
+private fun bm25Score(
+    records: List<MemoryRecord>,
+    queryTokens: List<String>,
+    k1: Double = 1.2,
+    b: Double = 0.75
+): List<Pair<Int, Double>> {
+    if (queryTokens.isEmpty() || records.isEmpty()) return emptyList()
+
+    // Tokenize each record (title + content combined)
+    data class DocIndex(val index: Int, val tokens: List<String>, val termFreq: Map<String, Int>)
+    val docs = records.mapIndexed { index, record ->
+        val text = normalizeSearchText("${record.title} ${record.title} ${record.title} ${record.title} ${record.content}")
+        val tokens = tokenizeForBm25(text)
+        val termFreq = tokens.groupingBy { it }.eachCount()
+        DocIndex(index, tokens, termFreq)
     }
-    when {
-        content == normalizedQuery -> score += 70
-        content.startsWith(normalizedQuery) -> score += 40
-        content.contains(normalizedQuery) -> score += 24
+
+    val numDocs = docs.size.toDouble()
+    val avgDocLen = docs.map { it.tokens.size }.average().coerceAtLeast(1.0)
+    val uniqueQueryTerms = queryTokens.toSet()
+
+    // Document frequency per unique query term
+    val docFreqs = mutableMapOf<String, Int>()
+    for (term in uniqueQueryTerms) {
+        docFreqs[term] = docs.count { doc -> doc.termFreq.containsKey(term) }
     }
-    val matchedTokens = linkedSetOf<String>()
-    tokens.forEach { token ->
+
+    return docs.mapNotNull { doc ->
+        val docLen = doc.tokens.size.coerceAtLeast(1).toDouble()
+        var score = 0.0
+        for (term in queryTokens) {
+            val tf = doc.termFreq[term]?.toDouble() ?: continue
+            val df = docFreqs[term] ?: continue
+            if (df <= 0) continue
+            // BM25 IDF: log(1 + (N - df + 0.5) / (df + 0.5))
+            val idf = Math.log(1.0 + (numDocs - df + 0.5) / (df + 0.5))
+            // BM25 term score
+            score += idf * (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * docLen / avgDocLen))
+        }
+        if (score <= 0.0) null else doc.index to score
+    }.sortedByDescending { it.second }
+}
+
+/**
+ * Tokenizer for BM25 — keeps duplicates (unlike [tokenize]) so term frequency is preserved.
+ */
+private fun tokenizeForBm25(text: String): List<String> {
+    val result = mutableListOf<String>()
+    val latinBuf = StringBuilder()
+    for (ch in text.lowercase()) {
         when {
-            titleTokens.contains(token) -> {
-                score += 20
-                matchedTokens += token
+            ch in '\u4E00'..'\u9FFF' || ch in '\uAC00'..'\uD7AF' ||
+                ch in '\u3040'..'\u309F' || ch in '\u30A0'..'\u30FF' -> {
+                if (latinBuf.isNotEmpty()) { result.add(latinBuf.toString()); latinBuf.clear() }
+                result.add(ch.toString())
             }
-            title.startsWith(token) -> {
-                score += 12
-                matchedTokens += token
-            }
-            title.contains(token) -> {
-                score += 8
-                matchedTokens += token
-            }
-        }
-        when {
-            contentTokens.contains(token) -> {
-                score += 8
-                matchedTokens += token
-            }
-            content.startsWith(token) -> {
-                score += 5
-                matchedTokens += token
-            }
-            content.contains(token) -> {
-                score += 3
-                matchedTokens += token
+            ch.isLetterOrDigit() || ch == '_' || ch == '-' -> latinBuf.append(ch)
+            else -> {
+                if (latinBuf.isNotEmpty()) { result.add(latinBuf.toString()); latinBuf.clear() }
             }
         }
     }
-    if (tokens.isNotEmpty()) {
-        score += matchedTokens.size * 6
-        if (matchedTokens.size == tokens.size) {
-            score += 18
-        }
-    }
-    return score.takeIf { it > 0 }
+    if (latinBuf.isNotEmpty()) result.add(latinBuf.toString())
+    return result
 }
 
 private fun tokenize(text: String): List<String> {
