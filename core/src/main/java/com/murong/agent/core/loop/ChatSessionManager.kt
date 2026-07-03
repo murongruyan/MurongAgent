@@ -6,6 +6,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
 import com.murong.agent.common.utils.RootFile
+import com.murong.agent.core.command.CustomCommandLoader
 import com.murong.agent.core.config.ConfigRepository
 import com.murong.agent.core.config.GlobalMemory
 import com.murong.agent.core.config.GlobalRule
@@ -4208,6 +4209,15 @@ class ChatSessionManager(
     ): String? {
         val normalizedText = text.trim()
         if ((normalizedText.isBlank() && pendingImages.isEmpty()) || _state.value.isProcessing) return null
+
+        // Resolve custom slash commands from .reasonix/commands/*.md
+        val projectRoot = _state.value.projectPath
+        val commands = if (normalizedText.startsWith("/") && !projectRoot.isNullOrBlank())
+            CustomCommandLoader.load(projectRoot) else emptyList()
+        val resolvedCommand = if (commands.isNotEmpty())
+            CustomCommandLoader.resolve(normalizedText, commands) else null
+        val effectiveText = resolvedCommand?.expandedText ?: normalizedText
+
         val globalConfig = configRepository.getConfig()
         val config = resolveEffectiveSessionConfig(globalConfig = globalConfig)
         if (normalizedText.isBlank() && pendingImages.isNotEmpty() && !config.isMultimodalEnabled()) {
@@ -4223,7 +4233,7 @@ class ChatSessionManager(
         )
         val executionConfig = resolveExecutionConfig(
             baseConfig = config,
-            goal = normalizedText,
+            goal = effectiveText,
             mentionedFiles = mentionedFiles
         )
         val executionToast = buildExecutionProfileToast(
@@ -4232,14 +4242,14 @@ class ChatSessionManager(
         )
         sendMessageInternal(
             userVisibleText = normalizedText,
-            modelInput = normalizedText,
+            modelInput = effectiveText,
             mentionedFiles = mentionedFiles,
             pendingImages = pendingImages,
             configOverride = executionConfig,
             extraUserContext = listOfNotNull(
                 buildSkillSelectionUserContext(selectedSkills),
                 buildExecutionProfileUserContext(
-                    goal = normalizedText,
+                    goal = effectiveText,
                     baseConfig = config,
                     executionConfig = executionConfig
                 )
