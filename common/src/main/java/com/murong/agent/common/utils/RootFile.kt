@@ -49,7 +49,13 @@ object RootFile {
         return result.trim() == "1"
     }
 
-    fun readFile(path: String): String {
+    fun readFile(path: String, maxBytes: Int = 500_000): String {
+        // Guard: check file size before reading to avoid OOM on large files
+        val sizeResult = KeepShellPublic.doCmdSync("stat -c%s \"$path\" 2>/dev/null || echo 0").trim()
+        val size = sizeResult.toLongOrNull() ?: 0L
+        if (size > maxBytes) {
+            return "error: file too large (${size} bytes, max ${maxBytes}). Use readFilePaged to read in windows."
+        }
         return KeepShellPublic.doCmdSync("cat \"$path\"")
     }
 

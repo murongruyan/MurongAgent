@@ -412,7 +412,7 @@ internal fun ChatScreen(
             .take(8)
             .toList()
     }
-    val listState = rememberSaveable(state.sessionId, saver = LazyListState.Saver) {
+    val listState = remember(state.sessionId) {
         LazyListState()
     }
     val bottomBarScrollPadding = rememberMurongBottomBarScrollPadding()
@@ -623,13 +623,12 @@ internal fun ChatScreen(
     }
 
     // 只在切会话或本来就接近底部时自动跟随，避免手动上滑时被强行拉回。
+    // 注意：不监听 contentLength/reasoningLength/streaming 等每 token 变化的 key，
+    // 避免 LaunchedEffect 频繁重启导致 scrollToItem 被取消而锁死滚动状态。
     LaunchedEffect(
         state.sessionId,
         itemCount,
         lastMessage?.id,
-        lastMessageContentLength,
-        lastMessageReasoningLength,
-        lastMessageStreaming,
         state.isProcessing
     ) {
         if (!isScreenActive) return@LaunchedEffect

@@ -2414,6 +2414,12 @@ private fun PersistedMemoryCard(
     onChanged: (GlobalMemory) -> Unit,
     onDelete: () -> Unit
 ) {
+    // Local state decouples cursor from async persistence
+    var titleText by remember(memory.id) { mutableStateOf(memory.title) }
+    var contentText by remember(memory.id) { mutableStateOf(memory.content) }
+    LaunchedEffect(memory.title) { if (titleText != memory.title) titleText = memory.title }
+    LaunchedEffect(memory.content) { if (contentText != memory.content) contentText = memory.content }
+
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surface,
@@ -2446,16 +2452,22 @@ private fun PersistedMemoryCard(
                 }
             }
             OutlinedTextField(
-                value = memory.title,
-                onValueChange = { onChanged(memory.copy(title = it)) },
+                value = titleText,
+                onValueChange = {
+                    titleText = it
+                    onChanged(memory.copy(title = it))
+                },
                 label = { Text("记忆标题") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 textStyle = MaterialTheme.typography.bodySmall
             )
             OutlinedTextField(
-                value = memory.content,
-                onValueChange = { onChanged(memory.copy(content = it)) },
+                value = contentText,
+                onValueChange = {
+                    contentText = it
+                    onChanged(memory.copy(content = it))
+                },
                 label = { Text("记忆内容") },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2808,7 +2820,7 @@ private fun AddMcpServerForm(
 
             OutlinedTextField(
                 value = requestTimeoutMs,
-                onValueChange = { requestTimeoutMs = it.filter { ch -> ch.isDigit() } },
+                onValueChange = { requestTimeoutMs = it },
                 label = { Text("超时（毫秒，可选）") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
