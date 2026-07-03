@@ -23,17 +23,9 @@ internal fun buildAskHostSurfacePresentation(
             interactionState = interactionState
         )
     }
-    return if (isChatScreenVisible) {
-        AskHostSurfacePresentation(
-            kind = AskHostSurfaceKind.CHAT_INLINE,
-            askPresentation = askPresentation,
-            interactionState = interactionState
-        )
-    } else {
-        AskHostSurfacePresentation(
-            kind = AskHostSurfaceKind.DIALOG,
-            askPresentation = askPresentation,
-            interactionState = interactionState
-        )
-    }
+    return AskHostSurfacePresentation(
+        kind = AskHostSurfaceKind.CHAT_INLINE,
+        askPresentation = askPresentation,
+        interactionState = interactionState
+    )
 }

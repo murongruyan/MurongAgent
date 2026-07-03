@@ -23,19 +23,11 @@ internal fun buildWorkflowPlanHostSurfacePresentation(
             interactionState = interactionState
         )
     }
-    return if (isChatScreenVisible) {
-        WorkflowPlanHostSurfacePresentation(
-            kind = WorkflowPlanHostSurfaceKind.CHAT_INLINE,
-            workflowPlanPresentation = workflowPlanPresentation,
-            interactionState = interactionState
-        )
-    } else {
-        WorkflowPlanHostSurfacePresentation(
-            kind = WorkflowPlanHostSurfaceKind.DIALOG,
-            workflowPlanPresentation = workflowPlanPresentation,
-            interactionState = interactionState
-        )
-    }
+    return WorkflowPlanHostSurfacePresentation(
+        kind = WorkflowPlanHostSurfaceKind.CHAT_INLINE,
+        workflowPlanPresentation = workflowPlanPresentation,
+        interactionState = interactionState
+    )
 }
 
 internal enum class ClarificationHostSurfaceKind {
@@ -61,17 +53,9 @@ internal fun buildClarificationHostSurfacePresentation(
             interactionState = interactionState
         )
     }
-    return if (isChatScreenVisible) {
-        ClarificationHostSurfacePresentation(
-            kind = ClarificationHostSurfaceKind.CHAT_INLINE,
-            clarificationPresentation = clarificationPresentation,
-            interactionState = interactionState
-        )
-    } else {
-        ClarificationHostSurfacePresentation(
-            kind = ClarificationHostSurfaceKind.DIALOG,
-            clarificationPresentation = clarificationPresentation,
-            interactionState = interactionState
-        )
-    }
+    return ClarificationHostSurfacePresentation(
+        kind = ClarificationHostSurfaceKind.CHAT_INLINE,
+        clarificationPresentation = clarificationPresentation,
+        interactionState = interactionState
+    )
 }
