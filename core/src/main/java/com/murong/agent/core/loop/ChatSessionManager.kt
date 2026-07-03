@@ -1,6 +1,7 @@
 package com.murong.agent.core.loop
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -2060,6 +2061,11 @@ class ChatSessionManager(
         val AUTO_DISCOVERY_TARGET_KEYWORDS = listOf(
             "mcp", "skill", "server", "工具", "插件", "tool", "prompt"
         )
+
+        /** Max image dimension (longest side) for sending to LLM */
+        private const val MAX_IMAGE_DIMENSION = 2048
+        /** Max image file size in bytes after downscaling */
+        private const val MAX_IMAGE_FILE_SIZE = 500_000L
     }
 
     private data class ToolHistoryPruningPlan(
@@ -5563,6 +5569,28 @@ class ChatSessionManager(
         )
     }
 
+    // -------------------------------------------------------------------------
+    // Fork session stubs — Phase 2 placeholders (to be fully implemented)
+    // -------------------------------------------------------------------------
+
+    fun forkSessionFromUserMessage(messageId: Long): Result<String> {
+        return Result.failure(
+            IllegalStateException("分叉会话功能尚未实现，敬请期待")
+        )
+    }
+
+    fun forkSessionFromCheckpoint(checkpointId: String): Result<String> {
+        return Result.failure(
+            IllegalStateException("分叉会话功能尚未实现，敬请期待")
+        )
+    }
+
+    fun forkSessionFromWorkflowPlan(): Result<String> {
+        return Result.failure(
+            IllegalStateException("分叉会话功能尚未实现，敬请期待")
+        )
+    }
+
     private fun restoreFileRecord(record: FileChangeRecordUi): Result<String?> {
         return runCatching {
             val currentContent = readCurrentFileContent(record.path)
@@ -6249,15 +6277,60 @@ class ChatSessionManager(
             }
             else -> context.contentResolver.openInputStream(uri)?.use { input -> input.readBytes() }
         } ?: return null
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+
+        // Downscale image to reasonable size before caching
+        val bitmap = runCatching {
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+            val (width, height) = options.outWidth to options.outHeight
+            if (width <= 0 || height <= 0) return@runCatching null
+
+            val longestSide = maxOf(width, height)
+            val sampleSize = when {
+                longestSide > MAX_IMAGE_DIMENSION * 2 -> 4
+                longestSide > MAX_IMAGE_DIMENSION -> 2
+                else -> 1
+            }
+            if (sampleSize <= 1 && bytes.size.toLong() <= MAX_IMAGE_FILE_SIZE) return@runCatching null
+
+            val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            val sampled = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOptions) ?: return@runCatching null
+
+            // If still too large after sampling, scale down further
+            val currentLongest = maxOf(sampled.width, sampled.height)
+            if (currentLongest > MAX_IMAGE_DIMENSION) {
+                val scale = MAX_IMAGE_DIMENSION.toFloat() / currentLongest
+                val newWidth = (sampled.width * scale).toInt().coerceAtLeast(1)
+                val newHeight = (sampled.height * scale).toInt().coerceAtLeast(1)
+                val scaled = Bitmap.createScaledBitmap(sampled, newWidth, newHeight, true)
+                if (scaled != sampled) sampled.recycle()
+                scaled
+            } else sampled
+        }.getOrNull()
+
+        val (finalBytes, finalWidth, finalHeight) = if (bitmap != null) {
+            val stream = java.io.ByteArrayOutputStream()
+            val quality = if (mimeType == "image/png") 100 else 85
+            bitmap.compress(
+                if (mimeType == "image/png") Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG,
+                quality, stream
+            )
+            bitmap.recycle()
+            val compressed = stream.toByteArray()
+            Triple(compressed, bitmap.width, bitmap.height)
+        } else {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            Triple(bytes, bounds.outWidth, bounds.outHeight)
+        }
+
         val extension = when (mimeType) {
             "image/png" -> "png"
             "image/webp" -> "webp"
             else -> "jpg"
         }
         val targetFile = File(imageCacheDir(), "${UUID.randomUUID()}.$extension")
-        targetFile.writeBytes(bytes)
+        targetFile.writeBytes(finalBytes)
         val resolvedFileName = pending.fileName.ifBlank {
             resolveDisplayName(uri) ?: targetFile.name
         }
@@ -6265,9 +6338,9 @@ class ChatSessionManager(
             fileName = resolvedFileName,
             mimeType = mimeType,
             localCachePath = targetFile.absolutePath,
-            width = bounds.outWidth.takeIf { it > 0 },
-            height = bounds.outHeight.takeIf { it > 0 },
-            sizeBytes = bytes.size.toLong()
+            width = finalWidth.takeIf { it > 0 },
+            height = finalHeight.takeIf { it > 0 },
+            sizeBytes = finalBytes.size.toLong()
         )
     }
 

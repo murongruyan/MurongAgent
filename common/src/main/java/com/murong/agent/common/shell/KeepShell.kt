@@ -45,6 +45,11 @@ class KeepShell(
         }
     }
 
+    companion object {
+        private const val MAX_OUTPUT_CHARS = 1_000_000
+        private const val MAX_OUTPUT_LINES = 50_000
+    }
+
     /**
      * 执行一条同步命令，返回 output
      */
@@ -64,10 +69,11 @@ class KeepShell(
                 pw.write("printf '\\n%s\\n' '$markerEnd'\n")
                 pw.flush()
 
-                // 读取直到找到结束标签
-                val output = StringBuilder()
+                // 读取直到找到结束标签，限制输出大小防止 OOM
+                val output = StringBuilder(4096)
                 var inBlock = false
                 var line: String?
+                var lineCount = 0
                 while (br.readLine().also { line = it } != null) {
                     val l = line!!
                     if (l == markerStart) {
@@ -78,6 +84,17 @@ class KeepShell(
                         break
                     }
                     if (inBlock) {
+                        lineCount++
+                        if (output.length >= MAX_OUTPUT_CHARS || lineCount > MAX_OUTPUT_LINES) {
+                            if (output.length < MAX_OUTPUT_CHARS) {
+                                output.append("\n...(truncated, output too large)")
+                            }
+                            // Drain remaining lines until end marker to keep shell state clean
+                            while (br.readLine().also { line = it } != null) {
+                                if (line == markerEnd) break
+                            }
+                            break
+                        }
                         if (output.isNotEmpty()) output.append('\n')
                         output.append(l)
                     }

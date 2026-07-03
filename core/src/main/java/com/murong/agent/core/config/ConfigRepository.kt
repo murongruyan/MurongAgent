@@ -38,8 +38,11 @@ class ConfigRepository(private val context: Context) {
         private const val SECRET_WEB_SEARCH_BING_API_KEY = "web_search_bing_api_key"
     }
 
-    init {
-        runBlocking {
+    private var legacyMigrationDone = false
+
+    private suspend fun ensureLegacyMigration() {
+        if (!legacyMigrationDone) {
+            legacyMigrationDone = true
             migrateLegacyPlaintextSecretsIfNeeded()
         }
     }
@@ -48,7 +51,10 @@ class ConfigRepository(private val context: Context) {
         decodeConfig(prefs[CONFIG_KEY]).withSensitiveSecrets(readSensitiveSecrets())
     }
 
-    suspend fun getConfig(): ProviderConfig = configFlow.first()
+    suspend fun getConfig(): ProviderConfig {
+        ensureLegacyMigration()
+        return configFlow.first()
+    }
 
     suspend fun saveConfig(config: ProviderConfig) {
         writeSensitiveSecrets(config)
