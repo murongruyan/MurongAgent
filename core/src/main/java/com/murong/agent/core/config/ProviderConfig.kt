@@ -118,7 +118,7 @@ data class ProviderConfig(
     val projectToolPreferences: ProjectToolPreferences? = null,
     val approvalMode: ToolApprovalMode = ToolApprovalMode.ALL_APPROVAL,
     val workflowExecutionMode: WorkflowExecutionMode = WorkflowExecutionMode.SINGLE_PASS,
-    val autoRouteBeforeExecution: Boolean = true,
+    val autoRouteBeforeExecution: Boolean = false,
     val enabledBuiltinTools: List<String> = DEFAULT_ENABLED_BUILTIN_TOOLS,
     val enabledFileToolOperations: List<String> = DEFAULT_ENABLED_FILE_TOOL_OPERATIONS,
     val allowAllMcpTools: Boolean = true,
