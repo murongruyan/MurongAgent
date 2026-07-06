@@ -118,6 +118,7 @@ import com.murong.agent.core.config.SessionProjectConfig
 import com.murong.agent.core.config.ProjectWorkflowRiskLevel
 import com.murong.agent.core.config.ProjectWorkflowType
 import com.murong.agent.core.config.ProviderConfig
+import com.murong.agent.core.config.SkillRunAs
 import com.murong.agent.core.config.ToolApprovalMode
 import com.murong.agent.core.config.WorkflowFailureFallbackMode
 import com.murong.agent.core.loop.ProjectKnowledgeSnapshotUi
@@ -146,6 +147,7 @@ import com.murong.agent.ui.MurongTagButton
 import com.murong.agent.ui.MemoryDraftImportCard
 import com.murong.agent.ui.RuleDraftImportCard
 import com.murong.agent.ui.SkillDraftImportCard
+import com.murong.agent.ui.normalizeSkillAllowedTools
 import com.murong.agent.ui.rememberMurongAccentColor
 import com.murong.agent.ui.rememberMurongBottomBarScrollPadding
 import com.murong.agent.ui.rememberMurongChromeColor
@@ -3370,6 +3372,11 @@ private fun ProjectRuleCard(
     onChanged: (GlobalRule) -> Unit,
     onDelete: () -> Unit
 ) {
+    var titleText by remember(rule.id) { mutableStateOf(rule.title) }
+    var contentText by remember(rule.id) { mutableStateOf(rule.content) }
+    LaunchedEffect(rule.title) { if (titleText != rule.title) titleText = rule.title }
+    LaunchedEffect(rule.content) { if (contentText != rule.content) contentText = rule.content }
+
     ProjectInsetCard {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
@@ -3396,8 +3403,11 @@ private fun ProjectRuleCard(
             }
 
             OutlinedTextField(
-                value = rule.title,
-                onValueChange = { onChanged(rule.copy(title = it)) },
+                value = titleText,
+                onValueChange = {
+                    titleText = it
+                    onChanged(rule.copy(title = it))
+                },
                 label = { Text("规则标题") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
@@ -3405,8 +3415,11 @@ private fun ProjectRuleCard(
             )
 
             OutlinedTextField(
-                value = rule.content,
-                onValueChange = { onChanged(rule.copy(content = it)) },
+                value = contentText,
+                onValueChange = {
+                    contentText = it
+                    onChanged(rule.copy(content = it))
+                },
                 label = { Text("规则内容") },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -3425,6 +3438,11 @@ private fun ProjectMemoryCard(
     onChanged: (GlobalMemory) -> Unit,
     onDelete: () -> Unit
 ) {
+    var titleText by remember(memory.id) { mutableStateOf(memory.title) }
+    var contentText by remember(memory.id) { mutableStateOf(memory.content) }
+    LaunchedEffect(memory.title) { if (titleText != memory.title) titleText = memory.title }
+    LaunchedEffect(memory.content) { if (contentText != memory.content) contentText = memory.content }
+
     ProjectInsetCard {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
@@ -3451,8 +3469,11 @@ private fun ProjectMemoryCard(
             }
 
             OutlinedTextField(
-                value = memory.title,
-                onValueChange = { onChanged(memory.copy(title = it)) },
+                value = titleText,
+                onValueChange = {
+                    titleText = it
+                    onChanged(memory.copy(title = it))
+                },
                 label = { Text("记忆标题") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
@@ -3460,8 +3481,11 @@ private fun ProjectMemoryCard(
             )
 
             OutlinedTextField(
-                value = memory.content,
-                onValueChange = { onChanged(memory.copy(content = it)) },
+                value = contentText,
+                onValueChange = {
+                    contentText = it
+                    onChanged(memory.copy(content = it))
+                },
                 label = { Text("记忆内容") },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -3476,29 +3500,163 @@ private fun ProjectMemoryCard(
 
 @Composable
 private fun ProjectSkillEditorInline(skills: List<GlobalSkill>, onSkillsChanged: (List<GlobalSkill>) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         skills.forEach { skill ->
-            ProjectInsetCard {
-                Column(Modifier.padding(8.dp)) {
-                    Text(
-                        skill.title.ifBlank { "未命名技能" },
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
-                        skill.description.take(60),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+            ProjectSkillCard(
+                skill = skill,
+                onChanged = { updated ->
+                    onSkillsChanged(skills.map { if (it.id == updated.id) updated else it })
+                },
+                onDelete = {
+                    onSkillsChanged(skills.filterNot { it.id == skill.id })
                 }
-            }
+            )
         }
         SkillDraftImportCard(onImportDrafts = { imported ->
             val merged = (skills + imported).distinctBy { it.id }
             onSkillsChanged(merged)
         })
+        TextButton(
+            onClick = {
+                onSkillsChanged(
+                    skills + GlobalSkill(
+                        id = UUID.randomUUID().toString().take(8),
+                        title = "新 Skill",
+                        content = ""
+                    )
+                )
+            }
+        ) {
+            Text("+ 添加 Skill")
+        }
+    }
+}
+
+@Composable
+private fun ProjectSkillCard(
+    skill: GlobalSkill,
+    onChanged: (GlobalSkill) -> Unit,
+    onDelete: () -> Unit
+) {
+    var titleText by remember(skill.id) { mutableStateOf(skill.title) }
+    var descriptionText by remember(skill.id) { mutableStateOf(skill.description) }
+    var allowedToolsText by remember(skill.id) { mutableStateOf(skill.allowedTools.joinToString(", ")) }
+    var preferredModelText by remember(skill.id) { mutableStateOf(skill.preferredModel) }
+    var contentText by remember(skill.id) { mutableStateOf(skill.content) }
+    LaunchedEffect(skill.title) { if (titleText != skill.title) titleText = skill.title }
+    LaunchedEffect(skill.description) { if (descriptionText != skill.description) descriptionText = skill.description }
+    LaunchedEffect(skill.allowedTools) {
+        val normalizedText = skill.allowedTools.joinToString(", ")
+        if (allowedToolsText != normalizedText) allowedToolsText = normalizedText
+    }
+    LaunchedEffect(skill.preferredModel) { if (preferredModelText != skill.preferredModel) preferredModelText = skill.preferredModel }
+    LaunchedEffect(skill.content) { if (contentText != skill.content) contentText = skill.content }
+
+    ProjectInsetCard {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (skill.enabled) "已启用" else "已停用",
+                    color = if (skill.enabled) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(
+                        checked = skill.enabled,
+                        onCheckedChange = { checked ->
+                            onChanged(skill.copy(enabled = checked))
+                        }
+                    )
+                    TextButton(onClick = onDelete) {
+                        Text("删除", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+
+            OutlinedTextField(
+                value = titleText,
+                onValueChange = {
+                    titleText = it
+                    onChanged(skill.copy(title = it))
+                },
+                label = { Text("Skill 标题") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall
+            )
+
+            OutlinedTextField(
+                value = descriptionText,
+                onValueChange = {
+                    descriptionText = it
+                    onChanged(skill.copy(description = it))
+                },
+                label = { Text("Skill 描述") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = skill.runAs == SkillRunAs.INLINE,
+                    onClick = { onChanged(skill.copy(runAs = SkillRunAs.INLINE)) },
+                    label = { Text("内联", fontSize = 12.sp) }
+                )
+                FilterChip(
+                    selected = skill.runAs == SkillRunAs.SUBAGENT,
+                    onClick = { onChanged(skill.copy(runAs = SkillRunAs.SUBAGENT)) },
+                    label = { Text("子代理", fontSize = 12.sp) }
+                )
+            }
+
+            OutlinedTextField(
+                value = allowedToolsText,
+                onValueChange = { raw ->
+                    allowedToolsText = raw
+                    onChanged(skill.copy(allowedTools = normalizeSkillAllowedTools(raw)))
+                },
+                label = { Text("允许工具（逗号分隔）") },
+                modifier = Modifier.fillMaxWidth(),
+                textStyle = MaterialTheme.typography.bodySmall,
+                minLines = 2,
+                maxLines = 4
+            )
+
+            OutlinedTextField(
+                value = preferredModelText,
+                onValueChange = {
+                    preferredModelText = it
+                    onChanged(skill.copy(preferredModel = it))
+                },
+                label = { Text("默认模型（可选）") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall
+            )
+
+            OutlinedTextField(
+                value = contentText,
+                onValueChange = {
+                    contentText = it
+                    onChanged(skill.copy(content = it))
+                },
+                label = { Text("Skill 内容") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 100.dp),
+                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                minLines = 4,
+                maxLines = 8
+            )
+        }
     }
 }
 

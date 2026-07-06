@@ -657,6 +657,7 @@ fun ProjectToolPreferences?.isUsingGlobalToolPreferences(): Boolean {
 
 val DEFAULT_ENABLED_BUILTIN_TOOLS = listOf(
     "shell",
+    "android",
     "file",
     "code_edit",
     "code_search",

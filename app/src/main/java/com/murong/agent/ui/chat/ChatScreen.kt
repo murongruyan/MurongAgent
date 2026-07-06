@@ -613,6 +613,27 @@ internal fun ChatScreen(
             }
     }
 
+    LaunchedEffect(
+        state.sessionId,
+        lastMessage?.id,
+        lastMessageContentLength,
+        lastMessageReasoningLength,
+        lastMessageStreaming,
+        shouldAutoFollowMessages,
+        isScreenActive,
+        listState.isScrollInProgress
+    ) {
+        if (
+            isScreenActive &&
+            shouldAutoFollowMessages &&
+            !listState.isScrollInProgress &&
+            lastMessageStreaming &&
+            lastMessage?.id != null
+        ) {
+            scrollMessagesToBottom()
+        }
+    }
+
     LaunchedEffect(pendingJumpRoundId, timelineItems, state.sessionId) {
         val targetRoundId = pendingJumpRoundId ?: return@LaunchedEffect
         val targetIndex = timelineItems.indexOfFirst { item -> item.roundId == targetRoundId }
@@ -629,11 +650,12 @@ internal fun ChatScreen(
         state.sessionId,
         itemCount,
         lastMessage?.id,
-        state.isProcessing
+        state.isProcessing,
+        listState.isScrollInProgress
     ) {
         if (!isScreenActive) return@LaunchedEffect
         val sessionChanged = lastAutoScrolledSessionId != state.sessionId
-        if (sessionChanged || shouldAutoFollowMessages) {
+        if (!listState.isScrollInProgress && (sessionChanged || shouldAutoFollowMessages)) {
             scrollMessagesToBottom()
         }
         lastAutoScrolledSessionId = state.sessionId
@@ -8626,12 +8648,25 @@ private fun formatFileChangeOperation(operation: String): String {
     }
 }
 
-private fun isMessageListNearBottom(listState: LazyListState, threshold: Int = 2): Boolean {
+private fun isMessageListNearBottom(
+    listState: LazyListState,
+    trailingItemsThreshold: Int = 0,
+    bottomGapPxThreshold: Int = 48
+): Boolean {
     val layoutInfo = listState.layoutInfo
     val totalItems = layoutInfo.totalItemsCount
     if (totalItems == 0) return true
-    val lastVisibleIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: return true
-    return lastVisibleIndex >= totalItems - threshold
+    val lastVisibleItem = layoutInfo.visibleItemsInfo.lastOrNull() ?: return true
+    val lastVisibleIndex = lastVisibleItem.index
+    if (lastVisibleIndex < totalItems - 1 - trailingItemsThreshold) {
+        return false
+    }
+    if (lastVisibleIndex < totalItems - 1) {
+        return true
+    }
+    val viewportEnd = layoutInfo.viewportEndOffset
+    val lastItemBottom = lastVisibleItem.offset + lastVisibleItem.size
+    return lastItemBottom <= viewportEnd + bottomGapPxThreshold
 }
 
 private fun shouldShowScrollToTop(listState: LazyListState): Boolean {

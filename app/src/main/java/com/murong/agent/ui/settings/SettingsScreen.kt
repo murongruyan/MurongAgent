@@ -2101,6 +2101,21 @@ private fun SkillCard(
     onChanged: (GlobalSkill) -> Unit,
     onDelete: () -> Unit
 ) {
+    // Local state decouples cursor from parent list updates.
+    var titleText by remember(skill.id) { mutableStateOf(skill.title) }
+    var descriptionText by remember(skill.id) { mutableStateOf(skill.description) }
+    var allowedToolsText by remember(skill.id) { mutableStateOf(skill.allowedTools.joinToString(", ")) }
+    var preferredModelText by remember(skill.id) { mutableStateOf(skill.preferredModel) }
+    var contentText by remember(skill.id) { mutableStateOf(skill.content) }
+    LaunchedEffect(skill.title) { if (titleText != skill.title) titleText = skill.title }
+    LaunchedEffect(skill.description) { if (descriptionText != skill.description) descriptionText = skill.description }
+    LaunchedEffect(skill.allowedTools) {
+        val normalizedText = skill.allowedTools.joinToString(", ")
+        if (allowedToolsText != normalizedText) allowedToolsText = normalizedText
+    }
+    LaunchedEffect(skill.preferredModel) { if (preferredModelText != skill.preferredModel) preferredModelText = skill.preferredModel }
+    LaunchedEffect(skill.content) { if (contentText != skill.content) contentText = skill.content }
+
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surface,
@@ -2134,8 +2149,11 @@ private fun SkillCard(
             }
 
             OutlinedTextField(
-                value = skill.title,
-                onValueChange = { onChanged(skill.copy(title = it)) },
+                value = titleText,
+                onValueChange = {
+                    titleText = it
+                    onChanged(skill.copy(title = it))
+                },
                 label = { Text("Skill 标题") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
@@ -2143,8 +2161,11 @@ private fun SkillCard(
             )
 
             OutlinedTextField(
-                value = skill.description,
-                onValueChange = { onChanged(skill.copy(description = it)) },
+                value = descriptionText,
+                onValueChange = {
+                    descriptionText = it
+                    onChanged(skill.copy(description = it))
+                },
                 label = { Text("Skill 描述") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
@@ -2166,8 +2187,9 @@ private fun SkillCard(
                 )
             }
             OutlinedTextField(
-                value = skill.allowedTools.joinToString(", "),
+                value = allowedToolsText,
                 onValueChange = { raw ->
+                    allowedToolsText = raw
                     onChanged(
                         skill.copy(
                             allowedTools = normalizeSkillAllowedTools(raw)
@@ -2185,8 +2207,11 @@ private fun SkillCard(
                 fontSize = 10.sp
             )
             OutlinedTextField(
-                value = skill.preferredModel,
-                onValueChange = { onChanged(skill.copy(preferredModel = it)) },
+                value = preferredModelText,
+                onValueChange = {
+                    preferredModelText = it
+                    onChanged(skill.copy(preferredModel = it))
+                },
                 label = { Text("默认模型（可选）") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
@@ -2194,8 +2219,11 @@ private fun SkillCard(
             )
 
             OutlinedTextField(
-                value = skill.content,
-                onValueChange = { onChanged(skill.copy(content = it)) },
+                value = contentText,
+                onValueChange = {
+                    contentText = it
+                    onChanged(skill.copy(content = it))
+                },
                 label = { Text("Skill 内容") },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2352,6 +2380,12 @@ private fun MemoryCard(
     onChanged: (GlobalMemory) -> Unit,
     onDelete: () -> Unit
 ) {
+    // Local state decouples cursor from parent list updates.
+    var titleText by remember(memory.id) { mutableStateOf(memory.title) }
+    var contentText by remember(memory.id) { mutableStateOf(memory.content) }
+    LaunchedEffect(memory.title) { if (titleText != memory.title) titleText = memory.title }
+    LaunchedEffect(memory.content) { if (contentText != memory.content) contentText = memory.content }
+
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surface,
@@ -2385,8 +2419,11 @@ private fun MemoryCard(
             }
 
             OutlinedTextField(
-                value = memory.title,
-                onValueChange = { onChanged(memory.copy(title = it)) },
+                value = titleText,
+                onValueChange = {
+                    titleText = it
+                    onChanged(memory.copy(title = it))
+                },
                 label = { Text("记忆标题") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
@@ -2394,8 +2431,11 @@ private fun MemoryCard(
             )
 
             OutlinedTextField(
-                value = memory.content,
-                onValueChange = { onChanged(memory.copy(content = it)) },
+                value = contentText,
+                onValueChange = {
+                    contentText = it
+                    onChanged(memory.copy(content = it))
+                },
                 label = { Text("记忆内容") },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2582,6 +2622,12 @@ private fun RuleCard(
     onChanged: (GlobalRule) -> Unit,
     onDelete: () -> Unit
 ) {
+    // Local state decouples cursor from parent list updates.
+    var titleText by remember(rule.id) { mutableStateOf(rule.title) }
+    var contentText by remember(rule.id) { mutableStateOf(rule.content) }
+    LaunchedEffect(rule.title) { if (titleText != rule.title) titleText = rule.title }
+    LaunchedEffect(rule.content) { if (contentText != rule.content) contentText = rule.content }
+
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surface,
@@ -2615,8 +2661,11 @@ private fun RuleCard(
             }
 
             OutlinedTextField(
-                value = rule.title,
-                onValueChange = { onChanged(rule.copy(title = it)) },
+                value = titleText,
+                onValueChange = {
+                    titleText = it
+                    onChanged(rule.copy(title = it))
+                },
                 label = { Text("规则标题") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
@@ -2624,8 +2673,11 @@ private fun RuleCard(
             )
 
             OutlinedTextField(
-                value = rule.content,
-                onValueChange = { onChanged(rule.copy(content = it)) },
+                value = contentText,
+                onValueChange = {
+                    contentText = it
+                    onChanged(rule.copy(content = it))
+                },
                 label = { Text("规则内容") },
                 modifier = Modifier
                     .fillMaxWidth()

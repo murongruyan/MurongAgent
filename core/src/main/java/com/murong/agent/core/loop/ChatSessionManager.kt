@@ -63,6 +63,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -6267,7 +6268,7 @@ class ChatSessionManager(
         pending: PendingImageAttachmentUi
     ): MessageImageAttachmentUi? {
         val uri = runCatching { Uri.parse(pending.uri) }.getOrNull() ?: return null
-        val mimeType = pending.mimeType
+        val sourceMimeType = pending.mimeType
             ?.takeIf { it.startsWith("image/") }
             ?: context.contentResolver.getType(uri)?.takeIf { it.startsWith("image/") }
             ?: "image/jpeg"
@@ -6308,39 +6309,50 @@ class ChatSessionManager(
             } else sampled
         }.getOrNull()
 
-        val (finalBytes, finalWidth, finalHeight) = if (bitmap != null) {
+        val finalPayload = if (bitmap != null) {
+            val outputMimeType = if (sourceMimeType == "image/png") "image/png" else "image/jpeg"
             val stream = java.io.ByteArrayOutputStream()
-            val quality = if (mimeType == "image/png") 100 else 85
+            val quality = if (outputMimeType == "image/png") 100 else 85
+            val finalWidth = bitmap.width
+            val finalHeight = bitmap.height
             bitmap.compress(
-                if (mimeType == "image/png") Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG,
+                if (outputMimeType == "image/png") Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG,
                 quality, stream
             )
             bitmap.recycle()
             val compressed = stream.toByteArray()
-            Triple(compressed, bitmap.width, bitmap.height)
+            ImportedImagePayload(
+                bytes = compressed,
+                mimeType = outputMimeType,
+                extension = imageAttachmentExtensionForMimeType(outputMimeType),
+                width = finalWidth,
+                height = finalHeight
+            )
         } else {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-            Triple(bytes, bounds.outWidth, bounds.outHeight)
+            ImportedImagePayload(
+                bytes = bytes,
+                mimeType = sourceMimeType,
+                extension = imageAttachmentExtensionForMimeType(sourceMimeType),
+                width = bounds.outWidth,
+                height = bounds.outHeight
+            )
         }
 
-        val extension = when (mimeType) {
-            "image/png" -> "png"
-            "image/webp" -> "webp"
-            else -> "jpg"
-        }
-        val targetFile = File(imageCacheDir(), "${UUID.randomUUID()}.$extension")
-        targetFile.writeBytes(finalBytes)
-        val resolvedFileName = pending.fileName.ifBlank {
+        val targetFile = File(imageCacheDir(), "${UUID.randomUUID()}.${finalPayload.extension}")
+        targetFile.writeBytes(finalPayload.bytes)
+        val displayName = pending.fileName.ifBlank {
             resolveDisplayName(uri) ?: targetFile.name
         }
+        val resolvedFileName = normalizeImageAttachmentFileName(displayName, finalPayload.extension)
         return MessageImageAttachmentUi(
             fileName = resolvedFileName,
-            mimeType = mimeType,
+            mimeType = finalPayload.mimeType,
             localCachePath = targetFile.absolutePath,
-            width = finalWidth.takeIf { it > 0 },
-            height = finalHeight.takeIf { it > 0 },
-            sizeBytes = finalBytes.size.toLong()
+            width = finalPayload.width.takeIf { it > 0 },
+            height = finalPayload.height.takeIf { it > 0 },
+            sizeBytes = finalPayload.bytes.size.toLong()
         )
     }
 
@@ -6360,6 +6372,37 @@ class ChatSessionManager(
             height = attachment.height,
             sizeBytes = attachment.sizeBytes
         )
+    }
+
+    private data class ImportedImagePayload(
+        val bytes: ByteArray,
+        val mimeType: String,
+        val extension: String,
+        val width: Int,
+        val height: Int
+    )
+
+    private fun imageAttachmentExtensionForMimeType(mimeType: String): String {
+        return when (mimeType.lowercase(Locale.ROOT)) {
+            "image/png" -> "png"
+            "image/webp" -> "webp"
+            "image/gif" -> "gif"
+            "image/bmp" -> "bmp"
+            "image/heic" -> "heic"
+            "image/heif" -> "heif"
+            "image/avif" -> "avif"
+            else -> "jpg"
+        }
+    }
+
+    private fun normalizeImageAttachmentFileName(fileName: String, extension: String): String {
+        val trimmed = fileName.trim()
+        if (trimmed.isBlank()) return "image.$extension"
+        val normalizedExtension = extension.lowercase(Locale.ROOT)
+        val currentExtension = trimmed.substringAfterLast('.', "").lowercase(Locale.ROOT)
+        if (currentExtension == normalizedExtension) return trimmed
+        val baseName = trimmed.substringBeforeLast('.', trimmed).ifBlank { "image" }
+        return "$baseName.$normalizedExtension"
     }
 
     private fun resolveDisplayName(uri: Uri): String? {
@@ -6387,6 +6430,9 @@ class ChatSessionManager(
         allowWriteTools: Boolean = true
     ): ToolRegistry {
         val registry = ToolRegistry()
+        val latestGitHubConfigProvider: () -> ProviderConfig = {
+            runBlocking { configRepository.getConfig() }
+        }
         val subagentTool = if (config.isBuiltinToolEnabled("subagent")) {
             createSubagentTool(provider, config)
         } else {
@@ -6556,29 +6602,29 @@ class ChatSessionManager(
         registry.register(
             TaskRepoSearchCodeTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
-                githubTokenProvider = { config.githubToken },
-                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+                githubTokenProvider = { latestGitHubConfigProvider().githubToken },
+                githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             )
         )
         registry.register(
             TaskRepoListDirTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
-                githubTokenProvider = { config.githubToken },
-                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+                githubTokenProvider = { latestGitHubConfigProvider().githubToken },
+                githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             )
         )
         registry.register(
             TaskRepoListBranchesTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
-                githubTokenProvider = { config.githubToken },
-                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+                githubTokenProvider = { latestGitHubConfigProvider().githubToken },
+                githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             )
         )
         registry.register(
             TaskRepoCreateBranchTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
-                githubTokenProvider = { config.githubToken },
-                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+                githubTokenProvider = { latestGitHubConfigProvider().githubToken },
+                githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
             isEnabled = { allowWriteTools },
             isPromptExposed = { true }
@@ -6586,8 +6632,8 @@ class ChatSessionManager(
         registry.register(
             TaskRepoCreatePrTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
-                githubTokenProvider = { config.githubToken },
-                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+                githubTokenProvider = { latestGitHubConfigProvider().githubToken },
+                githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
             isEnabled = { allowWriteTools },
             isPromptExposed = { true }
@@ -6595,8 +6641,8 @@ class ChatSessionManager(
         registry.register(
             TaskRepoClosePrTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
-                githubTokenProvider = { config.githubToken },
-                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+                githubTokenProvider = { latestGitHubConfigProvider().githubToken },
+                githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
             isEnabled = { allowWriteTools },
             isPromptExposed = { true }
@@ -6604,8 +6650,8 @@ class ChatSessionManager(
         registry.register(
             TaskRepoDeleteBranchTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
-                githubTokenProvider = { config.githubToken },
-                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+                githubTokenProvider = { latestGitHubConfigProvider().githubToken },
+                githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
             isEnabled = { allowWriteTools },
             isPromptExposed = { true }
@@ -6613,15 +6659,15 @@ class ChatSessionManager(
         registry.register(
             TaskRepoReadFileTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
-                githubTokenProvider = { config.githubToken },
-                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+                githubTokenProvider = { latestGitHubConfigProvider().githubToken },
+                githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             )
         )
         registry.register(
             TaskRepoSearchReplaceTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
-                githubTokenProvider = { config.githubToken },
-                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+                githubTokenProvider = { latestGitHubConfigProvider().githubToken },
+                githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
             isEnabled = { allowWriteTools },
             isPromptExposed = { true }
@@ -6629,8 +6675,8 @@ class ChatSessionManager(
         registry.register(
             TaskRepoApplyPatchTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
-                githubTokenProvider = { config.githubToken },
-                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+                githubTokenProvider = { latestGitHubConfigProvider().githubToken },
+                githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
             isEnabled = { allowWriteTools },
             isPromptExposed = { true }
@@ -6638,8 +6684,8 @@ class ChatSessionManager(
         registry.register(
             TaskRepoUpdateFileTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
-                githubTokenProvider = { config.githubToken },
-                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+                githubTokenProvider = { latestGitHubConfigProvider().githubToken },
+                githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
             isEnabled = { allowWriteTools },
             isPromptExposed = { true }
@@ -6647,8 +6693,8 @@ class ChatSessionManager(
         registry.register(
             TaskRepoDeleteFileTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
-                githubTokenProvider = { config.githubToken },
-                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+                githubTokenProvider = { latestGitHubConfigProvider().githubToken },
+                githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
             isEnabled = { allowWriteTools },
             isPromptExposed = { true }
@@ -6656,8 +6702,8 @@ class ChatSessionManager(
         registry.register(
             TaskRepoCommitFilesTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
-                githubTokenProvider = { config.githubToken },
-                githubApiBaseUrlProvider = { config.getGitHubApiBaseUrl() }
+                githubTokenProvider = { latestGitHubConfigProvider().githubToken },
+                githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
             isEnabled = { allowWriteTools },
             isPromptExposed = { true }
@@ -6675,6 +6721,13 @@ class ChatSessionManager(
                     scheduleBackgroundExecution = ::scheduleBackgroundShellExecution
                 ),
                 isEnabled = { allowWriteTools && shouldExposeLocalShellTool() },
+                isPromptExposed = { shouldExposeLocalShellTool() }
+            )
+        }
+        if (config.isBuiltinToolEnabled("android")) {
+            registry.register(
+                AndroidTool(),
+                isEnabled = { shouldExposeLocalShellTool() },
                 isPromptExposed = { shouldExposeLocalShellTool() }
             )
         }

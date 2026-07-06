@@ -690,7 +690,8 @@ class SubagentTool(
                 isWebToolToken(normalized) ||
                 isCodeEditToolToken(normalized) ||
                 isRemoteTaskRepoToolToken(normalized) ||
-                isShellToolToken(normalized)
+                isShellToolToken(normalized) ||
+                isAndroidToolToken(normalized)
             ) {
                 return@forEach
             }
@@ -797,6 +798,11 @@ class SubagentTool(
     private fun isShellToolToken(token: String): Boolean {
         val normalized = token.trim().lowercase()
         return normalized in setOf("shell", "bash", "sh", "zsh", "pwsh", "powershell", "terminal", "command", "cmd")
+    }
+
+    private fun isAndroidToolToken(token: String): Boolean {
+        val normalized = token.trim().lowercase()
+        return normalized in setOf("android", "android_tool", "android-tool", "android_device", "android-device")
     }
 
     private fun isRemoteTaskRepoToolToken(token: String): Boolean {
@@ -1486,6 +1492,7 @@ class SubagentTool(
             addAll(effectiveRemoteTaskRepoWriteTools)
             if (effectiveAllowShell) {
                 add("shell")
+                add("android")
             }
             addAll(requestedToolBudget.inheritedMcpToolNames)
         }
@@ -1512,6 +1519,7 @@ class SubagentTool(
             }
             if (effectiveAllowShell) {
                 register(ShellTool())
+                register(AndroidTool())
             }
             requestedToolBudget.inheritedMcpTools.forEach(::register)
         }
