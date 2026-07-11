@@ -34,6 +34,7 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material3.Icon
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -136,6 +137,9 @@ import com.murong.agent.ui.rememberMurongChromeColor
 import com.murong.agent.ui.rememberMurongMutedTextColor
 import com.murong.agent.ui.rememberMurongSurfaceColor
 import com.murong.agent.ui.toSessionReadinessPresentation
+import com.murong.agent.ui.settings.ProviderModelCatalogUiState
+import com.murong.agent.ui.settings.mergeProviderModelCandidates
+import com.murong.agent.ui.settings.withProviderModelSelection
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -196,6 +200,8 @@ internal fun ChatScreen(
     bottomReservedPadding: Dp = 0.dp,
     multimodalEnabled: Boolean = true,
     executionProfileConfig: ProviderConfig = ProviderConfig(),
+    globalConfig: ProviderConfig = executionProfileConfig,
+    activeProviderModelCatalog: ProviderModelCatalogUiState? = null,
     globalApprovalMode: ToolApprovalMode = executionProfileConfig.approvalMode,
     projectKnowledgePaths: List<String> = emptyList(),
     onSend: (String, List<FileMentionUi>, List<PendingImageAttachmentUi>, List<GlobalSkill>) -> Unit,
@@ -210,6 +216,8 @@ internal fun ChatScreen(
     autoRouteBeforeExecution: Boolean = true,
     projectToolPreferences: ProjectToolPreferences? = null,
     onNavigateToSettings: () -> Unit = {},
+    onUpdateGlobalConfig: (ProviderConfig) -> Unit = {},
+    onRefreshActiveProviderModels: () -> Unit = {},
     onUpdateProjectToolPreferences: (ProjectToolPreferences?) -> Unit = {},
     onUndoMessageKeepCode: (Long) -> Boolean = { false },
     onUndoCodeKeepMessage: (Long) -> Result<Int> = { Result.failure(IllegalStateException("未配置仅撤回改动动作。")) },
@@ -239,12 +247,21 @@ internal fun ChatScreen(
     onSearchFiles: suspend (String) -> List<FileMentionUi> = { emptyList() },
     onRetrySubagent: (String) -> Unit = {},
     onCancelSubagent: (String) -> Unit = {},
-    onUpdateWorkspaceMode: (WorkspaceMode) -> Unit = {}
+    onUpdateWorkspaceMode: (WorkspaceMode) -> Unit = {},
+    onLoadInputHistory: suspend () -> List<String> = { emptyList() },
+    onSaveInputHistory: (List<String>) -> Unit = {}
 ) {
     var inputText by remember { mutableStateOf("") }
     val inputHistory = remember(state.sessionId) { mutableStateListOf<String>() }
     var inputHistoryIndex by remember(state.sessionId) { mutableIntStateOf(-1) }
     var inputDraftBeforeHistory by remember(state.sessionId) { mutableStateOf("") }
+
+    val coroutineScope = rememberCoroutineScope()
+    LaunchedEffect(state.sessionId) {
+        val savedHistory = onLoadInputHistory()
+        inputHistory.clear()
+        inputHistory.addAll(savedHistory)
+    }
     var editingMessageId by remember { mutableStateOf<Long?>(null) }
     var messageActionTarget by remember { mutableStateOf<ChatMessageUi?>(null) }
     var selectedSubagentRun by remember { mutableStateOf<SubagentRunUi?>(null) }
@@ -344,6 +361,48 @@ internal fun ChatScreen(
         (executionProfileConfig.globalSkills + state.projectSkills)
             .filter { it.enabled && (it.title.isNotBlank() || it.content.isNotBlank()) }
             .distinctBy { listOf(it.title.trim(), it.description.trim(), it.content.trim(), it.runAs.name).joinToString("|") }
+    }
+    val activeProvider = remember(executionProfileConfig.activeProviderId) {
+        ProviderRegistry.getActiveProvider(executionProfileConfig.activeProviderId)
+    }
+    val activeResolvedModel = executionProfileConfig.getActiveModel()
+    val activeModelChoices = remember(
+        activeProvider.id,
+        activeResolvedModel,
+        activeProviderModelCatalog
+    ) {
+        buildChatModelChoiceItems(
+            provider = activeProvider,
+            resolvedModel = activeResolvedModel,
+            catalog = activeProviderModelCatalog
+        )
+    }
+    val currentReasoningEffort = executionProfileConfig.getActiveReasoningEffort()
+    val reasoningEffortItems = remember(activeProvider.id, currentReasoningEffort) {
+        if (activeProvider.supportsReasoning) {
+            activeProvider.supportedReasoningEfforts.map { effort ->
+                MurongChoiceDialogItem(
+                    key = effort,
+                    title = if (effort == currentReasoningEffort) "✓ $effort" else effort,
+                    subtitle = null
+                )
+            }
+        } else {
+            emptyList()
+        }
+    }
+    LaunchedEffect(
+        isScreenActive,
+        activeProvider.id,
+        globalConfig.getApiKey(activeProvider.id),
+        activeProviderModelCatalog?.syncedAt,
+        activeProviderModelCatalog?.isLoading
+    ) {
+        if (!isScreenActive) return@LaunchedEffect
+        if (globalConfig.getApiKey(activeProvider.id).isBlank()) return@LaunchedEffect
+        if (activeProviderModelCatalog?.isLoading == true) return@LaunchedEffect
+        if (activeProviderModelCatalog?.syncedAt != null) return@LaunchedEffect
+        onRefreshActiveProviderModels()
     }
     val messages = state.messages
     val questionRounds = remember(messages) {
@@ -492,7 +551,6 @@ internal fun ChatScreen(
     }
     var compressionActionInProgress by remember(state.sessionId) { mutableStateOf(false) }
     var compressionActionError by remember(state.sessionId) { mutableStateOf<String?>(null) }
-    val coroutineScope = rememberCoroutineScope()
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetMultipleContents()
     ) { uris ->
@@ -627,8 +685,7 @@ internal fun ChatScreen(
             isScreenActive &&
             shouldAutoFollowMessages &&
             !listState.isScrollInProgress &&
-            lastMessageStreaming &&
-            lastMessage?.id != null
+            lastMessageStreaming
         ) {
             scrollMessagesToBottom()
         }
@@ -1123,6 +1180,14 @@ internal fun ChatScreen(
                     inputHasFocus = focused
                 },
                 currentApprovalModeLabel = chatRuntimeHostPresentation.currentApprovalModeLabel,
+                currentModelLabel = activeProvider.formatModelDisplayName(activeResolvedModel),
+                modelChoiceTitle = "${activeProvider.name} 模型",
+                modelChoiceItems = activeModelChoices,
+                onSelectModel = { modelId ->
+                    onUpdateGlobalConfig(
+                        globalConfig.withProviderModelSelection(globalConfig.activeProviderId, modelId)
+                    )
+                },
                 onPlanModeChange = { enabled ->
                     onUpdateProjectToolPreferences(
                         normalizeChatProjectToolPreferences(
@@ -1148,6 +1213,7 @@ internal fun ChatScreen(
                             while (inputHistory.size > 50) {
                                 inputHistory.removeAt(0)
                             }
+                            onSaveInputHistory(inputHistory.toList())
                         }
                         when {
                             planModeEnabled -> {
@@ -1241,7 +1307,18 @@ internal fun ChatScreen(
                 workspaceMode = effectiveWorkspaceMode,
                 hasRemoteTaskRepository = hasRemoteTaskRepository,
                 hasLocalProject = hasLocalProject,
-                onUpdateWorkspaceMode = onUpdateWorkspaceMode
+                onUpdateWorkspaceMode = onUpdateWorkspaceMode,
+                currentReasoningEffort = currentReasoningEffort,
+                reasoningEffortItems = reasoningEffortItems,
+                onSelectReasoningEffort = if (activeProvider.supportsReasoning) {
+                    { effort ->
+                        onUpdateGlobalConfig(
+                            globalConfig.withProviderReasoningEffort(globalConfig.activeProviderId, effort)
+                        )
+                    }
+                } else {
+                    null
+                }
             )
 
             if (showSkillPicker) {
@@ -4798,6 +4875,10 @@ private fun InputBar(
     onTextChange: (String) -> Unit,
     onInputFocusChanged: (Boolean) -> Unit,
     currentApprovalModeLabel: String,
+    currentModelLabel: String,
+    modelChoiceTitle: String,
+    modelChoiceItems: List<MurongChoiceDialogItem>,
+    onSelectModel: (String) -> Unit,
     onPlanModeChange: (Boolean) -> Unit,
     onGoalModeChange: (Boolean) -> Unit,
     onOpenApprovalMode: () -> Unit,
@@ -4823,13 +4904,17 @@ private fun InputBar(
     workspaceMode: WorkspaceMode,
     hasRemoteTaskRepository: Boolean,
     hasLocalProject: Boolean,
-    onUpdateWorkspaceMode: (WorkspaceMode) -> Unit
+    onUpdateWorkspaceMode: (WorkspaceMode) -> Unit,
+    currentReasoningEffort: String? = null,
+    reasoningEffortItems: List<MurongChoiceDialogItem> = emptyList(),
+    onSelectReasoningEffort: ((String) -> Unit)? = null
 ) {
+    var showModelChoices by remember { mutableStateOf(false) }
+    var modelMenuOffset by remember { mutableStateOf(IntOffset.Zero) }
     var showMoreActions by remember { mutableStateOf(false) }
     var moreMenuOffset by remember { mutableStateOf(IntOffset.Zero) }
-    var inputBarHeightPx by remember { mutableIntStateOf(0) }
-    var textFieldHeightPx by remember { mutableIntStateOf(0) }
-    var actionRowHeightPx by remember { mutableIntStateOf(0) }
+    var showReasoningChoices by remember { mutableStateOf(false) }
+    var reasoningMenuOffset by remember { mutableStateOf(IntOffset.Zero) }
     var textFieldFocused by remember { mutableStateOf(false) }
     val actionsEnabled = enabled && !isSending
     val moreActions = remember(
@@ -4891,6 +4976,10 @@ private fun InputBar(
         ((compactMoreActions.size.coerceAtMost(6) * 42) + 28).dp.roundToPx()
     }
     val compactMoreMenuGapPx = with(density) { 8.dp.roundToPx() }
+    val compactModelMenuWidthPx = with(density) { 236.dp.roundToPx() }
+    val compactModelMenuHeightPx = with(density) {
+        ((modelChoiceItems.size.coerceAtMost(6) * 42) + 44).dp.roundToPx()
+    }
 
     Box(
         modifier = Modifier
@@ -4904,8 +4993,7 @@ private fun InputBar(
     ) {
         MurongGlassSurface(
             modifier = Modifier
-                .fillMaxWidth()
-                .onSizeChanged { inputBarHeightPx = it.height },
+                .fillMaxWidth(),
             shape = MaterialTheme.shapes.extraLarge,
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
             surfaceColorOverride = surfaceColor.copy(alpha = 0.78f)
@@ -4915,57 +5003,124 @@ private fun InputBar(
                     .fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = onTextChange,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .onSizeChanged { textFieldHeightPx = it.height }
-                        .onFocusChanged { focusState ->
-                            textFieldFocused = focusState.isFocused
-                            onInputFocusChanged(focusState.isFocused)
-                        },
-                    placeholder = {
-                        Text(
-                            composerPlaceholder(
-                                planModeEnabled = planModeEnabled,
-                                goalModeEnabled = goalModeEnabled,
-                                hasSessionGoal = hasSessionGoal
-                            ),
-                            color = mutedTextColor
-                        )
-                    },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                        cursorColor = MaterialTheme.colorScheme.primary,
-                        focusedContainerColor = surfaceColor.copy(alpha = 0.34f),
-                        unfocusedContainerColor = surfaceColor.copy(alpha = 0.22f),
-                        disabledContainerColor = surfaceColor.copy(alpha = 0.14f)
-                    ),
-                    shape = MaterialTheme.shapes.large,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
-                    supportingText = {
-                        if (textFieldFocused) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    OutlinedTextField(
+                        value = text,
+                        onValueChange = onTextChange,
+                        modifier = Modifier
+                            .weight(1f)
+                            .onFocusChanged { focusState ->
+                                textFieldFocused = focusState.isFocused
+                                onInputFocusChanged(focusState.isFocused)
+                            },
+                        placeholder = {
                             Text(
-                                "回车换行，发送按钮发送",
-                                style = MaterialTheme.typography.bodySmall,
+                                composerPlaceholder(
+                                    planModeEnabled = planModeEnabled,
+                                    goalModeEnabled = goalModeEnabled,
+                                    hasSessionGoal = hasSessionGoal
+                                ),
                                 color = mutedTextColor
                             )
-                        }
-                    },
-                    singleLine = false,
-                    maxLines = 4,
-                    textStyle = MaterialTheme.typography.bodyMedium,
-                    enabled = enabled
-                )
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                            cursorColor = MaterialTheme.colorScheme.primary,
+                            focusedContainerColor = surfaceColor.copy(alpha = 0.34f),
+                            unfocusedContainerColor = surfaceColor.copy(alpha = 0.22f),
+                            disabledContainerColor = surfaceColor.copy(alpha = 0.14f)
+                        ),
+                        shape = MaterialTheme.shapes.large,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+                        singleLine = false,
+                        maxLines = 4,
+                        textStyle = MaterialTheme.typography.bodyMedium,
+                        enabled = enabled
+                    )
+                    Button(
+                        onClick = {
+                            if (isSending) {
+                                onStopSending()
+                            } else {
+                                onSend()
+                            }
+                        },
+                        modifier = Modifier
+                            .widthIn(min = 64.dp)
+                            .height(48.dp),
+                        enabled = if (isSending) true else enabled && canSend,
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isSending) {
+                                MaterialTheme.colorScheme.errorContainer
+                            } else {
+                                accent
+                            },
+                            contentColor = if (isSending) {
+                                MaterialTheme.colorScheme.onErrorContainer
+                            } else {
+                                MaterialTheme.colorScheme.onPrimary
+                            }
+                        )
+                    ) {
+                        Text(
+                            text = if (isSending) "终止" else "发送"
+                        )
+                    }
+                }
+                if (textFieldFocused) {
+                    Text(
+                        text = "回车换行，发送按钮发送",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor,
+                        modifier = Modifier.padding(start = 4.dp)
+                    )
+                }
                 Row(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .onSizeChanged { actionRowHeightPx = it.height },
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                        .fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.Start),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    if (modelChoiceItems.isNotEmpty()) {
+                        MurongTagButton(
+                            text = currentModelLabel,
+                            onClick = {
+                                if (actionsEnabled) {
+                                    showModelChoices = true
+                                }
+                            },
+                            modifier = Modifier.onGloballyPositioned { coordinates ->
+                                val bounds = coordinates.boundsInWindow()
+                                modelMenuOffset = IntOffset(
+                                    x = bounds.left.roundToInt(),
+                                    y = bounds.top.roundToInt() - compactModelMenuHeightPx - compactMoreMenuGapPx
+                                )
+                            }
+                        )
+                    }
+                    if (onSelectReasoningEffort != null && reasoningEffortItems.isNotEmpty()) {
+                        MurongTagButton(
+                            text = currentReasoningEffort ?: "推理",
+                            onClick = {
+                                if (actionsEnabled) {
+                                    showReasoningChoices = true
+                                }
+                            },
+                            modifier = Modifier.onGloballyPositioned { coordinates ->
+                                val bounds = coordinates.boundsInWindow()
+                                reasoningMenuOffset = IntOffset(
+                                    x = bounds.left.roundToInt(),
+                                    y = bounds.top.roundToInt() - compactModelMenuHeightPx - compactMoreMenuGapPx
+                                )
+                            }
+                        )
+                    }
                     MurongTagButton(
                         text = if (text.isBlank()) "更多" else "操作",
                         onClick = {
@@ -4982,54 +5137,52 @@ private fun InputBar(
                         }
                     )
                     MurongTagButton(
-                        text = "上一条",
                         onClick = {
                             if (actionsEnabled && canRecallPrevious) {
                                 onPreviousInput()
                             }
-                        }
-                    )
+                        },
+                        enabled = canRecallPrevious
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.KeyboardArrowUp,
+                            contentDescription = "上一条",
+                            tint = if (canRecallPrevious) accent else accent.copy(alpha = 0.38f)
+                        )
+                    }
                     MurongTagButton(
-                        text = "下一条",
                         onClick = {
                             if (actionsEnabled && canRecallNext) {
                                 onNextInput()
                             }
-                        }
-                    )
-                    Button(
-                        onClick = {
-                            if (isSending) {
-                                onStopSending()
-                            } else {
-                                onSend()
-                            }
                         },
-                        enabled = if (isSending) true else enabled && canSend,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isSending) {
-                                MaterialTheme.colorScheme.errorContainer
-                            } else {
-                                accent
-                            },
-                            contentColor = if (isSending) {
-                                MaterialTheme.colorScheme.onErrorContainer
-                            } else {
-                                MaterialTheme.colorScheme.onPrimary
-                            }
-                        )
+                        enabled = canRecallNext
                     ) {
-                        Text(
-                            text = if (isSending) "终止" else composerSubmitLabel(
-                                planModeEnabled = planModeEnabled,
-                                goalModeEnabled = goalModeEnabled,
-                                hasSessionGoal = hasSessionGoal
-                            )
+                        Icon(
+                            imageVector = Icons.Outlined.KeyboardArrowDown,
+                            contentDescription = "下一条",
+                            tint = if (canRecallNext) accent else accent.copy(alpha = 0.38f)
                         )
                     }
                 }
             }
         }
+    }
+    if (showModelChoices) {
+        MurongCompactChoiceDialog(
+            title = modelChoiceTitle,
+            subtitle = "切换后会写回当前默认模型配置",
+            items = modelChoiceItems,
+            modifier = Modifier.widthIn(min = 196.dp, max = 236.dp),
+            dialogAlignment = Alignment.TopStart,
+            popupOffset = modelMenuOffset,
+            showCancelButton = false,
+            onDismissRequest = { showModelChoices = false },
+            onSelect = { selectedItem ->
+                showModelChoices = false
+                onSelectModel(selectedItem.key)
+            }
+        )
     }
     if (showMoreActions) {
         MurongCompactChoiceDialog(
@@ -5047,6 +5200,43 @@ private fun InputBar(
             }
         )
     }
+    if (showReasoningChoices) {
+        MurongCompactChoiceDialog(
+            title = "推理深度",
+            subtitle = "切换后会写回当前默认配置",
+            items = reasoningEffortItems,
+            modifier = Modifier.widthIn(min = 196.dp, max = 236.dp),
+            dialogAlignment = Alignment.TopStart,
+            popupOffset = reasoningMenuOffset,
+            showCancelButton = false,
+            onDismissRequest = { showReasoningChoices = false },
+            onSelect = { selectedItem ->
+                showReasoningChoices = false
+                onSelectReasoningEffort?.invoke(selectedItem.key)
+            }
+        )
+    }
+}
+
+private fun buildChatModelChoiceItems(
+    provider: com.murong.agent.core.provider.ModelProvider,
+    resolvedModel: String,
+    catalog: ProviderModelCatalogUiState?
+): List<MurongChoiceDialogItem> {
+    return mergeProviderModelCandidates(
+        providerId = provider.id,
+        currentModel = resolvedModel,
+        fetchedModels = catalog?.models.orEmpty()
+    )
+        .take(8)
+        .map { modelId ->
+            val title = provider.formatModelDisplayName(modelId)
+            MurongChoiceDialogItem(
+                key = modelId,
+                title = if (modelId == resolvedModel) "✓ $title" else title,
+                subtitle = modelId.takeIf { it != title }
+            )
+        }
 }
 
 private fun composerPlaceholder(

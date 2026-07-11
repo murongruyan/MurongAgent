@@ -36,6 +36,7 @@ class ConfigRepository(private val context: Context) {
         private const val SECRET_GITHUB_CLIENT_SECRET = "github_client_secret"
         private const val SECRET_GITHUB_BACKEND_SESSION_TOKEN = "github_backend_session_token"
         private const val SECRET_WEB_SEARCH_BING_API_KEY = "web_search_bing_api_key"
+        private val INPUT_HISTORY_KEY = stringPreferencesKey("chat_input_history")
     }
 
     private var legacyMigrationDone = false
@@ -98,6 +99,23 @@ class ConfigRepository(private val context: Context) {
     suspend fun setActiveProvider(providerId: String) {
         val config = getConfig()
         saveConfig(config.copy(activeProviderId = providerId))
+    }
+
+    suspend fun getInputHistory(): List<String> {
+        val prefs = context.dataStore.data.first()
+        val raw = prefs[INPUT_HISTORY_KEY] ?: return emptyList()
+        return try {
+            json.decodeFromString<List<String>>(raw)
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun saveInputHistory(history: List<String>) {
+        val sanitized = history.takeLast(50)
+        context.dataStore.edit { prefs ->
+            prefs[INPUT_HISTORY_KEY] = json.encodeToString(sanitized)
+        }
     }
 
     fun listDurableGlobalMemories(): List<GlobalMemory> {

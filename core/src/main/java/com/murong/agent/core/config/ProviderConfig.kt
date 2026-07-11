@@ -77,12 +77,12 @@ data class ProviderConfig(
     val deepseekBalanceUsd: Double = 0.0, val deepseekBalanceCurrency: String = "CNY",
     val deepseekBalanceSyncedAt: Long? = null,
     val openaiApiKey: String = "", val openaiBaseUrl: String = "",
-    val openaiModel: String = "gpt-5.5", val openaiReasoningEffort: String = "medium",
+    val openaiModel: String = "gpt-5.6-sol", val openaiReasoningEffort: String = "high",
     val openaiPromptPricePer1M: Double = 0.0, val openaiCompletionPricePer1M: Double = 0.0,
     val openaiBalanceUsd: Double = 0.0, val openaiBalanceCurrency: String = "USD",
     val openaiBalanceSyncedAt: Long? = null, val openaiBalanceApiPath: String = "",
     val claudeApiKey: String = "", val claudeBaseUrl: String = "",
-    val claudeModel: String = "claude-opus-4-8", val claudeReasoningEffort: String = "high",
+    val claudeModel: String = "claude-fable-5", val claudeReasoningEffort: String = "high",
     val claudePromptPricePer1M: Double = 0.0, val claudeCompletionPricePer1M: Double = 0.0,
     val claudeBalanceUsd: Double = 0.0, val claudeBalanceCurrency: String = "USD",
     val claudeBalanceSyncedAt: Long? = null, val claudeBalanceApiPath: String = "",
@@ -226,16 +226,76 @@ data class ProviderConfig(
         }
         return updated.copy(executionProfileAutoControlsInitialized = true)
     }
+    fun withProviderReasoningEffort(providerId: String, effort: String): ProviderConfig {
+        return when (providerId) {
+            "deepseek" -> copy(deepseekReasoningEffort = effort)
+            "openai-compatible" -> copy(openaiReasoningEffort = effort)
+            "claude" -> copy(claudeReasoningEffort = effort)
+            else -> this
+        }
+    }
     fun getActiveThinkingMode(): String? {
         val effort = getActiveReasoningEffort(); return if (effort.isNullOrBlank()) null else "reasoning/$effort"
     }
-    fun getPromptPricePer1M(providerId: String = activeProviderId): Double = when (providerId) {
+    fun getConfiguredPromptPricePer1M(providerId: String = activeProviderId): Double = when (providerId) {
         "deepseek" -> deepseekPromptPricePer1M; "openai-compatible" -> openaiPromptPricePer1M
         "claude" -> claudePromptPricePer1M; else -> 0.0
     }
-    fun getCompletionPricePer1M(providerId: String = activeProviderId): Double = when (providerId) {
+    fun getConfiguredCompletionPricePer1M(providerId: String = activeProviderId): Double = when (providerId) {
         "deepseek" -> deepseekCompletionPricePer1M; "openai-compatible" -> openaiCompletionPricePer1M
         "claude" -> claudeCompletionPricePer1M; else -> 0.0
+    }
+    fun getOfficialPromptPricePer1M(
+        providerId: String = activeProviderId,
+        modelId: String = getResolvedModel(providerId)
+    ): Double = when (providerId) {
+        "openai-compatible" -> when (modelId.trim().lowercase()) {
+            "gpt-5.6-sol" -> 5.0
+            "gpt-5.6-terra" -> 2.5
+            "gpt-5.6-luna" -> 1.0
+            else -> 0.0
+        }
+        "claude" -> when (modelId.trim().lowercase()) {
+            "claude-fable-5" -> 10.0
+            "claude-opus-4-8" -> 5.0
+            else -> 0.0
+        }
+        else -> 0.0
+    }
+    fun getOfficialCompletionPricePer1M(
+        providerId: String = activeProviderId,
+        modelId: String = getResolvedModel(providerId)
+    ): Double = when (providerId) {
+        "openai-compatible" -> when (modelId.trim().lowercase()) {
+            "gpt-5.6-sol" -> 30.0
+            "gpt-5.6-terra" -> 15.0
+            "gpt-5.6-luna" -> 6.0
+            else -> 0.0
+        }
+        "claude" -> when (modelId.trim().lowercase()) {
+            "claude-fable-5" -> 50.0
+            "claude-opus-4-8" -> 25.0
+            else -> 0.0
+        }
+        else -> 0.0
+    }
+    fun getPromptPricePer1M(providerId: String = activeProviderId): Double {
+        val configured = getConfiguredPromptPricePer1M(providerId)
+        val official = getOfficialPromptPricePer1M(providerId)
+        return when {
+            official > 0.0 -> official * configured.takeIf { it > 0.0 }.let { it ?: 1.0 }
+            configured > 0.0 -> configured
+            else -> official
+        }
+    }
+    fun getCompletionPricePer1M(providerId: String = activeProviderId): Double {
+        val configured = getConfiguredCompletionPricePer1M(providerId)
+        val official = getOfficialCompletionPricePer1M(providerId)
+        return when {
+            official > 0.0 -> official * configured.takeIf { it > 0.0 }.let { it ?: 1.0 }
+            configured > 0.0 -> configured
+            else -> official
+        }
     }
     fun getPriceCurrency(providerId: String = activeProviderId): String = when (providerId) {
         "deepseek" -> "CNY"

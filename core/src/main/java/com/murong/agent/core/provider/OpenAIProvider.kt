@@ -30,17 +30,29 @@ class OpenAIProvider : ModelProvider {
     override val name = "OpenAI Compatible"
     override val id = "openai-compatible"
     override val defaultBaseUrl = "https://api.openai.com"
-    override val defaultModel = "gpt-5.5"
+    override val defaultModel = "gpt-5.6-sol"
     override val supportsReasoning = true
     override val supportedReasoningEfforts = listOf("low", "medium", "high", "xhigh", "max")
 
     override fun formatModelDisplayName(modelId: String): String = when (modelId.trim()) {
+        "gpt-5.6-sol" -> "GPT-5.6 Sol"
+        "gpt-5.6-terra" -> "GPT-5.6 Terra"
+        "gpt-5.6-luna" -> "GPT-5.6 Luna"
         "gpt-5.5" -> "GPT-5.5"
         else -> super.formatModelDisplayName(modelId)
     }
 
     override fun buildReasoningHint(modelId: String, reasoningEffort: String?): String {
-        return "当前请求: model=$modelId, effort=$reasoningEffort。GPT-5.5 推荐从 medium 起步，复杂任务再升到 xhigh。"
+        return when (modelId.trim()) {
+            "gpt-5.6-sol" ->
+                "当前请求: model=$modelId, effort=$reasoningEffort。GPT-5.6 Sol 适合高复杂度任务，建议从 high 起步，特别难的任务可升到 xhigh / max。"
+            "gpt-5.6-terra" ->
+                "当前请求: model=$modelId, effort=$reasoningEffort。GPT-5.6 Terra 更均衡，适合日常编码与多步分析。"
+            "gpt-5.6-luna" ->
+                "当前请求: model=$modelId, effort=$reasoningEffort。GPT-5.6 Luna 偏速度与成本，适合轻量请求。"
+            else ->
+                "当前请求: model=$modelId, effort=$reasoningEffort。GPT 系列推荐从 medium 起步，复杂任务再升到 xhigh。"
+        }
     }
 
     private val client = OkHttpClient.Builder()

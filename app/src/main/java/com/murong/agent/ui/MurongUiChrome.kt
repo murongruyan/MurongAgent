@@ -1268,6 +1268,34 @@ fun MurongTagButton(
 }
 
 @Composable
+fun MurongTagButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable () -> Unit
+) {
+    val accent = rememberMurongAccentColor()
+    Surface(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(
+                onClick = onClick,
+                enabled = enabled
+            ),
+        shape = RoundedCornerShape(14.dp),
+        color = Color.Transparent,
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.36f))
+    ) {
+        Box(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            content()
+        }
+    }
+}
+
+@Composable
 fun MurongAlertDialog(
     onDismissRequest: () -> Unit,
     confirmButton: @Composable () -> Unit,

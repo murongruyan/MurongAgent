@@ -67,7 +67,7 @@ class ExecutionProfileDeciderTest {
             mentionedFileCount = 0
         )
 
-        assertEquals("gpt-5.5", officialResolved.openaiModel)
+        assertEquals("gpt-5.6-sol", officialResolved.openaiModel)
         assertEquals("xhigh", officialResolved.openaiReasoningEffort)
         assertEquals("gpt-4.1-mini", customResolved.openaiModel)
         assertEquals("xhigh", customResolved.openaiReasoningEffort)

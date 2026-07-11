@@ -221,6 +221,7 @@ fun MainScreen() {
     val isCheckingRoot by settingsVm.isCheckingRoot.collectAsState()
     val settingsSessions by settingsVm.sessions.collectAsState()
     val settingsDurableGlobalMemories by settingsVm.durableGlobalMemories.collectAsState()
+    val providerModelCatalogs by settingsVm.providerModelCatalogs.collectAsState()
     val selectedProjectTaskRepository = remember(
         chatState.remoteTaskRepositoryOwner,
         chatState.remoteTaskRepositoryName
@@ -1221,6 +1222,8 @@ fun MainScreen() {
                                 bottomReservedPadding = pageLayoutState.bottomPadding,
                                 multimodalEnabled = settingsConfig.isMultimodalEnabled(),
                                 executionProfileConfig = effectiveChatConfig,
+                                globalConfig = settingsConfig,
+                                activeProviderModelCatalog = providerModelCatalogs[effectiveChatConfig.activeProviderId],
                                 globalApprovalMode = settingsConfig.approvalMode,
                                 projectKnowledgePaths = chatState.projectKnowledgePaths,
                                 onSend = { text, mentions, images, skills ->
@@ -1253,6 +1256,12 @@ fun MainScreen() {
                                 projectToolPreferences = chatState.projectToolPreferences,
                                 onNavigateToSettings = {
                                     navigateToTopLevel(Screen.Settings)
+                                },
+                                onUpdateGlobalConfig = { updatedConfig ->
+                                    settingsVm.updateConfig(updatedConfig)
+                                },
+                                onRefreshActiveProviderModels = {
+                                    settingsVm.refreshProviderModels(effectiveChatConfig.activeProviderId)
                                 },
                                 onUpdateProjectToolPreferences = { preferences ->
                                     chatVm.updateProjectToolPreferences(
@@ -1383,6 +1392,12 @@ fun MainScreen() {
                                         )
                                     scope.launch {
                                         snackbarHostState.showSnackbar(message)
+                                    }
+                                },
+                                onLoadInputHistory = { settingsVm.configRepository.getInputHistory() },
+                                onSaveInputHistory = { history ->
+                                    scope.launch {
+                                        settingsVm.configRepository.saveInputHistory(history)
                                     }
                                 }
                             )
@@ -1642,10 +1657,12 @@ fun MainScreen() {
                             onCheckRoot = { settingsVm.checkRoot() },
                             sessions = settingsSessions,
                             balanceSyncStates = balanceSyncStates,
+                            providerModelCatalogs = providerModelCatalogs,
                             mcpServers = mcpServers,
                             mcpStatuses = mcpStatuses,
                             mcpConnectError = mcpConnectError,
                             onRefreshProviderBalance = { settingsVm.refreshProviderBalance(it) },
+                            onRefreshProviderModels = { settingsVm.refreshProviderModels(it) },
                             supportsBalanceFetch = { settingsVm.supportsBalanceFetch(it) },
                             onAddMcpServer = { settingsVm.addMcpServer(it) },
                             onImportMcpDrafts = { settingsVm.importMcpServers(it) },

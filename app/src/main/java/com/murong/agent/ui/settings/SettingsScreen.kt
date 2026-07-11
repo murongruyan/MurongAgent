@@ -75,10 +75,12 @@ fun SettingsScreen(
     onCheckRoot: () -> Unit = {},
     sessions: List<SessionSummary> = emptyList(),
     balanceSyncStates: Map<String, BalanceSyncUiState> = emptyMap(),
+    providerModelCatalogs: Map<String, ProviderModelCatalogUiState> = emptyMap(),
     mcpServers: List<McpServerConfig> = emptyList(),
     mcpStatuses: List<McpServerStatus> = emptyList(),
     mcpConnectError: String? = null,
     onRefreshProviderBalance: (String) -> Unit = {},
+    onRefreshProviderModels: (String) -> Unit = {},
     supportsBalanceFetch: (String) -> Boolean = { false },
     onAddMcpServer: (McpServerConfig) -> Unit = {},
     onImportMcpDrafts: (List<McpServerConfig>) -> Unit = {},
@@ -419,12 +421,14 @@ fun SettingsScreen(
                 providerSectionExpanded = providerSectionExpanded,
                 onProviderSectionExpandedChange = { providerSectionExpanded = it },
                 balanceSyncStates = balanceSyncStates,
+                providerModelCatalogs = providerModelCatalogs,
                 onConfigChanged = onConfigChanged,
                 onUpdateApiKey = onUpdateApiKey,
                 onUpdateBaseUrl = onUpdateBaseUrl,
                 onUpdateModel = onUpdateModel,
                 onSetActiveProvider = onSetActiveProvider,
                 onRefreshProviderBalance = onRefreshProviderBalance,
+                onRefreshProviderModels = onRefreshProviderModels,
                 supportsBalanceFetch = supportsBalanceFetch
             )
 
@@ -942,12 +946,14 @@ private fun ProviderSettingsSection(
     providerSectionExpanded: Boolean,
     onProviderSectionExpandedChange: (Boolean) -> Unit,
     balanceSyncStates: Map<String, BalanceSyncUiState>,
+    providerModelCatalogs: Map<String, ProviderModelCatalogUiState>,
     onConfigChanged: (ProviderConfig) -> Unit,
     onUpdateApiKey: (String, String) -> Unit,
     onUpdateBaseUrl: (String, String) -> Unit,
     onUpdateModel: (String, String) -> Unit,
     onSetActiveProvider: (String) -> Unit,
     onRefreshProviderBalance: (String) -> Unit,
+    onRefreshProviderModels: (String) -> Unit,
     supportsBalanceFetch: (String) -> Boolean
 ) {
     val focusManager = LocalFocusManager.current
@@ -1031,18 +1037,18 @@ private fun ProviderSettingsSection(
                             reasoningAutoSelectionEnabled = reasoningAutoSelectionEnabled,
                             supportsAutoModelSelection = supportsAutoModelSelection
                         )
-                        val promptPricePer1M = when (provider.id) {
-                            "deepseek" -> config.deepseekPromptPricePer1M
-                            "openai-compatible" -> config.openaiPromptPricePer1M
-                            "claude" -> config.claudePromptPricePer1M
-                            else -> 0.0
-                        }
-                        val completionPricePer1M = when (provider.id) {
-                            "deepseek" -> config.deepseekCompletionPricePer1M
-                            "openai-compatible" -> config.openaiCompletionPricePer1M
-                            "claude" -> config.claudeCompletionPricePer1M
-                            else -> 0.0
-                        }
+                        val promptPricePer1M = config.getConfiguredPromptPricePer1M(provider.id)
+                        val completionPricePer1M = config.getConfiguredCompletionPricePer1M(provider.id)
+                        val officialPromptPricePer1M = config.getOfficialPromptPricePer1M(
+                            providerId = provider.id,
+                            modelId = resolvedModel
+                        )
+                        val officialCompletionPricePer1M = config.getOfficialCompletionPricePer1M(
+                            providerId = provider.id,
+                            modelId = resolvedModel
+                        )
+                        val effectivePromptPricePer1M = config.getPromptPricePer1M(provider.id)
+                        val effectiveCompletionPricePer1M = config.getCompletionPricePer1M(provider.id)
                         val balanceUsd = when (provider.id) {
                             "deepseek" -> config.deepseekBalanceUsd
                             "openai-compatible" -> config.openaiBalanceUsd
@@ -1054,6 +1060,13 @@ private fun ProviderSettingsSection(
                         val priceCurrency = config.getPriceCurrency(provider.id)
                         val balanceSyncedAt = config.getBalanceSyncedAt(provider.id)
                         val balanceSyncState = balanceSyncStates[provider.id] ?: BalanceSyncUiState()
+                        val modelCatalogState = providerModelCatalogs[provider.id] ?: ProviderModelCatalogUiState(
+                            providerId = provider.id,
+                            models = mergeProviderModelCandidates(
+                                providerId = provider.id,
+                                currentModel = resolvedModel
+                            )
+                        )
                         val canFetchBalance = supportsBalanceFetch(provider.id)
                         var apiKeyDraft by rememberSaveable(provider.id, "apiKey") { mutableStateOf(apiKey) }
                         var baseUrlDraft by rememberSaveable(provider.id, "baseUrl") { mutableStateOf(baseUrl) }
@@ -1294,13 +1307,7 @@ private fun ProviderSettingsSection(
                                                 FilterChip(
                                                     selected = model == provider.defaultModel,
                                                     onClick = {
-                                                        onConfigChanged(
-                                                            when (provider.id) {
-                                                                "openai-compatible" -> config.copy(openaiModel = provider.defaultModel)
-                                                                "claude" -> config.copy(claudeModel = provider.defaultModel)
-                                                                else -> config
-                                                            }
-                                                        )
+                                                        onConfigChanged(config.withProviderModelSelection(provider.id, provider.defaultModel))
                                                     },
                                                     label = { Text(provider.formatModelDisplayName(provider.defaultModel), fontSize = 12.sp) }
                                                 )
@@ -1312,7 +1319,7 @@ private fun ProviderSettingsSection(
                                                                 "openai-compatible" -> config.copy(openaiModel = "")
                                                                 "claude" -> config.copy(claudeModel = "")
                                                                 else -> config
-                                                            }
+                                                            }.withModelAutoSelection(provider.id, false)
                                                         )
                                                     },
                                                     label = { Text("自定义", fontSize = 12.sp) }
@@ -1381,6 +1388,68 @@ private fun ProviderSettingsSection(
                                                 cursorColor = MaterialTheme.colorScheme.primary
                                             )
                                         )
+
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            OutlinedButton(
+                                                onClick = { onRefreshProviderModels(provider.id) },
+                                                enabled = !modelCatalogState.isLoading
+                                            ) {
+                                                Text(
+                                                    if (modelCatalogState.isLoading) "同步中..." else "从上游获取模型列表",
+                                                    fontSize = 12.sp
+                                                )
+                                            }
+                                            Text(
+                                                text = "来源: ${modelCatalogState.sourceLabel}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        modelCatalogState.message?.takeIf { it.isNotBlank() }?.let { message ->
+                                            Text(
+                                                text = message,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = Color(0xFF2E7D32)
+                                            )
+                                        }
+                                        modelCatalogState.error?.takeIf { it.isNotBlank() }?.let { error ->
+                                            Text(
+                                                text = error,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.error
+                                            )
+                                        }
+                                        if (modelCatalogState.models.isNotEmpty()) {
+                                            Text(
+                                                text = "可选模型",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            FlowRow(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                modelCatalogState.models.take(18).forEach { modelId ->
+                                                    FilterChip(
+                                                        selected = resolvedModel == modelId,
+                                                        onClick = {
+                                                            onConfigChanged(config.withProviderModelSelection(provider.id, modelId))
+                                                        },
+                                                        label = {
+                                                            Text(
+                                                                provider.formatModelDisplayName(modelId),
+                                                                fontSize = 12.sp
+                                                            )
+                                                        }
+                                                    )
+                                                }
+                                            }
+                                        }
 
                                         if (provider.supportsReasoning && provider.supportedReasoningEfforts.isNotEmpty()) {
                                             Text(
@@ -1516,7 +1585,17 @@ private fun ProviderSettingsSection(
                                         DeferredDoubleField(
                                             fieldKey = "${provider.id}-prompt-price",
                                             currentValue = promptPricePer1M,
-                                            label = "输入价格（$priceCurrency / 1M tokens）",
+                                            label = if (officialPromptPricePer1M > 0.0) {
+                                                "输入倍率（相对官方价）"
+                                            } else {
+                                                "输入价格（$priceCurrency / 1M tokens）"
+                                            },
+                                            supportingText = buildPricingFieldSupportingText(
+                                                officialPricePer1M = officialPromptPricePer1M,
+                                                effectivePricePer1M = effectivePromptPricePer1M,
+                                                configuredValue = promptPricePer1M,
+                                                currency = priceCurrency
+                                            ),
                                             onCommit = { parsed ->
                                                 onConfigChanged(
                                                     when (provider.id) {
@@ -1531,7 +1610,17 @@ private fun ProviderSettingsSection(
                                         DeferredDoubleField(
                                             fieldKey = "${provider.id}-completion-price",
                                             currentValue = completionPricePer1M,
-                                            label = "输出价格（$priceCurrency / 1M tokens）",
+                                            label = if (officialCompletionPricePer1M > 0.0) {
+                                                "输出倍率（相对官方价）"
+                                            } else {
+                                                "输出价格（$priceCurrency / 1M tokens）"
+                                            },
+                                            supportingText = buildPricingFieldSupportingText(
+                                                officialPricePer1M = officialCompletionPricePer1M,
+                                                effectivePricePer1M = effectiveCompletionPricePer1M,
+                                                configuredValue = completionPricePer1M,
+                                                currency = priceCurrency
+                                            ),
                                             onCommit = { parsed ->
                                                 onConfigChanged(
                                                     when (provider.id) {
@@ -1665,6 +1754,23 @@ private fun buildProfileOverrideSummary(
         "已开启，但当前仍完全继承主聊天 · $profileLabel"
     } else {
         "独立 ${overrideParts.joinToString(" + ")} · $profileLabel"
+    }
+}
+
+private fun buildPricingFieldSupportingText(
+    officialPricePer1M: Double,
+    effectivePricePer1M: Double,
+    configuredValue: Double,
+    currency: String
+): String {
+    return when {
+        officialPricePer1M > 0.0 -> {
+            val effectiveMultiplier = configuredValue.takeIf { it > 0.0 } ?: 1.0
+            "已内置官方参考价 ${formatCurrencyAmount(officialPricePer1M, currency)} / 1M；" +
+                "这里填写倍率，留空或 0 按 1.0x 计算；当前生效 ${effectiveMultiplier}x = " +
+                "${formatCurrencyAmount(effectivePricePer1M, currency)} / 1M。"
+        }
+        else -> "这里填写绝对价格，用于本地成本估算。"
     }
 }
 

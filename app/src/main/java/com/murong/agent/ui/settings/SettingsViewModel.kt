@@ -14,6 +14,7 @@ import com.murong.agent.core.loop.SessionSummary
 import com.murong.agent.core.mcp.McpRegistry
 import com.murong.agent.core.mcp.McpServerConfig
 import com.murong.agent.core.mcp.McpServerStatus
+import com.murong.agent.core.provider.ProviderRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -91,7 +92,7 @@ data class AppUpdateUiState(
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-    private val configRepository: ConfigRepository,
+    val configRepository: ConfigRepository,
     private val providerBalanceService: ProviderBalanceService,
     private val mcpRegistry: McpRegistry,
     private val chatSessionManager: ChatSessionManager
@@ -136,6 +137,10 @@ class SettingsViewModel @Inject constructor(
 
     private val _balanceSyncStates = MutableStateFlow<Map<String, BalanceSyncUiState>>(emptyMap())
     val balanceSyncStates: StateFlow<Map<String, BalanceSyncUiState>> = _balanceSyncStates.asStateFlow()
+    private val _providerModelCatalogs =
+        MutableStateFlow<Map<String, ProviderModelCatalogUiState>>(emptyMap())
+    val providerModelCatalogs: StateFlow<Map<String, ProviderModelCatalogUiState>> =
+        _providerModelCatalogs.asStateFlow()
 
     private val _gitHubAuthState = MutableStateFlow(GitHubAuthUiState())
     val gitHubAuthState: StateFlow<GitHubAuthUiState> = _gitHubAuthState.asStateFlow()
@@ -154,6 +159,16 @@ class SettingsViewModel @Inject constructor(
         refreshDurableGlobalMemories()
         viewModelScope.launch {
             configRepository.configFlow.collect { currentConfig ->
+                _providerModelCatalogs.value = ProviderRegistry.getAllProviders().associate { provider ->
+                    val existing = _providerModelCatalogs.value[provider.id]
+                    provider.id to (existing ?: ProviderModelCatalogUiState(providerId = provider.id)).copy(
+                        models = mergeProviderModelCandidates(
+                            providerId = provider.id,
+                            currentModel = currentConfig.getResolvedModel(provider.id),
+                            fetchedModels = existing?.models.orEmpty()
+                        )
+                    )
+                }
                 _gitHubAuthState.value = _gitHubAuthState.value.copy(
                     viewerLogin = currentConfig.githubViewerLogin.ifBlank { null },
                     viewerName = currentConfig.githubViewerName.ifBlank { null }
@@ -216,6 +231,53 @@ class SettingsViewModel @Inject constructor(
     fun refreshDurableGlobalMemories() {
         viewModelScope.launch(Dispatchers.IO) {
             _durableGlobalMemories.value = configRepository.listDurableGlobalMemories()
+        }
+    }
+
+    fun refreshProviderModels(providerId: String) {
+        val provider = ProviderRegistry.getProvider(providerId) ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val config = configRepository.getConfig()
+            val existing = _providerModelCatalogs.value[providerId] ?: ProviderModelCatalogUiState(
+                providerId = providerId,
+                models = mergeProviderModelCandidates(
+                    providerId = providerId,
+                    currentModel = config.getResolvedModel(providerId)
+                )
+            )
+            _providerModelCatalogs.value = _providerModelCatalogs.value + (
+                providerId to existing.copy(
+                    isLoading = true,
+                    message = null,
+                    error = null
+                )
+            )
+            fetchProviderModelCatalog(config, provider)
+                .onSuccess { catalog ->
+                    _providerModelCatalogs.value = _providerModelCatalogs.value + (
+                        providerId to existing.copy(
+                            models = mergeProviderModelCandidates(
+                                providerId = providerId,
+                                currentModel = config.getResolvedModel(providerId),
+                                fetchedModels = catalog.models
+                            ),
+                            sourceLabel = catalog.sourceLabel,
+                            isLoading = false,
+                            message = "已同步 ${catalog.models.size} 个模型",
+                            error = null,
+                            syncedAt = catalog.syncedAt
+                        )
+                    )
+                }
+                .onFailure { error ->
+                    _providerModelCatalogs.value = _providerModelCatalogs.value + (
+                        providerId to existing.copy(
+                            isLoading = false,
+                            message = null,
+                            error = error.message ?: "读取模型列表失败"
+                        )
+                    )
+                }
         }
     }
 

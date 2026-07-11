@@ -30,11 +30,11 @@ class ProviderMetadataTest {
             listOf("low", "medium", "high", "xhigh", "max"),
             provider.supportedReasoningEfforts
         )
-        assertEquals("GPT-5.5", provider.formatModelDisplayName("gpt-5.5"))
-        assertEquals("GPT-5.5 超高推理", provider.buildExecutionProfileLabel("gpt-5.5", "xhigh"))
+        assertEquals("GPT-5.6 Sol", provider.formatModelDisplayName("gpt-5.6-sol"))
+        assertEquals("GPT-5.6 Sol 超高推理", provider.buildExecutionProfileLabel("gpt-5.6-sol", "xhigh"))
         assertTrue(
-            provider.buildReasoningHint("gpt-5.5", "medium")
-                ?.contains("GPT-5.5 推荐从 medium 起步") == true
+            provider.buildReasoningHint("gpt-5.6-sol", "high")
+                ?.contains("GPT-5.6 Sol") == true
         )
     }
 
@@ -46,11 +46,11 @@ class ProviderMetadataTest {
             listOf("low", "medium", "high", "xhigh", "max"),
             provider.supportedReasoningEfforts
         )
-        assertEquals("Claude 4.8", provider.formatModelDisplayName("claude-opus-4-8"))
-        assertEquals("Claude 4.8 高推理", provider.buildExecutionProfileLabel("claude-opus-4-8", "high"))
+        assertEquals("Claude Fable 5", provider.formatModelDisplayName("claude-fable-5"))
+        assertEquals("Claude Fable 5 高推理", provider.buildExecutionProfileLabel("claude-fable-5", "high"))
         assertTrue(
-            provider.buildReasoningHint("claude-opus-4-8", "high")
-                ?.contains("Claude 4.8 支持自适应 thinking + effort") == true
+            provider.buildReasoningHint("claude-fable-5", "high")
+                ?.contains("Claude Fable 5") == true
         )
     }
 

@@ -33,8 +33,8 @@ internal object ExecutionProfileDecider {
         val requestedModel = matchedSkillPreferredModel?.trim().orEmpty().ifBlank {
             when (baseConfig.activeProviderId) {
                 "deepseek" -> if (shouldAutoModel) "deepseek-v4-pro" else ""
-                "claude" -> if (shouldAutoModel) "claude-opus-4-8" else ""
-                "openai-compatible" -> if (shouldAutoModel && shouldPreferLatestOpenAiProfile(baseConfig)) "gpt-5.5" else ""
+                "claude" -> if (shouldAutoModel) "claude-fable-5" else ""
+                "openai-compatible" -> if (shouldAutoModel && shouldPreferLatestOpenAiProfile(baseConfig)) "gpt-5.6-sol" else ""
                 else -> ""
             }
         }
