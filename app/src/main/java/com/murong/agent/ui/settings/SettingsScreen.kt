@@ -32,6 +32,8 @@ import com.murong.agent.core.config.GlobalMemory
 import com.murong.agent.core.config.GlobalRule
 import com.murong.agent.core.config.GlobalSkill
 import com.murong.agent.core.config.ProviderConfig
+import com.murong.agent.core.config.RelayConfig
+import com.murong.agent.core.config.RelayKind
 import com.murong.agent.core.config.ResponseVerbosity
 import com.murong.agent.core.config.SkillRunAs
 import com.murong.agent.core.loop.SessionSummary
@@ -43,6 +45,7 @@ import com.murong.agent.core.provider.ModelProvider
 import com.murong.agent.core.provider.ProviderRegistry
 import com.murong.agent.ui.MemoryDraftImportCard
 import com.murong.agent.ui.McpDraftImportCard
+import com.murong.agent.ui.MurongDialog
 import com.murong.agent.ui.MurongGlassSurface
 import com.murong.agent.ui.MurongInfoCard
 import com.murong.agent.ui.MurongOutlinedActionButton
@@ -68,6 +71,8 @@ fun SettingsScreen(
     onUpdateApiKey: (String, String) -> Unit = { _, _ -> },
     onUpdateBaseUrl: (String, String) -> Unit = { _, _ -> },
     onUpdateModel: (String, String) -> Unit = { _, _ -> },
+    onAddRelay: (String) -> Unit = {},
+    onSelectRelay: (String, String) -> Unit = { _, _ -> },
     onSetActiveProvider: (String) -> Unit = {},
     gitHubAuthState: GitHubAuthUiState = GitHubAuthUiState(),
     rootStatus: Boolean? = null,
@@ -103,7 +108,7 @@ fun SettingsScreen(
     var showApiKey by remember { mutableStateOf(false) }
     val uriHandler = LocalUriHandler.current
     var lastOpenedGitHubAuthUrl by remember { mutableStateOf<String?>(null) }
-    var providerSectionExpanded by rememberSaveable { mutableStateOf(!hasConfiguredProvider(config)) }
+    var providerSectionExpanded by rememberSaveable { mutableStateOf(false) }
     var chatAndSearchExpanded by rememberSaveable { mutableStateOf(false) }
     var systemPromptExpanded by rememberSaveable { mutableStateOf(false) }
     var rulesExpanded by rememberSaveable { mutableStateOf(false) }
@@ -413,24 +418,20 @@ fun SettingsScreen(
         // ═══════════════════════════════════════
         // AI 模型提供商
         // ═══════════════════════════════════════
-            ProviderSettingsSection(
-                providers = providers,
-                config = config,
-                showApiKey = showApiKey,
-                onToggleShowApiKey = { showApiKey = !showApiKey },
-                providerSectionExpanded = providerSectionExpanded,
-                onProviderSectionExpandedChange = { providerSectionExpanded = it },
-                balanceSyncStates = balanceSyncStates,
-                providerModelCatalogs = providerModelCatalogs,
-                onConfigChanged = onConfigChanged,
-                onUpdateApiKey = onUpdateApiKey,
-                onUpdateBaseUrl = onUpdateBaseUrl,
-                onUpdateModel = onUpdateModel,
-                onSetActiveProvider = onSetActiveProvider,
-                onRefreshProviderBalance = onRefreshProviderBalance,
-                onRefreshProviderModels = onRefreshProviderModels,
-                supportsBalanceFetch = supportsBalanceFetch
-            )
+            SettingsExpandableSectionCard(
+                title = "AI 连接配置",
+                subtitle = config.getActiveRelay()?.let {
+                    config.configuredConnectionLabel(config.activeProviderId, it)
+                } ?: "未选择配置",
+                expanded = providerSectionExpanded,
+                onExpandedChange = { providerSectionExpanded = it }
+            ) {
+                ProviderConfigurationSection(
+                    providers = providers,
+                    config = config,
+                    onConfigChanged = onConfigChanged
+                )
+            }
 
         SettingsExpandableSectionCard(
             title = "系统提示词",
@@ -938,7 +939,263 @@ private fun McpSettingsSection(
 }
 
 @Composable
-private fun ProviderSettingsSection(
+private fun ProviderConfigurationSection(
+    providers: List<ModelProvider>,
+    config: ProviderConfig,
+    onConfigChanged: (ProviderConfig) -> Unit
+) {
+    var editorTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var creationProviderId by remember { mutableStateOf<String?>(null) }
+    var creationKind by remember { mutableStateOf(RelayKind.CUSTOM) }
+    var showProtocolPicker by remember { mutableStateOf(false) }
+    var showOfficialProviderPicker by remember { mutableStateOf(false) }
+    var deleteTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val activeKey = config.activeProviderId to config.getActiveRelayId(config.activeProviderId)
+    val configurations = providers.flatMap { provider ->
+        config.getRelayConfigs(provider.id).map { relay -> provider to relay }
+    }
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                "官方预设只需填写 API Key；自定义项支持 OpenAI Compatible 和 Claude 协议。点卡片切换，点编辑修改详情。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            configurations.forEach { (provider, relay) ->
+                val selected = activeKey.first == provider.id && activeKey.second == relay.id
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
+                    modifier = Modifier.fillMaxWidth().clickable {
+                        onConfigChanged(config.selectConfiguration(provider.id, relay.id))
+                    }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = selected, onClick = {
+                            onConfigChanged(config.selectConfiguration(provider.id, relay.id))
+                        })
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                config.configuredConnectionLabel(provider.id, relay),
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(
+                                "${provider.name} · ${relay.model.ifBlank { provider.defaultModel }}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(onClick = { editorTarget = provider.id to relay.id }) {
+                            Text("编辑", fontSize = 12.sp)
+                        }
+                        TextButton(onClick = { deleteTarget = provider.id to relay.id }) {
+                            Text("删除", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+            Button(onClick = { showProtocolPicker = true }, modifier = Modifier.fillMaxWidth()) {
+                Text("新增配置")
+            }
+        }
+    }
+    val deletion = deleteTarget
+    if (deletion != null) {
+        val provider = ProviderRegistry.getActiveProvider(deletion.first)
+        val relay = config.getRelayConfigs(deletion.first).firstOrNull { it.id == deletion.second }
+        if (relay != null) {
+            AlertDialog(
+                onDismissRequest = { deleteTarget = null },
+                title = { Text("删除 ${config.configuredConnectionLabel(provider.id, relay)}？") },
+                text = { Text("将删除此连接及其保存的配置与 API Key。") },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            onConfigChanged(config.removeRelay(provider.id, relay.id))
+                            deleteTarget = null
+                        }
+                    ) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                },
+                dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } }
+            )
+        }
+    }
+    if (showProtocolPicker) {
+        AlertDialog(
+            onDismissRequest = { showProtocolPicker = false },
+            title = { Text("选择协议") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { showProtocolPicker = false; showOfficialProviderPicker = true }, modifier = Modifier.fillMaxWidth()) { Text("官方 API") }
+                    TextButton(onClick = { showProtocolPicker = false; creationKind = RelayKind.CUSTOM; creationProviderId = "openai-compatible" }, modifier = Modifier.fillMaxWidth()) { Text("OpenAI Compatible") }
+                    TextButton(onClick = { showProtocolPicker = false; creationKind = RelayKind.CUSTOM; creationProviderId = "claude" }, modifier = Modifier.fillMaxWidth()) { Text("Claude") }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { showProtocolPicker = false }) { Text("取消") } }
+        )
+    }
+    if (showOfficialProviderPicker) {
+        AlertDialog(
+            onDismissRequest = { showOfficialProviderPicker = false },
+            title = { Text("选择官方 API") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("deepseek" to "官方 DeepSeek", "openai-compatible" to "官方 OpenAI", "claude" to "官方 Claude").forEach { (id, label) ->
+                        TextButton(onClick = { showOfficialProviderPicker = false; creationKind = RelayKind.OFFICIAL; creationProviderId = id }, modifier = Modifier.fillMaxWidth()) { Text(label) }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { showOfficialProviderPicker = false }) { Text("取消") } }
+        )
+    }
+    val target = editorTarget
+    if (target != null) {
+        val provider = ProviderRegistry.getActiveProvider(target.first)
+        val relay = config.getRelayConfigs(target.first).firstOrNull { it.id == target.second }
+        if (relay != null) {
+            RelayConfigurationDialog(
+                provider = provider,
+                config = config.selectConfiguration(target.first, relay.id),
+                onDismiss = { editorTarget = null },
+                onConfigChanged = onConfigChanged
+            )
+        }
+    }
+    creationProviderId?.let { providerId ->
+        val provider = ProviderRegistry.getActiveProvider(providerId)
+        NewRelayConfigurationDialog(
+            provider = provider,
+            kind = creationKind,
+            onDismiss = { creationProviderId = null },
+            onSave = { relay ->
+                onConfigChanged(
+                    config.withRelayConfigs(
+                        providerId,
+                        config.getRelayConfigs(providerId) + relay,
+                        relay.id
+                    ).copy(activeProviderId = providerId)
+                )
+                creationProviderId = null
+            }
+        )
+    }
+}
+
+@Composable
+private fun NewRelayConfigurationDialog(
+    provider: ModelProvider,
+    kind: RelayKind,
+    onDismiss: () -> Unit,
+    onSave: (RelayConfig) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var apiKey by remember { mutableStateOf("") }
+    var baseUrl by remember { mutableStateOf("") }
+    var model by remember { mutableStateOf(provider.defaultModel) }
+    MurongDialog(onDismissRequest = onDismiss) {
+        Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
+            Column(
+                modifier = Modifier.padding(20.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(if (kind == RelayKind.OFFICIAL) "新增官方 ${provider.name}" else "新增 ${provider.name} 配置", style = MaterialTheme.typography.titleLarge)
+                if (kind == RelayKind.CUSTOM) {
+                    OutlinedTextField(name, { name = it }, label = { Text("配置名称（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    OutlinedTextField(baseUrl, { baseUrl = it }, label = { Text("Base URL") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                }
+                OutlinedTextField(apiKey, { apiKey = it }, label = { Text("API Key") }, modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation())
+                OutlinedTextField(model, { model = it }, label = { Text("模型") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                Text("取消不会创建配置，也不会保存 API Key。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    TextButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("取消") }
+                    Button(
+                        onClick = {
+                            onSave(
+                                RelayConfig(
+                                    id = "relay-${UUID.randomUUID()}",
+                                    name = name.trim(),
+                                    baseUrl = if (kind == RelayKind.OFFICIAL) "" else baseUrl.trim(),
+                                    apiKey = apiKey,
+                                    model = model.trim().ifBlank { provider.defaultModel },
+                                    kind = kind
+                                )
+                            )
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("保存配置") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RelayConfigurationDialog(
+    provider: ModelProvider,
+    config: ProviderConfig,
+    onDismiss: () -> Unit,
+    onConfigChanged: (ProviderConfig) -> Unit
+) {
+    var showApiKey by remember { mutableStateOf(false) }
+    MurongDialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(config.configuredConnectionLabel(provider.id, config.getActiveRelay(provider.id)!!), style = MaterialTheme.typography.titleLarge)
+                        Text("完整连接、模型、推理、预算和执行 Profile 设置", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TextButton(onClick = onDismiss) { Text("完成") }
+                }
+                LegacyProviderSettingsSection(
+                    providers = listOf(provider),
+                    config = config,
+                    showApiKey = showApiKey,
+                    onToggleShowApiKey = { showApiKey = !showApiKey },
+                    providerSectionExpanded = true,
+                    onProviderSectionExpandedChange = {},
+                    balanceSyncStates = emptyMap(),
+                    providerModelCatalogs = emptyMap(),
+                    onConfigChanged = onConfigChanged,
+                    onUpdateApiKey = { providerId, value -> onConfigChanged(config.updateActiveRelay(providerId) { it.copy(apiKey = value) }) },
+                    onUpdateBaseUrl = { providerId, value -> onConfigChanged(config.updateActiveRelay(providerId) { it.copy(baseUrl = value) }) },
+                    onUpdateModel = { providerId, value -> onConfigChanged(config.updateActiveRelay(providerId) { it.copy(model = value) }) },
+                    onAddRelay = {},
+                    onSelectRelay = { _, _ -> },
+                    showRelayManagement = false,
+                    onSetActiveProvider = { providerId -> onConfigChanged(config.copy(activeProviderId = providerId)) },
+                    onRefreshProviderBalance = {},
+                    onRefreshProviderModels = {},
+                    supportsBalanceFetch = { false }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LegacyProviderSettingsSection(
     providers: List<ModelProvider>,
     config: ProviderConfig,
     showApiKey: Boolean,
@@ -951,6 +1208,9 @@ private fun ProviderSettingsSection(
     onUpdateApiKey: (String, String) -> Unit,
     onUpdateBaseUrl: (String, String) -> Unit,
     onUpdateModel: (String, String) -> Unit,
+    onAddRelay: (String) -> Unit,
+    onSelectRelay: (String, String) -> Unit,
+    showRelayManagement: Boolean = true,
     onSetActiveProvider: (String) -> Unit,
     onRefreshProviderBalance: (String) -> Unit,
     onRefreshProviderModels: (String) -> Unit,
@@ -1006,28 +1266,16 @@ private fun ProviderSettingsSection(
                             "claude" -> config.claudeApiKey
                             else -> ""
                         }
-                        val baseUrl = when (provider.id) {
-                            "deepseek" -> config.deepseekBaseUrl
-                            "openai-compatible" -> config.openaiBaseUrl
-                            "claude" -> config.claudeBaseUrl
-                            else -> ""
-                        }
-                        val model = when (provider.id) {
-                            "deepseek" -> config.deepseekModel
-                            "openai-compatible" -> config.openaiModel
-                            "claude" -> config.claudeModel
-                            else -> ""
-                        }
+                        val activeRelay = config.getActiveRelay(provider.id)
+                        val relays = config.getRelayConfigs(provider.id)
+                        val activeRelayId = config.getActiveRelayId(provider.id)
+                        val baseUrl = activeRelay?.baseUrl.orEmpty()
+                        val model = activeRelay?.model.orEmpty()
                         val resolvedModel = config.getResolvedModel(provider.id)
                         val supportsAutoModelSelection = provider.id == "deepseek"
                         val modelAutoSelectionEnabled = supportsAutoModelSelection &&
                             config.isModelAutoSelectionEnabled(provider.id)
-                        val reasoningEffort = when (provider.id) {
-                            "deepseek" -> config.deepseekReasoningEffort
-                            "openai-compatible" -> config.openaiReasoningEffort
-                            "claude" -> config.claudeReasoningEffort
-                            else -> ""
-                        }
+                        val reasoningEffort = activeRelay?.reasoningEffort.orEmpty()
                         val reasoningAutoSelectionEnabled = config.isReasoningAutoSelectionEnabled(provider.id)
                         val mainProfileSummary = buildMainExecutionProfileSummary(
                             provider = provider,
@@ -1150,6 +1398,36 @@ private fun ProviderSettingsSection(
                                         modifier = Modifier.padding(start = 44.dp, top = 8.dp),
                                         verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
+                                        if (showRelayManagement) {
+                                            Text(
+                                                text = "中转站",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            FlowRow(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                relays.forEachIndexed { index, relay ->
+                                                    FilterChip(
+                                                        selected = relay.id == activeRelayId,
+                                                        onClick = { onSelectRelay(provider.id, relay.id) },
+                                                        label = { Text(relay.displayName(index), fontSize = 12.sp) }
+                                                    )
+                                                }
+                                                AssistChip(
+                                                    onClick = { onAddRelay(provider.id) },
+                                                    label = { Text("新增中转站", fontSize = 12.sp) }
+                                                )
+                                            }
+                                            Text(
+                                                text = "切换仅改变当前使用项，已保存的中转站不会被删除。",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                fontSize = 10.sp
+                                            )
+                                        }
                                         OutlinedTextField(
                                             value = apiKeyDraft,
                                             onValueChange = { key ->
@@ -1598,11 +1876,8 @@ private fun ProviderSettingsSection(
                                             ),
                                             onCommit = { parsed ->
                                                 onConfigChanged(
-                                                    when (provider.id) {
-                                                        "deepseek" -> config.copy(deepseekPromptPricePer1M = parsed)
-                                                        "openai-compatible" -> config.copy(openaiPromptPricePer1M = parsed)
-                                                        "claude" -> config.copy(claudePromptPricePer1M = parsed)
-                                                        else -> config
+                                                    config.updateActiveRelay(provider.id) {
+                                                        it.copy(promptPricePer1M = parsed)
                                                     }
                                                 )
                                             }
@@ -1623,11 +1898,8 @@ private fun ProviderSettingsSection(
                                             ),
                                             onCommit = { parsed ->
                                                 onConfigChanged(
-                                                    when (provider.id) {
-                                                        "deepseek" -> config.copy(deepseekCompletionPricePer1M = parsed)
-                                                        "openai-compatible" -> config.copy(openaiCompletionPricePer1M = parsed)
-                                                        "claude" -> config.copy(claudeCompletionPricePer1M = parsed)
-                                                        else -> config
+                                                    config.updateActiveRelay(provider.id) {
+                                                        it.copy(completionPricePer1M = parsed)
                                                     }
                                                 )
                                             }

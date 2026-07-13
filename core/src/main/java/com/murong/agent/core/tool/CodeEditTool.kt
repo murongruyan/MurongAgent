@@ -6,7 +6,9 @@ import kotlinx.serialization.json.*
 /**
  * 代码编辑工具——读取、查看和修改代码文件
  */
-class CodeEditTool : Tool {
+class CodeEditTool(
+    private val workspacePathPolicy: WorkspacePathPolicy? = null
+) : Tool {
 
     override val name = "code_edit"
     override val description = "查看、搜索和编辑代码文件。使用 SEARCH/REPLACE 块精确修改文件内容。"
@@ -53,24 +55,27 @@ class CodeEditTool : Tool {
             val obj = json.parseToJsonElement(args).jsonObject
             val op = obj["operation"]?.jsonPrimitive?.content ?: return null
             val path = obj["path"]?.jsonPrimitive?.content ?: return null
+            val resolved = workspacePathPolicy?.resolve(path)
+            if (resolved is WorkspacePathPolicy.Result.Rejected) return null
+            val approvedPath = (resolved as? WorkspacePathPolicy.Result.Allowed)?.canonicalPath ?: path
 
             when (op) {
                 "search_replace" -> ToolApprovalRequest(
                     toolName = name,
                     summary = "修改代码文件",
-                    detail = path,
+                    detail = approvedPath,
                     riskLevel = ApprovalRiskLevel.HIGH,
                     rawArgs = args,
-                    pathBoundaryValue = path
+                    pathBoundaryValue = approvedPath
                 )
 
                 "create" -> ToolApprovalRequest(
                     toolName = name,
                     summary = "创建新文件",
-                    detail = path,
+                    detail = approvedPath,
                     riskLevel = ApprovalRiskLevel.HIGH,
                     rawArgs = args,
-                    pathBoundaryValue = path
+                    pathBoundaryValue = approvedPath
                 )
 
                 else -> null
@@ -89,8 +94,13 @@ class CodeEditTool : Tool {
             val obj = json.parseToJsonElement(args).jsonObject
             val op = obj["operation"]?.jsonPrimitive?.content
                 ?: return ToolExecutionResult("Error: 'operation' required")
-            val path = obj["path"]?.jsonPrimitive?.content
+            val requestedPath = obj["path"]?.jsonPrimitive?.content
                 ?: return ToolExecutionResult("Error: 'path' required")
+            val path = when (val resolved = workspacePathPolicy?.resolve(requestedPath)) {
+                is WorkspacePathPolicy.Result.Allowed -> resolved.canonicalPath
+                is WorkspacePathPolicy.Result.Rejected -> return ToolExecutionResult("Error: ${resolved.reason}")
+                null -> requestedPath
+            }
 
             when (op) {
                 "view" -> {

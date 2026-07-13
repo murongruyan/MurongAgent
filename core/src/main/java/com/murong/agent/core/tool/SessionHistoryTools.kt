@@ -5,6 +5,7 @@ import com.murong.agent.core.loop.PersistedMessage
 import com.murong.agent.core.loop.PersistedSession
 import com.murong.agent.core.loop.SessionSummary
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
@@ -240,9 +241,8 @@ internal fun parseSessionHistoryToolRequest(
             excerptMessageLimit = (obj["excerpt_message_limit"]?.jsonPrimitive?.intOrNull ?: 6)
                 .coerceIn(1, 12),
             anchorMessageId = obj["anchor_message_id"]?.jsonPrimitive?.longOrNull,
-            projectOnly = obj["project_only"]?.jsonPrimitive?.contentOrNull.toBooleanStrictOrFalse(),
-            includeCurrentSession = obj["include_current_session"]?.jsonPrimitive?.contentOrNull
-                .toBooleanStrictOrFalse()
+            projectOnly = obj["project_only"]?.jsonPrimitive?.booleanOrNull ?: false,
+            includeCurrentSession = obj["include_current_session"]?.jsonPrimitive?.booleanOrNull ?: false
         )
     )
 }
@@ -425,7 +425,13 @@ internal fun searchSessionHistory(
     if (candidates.isEmpty()) return emptyList()
 
     val queryTokens = tokenizeForBm25(normalizedQuery)
-    if (queryTokens.isEmpty()) return emptyList()
+    if (queryTokens.isEmpty()) {
+        return candidates
+            .sortedByDescending { it.summary.updatedAt }
+            .map { doc -> buildSessionHistoryMatch(doc.summary, doc.session, normalizedQuery) }
+            .filterNotNull()
+            .take(limit.coerceIn(1, 20))
+    }
 
     // BM25 score all candidates
     val scored = bm25ScoreSessionHistory(candidates, queryTokens)
@@ -1171,7 +1177,7 @@ private fun normalizeSessionHistoryProjectPath(path: String?): String? {
         ?.trim()
         ?.replace('\\', '/')
         ?.removeSuffix("/")
-        ?.lowercase(Locale.getDefault())
+        ?.lowercase(Locale.ROOT)
         ?.ifBlank { null }
 }
 

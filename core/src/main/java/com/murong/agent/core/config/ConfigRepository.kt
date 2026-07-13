@@ -49,7 +49,9 @@ class ConfigRepository(private val context: Context) {
     }
 
     val configFlow: Flow<ProviderConfig> = context.dataStore.data.map { prefs ->
-        decodeConfig(prefs[CONFIG_KEY]).withSensitiveSecrets(readSensitiveSecrets())
+        decodeConfig(prefs[CONFIG_KEY])
+            .withLegacyRelayConfigurations()
+            .withSensitiveSecrets(readSensitiveSecrets())
     }
 
     suspend fun getConfig(): ProviderConfig {
@@ -58,8 +60,9 @@ class ConfigRepository(private val context: Context) {
     }
 
     suspend fun saveConfig(config: ProviderConfig) {
-        writeSensitiveSecrets(config)
-        val sanitizedConfig = config.withSensitiveSecretsCleared()
+        val migratedConfig = config.withLegacyRelayConfigurations()
+        writeSensitiveSecrets(migratedConfig)
+        val sanitizedConfig = migratedConfig.withSensitiveSecretsCleared()
         context.dataStore.edit { prefs ->
             prefs[CONFIG_KEY] = json.encodeToString(sanitizedConfig)
             prefs[CONFIG_REVISION_KEY] = System.currentTimeMillis()
@@ -67,33 +70,33 @@ class ConfigRepository(private val context: Context) {
     }
 
     suspend fun updateApiKey(providerId: String, apiKey: String) {
-        val config = getConfig()
-        saveConfig(when (providerId) {
-            "deepseek" -> config.copy(deepseekApiKey = apiKey)
-            "openai-compatible" -> config.copy(openaiApiKey = apiKey)
-            "claude" -> config.copy(claudeApiKey = apiKey)
-            else -> config
-        })
+        updateActiveRelay(providerId) { it.copy(apiKey = apiKey) }
     }
 
     suspend fun updateBaseUrl(providerId: String, baseUrl: String) {
-        val config = getConfig()
-        saveConfig(when (providerId) {
-            "deepseek" -> config.copy(deepseekBaseUrl = baseUrl)
-            "openai-compatible" -> config.copy(openaiBaseUrl = baseUrl)
-            "claude" -> config.copy(claudeBaseUrl = baseUrl)
-            else -> config
-        })
+        updateActiveRelay(providerId) { it.copy(baseUrl = baseUrl) }
     }
 
     suspend fun updateModel(providerId: String, model: String) {
+        updateActiveRelay(providerId) { it.copy(model = model) }
+    }
+
+    suspend fun addRelay(providerId: String, relay: RelayConfig) {
         val config = getConfig()
-        saveConfig(when (providerId) {
-            "deepseek" -> config.copy(deepseekModel = model)
-            "openai-compatible" -> config.copy(openaiModel = model)
-            "claude" -> config.copy(claudeModel = model)
-            else -> config
-        })
+        val normalized = relay.copy(id = relay.id.trim().ifBlank { "relay-${System.currentTimeMillis()}" })
+        val relays = config.getRelayConfigs(providerId).filterNot { it.id == normalized.id } + normalized
+        saveConfig(config.withRelayConfigs(providerId, relays, normalized.id))
+    }
+
+    suspend fun selectRelay(providerId: String, relayId: String) {
+        val config = getConfig()
+        saveConfig(config.selectConfiguration(providerId, relayId))
+    }
+
+    private suspend fun updateActiveRelay(providerId: String, transform: (RelayConfig) -> RelayConfig) {
+        val config = getConfig()
+        val active = config.getActiveRelay(providerId) ?: return
+        saveConfig(config.updateActiveRelay(providerId, transform))
     }
 
     suspend fun setActiveProvider(providerId: String) {
@@ -180,8 +183,14 @@ class ConfigRepository(private val context: Context) {
 
     private suspend fun migrateLegacyPlaintextSecretsIfNeeded() {
         val prefs = context.dataStore.data.first()
-        val config = decodeConfig(prefs[CONFIG_KEY])
-        if (!config.hasPlaintextSensitiveSecrets()) return
+        val rawConfig = decodeConfig(prefs[CONFIG_KEY])
+        val requiresRelayMigration = rawConfig.deepseekRelays.isEmpty() ||
+            rawConfig.openaiRelays.isEmpty() ||
+            rawConfig.claudeRelays.isEmpty()
+        val config = rawConfig
+            .withLegacyRelayConfigurations()
+            .withSensitiveSecrets(readSensitiveSecrets())
+        if (!requiresRelayMigration && !config.hasPlaintextSensitiveSecrets()) return
         writeSensitiveSecrets(config)
         context.dataStore.edit { mutablePrefs ->
             mutablePrefs[CONFIG_KEY] = json.encodeToString(config.withSensitiveSecretsCleared())
@@ -231,6 +240,11 @@ class ConfigRepository(private val context: Context) {
         secureSecretStore.write(SECRET_DEEPSEEK_API_KEY, config.deepseekApiKey)
         secureSecretStore.write(SECRET_OPENAI_API_KEY, config.openaiApiKey)
         secureSecretStore.write(SECRET_CLAUDE_API_KEY, config.claudeApiKey)
+        listOf("deepseek", "openai-compatible", "claude").forEach { providerId ->
+            config.getRelayConfigs(providerId).forEach { relay ->
+                secureSecretStore.write(relaySecretKey(providerId, relay.id), relay.apiKey)
+            }
+        }
         secureSecretStore.write(SECRET_GITHUB_TOKEN, config.githubToken)
         secureSecretStore.write(SECRET_GITHUB_CLIENT_SECRET, config.githubClientSecret)
         secureSecretStore.write(SECRET_GITHUB_BACKEND_SESSION_TOKEN, config.githubBackendSessionToken)
@@ -248,10 +262,27 @@ class ConfigRepository(private val context: Context) {
     )
 
     private fun ProviderConfig.withSensitiveSecrets(secrets: SensitiveSecrets): ProviderConfig {
+        val restoredDeepseekKey = secrets.deepseekApiKey.ifBlank { deepseekApiKey }
+        val restoredOpenaiKey = secrets.openaiApiKey.ifBlank { openaiApiKey }
+        val restoredClaudeKey = secrets.claudeApiKey.ifBlank { claudeApiKey }
+        fun restoreRelaySecrets(
+            providerId: String,
+            relays: List<RelayConfig>,
+            legacyRelayId: String,
+            legacyApiKey: String
+        ): List<RelayConfig> = relays.map { relay ->
+            val relayApiKey = secureSecretStore.read(relaySecretKey(providerId, relay.id))
+                .ifBlank { relay.apiKey }
+                .ifBlank { if (relay.id == legacyRelayId) legacyApiKey else "" }
+            relay.copy(apiKey = relayApiKey)
+        }
         return copy(
-            deepseekApiKey = secrets.deepseekApiKey.ifBlank { deepseekApiKey },
-            openaiApiKey = secrets.openaiApiKey.ifBlank { openaiApiKey },
-            claudeApiKey = secrets.claudeApiKey.ifBlank { claudeApiKey },
+            deepseekApiKey = restoredDeepseekKey,
+            openaiApiKey = restoredOpenaiKey,
+            claudeApiKey = restoredClaudeKey,
+            deepseekRelays = restoreRelaySecrets("deepseek", deepseekRelays, "legacy-deepseek", restoredDeepseekKey),
+            openaiRelays = restoreRelaySecrets("openai-compatible", openaiRelays, "legacy-openai-compatible", restoredOpenaiKey),
+            claudeRelays = restoreRelaySecrets("claude", claudeRelays, "legacy-claude", restoredClaudeKey),
             githubToken = secrets.githubToken.ifBlank { githubToken },
             githubClientSecret = secrets.githubClientSecret.ifBlank { githubClientSecret },
             githubBackendSessionToken = secrets.githubBackendSessionToken.ifBlank { githubBackendSessionToken },
@@ -260,10 +291,14 @@ class ConfigRepository(private val context: Context) {
     }
 
     private fun ProviderConfig.withSensitiveSecretsCleared(): ProviderConfig {
+        fun clearRelaySecrets(relays: List<RelayConfig>) = relays.map { it.copy(apiKey = "") }
         return copy(
             deepseekApiKey = "",
             openaiApiKey = "",
             claudeApiKey = "",
+            deepseekRelays = clearRelaySecrets(deepseekRelays),
+            openaiRelays = clearRelaySecrets(openaiRelays),
+            claudeRelays = clearRelaySecrets(claudeRelays),
             githubToken = "",
             githubClientSecret = "",
             githubBackendSessionToken = "",
@@ -271,10 +306,15 @@ class ConfigRepository(private val context: Context) {
         )
     }
 
+    private fun relaySecretKey(providerId: String, relayId: String): String = "relay_api_key_${providerId}_${relayId}"
+
     private fun ProviderConfig.hasPlaintextSensitiveSecrets(): Boolean {
         return deepseekApiKey.isNotBlank() ||
             openaiApiKey.isNotBlank() ||
             claudeApiKey.isNotBlank() ||
+            deepseekRelays.any { it.apiKey.isNotBlank() } ||
+            openaiRelays.any { it.apiKey.isNotBlank() } ||
+            claudeRelays.any { it.apiKey.isNotBlank() } ||
             githubToken.isNotBlank() ||
             githubClientSecret.isNotBlank() ||
             githubBackendSessionToken.isNotBlank() ||

@@ -1650,6 +1650,8 @@ fun MainScreen() {
                             onUpdateApiKey = { providerId, value -> settingsVm.updateApiKey(providerId, value) },
                             onUpdateBaseUrl = { providerId, value -> settingsVm.updateBaseUrl(providerId, value) },
                             onUpdateModel = { providerId, value -> settingsVm.updateModel(providerId, value) },
+                            onAddRelay = { providerId -> settingsVm.addRelay(providerId) },
+                            onSelectRelay = { providerId, relayId -> settingsVm.selectRelay(providerId, relayId) },
                             onSetActiveProvider = { providerId -> settingsVm.setActiveProvider(providerId) },
                             gitHubAuthState = gitHubAuthState,
                             rootStatus = rootStatus,

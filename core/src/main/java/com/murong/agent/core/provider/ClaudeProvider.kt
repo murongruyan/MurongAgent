@@ -53,11 +53,12 @@ class ClaudeProvider : ModelProvider {
     }
 
     override suspend fun chatStream(
-        request: ChatRequest,
+        rawRequest: ChatRequest,
         apiKey: String,
         baseUrl: String?,
         onDelta: (StreamDelta) -> Unit
     ): ChatResponse {
+        val request = normalizeChatRequestForProvider(rawRequest)
         val endpoint = (baseUrl ?: defaultBaseUrl).trimEnd('/')
         val url = "$endpoint/v1/messages"
 
@@ -116,7 +117,11 @@ class ClaudeProvider : ModelProvider {
 
                 if (!response.isSuccessful) {
                     val errorBody = responseBody.string()
-                    throw java.io.IOException("HTTP ${response.code}: $errorBody")
+                    throw ProviderHttpException(
+                        statusCode = response.code,
+                        retryAfterMillis = parseRetryAfterMillis(response.header("Retry-After")),
+                        body = errorBody
+                    )
                 }
 
                 parseSSEStream(responseBody.byteStream(), onDelta)
@@ -125,10 +130,11 @@ class ClaudeProvider : ModelProvider {
     }
 
     override suspend fun chat(
-        request: ChatRequest,
+        rawRequest: ChatRequest,
         apiKey: String,
         baseUrl: String?
     ): ChatResponse {
+        val request = normalizeChatRequestForProvider(rawRequest)
         val endpoint = (baseUrl ?: defaultBaseUrl).trimEnd('/')
         val url = "$endpoint/v1/messages"
 
@@ -176,7 +182,11 @@ class ClaudeProvider : ModelProvider {
                     ?: throw java.io.IOException("Empty response body")
                 val responseStr = responseBody.string()
                 if (!response.isSuccessful) {
-                    throw java.io.IOException("HTTP ${response.code}: $responseStr")
+                    throw ProviderHttpException(
+                        statusCode = response.code,
+                        retryAfterMillis = parseRetryAfterMillis(response.header("Retry-After")),
+                        body = responseStr
+                    )
                 }
 
                 val root = json.parseToJsonElement(responseStr).jsonObject
@@ -245,6 +255,7 @@ class ClaudeProvider : ModelProvider {
         var currentToolName = ""
         var currentToolArgs = StringBuilder()
         var usage: Usage? = null
+        var completed = false
 
         try {
             var line: String?
@@ -357,6 +368,7 @@ class ClaudeProvider : ModelProvider {
                                     }
                                 }
                                 "message_stop" -> {
+                                    completed = true
                                     onDelta(StreamDelta.Done)
                                 }
                                 "error" -> {
@@ -375,6 +387,14 @@ class ClaudeProvider : ModelProvider {
             try { inputStream.close() } catch (_: Exception) {}
         }
 
+        if (!completed) {
+            val emittedVisibleOutput = fullContent.isNotEmpty() || currentToolId.isNotBlank() || toolCalls.isNotEmpty()
+            if (!emittedVisibleOutput) {
+                throw IncompleteSseException("Claude stream ended before message_stop")
+            }
+            onDelta(StreamDelta.Error("Stream ended before message_stop; tool calls were not executed."))
+            return ChatResponse(content = fullContent.toString().ifBlank { null }, toolCalls = null, usage = usage)
+        }
         return ChatResponse(
             content = fullContent.toString().ifBlank { null },
             toolCalls = toolCalls.ifEmpty { null },

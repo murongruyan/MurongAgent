@@ -20,6 +20,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -155,6 +156,7 @@ private const val CHAT_COLLAPSE_MIN_ROUNDS = 8
 private const val CHAT_EXPANDED_RECENT_ROUNDS = 4
 private const val CHAT_SHOW_JUMP_ENTRY_MIN_ROUNDS = 4
 private const val CHAT_JUMP_TITLE_MAX_LENGTH = 28
+internal const val AUTO_PROFILE_SELECTION_KEY = "__auto_profile_selection__"
 
 private data class ChatQuestionRoundUi(
     val order: Int,
@@ -167,6 +169,19 @@ private data class ChatQuestionRoundUi(
     val containsStreaming: Boolean
 )
 
+private data class ChatProcessEntryUi(
+    val messageIndex: Int,
+    val reasoningOnly: Boolean = false
+)
+
+private data class ChatProcessGroupUi(
+    val groupId: String,
+    val roundId: Long,
+    val entries: List<ChatProcessEntryUi>,
+    val summary: ChatProcessSummaryUi,
+    val isRunning: Boolean
+)
+
 private sealed interface ChatTimelineItemUi {
     val key: String
     val roundId: Long?
@@ -174,10 +189,19 @@ private sealed interface ChatTimelineItemUi {
 
     data class Message(
         val messageIndex: Int,
-        override val roundId: Long?
+        override val roundId: Long?,
+        val hideReasoning: Boolean = false
     ) : ChatTimelineItemUi {
-        override val key: String = "msg:$messageIndex"
+        override val key: String = "msg:$messageIndex:${if (hideReasoning) "answer" else "full"}"
         override val contentType: String = "message"
+    }
+
+    data class ProcessGroup(
+        val group: ChatProcessGroupUi
+    ) : ChatTimelineItemUi {
+        override val key: String = "process:${group.groupId}"
+        override val roundId: Long = group.roundId
+        override val contentType: String = "process_group"
     }
 
     data class FoldedRound(
@@ -365,27 +389,61 @@ internal fun ChatScreen(
     val activeProvider = remember(executionProfileConfig.activeProviderId) {
         ProviderRegistry.getActiveProvider(executionProfileConfig.activeProviderId)
     }
+    val activeRelay = executionProfileConfig.getActiveRelay(executionProfileConfig.activeProviderId)
+    val currentConfigurationLabel = activeRelay?.let {
+        executionProfileConfig.configuredConnectionLabel(activeProvider.id, it)
+    }.orEmpty()
+    val configurationChoiceItems = remember(globalConfig) {
+        ProviderRegistry.getAllProviders().flatMap { provider ->
+            globalConfig.getRelayConfigs(provider.id)
+                .filter { relay -> globalConfig.isRelayConfigured(provider.id, relay) }
+                .map { relay ->
+                    MurongChoiceDialogItem(
+                        key = "${provider.id}|${relay.id}",
+                        title = globalConfig.configuredConnectionLabel(provider.id, relay),
+                        subtitle = provider.name
+                    )
+                }
+        }
+    }
     val activeResolvedModel = executionProfileConfig.getActiveModel()
+    val isModelAutoSelectionEnabled = executionProfileConfig.isModelAutoSelectionEnabled(activeProvider.id)
     val activeModelChoices = remember(
         activeProvider.id,
         activeResolvedModel,
-        activeProviderModelCatalog
+        activeProviderModelCatalog,
+        isModelAutoSelectionEnabled
     ) {
         buildChatModelChoiceItems(
             provider = activeProvider,
             resolvedModel = activeResolvedModel,
-            catalog = activeProviderModelCatalog
+            catalog = activeProviderModelCatalog,
+            autoSelected = isModelAutoSelectionEnabled
         )
     }
     val currentReasoningEffort = executionProfileConfig.getActiveReasoningEffort()
-    val reasoningEffortItems = remember(activeProvider.id, currentReasoningEffort) {
+    val isReasoningAutoSelectionEnabled = executionProfileConfig.isReasoningAutoSelectionEnabled(activeProvider.id)
+    val reasoningEffortItems = remember(
+        activeProvider.id,
+        currentReasoningEffort,
+        isReasoningAutoSelectionEnabled
+    ) {
         if (activeProvider.supportsReasoning) {
-            activeProvider.supportedReasoningEfforts.map { effort ->
-                MurongChoiceDialogItem(
-                    key = effort,
-                    title = if (effort == currentReasoningEffort) "✓ $effort" else effort,
-                    subtitle = null
+            buildList {
+                add(
+                    MurongChoiceDialogItem(
+                        key = AUTO_PROFILE_SELECTION_KEY,
+                        title = if (isReasoningAutoSelectionEnabled) "✓ 自动" else "自动",
+                        subtitle = "按任务复杂度自动选择思考深度"
+                    )
                 )
+                addAll(activeProvider.supportedReasoningEfforts.map { effort ->
+                    MurongChoiceDialogItem(
+                        key = effort,
+                        title = if (!isReasoningAutoSelectionEnabled && effort == currentReasoningEffort) "✓ $effort" else effort,
+                        subtitle = null
+                    )
+                })
             }
         } else {
             emptyList()
@@ -421,6 +479,7 @@ internal fun ChatScreen(
         buildChatTimelineItems(
             messages = messages,
             rounds = questionRounds,
+            isProcessing = state.isProcessing,
             enableRoundCollapse = enableLongConversationCollapse,
             expansionOverrides = roundExpansionSnapshot
         )
@@ -972,8 +1031,33 @@ internal fun ChatScreen(
                                     )
                                 }
 
+                                is ChatTimelineItemUi.ProcessGroup -> {
+                                    ChatProcessGroupCard(
+                                        group = item.group,
+                                        messages = messages,
+                                        isScreenActive = isScreenActive,
+                                        subagentRunsById = subagentRunsById,
+                                        subagentBatchesById = subagentBatchesById,
+                                        onLongPress = { messageActionTarget = it },
+                                        onApplyPrompt = { prompt ->
+                                            inputText = listOf(inputText, prompt)
+                                                .filter { it.isNotBlank() }
+                                                .joinToString("\n")
+                                        },
+                                        onOpenImagePreview = { items, index ->
+                                            previewImages = items
+                                            previewImageIndex = index
+                                        },
+                                        onOpenSubagent = { run, batch ->
+                                            if (run != null) selectedSubagentRun = run
+                                            else if (batch != null) selectedSubagentBatch = batch
+                                        }
+                                    )
+                                }
+
                                 is ChatTimelineItemUi.Message -> {
-                                    val msg = messages[item.messageIndex]
+                                    val sourceMessage = messages[item.messageIndex]
+                                    val msg = if (item.hideReasoning) sourceMessage.copy(reasoning = null) else sourceMessage
                                     val subagentRun = msg.subagentRunId?.let(subagentRunsById::get)
                                     val subagentBatch = msg.subagentBatchId?.let(subagentBatchesById::get)
                                     val previousMessage = messages.getOrNull(item.messageIndex - 1)
@@ -1180,12 +1264,33 @@ internal fun ChatScreen(
                     inputHasFocus = focused
                 },
                 currentApprovalModeLabel = chatRuntimeHostPresentation.currentApprovalModeLabel,
-                currentModelLabel = activeProvider.formatModelDisplayName(activeResolvedModel),
+                currentConfigurationLabel = currentConfigurationLabel,
+                configurationChoiceItems = configurationChoiceItems,
+                onSelectConfiguration = { key ->
+                    val separator = key.indexOf('|')
+                    if (separator > 0) {
+                        onUpdateGlobalConfig(
+                            globalConfig.selectConfiguration(
+                                providerId = key.substring(0, separator),
+                                relayId = key.substring(separator + 1)
+                            )
+                        )
+                    }
+                },
+                currentModelLabel = if (isModelAutoSelectionEnabled) {
+                    "自动 · ${activeProvider.formatModelDisplayName(activeResolvedModel)}"
+                } else {
+                    activeProvider.formatModelDisplayName(activeResolvedModel)
+                },
                 modelChoiceTitle = "${activeProvider.name} 模型",
                 modelChoiceItems = activeModelChoices,
                 onSelectModel = { modelId ->
                     onUpdateGlobalConfig(
-                        globalConfig.withProviderModelSelection(globalConfig.activeProviderId, modelId)
+                        if (modelId == AUTO_PROFILE_SELECTION_KEY) {
+                            globalConfig.withModelAutoSelection(globalConfig.activeProviderId, true)
+                        } else {
+                            globalConfig.withProviderModelSelection(globalConfig.activeProviderId, modelId)
+                        }
                     )
                 },
                 onPlanModeChange = { enabled ->
@@ -1308,12 +1413,20 @@ internal fun ChatScreen(
                 hasRemoteTaskRepository = hasRemoteTaskRepository,
                 hasLocalProject = hasLocalProject,
                 onUpdateWorkspaceMode = onUpdateWorkspaceMode,
-                currentReasoningEffort = currentReasoningEffort,
+                currentReasoningEffort = if (isReasoningAutoSelectionEnabled) {
+                    "自动 · ${currentReasoningEffort ?: "默认"}"
+                } else {
+                    currentReasoningEffort
+                },
                 reasoningEffortItems = reasoningEffortItems,
                 onSelectReasoningEffort = if (activeProvider.supportsReasoning) {
                     { effort ->
                         onUpdateGlobalConfig(
-                            globalConfig.withProviderReasoningEffort(globalConfig.activeProviderId, effort)
+                            if (effort == AUTO_PROFILE_SELECTION_KEY) {
+                                globalConfig.withReasoningAutoSelection(globalConfig.activeProviderId, true)
+                            } else {
+                                globalConfig.withProviderReasoningEffort(globalConfig.activeProviderId, effort)
+                            }
                         )
                     }
                 } else {
@@ -4875,6 +4988,9 @@ private fun InputBar(
     onTextChange: (String) -> Unit,
     onInputFocusChanged: (Boolean) -> Unit,
     currentApprovalModeLabel: String,
+    currentConfigurationLabel: String,
+    configurationChoiceItems: List<MurongChoiceDialogItem>,
+    onSelectConfiguration: (String) -> Unit,
     currentModelLabel: String,
     modelChoiceTitle: String,
     modelChoiceItems: List<MurongChoiceDialogItem>,
@@ -4909,6 +5025,8 @@ private fun InputBar(
     reasoningEffortItems: List<MurongChoiceDialogItem> = emptyList(),
     onSelectReasoningEffort: ((String) -> Unit)? = null
 ) {
+    var showConfigurationChoices by remember { mutableStateOf(false) }
+    var configurationMenuOffset by remember { mutableStateOf(IntOffset.Zero) }
     var showModelChoices by remember { mutableStateOf(false) }
     var modelMenuOffset by remember { mutableStateOf(IntOffset.Zero) }
     var showMoreActions by remember { mutableStateOf(false) }
@@ -4986,7 +5104,7 @@ private fun InputBar(
             .fillMaxWidth()
             .padding(
                 start = 12.dp,
-                top = if (imeVisible) 6.dp else 10.dp,
+                top = if (imeVisible) 4.dp else 6.dp,
                 end = 12.dp,
                 bottom = appliedBottomGap
             )
@@ -4995,7 +5113,7 @@ private fun InputBar(
             modifier = Modifier
                 .fillMaxWidth(),
             shape = MaterialTheme.shapes.extraLarge,
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
             surfaceColorOverride = surfaceColor.copy(alpha = 0.78f)
         ) {
             Column(
@@ -5081,12 +5199,24 @@ private fun InputBar(
                         modifier = Modifier.padding(start = 4.dp)
                     )
                 }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth(),
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.Start),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically)
                 ) {
+                    if (configurationChoiceItems.isNotEmpty()) {
+                        MurongTagButton(
+                            text = currentConfigurationLabel.ifBlank { "切换配置" },
+                            onClick = { if (actionsEnabled) showConfigurationChoices = true },
+                            modifier = Modifier.onGloballyPositioned { coordinates ->
+                                val bounds = coordinates.boundsInWindow()
+                                configurationMenuOffset = IntOffset(
+                                    x = bounds.left.roundToInt(),
+                                    y = bounds.top.roundToInt() - compactModelMenuHeightPx - compactMoreMenuGapPx
+                                )
+                            }
+                        )
+                    }
                     if (modelChoiceItems.isNotEmpty()) {
                         MurongTagButton(
                             text = currentModelLabel,
@@ -5168,6 +5298,22 @@ private fun InputBar(
             }
         }
     }
+    if (showConfigurationChoices) {
+        MurongCompactChoiceDialog(
+            title = "切换 AI 配置",
+            subtitle = "选择后会立即切换 Provider 与连接配置",
+            items = configurationChoiceItems,
+            modifier = Modifier.widthIn(min = 220.dp, max = 280.dp),
+            dialogAlignment = Alignment.TopStart,
+            popupOffset = configurationMenuOffset,
+            showCancelButton = false,
+            onDismissRequest = { showConfigurationChoices = false },
+            onSelect = { selectedItem ->
+                showConfigurationChoices = false
+                onSelectConfiguration(selectedItem.key)
+            }
+        )
+    }
     if (showModelChoices) {
         MurongCompactChoiceDialog(
             title = modelChoiceTitle,
@@ -5218,25 +5364,37 @@ private fun InputBar(
     }
 }
 
-private fun buildChatModelChoiceItems(
+internal fun buildChatModelChoiceItems(
     provider: com.murong.agent.core.provider.ModelProvider,
     resolvedModel: String,
-    catalog: ProviderModelCatalogUiState?
+    catalog: ProviderModelCatalogUiState?,
+    autoSelected: Boolean
 ): List<MurongChoiceDialogItem> {
-    return mergeProviderModelCandidates(
-        providerId = provider.id,
-        currentModel = resolvedModel,
-        fetchedModels = catalog?.models.orEmpty()
-    )
-        .take(8)
-        .map { modelId ->
-            val title = provider.formatModelDisplayName(modelId)
+    return buildList {
+        add(
             MurongChoiceDialogItem(
-                key = modelId,
-                title = if (modelId == resolvedModel) "✓ $title" else title,
-                subtitle = modelId.takeIf { it != title }
+                key = AUTO_PROFILE_SELECTION_KEY,
+                title = if (autoSelected) "✓ 自动" else "自动",
+                subtitle = "按任务复杂度自动升档"
             )
-        }
+        )
+        addAll(
+            mergeProviderModelCandidates(
+                providerId = provider.id,
+                currentModel = resolvedModel,
+                fetchedModels = catalog?.models.orEmpty()
+            )
+                .take(8)
+                .map { modelId ->
+                    val title = provider.formatModelDisplayName(modelId)
+                    MurongChoiceDialogItem(
+                        key = modelId,
+                        title = if (!autoSelected && modelId == resolvedModel) "✓ $title" else title,
+                        subtitle = modelId.takeIf { it != title }
+                    )
+                }
+        )
+    }
 }
 
 private fun composerPlaceholder(
@@ -5920,6 +6078,95 @@ private data class ToolResultMessageUi(
 )
 
 @Composable
+private fun ChatProcessGroupCard(
+    group: ChatProcessGroupUi,
+    messages: List<ChatMessageUi>,
+    isScreenActive: Boolean,
+    subagentRunsById: Map<String, SubagentRunUi>,
+    subagentBatchesById: Map<String, SubagentBatchUi>,
+    onLongPress: (ChatMessageUi) -> Unit,
+    onApplyPrompt: (String) -> Unit,
+    onOpenImagePreview: (List<ImagePreviewItemUi>, Int) -> Unit,
+    onOpenSubagent: (SubagentRunUi?, SubagentBatchUi?) -> Unit
+) {
+    val chromeColor = rememberMurongChromeColor()
+    val mutedTextColor = rememberMurongMutedTextColor()
+    var expanded by rememberSaveable(group.groupId) { mutableStateOf(group.isRunning) }
+    LaunchedEffect(group.isRunning) {
+        expanded = group.isRunning
+    }
+    val labels = remember(group.summary) { group.summary.labels() }
+    MurongGlassSurface(
+        modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
+        shape = RoundedCornerShape(18.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+        surfaceColorOverride = chromeColor.copy(alpha = 0.56f)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = if (expanded) Icons.Outlined.KeyboardArrowDown else Icons.Outlined.KeyboardArrowUp,
+                        contentDescription = null,
+                        tint = mutedTextColor
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (group.isRunning) "执行过程" else "已完成执行过程",
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                        if (labels.isNotEmpty()) {
+                            Text(
+                                text = labels.joinToString(" · "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = mutedTextColor,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+                Text(
+                    text = if (group.isRunning) "进行中" else if (expanded) "收起" else "展开",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (group.isRunning) MaterialTheme.colorScheme.primary else mutedTextColor
+                )
+            }
+            AnimatedVisibility(visible = expanded && isScreenActive) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    group.entries.forEach { entry ->
+                        val sourceMessage = messages[entry.messageIndex]
+                        val message = if (entry.reasoningOnly) sourceMessage.copy(content = "") else sourceMessage
+                        val subagentRun = message.subagentRunId?.let(subagentRunsById::get)
+                        val subagentBatch = message.subagentBatchId?.let(subagentBatchesById::get)
+                        MessageBubble(
+                            msg = message,
+                            isScreenActive = isScreenActive,
+                            previousMessage = messages.getOrNull(entry.messageIndex - 1),
+                            nextMessage = messages.getOrNull(entry.messageIndex + 1),
+                            subagentRun = subagentRun,
+                            subagentBatch = subagentBatch,
+                            onLongPress = { onLongPress(sourceMessage) },
+                            onApplyPrompt = onApplyPrompt,
+                            onOpenImagePreview = onOpenImagePreview,
+                            onClick = { onOpenSubagent(subagentRun, subagentBatch) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun FoldedRoundCard(
     round: ChatQuestionRoundUi,
     onExpand: () -> Unit
@@ -6154,16 +6401,14 @@ private fun buildChatQuestionRounds(messages: List<ChatMessageUi>): List<ChatQue
 private fun buildChatTimelineItems(
     messages: List<ChatMessageUi>,
     rounds: List<ChatQuestionRoundUi>,
+    isProcessing: Boolean,
     enableRoundCollapse: Boolean,
     expansionOverrides: Map<Long, Boolean>
 ): List<ChatTimelineItemUi> {
     if (messages.isEmpty()) return emptyList()
     if (rounds.isEmpty()) {
         return messages.indices.map { index ->
-            ChatTimelineItemUi.Message(
-                messageIndex = index,
-                roundId = null
-            )
+            ChatTimelineItemUi.Message(messageIndex = index, roundId = null)
         }
     }
 
@@ -6172,41 +6417,86 @@ private fun buildChatTimelineItems(
     } else {
         rounds.map { it.userMessageId }.toSet()
     }
-    val roundByStartIndex = rounds.associateBy { it.startIndex }
-    val roundIdByMessageIndex = buildMap<Int, Long> {
-        rounds.forEach { round ->
-            for (index in round.startIndex until round.endExclusive) {
-                put(index, round.userMessageId)
-            }
-        }
-    }
-
     val timelineItems = mutableListOf<ChatTimelineItemUi>()
-    var index = 0
-    while (index < messages.size) {
-        val round = roundByStartIndex[index]
-        if (round == null) {
-            timelineItems += ChatTimelineItemUi.Message(
-                messageIndex = index,
-                roundId = roundIdByMessageIndex[index]
-            )
-            index += 1
-            continue
-        }
-
-        val expanded = expansionOverrides[round.userMessageId] ?: defaultExpandedRoundIds.contains(round.userMessageId)
-        if (expanded) {
-            for (messageIndex in round.startIndex until round.endExclusive) {
-                timelineItems += ChatTimelineItemUi.Message(
-                    messageIndex = messageIndex,
-                    roundId = round.userMessageId
-                )
-            }
-        } else {
-            timelineItems += ChatTimelineItemUi.FoldedRound(round)
-        }
-        index = round.endExclusive
+    val firstRoundStartIndex = rounds.first().startIndex
+    for (messageIndex in 0 until firstRoundStartIndex) {
+        timelineItems += ChatTimelineItemUi.Message(messageIndex = messageIndex, roundId = null)
     }
+    rounds.forEach { round ->
+        val expanded = expansionOverrides[round.userMessageId] ?: defaultExpandedRoundIds.contains(round.userMessageId)
+        if (!expanded) {
+            timelineItems += ChatTimelineItemUi.FoldedRound(round)
+            return@forEach
+        }
+        timelineItems += buildExpandedRoundTimelineItems(
+            messages = messages,
+            round = round,
+            isProcessing = isProcessing
+        )
+    }
+    return timelineItems
+}
+
+private fun buildExpandedRoundTimelineItems(
+    messages: List<ChatMessageUi>,
+    round: ChatQuestionRoundUi,
+    isProcessing: Boolean
+): List<ChatTimelineItemUi> {
+    val isActiveRound = round.endExclusive == messages.size
+    val finalAnswerIndex = messages
+        .subList(round.startIndex, round.endExclusive)
+        .indexOfLast { message ->
+            message.role == "assistant" && message.content.isNotBlank() && !message.isStreaming
+        }
+        .takeIf { it >= 0 }
+        ?.plus(round.startIndex)
+    val processEntries = mutableListOf<ChatProcessEntryUi>()
+    val timelineItems = mutableListOf<ChatTimelineItemUi>()
+
+    fun flushProcessGroup() {
+        if (processEntries.isEmpty()) return
+        val entries = processEntries.toList()
+        timelineItems += ChatTimelineItemUi.ProcessGroup(
+            ChatProcessGroupUi(
+                groupId = "${round.userMessageId}:${entries.first().messageIndex}",
+                roundId = round.userMessageId,
+                entries = entries,
+                summary = buildChatProcessSummary(entries.map { messages[it.messageIndex] }),
+                isRunning = isActiveRound &&
+                    (isProcessing || entries.any { messages[it.messageIndex].isStreaming })
+            )
+        )
+        processEntries.clear()
+    }
+
+    for (messageIndex in round.startIndex until round.endExclusive) {
+        val message = messages[messageIndex]
+        val processEntry = when {
+            messageIndex != round.startIndex && messageIndex != finalAnswerIndex ->
+                ChatProcessEntryUi(messageIndex)
+            isChatProcessMessage(message) -> ChatProcessEntryUi(messageIndex)
+            else -> null
+        }
+        if (processEntry != null) {
+            processEntries += processEntry
+        } else if (messageIndex == finalAnswerIndex && !message.reasoning.isNullOrBlank()) {
+            // 最终回复只保留正文；其 reasoning 也应归入已完成的执行过程。
+            processEntries += ChatProcessEntryUi(messageIndex, reasoningOnly = true)
+            flushProcessGroup()
+            timelineItems += ChatTimelineItemUi.Message(
+                messageIndex = messageIndex,
+                roundId = round.userMessageId,
+                hideReasoning = true
+            )
+        } else {
+            flushProcessGroup()
+            timelineItems += ChatTimelineItemUi.Message(
+                messageIndex = messageIndex,
+                roundId = round.userMessageId
+            )
+        }
+    }
+    flushProcessGroup()
     return timelineItems
 }
 

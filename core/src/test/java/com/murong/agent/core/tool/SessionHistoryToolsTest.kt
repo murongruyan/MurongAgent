@@ -203,7 +203,7 @@ class SessionHistoryToolsTest {
                 currentProjectPathProvider = { "C:\\workspace\\app" }
             )
 
-            val result = tool.execute("""{"project_only":true,"limit":5}""")
+            val result = tool.execute("""{"query":"旧","project_only":true,"limit":5}""")
 
             assertTrue(result.contains("历史会话命中 1 条"))
             assertTrue(result.contains("same-project"))

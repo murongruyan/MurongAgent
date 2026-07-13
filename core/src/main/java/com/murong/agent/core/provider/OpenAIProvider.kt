@@ -67,11 +67,12 @@ class OpenAIProvider : ModelProvider {
     }
 
     override suspend fun chatStream(
-        request: ChatRequest,
+        rawRequest: ChatRequest,
         apiKey: String,
         baseUrl: String?,
         onDelta: (StreamDelta) -> Unit
     ): ChatResponse {
+        val request = normalizeChatRequestForProvider(rawRequest)
         val endpoint = (baseUrl ?: defaultBaseUrl).trimEnd('/')
         val url = "$endpoint/chat/completions"
 
@@ -138,7 +139,11 @@ class OpenAIProvider : ModelProvider {
 
                 if (!response.isSuccessful) {
                     val errorBody = responseBody.string()
-                    throw java.io.IOException("HTTP ${response.code}: $errorBody")
+                    throw ProviderHttpException(
+                        statusCode = response.code,
+                        retryAfterMillis = parseRetryAfterMillis(response.header("Retry-After")),
+                        body = errorBody
+                    )
                 }
 
                 parseSSEStream(responseBody.byteStream(), onDelta)
@@ -147,10 +152,11 @@ class OpenAIProvider : ModelProvider {
     }
 
     override suspend fun chat(
-        request: ChatRequest,
+        rawRequest: ChatRequest,
         apiKey: String,
         baseUrl: String?
     ): ChatResponse {
+        val request = normalizeChatRequestForProvider(rawRequest)
         val endpoint = (baseUrl ?: defaultBaseUrl).trimEnd('/')
         val url = "$endpoint/chat/completions"
 
@@ -165,6 +171,23 @@ class OpenAIProvider : ModelProvider {
                         } else if (msg.content != null) {
                             put("content", msg.content)
                         }
+                        if (msg.toolCalls != null) {
+                            putJsonArray("tool_calls") {
+                                msg.toolCalls.forEach { tc ->
+                                    addJsonObject {
+                                        put("id", tc.id)
+                                        put("type", tc.type)
+                                        putJsonObject("function") {
+                                            put("name", tc.function.name)
+                                            put("arguments", tc.function.arguments)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (msg.toolCallId != null) {
+                            put("tool_call_id", msg.toolCallId)
+                        }
                     }
                 }
             })
@@ -173,6 +196,9 @@ class OpenAIProvider : ModelProvider {
             put("stream", false)
             if (!request.reasoningEffort.isNullOrBlank()) {
                 put("reasoning_effort", request.reasoningEffort)
+            }
+            if (request.tools != null) {
+                put("tools", json.parseToJsonElement(request.tools))
             }
         }
 
@@ -189,7 +215,11 @@ class OpenAIProvider : ModelProvider {
                     ?: throw java.io.IOException("Empty response body")
                 val responseStr = responseBody.string()
                 if (!response.isSuccessful) {
-                    throw java.io.IOException("HTTP ${response.code}: $responseStr")
+                    throw ProviderHttpException(
+                        statusCode = response.code,
+                        retryAfterMillis = parseRetryAfterMillis(response.header("Retry-After")),
+                        body = responseStr
+                    )
                 }
 
                 val root = json.parseToJsonElement(responseStr).jsonObject
@@ -330,6 +360,14 @@ class OpenAIProvider : ModelProvider {
             try { inputStream.close() } catch (_: Exception) {}
         }
 
+        if (!doneSent) {
+            val emittedVisibleOutput = fullContent.isNotEmpty() || partialToolCalls.isNotEmpty()
+            if (!emittedVisibleOutput) {
+                throw IncompleteSseException("OpenAI-compatible stream ended before a completion marker")
+            }
+            onDelta(StreamDelta.Error("Stream ended before [DONE]; tool calls were not executed."))
+            return ChatResponse(content = fullContent.toString().ifBlank { null }, toolCalls = null, usage = usage)
+        }
         commitPendingToolCalls()
 
         return ChatResponse(

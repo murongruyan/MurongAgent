@@ -7,7 +7,8 @@ import kotlinx.serialization.json.*
  * 文件系统工具——通过 Root 访问设备文件
  */
 class FileTool(
-    private val allowedOperations: Set<String> = setOf("read", "write", "list", "delete", "exists", "chmod")
+    private val allowedOperations: Set<String> = setOf("read", "write", "list", "delete", "exists", "chmod"),
+    private val workspacePathPolicy: WorkspacePathPolicy? = null
 ) : Tool {
 
     override val name = "file"
@@ -56,33 +57,37 @@ class FileTool(
             val op = obj["operation"]?.jsonPrimitive?.content ?: return null
             val path = obj["path"]?.jsonPrimitive?.content ?: return null
             if (op !in allowedOperations) return null
+            val requiresWorkspaceBoundary = op in setOf("write", "delete", "chmod")
+            val resolved = if (requiresWorkspaceBoundary) workspacePathPolicy?.resolve(path) else null
+            if (resolved is WorkspacePathPolicy.Result.Rejected) return null
+            val approvedPath = (resolved as? WorkspacePathPolicy.Result.Allowed)?.canonicalPath ?: path
 
             when (op) {
                 "write" -> ToolApprovalRequest(
                     toolName = name,
                     summary = "写入文件",
-                    detail = path,
+                    detail = approvedPath,
                     riskLevel = ApprovalRiskLevel.HIGH,
                     rawArgs = args,
-                    pathBoundaryValue = path
+                    pathBoundaryValue = approvedPath
                 )
 
                 "delete" -> ToolApprovalRequest(
                     toolName = name,
                     summary = "删除文件或目录",
-                    detail = path,
+                    detail = approvedPath,
                     riskLevel = ApprovalRiskLevel.HIGH,
                     rawArgs = args,
-                    pathBoundaryValue = path
+                    pathBoundaryValue = approvedPath
                 )
 
                 "chmod" -> ToolApprovalRequest(
                     toolName = name,
                     summary = "修改文件权限",
-                    detail = path,
+                    detail = approvedPath,
                     riskLevel = ApprovalRiskLevel.MEDIUM,
                     rawArgs = args,
-                    pathBoundaryValue = path
+                    pathBoundaryValue = approvedPath
                 )
 
                 else -> null
@@ -101,8 +106,17 @@ class FileTool(
             val obj = json.parseToJsonElement(args).jsonObject
             val op = obj["operation"]?.jsonPrimitive?.content
                 ?: return ToolExecutionResult("Error: 'operation' required")
-            val path = obj["path"]?.jsonPrimitive?.content
+            val requestedPath = obj["path"]?.jsonPrimitive?.content
                 ?: return ToolExecutionResult("Error: 'path' required")
+            val path = if (op in setOf("write", "delete", "chmod")) {
+                when (val resolved = workspacePathPolicy?.resolve(requestedPath)) {
+                    is WorkspacePathPolicy.Result.Allowed -> resolved.canonicalPath
+                    is WorkspacePathPolicy.Result.Rejected -> return ToolExecutionResult("Error: ${resolved.reason}")
+                    null -> requestedPath
+                }
+            } else {
+                requestedPath
+            }
             val offset = obj["offset"]?.jsonPrimitive?.intOrNull ?: 0
             val limit = obj["limit"]?.jsonPrimitive?.intOrNull
             if (op !in allowedOperations) {

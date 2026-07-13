@@ -59,11 +59,12 @@ class DeepSeekProvider : ModelProvider {
     }
 
     override suspend fun chatStream(
-        request: ChatRequest,
+        rawRequest: ChatRequest,
         apiKey: String,
         baseUrl: String?,
         onDelta: (StreamDelta) -> Unit
     ): ChatResponse {
+        val request = normalizeChatRequestForProvider(rawRequest)
         val endpoint = (baseUrl ?: defaultBaseUrl).trimEnd('/')
         val url = "$endpoint/chat/completions"
 
@@ -136,7 +137,11 @@ class DeepSeekProvider : ModelProvider {
 
                 if (!response.isSuccessful) {
                     val errorBody = responseBody.string()
-                    throw java.io.IOException("HTTP ${response.code}: $errorBody")
+                    throw ProviderHttpException(
+                        statusCode = response.code,
+                        retryAfterMillis = parseRetryAfterMillis(response.header("Retry-After")),
+                        body = errorBody
+                    )
                 }
 
                 parseSSEStream(responseBody.byteStream(), onDelta)
@@ -145,10 +150,11 @@ class DeepSeekProvider : ModelProvider {
     }
 
     override suspend fun chat(
-        request: ChatRequest,
+        rawRequest: ChatRequest,
         apiKey: String,
         baseUrl: String?
     ): ChatResponse {
+        val request = normalizeChatRequestForProvider(rawRequest)
         val endpoint = (baseUrl ?: defaultBaseUrl).trimEnd('/')
         val url = "$endpoint/chat/completions"
 
@@ -162,6 +168,23 @@ class DeepSeekProvider : ModelProvider {
                             put("content", buildOpenAiContent(msg))
                         } else if (msg.content != null) {
                             put("content", msg.content)
+                        }
+                        if (msg.toolCalls != null) {
+                            putJsonArray("tool_calls") {
+                                msg.toolCalls.forEach { tc ->
+                                    addJsonObject {
+                                        put("id", tc.id)
+                                        put("type", tc.type)
+                                        putJsonObject("function") {
+                                            put("name", tc.function.name)
+                                            put("arguments", tc.function.arguments)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (msg.toolCallId != null) {
+                            put("tool_call_id", msg.toolCallId)
                         }
                     }
                 }
@@ -179,6 +202,9 @@ class DeepSeekProvider : ModelProvider {
                     }
                 }
             }
+            if (request.tools != null) {
+                put("tools", json.parseToJsonElement(request.tools))
+            }
         }
 
         val body = bodyJson.toString().toRequestBody("application/json".toMediaType())
@@ -191,6 +217,13 @@ class DeepSeekProvider : ModelProvider {
 
             val response = client.newCall(httpRequest).execute()
             val responseStr = response.body?.string() ?: ""
+            if (!response.isSuccessful) {
+                throw ProviderHttpException(
+                    statusCode = response.code,
+                    retryAfterMillis = parseRetryAfterMillis(response.header("Retry-After")),
+                    body = responseStr
+                )
+            }
 
             try {
                 val root = json.parseToJsonElement(responseStr).jsonObject
@@ -343,6 +376,18 @@ class DeepSeekProvider : ModelProvider {
             try { inputStream.close() } catch (_: Exception) {}
         }
 
+        if (!doneSent) {
+            val emittedVisibleOutput = fullContent.isNotEmpty() || fullReasoning.isNotEmpty() || partialToolCalls.isNotEmpty()
+            if (!emittedVisibleOutput) {
+                throw IncompleteSseException("DeepSeek stream ended before a completion marker")
+            }
+            onDelta(StreamDelta.Error("Stream ended before [DONE]; tool calls were not executed."))
+            return ChatResponse(
+                content = fullContent.toString().ifBlank { fullReasoning.toString().ifBlank { null } },
+                toolCalls = null,
+                usage = usage
+            )
+        }
         commitPendingToolCalls()
 
         val contentText = fullContent.toString()

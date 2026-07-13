@@ -8,6 +8,7 @@ import com.murong.agent.common.shell.KeepShellPublic
 import com.murong.agent.core.config.ConfigRepository
 import com.murong.agent.core.config.GlobalMemory
 import com.murong.agent.core.config.ProviderConfig
+import com.murong.agent.core.config.RelayConfig
 import com.murong.agent.core.config.ProviderBalanceService
 import com.murong.agent.core.loop.ChatSessionManager
 import com.murong.agent.core.loop.SessionSummary
@@ -209,6 +210,19 @@ class SettingsViewModel @Inject constructor(
 
     fun updateModel(providerId: String, model: String) {
         viewModelScope.launch { configRepository.updateModel(providerId, model) }
+    }
+
+    fun addRelay(providerId: String) {
+        viewModelScope.launch {
+            configRepository.addRelay(
+                providerId,
+                RelayConfig(id = "relay-${System.currentTimeMillis()}")
+            )
+        }
+    }
+
+    fun selectRelay(providerId: String, relayId: String) {
+        viewModelScope.launch { configRepository.selectRelay(providerId, relayId) }
     }
 
     fun setActiveProvider(providerId: String) {

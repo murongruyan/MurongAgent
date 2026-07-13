@@ -68,6 +68,33 @@ data class ProjectToolPreferences(
 )
 
 @Serializable
+enum class RelayKind { OFFICIAL, CUSTOM }
+
+@Serializable
+data class RelayConfig(
+    val id: String,
+    val name: String = "",
+    val baseUrl: String = "",
+    val apiKey: String = "",
+    val model: String = "",
+    val reasoningEffort: String = "high",
+    val modelPreset: String = "custom",
+    val autoModelSelection: Boolean = true,
+    val autoReasoningEffort: Boolean = true,
+    val promptPricePer1M: Double = 0.0,
+    val completionPricePer1M: Double = 0.0,
+    val balanceAmount: Double = 0.0,
+    val balanceCurrency: String = "USD",
+    val balanceSyncedAt: Long? = null,
+    val balanceApiPath: String = "",
+    val kind: RelayKind = RelayKind.CUSTOM
+) {
+    fun displayName(fallbackIndex: Int): String {
+        return name.trim().ifBlank { "自定义 ${fallbackIndex + 1}" }
+    }
+}
+
+@Serializable
 data class ProviderConfig(
     val activeProviderId: String = "deepseek",
     val deepseekApiKey: String = "", val deepseekBaseUrl: String = "",
@@ -86,6 +113,9 @@ data class ProviderConfig(
     val claudePromptPricePer1M: Double = 0.0, val claudeCompletionPricePer1M: Double = 0.0,
     val claudeBalanceUsd: Double = 0.0, val claudeBalanceCurrency: String = "USD",
     val claudeBalanceSyncedAt: Long? = null, val claudeBalanceApiPath: String = "",
+    val deepseekRelays: List<RelayConfig> = emptyList(), val activeDeepseekRelayId: String? = null,
+    val openaiRelays: List<RelayConfig> = emptyList(), val activeOpenaiRelayId: String? = null,
+    val claudeRelays: List<RelayConfig> = emptyList(), val activeClaudeRelayId: String? = null,
     val githubToken: String = "", val githubApiBaseUrl: String = "https://api.github.com",
     val githubClientId: String = "", val githubClientSecret: String = "",
     val githubBackendSessionToken: String = "", val githubViewerLogin: String = "",
@@ -151,12 +181,40 @@ data class ProviderConfig(
         val requiresApproval: Boolean, val explanationLabel: String, val explanationDetail: String
     )
 
-    fun getApiKey(providerId: String = activeProviderId): String = when (providerId) {
-        "deepseek" -> deepseekApiKey; "openai-compatible" -> openaiApiKey; "claude" -> claudeApiKey; else -> ""
+    fun getRelayConfigs(providerId: String): List<RelayConfig> = when (providerId) {
+        "deepseek" -> deepseekRelays
+        "openai-compatible" -> openaiRelays
+        "claude" -> claudeRelays
+        else -> emptyList()
+    }
+
+    fun getActiveRelayId(providerId: String = activeProviderId): String? = when (providerId) {
+        "deepseek" -> activeDeepseekRelayId
+        "openai-compatible" -> activeOpenaiRelayId
+        "claude" -> activeClaudeRelayId
+        else -> null
+    }
+
+    fun getActiveRelay(providerId: String = activeProviderId): RelayConfig? {
+        val relays = getRelayConfigs(providerId)
+        return relays.firstOrNull { it.id == getActiveRelayId(providerId) } ?: relays.firstOrNull()
+    }
+
+    fun getApiKey(providerId: String = activeProviderId): String {
+        val activeRelay = getActiveRelay(providerId)
+        val legacyApiKey = when (providerId) {
+            "deepseek" -> deepseekApiKey
+            "openai-compatible" -> openaiApiKey
+            "claude" -> claudeApiKey
+            else -> ""
+        }
+        return activeRelay?.apiKey?.ifBlank {
+            if (activeRelay.id.startsWith("legacy-")) legacyApiKey else ""
+        } ?: legacyApiKey
     }
     fun getActiveApiKey(): String = getApiKey(activeProviderId)
     fun getBaseUrl(providerId: String = activeProviderId): String? = normalizeBaseUrl(
-        when (providerId) {
+        getActiveRelay(providerId)?.baseUrl ?: when (providerId) {
             "deepseek" -> deepseekBaseUrl
             "openai-compatible" -> openaiBaseUrl
             "claude" -> claudeBaseUrl
@@ -164,17 +222,86 @@ data class ProviderConfig(
         }
     )
     fun getActiveBaseUrl(): String? = getBaseUrl(activeProviderId)
-    fun getResolvedModel(providerId: String): String = when (providerId) {
+    fun getResolvedModel(providerId: String): String = getActiveRelay(providerId)?.model?.takeIf { it.isNotBlank() } ?: when (providerId) {
         "deepseek" -> deepseekModel; "openai-compatible" -> openaiModel; "claude" -> claudeModel; else -> ""
     }
-    fun getActiveModel(): String = when (activeProviderId) {
-        "deepseek" -> deepseekModel; "openai-compatible" -> openaiModel; "claude" -> claudeModel; else -> ""
-    }
-    fun getActiveReasoningEffort(): String? = when (activeProviderId) {
+    fun getActiveModel(): String = getResolvedModel(activeProviderId)
+    fun getActiveReasoningEffort(): String? = getActiveRelay()?.reasoningEffort?.takeIf { it.isNotBlank() } ?: when (activeProviderId) {
         "deepseek" -> deepseekReasoningEffort
         "openai-compatible" -> openaiReasoningEffort
         "claude" -> claudeReasoningEffort
         else -> null
+    }
+
+    fun withLegacyRelayConfigurations(): ProviderConfig {
+        fun officialName(providerId: String): String = when (providerId) {
+            "deepseek" -> "官方 DeepSeek"
+            "openai-compatible" -> "官方 OpenAI"
+            else -> "官方 Claude"
+        }
+        fun legacyRelay(providerId: String): RelayConfig = when (providerId) {
+            "deepseek" -> RelayConfig("legacy-deepseek", "", deepseekBaseUrl, deepseekApiKey, deepseekModel, deepseekReasoningEffort, deepseekModelPreset, deepseekAutoModelSelection, deepseekAutoReasoningEffort, deepseekPromptPricePer1M, deepseekCompletionPricePer1M, deepseekBalanceUsd, deepseekBalanceCurrency, deepseekBalanceSyncedAt, kind = if (deepseekBaseUrl.isBlank()) RelayKind.OFFICIAL else RelayKind.CUSTOM)
+            "openai-compatible" -> RelayConfig("legacy-openai-compatible", "", openaiBaseUrl, openaiApiKey, openaiModel, openaiReasoningEffort, autoModelSelection = openaiAutoModelSelection, autoReasoningEffort = openaiAutoReasoningEffort, promptPricePer1M = openaiPromptPricePer1M, completionPricePer1M = openaiCompletionPricePer1M, balanceAmount = openaiBalanceUsd, balanceCurrency = openaiBalanceCurrency, balanceSyncedAt = openaiBalanceSyncedAt, balanceApiPath = openaiBalanceApiPath, kind = if (openaiBaseUrl.isBlank()) RelayKind.OFFICIAL else RelayKind.CUSTOM)
+            else -> RelayConfig("legacy-claude", "", claudeBaseUrl, claudeApiKey, claudeModel, claudeReasoningEffort, autoModelSelection = claudeAutoModelSelection, autoReasoningEffort = claudeAutoReasoningEffort, promptPricePer1M = claudePromptPricePer1M, completionPricePer1M = claudeCompletionPricePer1M, balanceAmount = claudeBalanceUsd, balanceCurrency = claudeBalanceCurrency, balanceSyncedAt = claudeBalanceSyncedAt, balanceApiPath = claudeBalanceApiPath, kind = if (claudeBaseUrl.isBlank()) RelayKind.OFFICIAL else RelayKind.CUSTOM)
+        }
+        fun normalizeRelays(providerId: String, relays: List<RelayConfig>, activeRelayId: String?): List<RelayConfig> {
+            val source = if (relays.isEmpty() && activeRelayId != "") listOf(legacyRelay(providerId)) else relays
+            val normalized = source.map { relay ->
+                if (relay.id.startsWith("legacy-") && relay.baseUrl.isBlank()) {
+                    relay.copy(name = officialName(providerId), kind = RelayKind.OFFICIAL)
+                } else {
+                    relay
+                }
+            }
+            return normalized
+        }
+        val migratedDeepseek = normalizeRelays("deepseek", deepseekRelays, activeDeepseekRelayId)
+        val migratedOpenai = normalizeRelays("openai-compatible", openaiRelays, activeOpenaiRelayId)
+        val migratedClaude = normalizeRelays("claude", claudeRelays, activeClaudeRelayId)
+        return copy(
+            deepseekRelays = migratedDeepseek,
+            activeDeepseekRelayId = activeDeepseekRelayId ?: migratedDeepseek.firstOrNull()?.id,
+            openaiRelays = migratedOpenai,
+            activeOpenaiRelayId = activeOpenaiRelayId ?: migratedOpenai.firstOrNull()?.id,
+            claudeRelays = migratedClaude,
+            activeClaudeRelayId = activeClaudeRelayId ?: migratedClaude.firstOrNull()?.id
+        )
+    }
+
+    fun selectConfiguration(providerId: String, relayId: String): ProviderConfig {
+        val target = getRelayConfigs(providerId).firstOrNull { it.id == relayId } ?: return this
+        return withRelayConfigs(providerId, getRelayConfigs(providerId), target.id)
+            .copy(activeProviderId = providerId)
+    }
+
+    fun isRelayConfigured(providerId: String, relay: RelayConfig): Boolean {
+        return relay.apiKey.isNotBlank() ||
+            (relay.id.startsWith("legacy-") && getApiKey(providerId).isNotBlank())
+    }
+
+    fun removeRelay(providerId: String, relayId: String): ProviderConfig {
+        if (getRelayConfigs(providerId).none { it.id == relayId }) return this
+        val remaining = getRelayConfigs(providerId).filterNot { it.id == relayId }
+        val fallbackId = remaining.firstOrNull()?.id
+        val updated = withRelayConfigs(providerId, remaining, fallbackId.orEmpty())
+        return if (activeProviderId == providerId && getActiveRelayId(providerId) == relayId) {
+            if (fallbackId != null) updated.copy(activeProviderId = providerId)
+            else updated.copy(activeProviderId = "")
+        } else {
+            updated
+        }
+    }
+
+    fun configuredConnectionLabel(providerId: String, relay: RelayConfig): String {
+        return when (relay.kind) {
+            RelayKind.OFFICIAL -> relay.name.ifBlank { "官方 ${providerId}" }
+            RelayKind.CUSTOM -> relay.displayName(
+                getRelayConfigs(providerId)
+                    .filter { it.kind == RelayKind.CUSTOM }
+                    .indexOfFirst { it.id == relay.id }
+                    .coerceAtLeast(0)
+            )
+        }
     }
     fun getPlannerResolvedConfig(): ProviderConfig {
         return if (!plannerProfileEnabled) this else applyActiveProviderProfileOverrides(
@@ -191,6 +318,7 @@ data class ProviderConfig(
     fun isStreamingResponsesEnabled(): Boolean = enableStreamingResponses
     fun isMultimodalEnabled(): Boolean = enableMultimodalMessages
     fun isModelAutoSelectionEnabled(providerId: String = activeProviderId): Boolean {
+        getActiveRelay(providerId)?.let { return it.autoModelSelection }
         if (!executionProfileAutoControlsInitialized) return autoUpgradeExecutionProfile
         return when (providerId) {
             "deepseek" -> deepseekAutoModelSelection
@@ -200,6 +328,7 @@ data class ProviderConfig(
         }
     }
     fun isReasoningAutoSelectionEnabled(providerId: String = activeProviderId): Boolean {
+        getActiveRelay(providerId)?.let { return it.autoReasoningEffort }
         if (!executionProfileAutoControlsInitialized) return autoUpgradeExecutionProfile
         return when (providerId) {
             "deepseek" -> deepseekAutoReasoningEffort
@@ -208,40 +337,38 @@ data class ProviderConfig(
             else -> false
         }
     }
-    fun withModelAutoSelection(providerId: String, enabled: Boolean): ProviderConfig {
-        val updated = when (providerId) {
-            "deepseek" -> copy(deepseekAutoModelSelection = enabled)
-            "openai-compatible" -> copy(openaiAutoModelSelection = enabled)
-            "claude" -> copy(claudeAutoModelSelection = enabled)
-            else -> this
-        }
-        return updated.copy(executionProfileAutoControlsInitialized = true)
+    fun withModelAutoSelection(providerId: String, enabled: Boolean): ProviderConfig = updateActiveRelay(providerId) {
+        it.copy(autoModelSelection = enabled)
+    }.copy(executionProfileAutoControlsInitialized = true)
+
+    fun withReasoningAutoSelection(providerId: String, enabled: Boolean): ProviderConfig = updateActiveRelay(providerId) {
+        it.copy(autoReasoningEffort = enabled)
+    }.copy(executionProfileAutoControlsInitialized = true)
+
+    fun withProviderReasoningEffort(providerId: String, effort: String): ProviderConfig = updateActiveRelay(providerId) {
+        it.copy(reasoningEffort = effort)
     }
-    fun withReasoningAutoSelection(providerId: String, enabled: Boolean): ProviderConfig {
-        val updated = when (providerId) {
-            "deepseek" -> copy(deepseekAutoReasoningEffort = enabled)
-            "openai-compatible" -> copy(openaiAutoReasoningEffort = enabled)
-            "claude" -> copy(claudeAutoReasoningEffort = enabled)
-            else -> this
-        }
-        return updated.copy(executionProfileAutoControlsInitialized = true)
+
+    fun updateActiveRelay(providerId: String, transform: (RelayConfig) -> RelayConfig): ProviderConfig {
+        val active = getActiveRelay(providerId) ?: return this
+        val relays = getRelayConfigs(providerId).map { if (it.id == active.id) transform(it) else it }
+        return withRelayConfigs(providerId, relays, active.id)
     }
-    fun withProviderReasoningEffort(providerId: String, effort: String): ProviderConfig {
-        return when (providerId) {
-            "deepseek" -> copy(deepseekReasoningEffort = effort)
-            "openai-compatible" -> copy(openaiReasoningEffort = effort)
-            "claude" -> copy(claudeReasoningEffort = effort)
-            else -> this
-        }
+
+    fun withRelayConfigs(providerId: String, relays: List<RelayConfig>, activeRelayId: String): ProviderConfig = when (providerId) {
+        "deepseek" -> copy(deepseekRelays = relays, activeDeepseekRelayId = activeRelayId)
+        "openai-compatible" -> copy(openaiRelays = relays, activeOpenaiRelayId = activeRelayId)
+        "claude" -> copy(claudeRelays = relays, activeClaudeRelayId = activeRelayId)
+        else -> this
     }
     fun getActiveThinkingMode(): String? {
         val effort = getActiveReasoningEffort(); return if (effort.isNullOrBlank()) null else "reasoning/$effort"
     }
-    fun getConfiguredPromptPricePer1M(providerId: String = activeProviderId): Double = when (providerId) {
+    fun getConfiguredPromptPricePer1M(providerId: String = activeProviderId): Double = getActiveRelay(providerId)?.promptPricePer1M ?: when (providerId) {
         "deepseek" -> deepseekPromptPricePer1M; "openai-compatible" -> openaiPromptPricePer1M
         "claude" -> claudePromptPricePer1M; else -> 0.0
     }
-    fun getConfiguredCompletionPricePer1M(providerId: String = activeProviderId): Double = when (providerId) {
+    fun getConfiguredCompletionPricePer1M(providerId: String = activeProviderId): Double = getActiveRelay(providerId)?.completionPricePer1M ?: when (providerId) {
         "deepseek" -> deepseekCompletionPricePer1M; "openai-compatible" -> openaiCompletionPricePer1M
         "claude" -> claudeCompletionPricePer1M; else -> 0.0
     }
@@ -297,28 +424,28 @@ data class ProviderConfig(
             else -> official
         }
     }
-    fun getPriceCurrency(providerId: String = activeProviderId): String = when (providerId) {
+    fun getPriceCurrency(providerId: String = activeProviderId): String = getActiveRelay(providerId)?.balanceCurrency?.ifBlank { if (providerId == "deepseek") "CNY" else "USD" }?.uppercase() ?: when (providerId) {
         "deepseek" -> "CNY"
         "openai-compatible" -> openaiBalanceCurrency.ifBlank { "USD" }.uppercase()
         "claude" -> claudeBalanceCurrency.ifBlank { "USD" }.uppercase()
         else -> "USD"
     }
-    fun getBalanceUsd(providerId: String = activeProviderId): Double = when (providerId) {
+    fun getBalanceUsd(providerId: String = activeProviderId): Double = getActiveRelay(providerId)?.balanceAmount ?: when (providerId) {
         "deepseek" -> deepseekBalanceUsd; "openai-compatible" -> openaiBalanceUsd
         "claude" -> claudeBalanceUsd; else -> 0.0
     }
     fun getBalanceAmount(providerId: String = activeProviderId): Double = getBalanceUsd(providerId)
-    fun getBalanceCurrency(providerId: String = activeProviderId): String = when (providerId) {
+    fun getBalanceCurrency(providerId: String = activeProviderId): String = getActiveRelay(providerId)?.balanceCurrency?.ifBlank { if (providerId == "deepseek") "CNY" else "USD" }?.uppercase() ?: when (providerId) {
         "deepseek" -> deepseekBalanceCurrency.ifBlank { "CNY" }.uppercase()
         "openai-compatible" -> openaiBalanceCurrency.ifBlank { "USD" }.uppercase()
         "claude" -> claudeBalanceCurrency.ifBlank { "USD" }.uppercase()
         else -> "USD"
     }
-    fun getBalanceSyncedAt(providerId: String = activeProviderId): Long? = when (providerId) {
+    fun getBalanceSyncedAt(providerId: String = activeProviderId): Long? = getActiveRelay(providerId)?.balanceSyncedAt ?: when (providerId) {
         "deepseek" -> deepseekBalanceSyncedAt; "openai-compatible" -> openaiBalanceSyncedAt
         "claude" -> claudeBalanceSyncedAt; else -> null
     }
-    fun getBalanceApiPath(providerId: String = activeProviderId): String = when (providerId) {
+    fun getBalanceApiPath(providerId: String = activeProviderId): String = getActiveRelay(providerId)?.balanceApiPath ?: when (providerId) {
         "deepseek" -> ""; "openai-compatible" -> openaiBalanceApiPath; "claude" -> claudeBalanceApiPath; else -> ""
     }
     fun getGitHubApiBaseUrl(): String = githubApiBaseUrl

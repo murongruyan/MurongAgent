@@ -3,6 +3,7 @@ package com.murong.agent.ui.chat
 import com.murong.agent.core.config.ProviderConfig
 import com.murong.agent.core.config.ToolApprovalMode
 import com.murong.agent.core.config.WorkflowExecutionMode
+import com.murong.agent.core.provider.ProviderRegistry
 import com.murong.agent.core.loop.ArchivedMemoryCandidate
 import com.murong.agent.core.loop.ArchivedMemoryCandidateScope
 import com.murong.agent.core.loop.ApprovalCardTelemetry
@@ -19,6 +20,27 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class ChatRuntimeHostPresentationTest {
+
+    @Test
+    fun chatModelChoices_includeAndMarkAutomaticSelection() {
+        val provider = ProviderRegistry.getActiveProvider("deepseek")
+        val automatic = buildChatModelChoiceItems(
+            provider = provider,
+            resolvedModel = "deepseek-v4-flash",
+            catalog = null,
+            autoSelected = true
+        )
+        val fixed = buildChatModelChoiceItems(
+            provider = provider,
+            resolvedModel = "deepseek-v4-flash",
+            catalog = null,
+            autoSelected = false
+        )
+
+        assertEquals(AUTO_PROFILE_SELECTION_KEY, automatic.first().key)
+        assertEquals("✓ 自动", automatic.first().title)
+        assertEquals("自动", fixed.first().title)
+    }
 
     @Test
     fun buildChatRuntimeHostPresentation_mergesPosturePromptAndSupplementalStatuses() {

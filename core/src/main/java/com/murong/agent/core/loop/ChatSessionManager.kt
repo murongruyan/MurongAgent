@@ -1617,7 +1617,14 @@ internal fun hasCheckpointPromptSnapshotDifference(
     state: SessionState,
     checkpoint: ConversationCheckpointUi
 ): Boolean {
-    return buildConversationCheckpointPromptSnapshot(state) != checkpoint.promptSnapshot
+    val currentSnapshot = buildConversationCheckpointPromptSnapshot(state)
+    val normalizedCurrent = currentSnapshot?.copy(
+        pendingAskRequest = currentSnapshot.pendingAskRequest?.copy(
+            isReplayOnly = false,
+            replayNotice = null
+        )
+    )
+    return normalizedCurrent != checkpoint.promptSnapshot
 }
 
 internal fun buildConversationCheckpointSummary(
@@ -1673,13 +1680,14 @@ internal fun buildFinalReadinessContinuationContext(
     audits: List<FinalReadinessAuditRecord>,
     recentSessionHistoryClue: SessionHistoryReferenceClueUi? = null
 ): String? {
-    val canonicalAudits = audits.filter {
-        it.receiptKind == FinalReadinessReceiptKind.INCOMPLETE_CANONICAL_WORKFLOW
+    val actionableAudits = audits.filter { audit ->
+        audit.result == FinalReadinessAuditResult.BLOCKED || audit.recovered ||
+            audit.receiptKind == FinalReadinessReceiptKind.INCOMPLETE_CANONICAL_WORKFLOW
     }
-    val summary = buildLatestFinalReadinessAuditSummary(canonicalAudits) ?: return null
+    val summary = buildLatestFinalReadinessAuditSummary(actionableAudits) ?: return null
     val historyReferenceSummary = buildSessionHistoryReferenceContext(
         mergeSessionHistoryReferenceClues(
-            buildLatestFinalReadinessHistoryReferenceClue(canonicalAudits),
+            buildLatestFinalReadinessHistoryReferenceClue(actionableAudits),
             recentSessionHistoryClue
         )
     )
@@ -2104,6 +2112,7 @@ class ChatSessionManager(
     private val pendingStreamingReasoning = StringBuilder()
     @Volatile
     private var latestPersistJob: Job? = null
+    private var persistenceGeneration: Long = 0
     @Volatile
     private var cachedCurrentPersistedSession: PersistedSession? = null
     @Volatile
@@ -5671,6 +5680,8 @@ class ChatSessionManager(
         val approvedScopesSnapshot = approvedApprovalScopes.toList()
         val cachedSessionSnapshot = cachedCurrentPersistedSession
             ?.takeIf { it.id == sessionIdSnapshot }
+        val generation = ++persistenceGeneration
+        latestPersistJob?.cancel()
         latestPersistJob = sessionPersistenceScope.launch {
             val persistedSession = buildPersistedSession(
                 config = config,
@@ -5680,7 +5691,7 @@ class ChatSessionManager(
                 cachedSession = cachedSessionSnapshot
             )
             val saved = conversationStore.saveSession(persistedSession)
-            if (saved && currentSessionId == sessionIdSnapshot) {
+            if (saved && currentSessionId == sessionIdSnapshot && generation == persistenceGeneration) {
                 cachedCurrentPersistedSession = persistedSession
             }
         }
@@ -6739,13 +6750,28 @@ class ChatSessionManager(
                 fileOps.filter { it in setOf("read", "list", "exists") }.toSet()
             }
             registry.register(
-                FileTool(filteredOps),
+                FileTool(
+                    allowedOperations = filteredOps,
+                    workspacePathPolicy = WorkspacePathPolicy {
+                        activeProjectScopePath(
+                            activeScopePath = _state.value.activeProjectScopePath,
+                            projectPath = _state.value.projectPath
+                        )
+                    }
+                ),
                 isEnabled = { shouldExposeLocalFileReadTool() }
             )
         }
         if (config.isBuiltinToolEnabled("code_edit")) {
             registry.register(
-                CodeEditTool(),
+                CodeEditTool(
+                    workspacePathPolicy = WorkspacePathPolicy {
+                        activeProjectScopePath(
+                            activeScopePath = _state.value.activeProjectScopePath,
+                            projectPath = _state.value.projectPath
+                        )
+                    }
+                ),
                 isEnabled = { allowWriteTools && shouldExposeLocalCodeEditTool() },
                 isPromptExposed = { shouldExposeLocalCodeEditTool() }
             )

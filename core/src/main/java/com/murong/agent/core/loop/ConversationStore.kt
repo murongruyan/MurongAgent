@@ -574,8 +574,9 @@ class ConversationStore internal constructor(
             checkpoints = emptyList(),
             fileChanges = emptyList()
         )
-        sessionFile(session.id).writeText(json.encodeToString(mainSession))
-        checkpointStoreFile(session.id).writeText(
+        atomicWrite(sessionFile(session.id), json.encodeToString(mainSession))
+        atomicWrite(
+            checkpointStoreFile(session.id),
             json.encodeToString(
                 PersistedCheckpointStore(
                     checkpoints = session.checkpoints,
@@ -1978,6 +1979,21 @@ class ConversationStore internal constructor(
         }.getOrNull()
     }
 
+    private fun atomicWrite(file: File, content: String) {
+        file.parentFile?.mkdirs()
+        val temporary = File(file.parentFile, ".${file.name}.tmp")
+        temporary.outputStream().bufferedWriter(Charsets.UTF_8).use { writer ->
+            writer.write(content)
+            writer.flush()
+        }
+        if (file.exists() && !file.delete()) {
+            throw IllegalStateException("Unable to replace ${file.name}")
+        }
+        if (!temporary.renameTo(file)) {
+            throw IllegalStateException("Unable to commit ${file.name}")
+        }
+    }
+
     private fun sessionFile(sessionId: String): File = File(baseDir, "$sessionId.json")
 
     private fun checkpointStoreFile(sessionId: String): File =
@@ -1985,7 +2001,7 @@ class ConversationStore internal constructor(
 
     private fun writeIndex(summaries: List<SessionSummary>) {
         val indexFile = File(baseDir, INDEX_FILE_NAME)
-        indexFile.writeText(json.encodeToString(summaries))
+        atomicWrite(indexFile, json.encodeToString(summaries))
     }
 
     private fun rebuildIndex() {
@@ -2012,7 +2028,7 @@ class ConversationStore internal constructor(
 
     private fun writeDeletedSessionIdsLocked() {
         val file = File(baseDir, DELETED_SESSIONS_FILE_NAME)
-        file.writeText(json.encodeToString(deletedSessionIds.toList()))
+        atomicWrite(file, json.encodeToString(deletedSessionIds.toList()))
     }
 
     private fun archivedSessionsLocked(): List<ArchivedSessionSummary> {
@@ -2027,7 +2043,8 @@ class ConversationStore internal constructor(
 
     private fun writeArchivedSessionsLocked(records: List<ArchivedSessionSummary>) {
         val file = File(baseDir, ARCHIVED_SESSIONS_FILE_NAME)
-        file.writeText(
+        atomicWrite(
+            file,
             json.encodeToString(
                 records.sortedByDescending { it.archivedAt }
             )

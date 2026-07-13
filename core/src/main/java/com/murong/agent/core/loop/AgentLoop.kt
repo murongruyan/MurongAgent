@@ -469,8 +469,10 @@ class AgentLoop(
         onEvent: (AgentEvent) -> Unit
     ): ChatResponse? {
         var lastError: String? = null
+        var retryAfterMillis: Long? = null
 
         for (attempt in 1..maxRetries) {
+            retryAfterMillis = null
             try {
                 return if (request.stream) {
                     provider.chatStream(
@@ -488,41 +490,23 @@ class AgentLoop(
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
-            } catch (e: java.net.UnknownHostException) {
-                lastError = "🌐 网络不可达：${e.message}。请检查网络连接。"
-                onEvent(AgentEvent.Error("⚠️ $lastError (重试 $attempt/$maxRetries)"))
-            } catch (e: java.net.SocketTimeoutException) {
-                lastError = "⏱️ 连接超时：${e.message}。中转站可能不稳定。"
-                onEvent(AgentEvent.Error("⚠️ $lastError (重试 $attempt/$maxRetries)"))
-            } catch (e: javax.net.ssl.SSLException) {
-                lastError = "🔒 SSL 错误：${e.message}。中转站证书可能有问题。"
-                onEvent(AgentEvent.Error("⚠️ $lastError (重试 $attempt/$maxRetries)"))
             } catch (e: java.io.IOException) {
                 val msg = e.message ?: "未知网络错误"
-                // 检查是否为 HTTP 错误码
-                when {
-                    msg.contains("401") || msg.contains("403") -> {
-                        // 认证错误——不重试
-                        onEvent(AgentEvent.Error(
-                            "🔑 API Key 无效或被拒绝（$msg）。请在设置中检查 API Key。"
-                        ))
-                        return null
-                    }
-                    msg.contains("429") -> {
-                        // 限流——重试
-                        lastError = "⏳ 请求过于频繁（429），等待后重试…"
-                        onEvent(AgentEvent.Error("⚠️ $lastError (重试 $attempt/$maxRetries)"))
-                    }
-                    msg.contains("5") && msg.length <= 4 -> {
-                        // 服务端错误 5xx
-                        lastError = "🔧 服务端错误（HTTP $msg）"
-                        onEvent(AgentEvent.Error("⚠️ $lastError (重试 $attempt/$maxRetries)"))
-                    }
-                    else -> {
-                        lastError = "⚠️ 网络错误：$msg"
-                        onEvent(AgentEvent.Error("$lastError (重试 $attempt/$maxRetries)"))
-                    }
+                if (e is ProviderHttpException && e.statusCode in setOf(401, 403)) {
+                    onEvent(AgentEvent.Error("🔑 API Key 无效或被拒绝（$msg）。请在设置中检查 API Key。"))
+                    return null
                 }
+                if (!isRetryableProviderFailure(e)) {
+                    onEvent(AgentEvent.Error("⚠️ 请求失败：$msg"))
+                    return null
+                }
+                retryAfterMillis = (e as? ProviderHttpException)?.retryAfterMillis
+                lastError = when ((e as? ProviderHttpException)?.statusCode) {
+                    429 -> "⏳ 请求过于频繁（429），等待后重试…"
+                    in 500..599 -> "🔧 服务端错误（$msg）"
+                    else -> "⚠️ 网络或流式连接错误：$msg"
+                }
+                onEvent(AgentEvent.Error("$lastError (重试 $attempt/$maxRetries)"))
             } catch (e: Exception) {
                 // 兜底：捕获所有其他异常（JSON 解析错误、空指针等）
                 val msg = e.message ?: e.javaClass.simpleName
@@ -530,9 +514,8 @@ class AgentLoop(
                 onEvent(AgentEvent.Error("⚠️ $lastError (重试 $attempt/$maxRetries)"))
             }
 
-            // 指数退避：1s, 2s, 4s
             if (attempt < maxRetries) {
-                delay(1000L * (1 shl (attempt - 1)))
+                delay(providerRetryDelayMillis(attempt, retryAfterMillis))
             }
         }
 
