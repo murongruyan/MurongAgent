@@ -419,7 +419,7 @@ object ToolchainManager {
         nativeLibraryDir: File?
     ): Boolean {
         if (manifest.files.any { !isSafeRelativePath(it.asset) || !isSafeRelativePath(it.path.ifBlank { it.asset }) }) return false
-        if (manifest.links.any { !isSafeRelativePath(it.path) || !isSafeLinkTarget(it.path, it.target) }) return false
+        if (manifest.links.any { !isSafeRelativePath(it.path) || (!isSafeLinkTarget(it.path, it.target) && !it.target.startsWith('/')) }) return false
         if (manifest.commands.any { (name, path) ->
                 !name.matches(Regex("[A-Za-z0-9._+-]+")) ||
                     (path.startsWith("native/") && !isSafeNativePath(path, nativeLibraryDir)) ||
@@ -509,6 +509,9 @@ object ToolchainManager {
 
     private fun ensureToolchainLinks(rootDir: File, links: List<ToolchainLinkEntry>) {
         links.forEach { entry ->
+            // Skip links with absolute targets - they reference system paths that won't
+            // resolve in this sandbox (e.g. /data/data/com.termux/... keyring symlinks)
+            if (entry.target.startsWith('/')) return@forEach
             val linkFile = File(rootDir, entry.path)
             linkFile.parentFile?.mkdirs()
             val existingTarget = runCatching {
