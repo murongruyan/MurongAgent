@@ -67,12 +67,12 @@ class OpenAIProvider : ModelProvider {
     }
 
     override suspend fun chatStream(
-        rawRequest: ChatRequest,
+        request: ChatRequest,
         apiKey: String,
         baseUrl: String?,
         onDelta: (StreamDelta) -> Unit
     ): ChatResponse {
-        val request = normalizeChatRequestForProvider(rawRequest)
+        val safeRequest = normalizeChatRequestForProvider(request)
         val endpoint = (baseUrl ?: defaultBaseUrl).trimEnd('/')
         val url = "$endpoint/chat/completions"
 
@@ -109,18 +109,18 @@ class OpenAIProvider : ModelProvider {
         val bodyJson = buildJsonObject {
             put("model", request.model)
             put("messages", messagesJson)
-            put("temperature", request.temperature)
-            put("max_tokens", request.maxTokens)
+            put("temperature", safeRequest.temperature)
+            put("max_tokens", safeRequest.maxTokens)
             put("stream", true)
-            if (!request.reasoningEffort.isNullOrBlank()) {
-                put("reasoning_effort", request.reasoningEffort)
+            if (!safeRequest.reasoningEffort.isNullOrBlank()) {
+                put("reasoning_effort", safeRequest.reasoningEffort)
             }
             putJsonObject("stream_options") {
                 put("include_usage", true)
             }
             // 工具
-            if (request.tools != null) {
-                put("tools", json.parseToJsonElement(request.tools))
+            if (safeRequest.tools != null) {
+                put("tools", json.parseToJsonElement(safeRequest.tools))
             }
         }
 
@@ -152,18 +152,18 @@ class OpenAIProvider : ModelProvider {
     }
 
     override suspend fun chat(
-        rawRequest: ChatRequest,
+        request: ChatRequest,
         apiKey: String,
         baseUrl: String?
     ): ChatResponse {
-        val request = normalizeChatRequestForProvider(rawRequest)
+        val safeRequest = normalizeChatRequestForProvider(request)
         val endpoint = (baseUrl ?: defaultBaseUrl).trimEnd('/')
         val url = "$endpoint/chat/completions"
 
         val bodyJson = buildJsonObject {
-            put("model", request.model)
+            put("model", safeRequest.model)
             put("messages", buildJsonArray {
-                request.messages.forEach { msg ->
+                safeRequest.messages.forEach { msg ->
                     addJsonObject {
                         put("role", msg.role)
                         if (msg.images.isNotEmpty()) {
@@ -191,14 +191,14 @@ class OpenAIProvider : ModelProvider {
                     }
                 }
             })
-            put("temperature", request.temperature)
-            put("max_tokens", request.maxTokens)
+            put("temperature", safeRequest.temperature)
+            put("max_tokens", safeRequest.maxTokens)
             put("stream", false)
-            if (!request.reasoningEffort.isNullOrBlank()) {
-                put("reasoning_effort", request.reasoningEffort)
+            if (!safeRequest.reasoningEffort.isNullOrBlank()) {
+                put("reasoning_effort", safeRequest.reasoningEffort)
             }
-            if (request.tools != null) {
-                put("tools", json.parseToJsonElement(request.tools))
+            if (safeRequest.tools != null) {
+                put("tools", json.parseToJsonElement(safeRequest.tools))
             }
         }
 

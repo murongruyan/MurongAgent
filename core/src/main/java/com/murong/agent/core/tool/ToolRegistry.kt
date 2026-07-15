@@ -105,6 +105,7 @@ private fun normalizeToolSchema(raw: Map<String, Any>): Map<String, Any> {
         else -> value
     }
 
+    @Suppress("UNCHECKED_CAST")
     val normalized = normalize(raw) as? MutableMap<String, Any?> ?: mutableMapOf()
     if (normalized.isEmpty()) {
         normalized["type"] = "object"

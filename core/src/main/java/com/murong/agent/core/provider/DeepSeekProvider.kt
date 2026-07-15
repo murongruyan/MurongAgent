@@ -59,12 +59,12 @@ class DeepSeekProvider : ModelProvider {
     }
 
     override suspend fun chatStream(
-        rawRequest: ChatRequest,
+        request: ChatRequest,
         apiKey: String,
         baseUrl: String?,
         onDelta: (StreamDelta) -> Unit
     ): ChatResponse {
-        val request = normalizeChatRequestForProvider(rawRequest)
+        val safeRequest = normalizeChatRequestForProvider(request)
         val endpoint = (baseUrl ?: defaultBaseUrl).trimEnd('/')
         val url = "$endpoint/chat/completions"
 
@@ -104,18 +104,18 @@ class DeepSeekProvider : ModelProvider {
             put("temperature", request.temperature)
             put("max_tokens", request.maxTokens)
             put("stream", true)
-            if (!request.reasoningEffort.isNullOrBlank()) {
-                put("reasoning_effort", request.reasoningEffort)
+            if (!safeRequest.reasoningEffort.isNullOrBlank()) {
+                put("reasoning_effort", safeRequest.reasoningEffort)
             }
-            if (!request.thinkingMode.isNullOrBlank() && !isAzureEndpoint(endpoint)) {
+            if (!safeRequest.thinkingMode.isNullOrBlank() && !isAzureEndpoint(endpoint)) {
                 putJsonObject("extra_body") {
                     putJsonObject("thinking") {
-                        put("type", request.thinkingMode)
+                        put("type", safeRequest.thinkingMode)
                     }
                 }
             }
-            if (request.tools != null) {
-                put("tools", json.parseToJsonElement(request.tools))
+            if (safeRequest.tools != null) {
+                put("tools", json.parseToJsonElement(safeRequest.tools))
             }
         }
 
@@ -150,18 +150,18 @@ class DeepSeekProvider : ModelProvider {
     }
 
     override suspend fun chat(
-        rawRequest: ChatRequest,
+        request: ChatRequest,
         apiKey: String,
         baseUrl: String?
     ): ChatResponse {
-        val request = normalizeChatRequestForProvider(rawRequest)
+        val safeRequest = normalizeChatRequestForProvider(request)
         val endpoint = (baseUrl ?: defaultBaseUrl).trimEnd('/')
         val url = "$endpoint/chat/completions"
 
         val bodyJson = buildJsonObject {
             put("model", request.model)
             put("messages", buildJsonArray {
-                request.messages.forEach { msg ->
+                safeRequest.messages.forEach { msg ->
                     addJsonObject {
                         put("role", msg.role)
                         if (msg.images.isNotEmpty()) {
@@ -189,21 +189,21 @@ class DeepSeekProvider : ModelProvider {
                     }
                 }
             })
-            put("temperature", request.temperature)
-            put("max_tokens", request.maxTokens)
+            put("temperature", safeRequest.temperature)
+            put("max_tokens", safeRequest.maxTokens)
             put("stream", false)
-            if (!request.reasoningEffort.isNullOrBlank()) {
-                put("reasoning_effort", request.reasoningEffort)
+            if (!safeRequest.reasoningEffort.isNullOrBlank()) {
+                put("reasoning_effort", safeRequest.reasoningEffort)
             }
-            if (!request.thinkingMode.isNullOrBlank() && !isAzureEndpoint(endpoint)) {
+            if (!safeRequest.thinkingMode.isNullOrBlank() && !isAzureEndpoint(endpoint)) {
                 putJsonObject("extra_body") {
                     putJsonObject("thinking") {
-                        put("type", request.thinkingMode)
+                        put("type", safeRequest.thinkingMode)
                     }
                 }
             }
-            if (request.tools != null) {
-                put("tools", json.parseToJsonElement(request.tools))
+            if (safeRequest.tools != null) {
+                put("tools", json.parseToJsonElement(safeRequest.tools))
             }
         }
 

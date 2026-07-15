@@ -53,12 +53,12 @@ class ClaudeProvider : ModelProvider {
     }
 
     override suspend fun chatStream(
-        rawRequest: ChatRequest,
+        request: ChatRequest,
         apiKey: String,
         baseUrl: String?,
         onDelta: (StreamDelta) -> Unit
     ): ChatResponse {
-        val request = normalizeChatRequestForProvider(rawRequest)
+        val safeRequest = normalizeChatRequestForProvider(request)
         val endpoint = (baseUrl ?: defaultBaseUrl).trimEnd('/')
         val url = "$endpoint/v1/messages"
 
@@ -96,8 +96,8 @@ class ClaudeProvider : ModelProvider {
                 }
             }
             // 工具
-            if (request.tools != null) {
-                put("tools", buildAnthropicToolsFromOpenAiSchema(json, request.tools))
+            if (safeRequest.tools != null) {
+                put("tools", buildAnthropicToolsFromOpenAiSchema(json, safeRequest.tools))
             }
         }
 
@@ -130,25 +130,25 @@ class ClaudeProvider : ModelProvider {
     }
 
     override suspend fun chat(
-        rawRequest: ChatRequest,
+        request: ChatRequest,
         apiKey: String,
         baseUrl: String?
     ): ChatResponse {
-        val request = normalizeChatRequestForProvider(rawRequest)
+        val safeRequest = normalizeChatRequestForProvider(request)
         val endpoint = (baseUrl ?: defaultBaseUrl).trimEnd('/')
         val url = "$endpoint/v1/messages"
 
-        val anthropicMessages = convertMessages(request.messages)
-        val systemPrompt = request.messages
+        val anthropicMessages = convertMessages(safeRequest.messages)
+        val systemPrompt = safeRequest.messages
             .filter { it.role == "system" }
             .joinToString("\n") { it.content ?: "" }
 
         val bodyJson = buildJsonObject {
-            put("model", request.model)
-            put("max_tokens", request.maxTokens)
+            put("model", safeRequest.model)
+            put("max_tokens", safeRequest.maxTokens)
             put("stream", false)
-            put("temperature", request.temperature)
-            buildClaudeReasoningConfig(request.reasoningEffort)?.let { (thinking, outputConfig) ->
+            put("temperature", safeRequest.temperature)
+            buildClaudeReasoningConfig(safeRequest.reasoningEffort)?.let { (thinking, outputConfig) ->
                 put("thinking", thinking)
                 put("output_config", outputConfig)
             }
@@ -163,8 +163,8 @@ class ClaudeProvider : ModelProvider {
             putJsonArray("messages") {
                 anthropicMessages.forEach { msg -> add(msg) }
             }
-            if (request.tools != null) {
-                put("tools", buildAnthropicToolsFromOpenAiSchema(json, request.tools))
+            if (safeRequest.tools != null) {
+                put("tools", buildAnthropicToolsFromOpenAiSchema(json, safeRequest.tools))
             }
         }
 
