@@ -24,6 +24,9 @@ object ToolchainManager {
 
     private const val TAG = "ToolchainManager"
     private const val EXTENSION_PACKAGE_NAME = "cc.rl1.murong.terminalextension"
+    private const val TERMUX_PREFIX_PLACEHOLDER = "/data/data/com.termux/files/usr"
+    private const val TERMUX_HOME_PLACEHOLDER = "/data/data/com.termux/files/home"
+    private const val TERMUX_CACHE_PLACEHOLDER = "/data/data/com.termux/cache"
     private const val SYSTEM_PATH =
         "/system/bin:/system/xbin:/system_ext/bin:/product/bin:/apex/com.android.runtime/bin"
     private val systemLibraryCandidates = listOf(
@@ -108,10 +111,21 @@ object ToolchainManager {
             }
 
             val rootDir = File(safeContext.filesDir, "toolchain/$abi")
+            if (!isValidManifest(manifest, rootDir, host.nativeLibraryDir)) {
+                Log.w(TAG, "Rejected unsafe toolchain manifest from ${host.packageName}")
+                return InstalledToolchain.unavailable(
+                    abi = abi,
+                    rootDir = rootDir,
+                    binDir = File(rootDir, "bin"),
+                    libDir = File(rootDir, "lib"),
+                    sourcePackage = host.packageName,
+                    sourceType = host.sourceType
+                )
+            }
             val binDir = File(rootDir, "bin")
             val libDir = File(rootDir, "lib")
             val versionFile = File(rootDir, ".version")
-            val installFingerprint = "${host.packageName}:${manifest.version}"
+            val installFingerprint = "${host.packageName}:${manifest.version}:relocatable-v1"
             val nativeLibraryDir = host.nativeLibraryDir
                 ?: File("/system/lib64")
             val commandTargetPaths = manifest.commands
@@ -153,23 +167,45 @@ object ToolchainManager {
                     requiredFiles.any { !it.exists() }
 
             if (needsInstall) {
-                rootDir.deleteRecursively()
-                rootDir.mkdirs()
-                manifest.files.forEach { entry ->
-                    val target = File(rootDir, entry.path.ifBlank { entry.asset })
-                    target.parentFile?.mkdirs()
-                    host.context.assets.open("$assetBase/${entry.asset}").use { input ->
-                        FileOutputStream(target).use { output ->
-                            input.copyTo(output)
+                try {
+                    rootDir.deleteRecursively()
+                    check(rootDir.mkdirs() || rootDir.isDirectory) { "Cannot create toolchain directory" }
+                    manifest.files.forEach { entry ->
+                        val target = File(rootDir, entry.path.ifBlank { entry.asset })
+                        check(target.parentFile?.mkdirs() != false || target.parentFile?.isDirectory == true) {
+                            "Cannot create toolchain file directory"
+                        }
+                        host.context.assets.open("$assetBase/${entry.asset}").use { input ->
+                            FileOutputStream(target).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        relocateTermuxTextFile(
+                            file = target,
+                            rootDir = rootDir,
+                            homeDir = safeContext.filesDir,
+                            cacheDir = safeContext.cacheDir
+                        )
+                        if (entry.executable) {
+                            target.setExecutable(true, false)
+                            target.setReadable(true, false)
                         }
                     }
-                    if (entry.executable) {
-                        target.setExecutable(true, false)
-                        target.setReadable(true, false)
-                    }
+                    ensureToolchainLinks(rootDir, manifest.links)
+                    versionFile.writeText(installFingerprint)
+                } catch (error: Exception) {
+                    Log.w(TAG, "Failed to install toolchain", error)
+                    rootDir.deleteRecursively()
+                    cachedToolchain = null
+                    return InstalledToolchain.unavailable(
+                        abi = abi,
+                        rootDir = rootDir,
+                        binDir = binDir,
+                        libDir = libDir,
+                        sourcePackage = host.packageName,
+                        sourceType = host.sourceType
+                    )
                 }
-                ensureToolchainLinks(rootDir, manifest.links)
-                versionFile.writeText(installFingerprint)
             }
             ensureToolchainLinks(rootDir, manifest.links)
             ensureCommandLinks(binDir, commandTargetPaths)
@@ -194,6 +230,21 @@ object ToolchainManager {
         val installed = ensureInstalled(context)
         return installed.commandPaths[commandName]?.takeIf { File(it).exists() }
     }
+
+    fun findCommandPath(commandName: String, context: Context? = appContext): String? {
+        val normalized = commandName.trim()
+        if (normalized.isBlank() || normalized.contains('/') || normalized.contains('\\')) return null
+        getBundledCommandPath(normalized, context)?.let { return it }
+        return buildPreferredPath(context)
+            .split(':')
+            .asSequence()
+            .map { File(it, normalized) }
+            .firstOrNull { it.isFile && it.canExecute() }
+            ?.absolutePath
+    }
+
+    /** The bundled upstream Termux apt/dpkg binaries use a fixed Termux prefix. */
+    fun hasRelocatablePackageManager(context: Context? = appContext): Boolean = false
 
     fun hasBundledCommands(context: Context? = appContext): Boolean {
         val installed = ensureInstalled(context)
@@ -265,9 +316,13 @@ object ToolchainManager {
         val libraryPath = buildPreferredLibraryPath(safeContext)
         val home = safeContext.filesDir.absolutePath
         val tmpDir = safeContext.cacheDir.absolutePath
+        val prefix = ensureInstalled(safeContext).rootDir.absolutePath
         val commands = mutableListOf(
             "export HOME=${shellQuote(home)}",
             "export TMPDIR=${shellQuote(tmpDir)}",
+            "export PREFIX=${shellQuote(prefix)}",
+            "export TERMUX__PREFIX=${shellQuote(prefix)}",
+            "export TERMUX_APP_PACKAGE_MANAGER=apt",
             "export PATH=${shellQuote(path)}",
             "hash -r >/dev/null 2>&1 || true"
         )
@@ -285,8 +340,12 @@ object ToolchainManager {
         context: Context? = appContext
     ) {
         val safeContext = context?.applicationContext ?: appContext ?: return
+        val installed = ensureInstalled(safeContext)
         environment["HOME"] = safeContext.filesDir.absolutePath
         environment["TMPDIR"] = safeContext.cacheDir.absolutePath
+        environment["PREFIX"] = installed.rootDir.absolutePath
+        environment["TERMUX__PREFIX"] = installed.rootDir.absolutePath
+        environment["TERMUX_APP_PACKAGE_MANAGER"] = "apt"
         environment["PATH"] = buildPreferredPath(safeContext)
         buildPreferredLibraryPath(safeContext)
             .takeIf { it.isNotBlank() }
@@ -324,6 +383,10 @@ object ToolchainManager {
             Log.w(TAG, "Failed to create extension package context", e)
             return null
         }
+        if (packageManager.checkSignatures(context.packageName, EXTENSION_PACKAGE_NAME) != PackageManager.SIGNATURE_MATCH) {
+            Log.w(TAG, "Rejected terminal extension with a different signing certificate")
+            return null
+        }
         val manifestText = readAssetOrNull(extensionContext, "toolchain/$abi/manifest.json") ?: return null
         val nativeLibraryDir = extensionContext.applicationInfo.nativeLibraryDir?.let(::File)
         return ToolchainHost(
@@ -350,6 +413,39 @@ object ToolchainManager {
         }
     }
 
+    private fun isValidManifest(
+        manifest: ToolchainManifest,
+        rootDir: File,
+        nativeLibraryDir: File?
+    ): Boolean {
+        if (manifest.files.any { !isSafeRelativePath(it.asset) || !isSafeRelativePath(it.path.ifBlank { it.asset }) }) return false
+        if (manifest.links.any { !isSafeRelativePath(it.path) || !isSafeLinkTarget(it.path, it.target) }) return false
+        if (manifest.commands.any { (name, path) ->
+                !name.matches(Regex("[A-Za-z0-9._+-]+")) ||
+                    (path.startsWith("native/") && !isSafeNativePath(path, nativeLibraryDir)) ||
+                    (!path.startsWith("native/") && !isSafeRelativePath(path))
+            }) return false
+        return rootDir.toPath().isAbsolute
+    }
+
+    private fun isSafeRelativePath(path: String): Boolean {
+        if (path.isBlank() || path.startsWith('/') || path.contains('\\')) return false
+        val normalized = Paths.get(path).normalize()
+        return !normalized.isAbsolute && !normalized.startsWith("..")
+    }
+
+    private fun isSafeLinkTarget(path: String, target: String): Boolean {
+        if (target.isBlank() || target.startsWith('/') || target.contains('\\')) return false
+        val parent = Paths.get(path).parent ?: Paths.get("")
+        val normalized = parent.resolve(target).normalize()
+        return !normalized.isAbsolute && !normalized.startsWith("..")
+    }
+
+    private fun isSafeNativePath(path: String, nativeLibraryDir: File?): Boolean {
+        val name = path.removePrefix("native/")
+        return nativeLibraryDir != null && name.isNotBlank() && !name.contains('/') && !name.contains('\\') && !name.contains("..")
+    }
+
     private fun resolveRuntimePath(
         relativePath: String,
         rootDir: File,
@@ -359,6 +455,38 @@ object ToolchainManager {
             File(nativeLibraryDir, relativePath.removePrefix("native/"))
         } else {
             File(rootDir, relativePath)
+        }
+    }
+
+    private fun relocateTermuxTextFile(
+        file: File,
+        rootDir: File,
+        homeDir: File,
+        cacheDir: File
+    ) {
+        if (!file.isFile || file.length() > 2 * 1024 * 1024) return
+        val bytes = runCatching { file.readBytes() }.getOrNull() ?: return
+        if (bytes.take(4).toByteArray().contentEquals(byteArrayOf(0x7f, 'E'.code.toByte(), 'L'.code.toByte(), 'F'.code.toByte()))) {
+            return
+        }
+        val text = runCatching { bytes.toString(Charsets.UTF_8) }.getOrNull() ?: return
+        if (!text.contains(TERMUX_PREFIX_PLACEHOLDER)) return
+        if (file.parentFile?.name == "bin" && file.name == "pkg" && !hasRelocatablePackageManager()) {
+            file.writeText(
+                "#!/system/bin/sh\n" +
+                    "echo 'pkg is unavailable: this terminal extension bundles upstream Termux apt/dpkg binaries with a fixed Termux prefix.' >&2\n" +
+                    "echo 'Install an extension built with a relocatable package manager to enable pkg install.' >&2\n" +
+                    "exit 126\n",
+                Charsets.UTF_8
+            )
+            return
+        }
+        val relocated = text
+            .replace(TERMUX_PREFIX_PLACEHOLDER, rootDir.absolutePath)
+            .replace(TERMUX_HOME_PLACEHOLDER, homeDir.absolutePath)
+            .replace(TERMUX_CACHE_PLACEHOLDER, cacheDir.absolutePath)
+        if (relocated != text) {
+            file.writeText(relocated, Charsets.UTF_8)
         }
     }
 

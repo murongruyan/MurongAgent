@@ -50,6 +50,7 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -823,6 +824,12 @@ private fun ProjectEditorSection(
     var isFileLoading by remember(currentProjectPath) { mutableStateOf(false) }
     var isSaving by remember(currentProjectPath) { mutableStateOf(false) }
     var editorError by remember(currentProjectPath) { mutableStateOf<String?>(null) }
+    var projectRunOutput by remember(currentProjectPath) { mutableStateOf<String?>(null) }
+    var projectRunTitle by remember(currentProjectPath) { mutableStateOf<String?>(null) }
+    var projectRunPlan by remember(currentProjectPath) { mutableStateOf<ProjectRunPlan?>(null) }
+    var projectRunInProgress by remember(currentProjectPath) { mutableStateOf(false) }
+    var projectRunProcess by remember(currentProjectPath) { mutableStateOf<Process?>(null) }
+    var showRunInstallConfirmation by remember(currentProjectPath) { mutableStateOf(false) }
     var showUnsavedChangesDialog by remember(currentProjectPath) { mutableStateOf(false) }
     var reloadVersion by remember(currentProjectPath) { mutableStateOf(0) }
     var searchQuery by remember(currentProjectPath) { mutableStateOf("") }
@@ -1745,6 +1752,76 @@ private fun ProjectEditorSection(
         }
     }
 
+    fun executeProjectRun(plan: ProjectRunPlan) {
+        scope.launch {
+            projectRunInProgress = true
+            projectRunTitle = "正在运行 ${plan.language}"
+            projectRunOutput = "${plan.command.joinToString(" ")}\n\n"
+            val result = withContext(Dispatchers.IO) {
+                ProjectRunExecutor.execute(
+                    context = context,
+                    command = plan.command,
+                    workingDirectory = plan.workingDirectory,
+                    onProcessStarted = { projectRunProcess = it },
+                    onOutput = { chunk ->
+                        projectRunOutput = (projectRunOutput.orEmpty() + chunk).takeLast(512 * 1024)
+                    }
+                )
+            }
+            projectRunOutput = buildString {
+                append(projectRunOutput.orEmpty())
+                append(result.output)
+                result.error?.let { appendLine(it) }
+                result.exitCode?.let { appendLine("\n退出码: $it") }
+            }
+            projectRunTitle = if (result.error == null) "${plan.language} 运行完成" else "${plan.language} 运行失败"
+            projectRunProcess = null
+            projectRunInProgress = false
+        }
+    }
+
+    fun prepareProjectRun(openTerminal: Boolean = false) {
+        val root = projectRoot ?: run {
+            editorError = "远端文件不能在本机终端运行"
+            return
+        }
+        val selected = selectedFilePath?.let(::File) ?: run {
+            editorError = "请先打开要运行的文件"
+            return
+        }
+        scope.launch {
+            if (dirty) {
+                val saved = withContext(Dispatchers.IO) { runCatching { saveProjectFile(selected, editedContent) } }
+                saved.onFailure { error ->
+                    editorError = error.message ?: "保存运行文件失败"
+                    return@launch
+                }
+                loadedContent = editedContent
+            }
+            val result = withContext(Dispatchers.IO) {
+                ProjectRunExecutor.plan(root, selected, editedContent)
+            }
+            val plan = result.getOrElse { error ->
+                editorError = error.message ?: "无法创建运行任务"
+                return@launch
+            }
+            projectRunPlan = plan
+            if (openTerminal) {
+                val command = plan.command.joinToString(" ") { "'${it.replace("'", "'\\\"'\\\"'")}'" }
+                val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+                clipboard.setPrimaryClip(ClipData.newPlainText("项目运行命令", command))
+                onSelectPrimaryTab(ProjectPrimaryTab.TERMINAL)
+                editorError = "运行命令已复制，已切换到终端，可直接粘贴执行"
+                return@launch
+            }
+            if (plan.requiredPackages.isNotEmpty() && !ProjectRunExecutor.areToolsAvailable(context, plan.requiredCommands)) {
+                showRunInstallConfirmation = true
+            } else {
+                executeProjectRun(plan)
+            }
+        }
+    }
+
     LaunchedEffect(selectedTaskRepository, projectRoot, config.githubToken, config.githubApiBaseUrl, reloadVersion) {
         if (isRemoteTaskMode) {
             remoteEntriesByDir.clear()
@@ -2524,6 +2601,18 @@ private fun ProjectEditorSection(
                     ) {
                         Text(if (isSaving) "保存中" else "保存")
                     }
+                    IconButton(
+                        onClick = { prepareProjectRun() },
+                        enabled = selectedFilePath != null && !projectRunInProgress
+                    ) {
+                        Icon(Icons.Outlined.PlayArrow, contentDescription = "运行当前文件")
+                    }
+                    IconButton(
+                        onClick = { prepareProjectRun(openTerminal = true) },
+                        enabled = selectedFilePath != null && !projectRunInProgress
+                    ) {
+                        Icon(Icons.Outlined.MoreVert, contentDescription = "在终端运行")
+                    }
                     Spacer(modifier = Modifier.weight(1f))
                 }
             }
@@ -2543,6 +2632,38 @@ private fun ProjectEditorSection(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
+                }
+            }
+
+            projectRunOutput?.let { output ->
+                MurongGlassSurface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 220.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(10.dp),
+                    surfaceColorOverride = editorChromeColor.copy(alpha = 0.32f)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(projectRunTitle ?: "运行输出", style = MaterialTheme.typography.labelLarge)
+                            Spacer(Modifier.weight(1f))
+                            if (projectRunInProgress) {
+                                TextButton(onClick = {
+                                    ProjectRunExecutor.stop(projectRunProcess)
+                                    projectRunTitle = "正在停止 ${projectRunPlan?.language.orEmpty()}"
+                                }) { Text("停止") }
+                            }
+                            TextButton(onClick = { projectRunOutput = null; projectRunTitle = null }) { Text("清空") }
+                        }
+                        SelectionContainer {
+                            Text(
+                                text = output,
+                                modifier = Modifier.verticalScroll(rememberScrollState()),
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+                            )
+                        }
+                    }
                 }
             }
 
@@ -2624,6 +2745,42 @@ private fun ProjectEditorSection(
         }
         }
     )
+
+    if (showRunInstallConfirmation) {
+        val plan = projectRunPlan
+        ProjectScreenLargeDialog(
+            title = "准备 ${plan?.language ?: "运行环境"}",
+            subtitle = "当前设备缺少运行所需的工具。确认后将通过 pkg 下载并安装。",
+            onDismissRequest = { showRunInstallConfirmation = false },
+            actions = {
+                TextButton(onClick = { showRunInstallConfirmation = false }) { Text("取消") }
+                TextButton(onClick = {
+                    showRunInstallConfirmation = false
+                    plan?.let { pendingPlan ->
+                        scope.launch {
+                            projectRunInProgress = true
+                            projectRunTitle = "正在安装 ${pendingPlan.requiredPackages.joinToString(", ")}"
+                            projectRunOutput = "pkg install ${pendingPlan.requiredPackages.joinToString(" ")}\n\n"
+                            val installResult = withContext(Dispatchers.IO) {
+                                ProjectRunExecutor.installPackages(context, pendingPlan.requiredPackages) { chunk ->
+                                    projectRunOutput = (projectRunOutput.orEmpty() + chunk).takeLast(512 * 1024)
+                                }
+                            }
+                            projectRunOutput = projectRunOutput.orEmpty() + installResult.output + installResult.error.orEmpty()
+                            projectRunInProgress = false
+                            if (installResult.exitCode == 0 && installResult.error == null) {
+                                executeProjectRun(pendingPlan)
+                            } else {
+                                projectRunTitle = "安装运行环境失败"
+                            }
+                        }
+                    }
+                }) { Text("下载并运行") }
+            }
+        ) {
+            Text("将安装：${plan?.requiredPackages?.joinToString(", ").orEmpty()}")
+        }
+    }
 
     if (showSearchReplaceDialog) {
         ProjectScreenLargeDialog(
