@@ -16,6 +16,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -26,6 +27,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -46,6 +48,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
@@ -67,9 +70,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import com.murong.agent.common.project.resolveProjectKnowledgeFiles
 import com.murong.agent.core.mcp.McpServerConfig
 import androidx.compose.foundation.rememberScrollState
@@ -108,12 +116,14 @@ import com.murong.agent.core.loop.MIN_MESSAGES_TO_COMPRESS
 import com.murong.agent.core.loop.RECENT_MESSAGES_TO_KEEP
 import com.murong.agent.core.loop.WEB_FETCH_RESULT_PREFIX
 import com.murong.agent.core.config.GlobalSkill
+import com.murong.agent.core.config.AgentBackendKind
 import com.murong.agent.core.config.ProviderConfig
 import com.murong.agent.core.config.ProjectToolPreferences
 import com.murong.agent.core.config.ToolApprovalMode
 import com.murong.agent.core.config.WorkflowExecutionMode
 import com.murong.agent.core.config.approvalModeDescription
 import com.murong.agent.core.config.approvalModeLabel
+import com.murong.agent.core.codex.CodexRateLimitWindow
 import com.murong.agent.core.provider.ProviderRegistry
 import com.murong.agent.ui.MurongDialog
 import com.murong.agent.ui.MurongChoiceDialogItem
@@ -157,6 +167,7 @@ private const val CHAT_EXPANDED_RECENT_ROUNDS = 4
 private const val CHAT_SHOW_JUMP_ENTRY_MIN_ROUNDS = 4
 private const val CHAT_JUMP_TITLE_MAX_LENGTH = 28
 internal const val AUTO_PROFILE_SELECTION_KEY = "__auto_profile_selection__"
+private const val CODEX_DEFAULT_SPEED_SELECTION_KEY = "__codex_default_speed__"
 
 private data class ChatQuestionRoundUi(
     val order: Int,
@@ -226,6 +237,8 @@ internal fun ChatScreen(
     executionProfileConfig: ProviderConfig = ProviderConfig(),
     globalConfig: ProviderConfig = executionProfileConfig,
     activeProviderModelCatalog: ProviderModelCatalogUiState? = null,
+    codexUsage: CodexUsageUiState = CodexUsageUiState(),
+    codexModelCatalog: CodexModelCatalogUiState = CodexModelCatalogUiState(),
     globalApprovalMode: ToolApprovalMode = executionProfileConfig.approvalMode,
     projectKnowledgePaths: List<String> = emptyList(),
     onSend: (String, List<FileMentionUi>, List<PendingImageAttachmentUi>, List<GlobalSkill>) -> Unit,
@@ -242,6 +255,8 @@ internal fun ChatScreen(
     onNavigateToSettings: () -> Unit = {},
     onUpdateGlobalConfig: (ProviderConfig) -> Unit = {},
     onRefreshActiveProviderModels: () -> Unit = {},
+    onRefreshCodexUsage: () -> Unit = {},
+    onRefreshCodexModelCatalog: () -> Unit = {},
     onUpdateProjectToolPreferences: (ProjectToolPreferences?) -> Unit = {},
     onUndoMessageKeepCode: (Long) -> Boolean = { false },
     onUndoCodeKeepMessage: (Long) -> Result<Int> = { Result.failure(IllegalStateException("未配置仅撤回改动动作。")) },
@@ -386,49 +401,142 @@ internal fun ChatScreen(
             .filter { it.enabled && (it.title.isNotBlank() || it.content.isNotBlank()) }
             .distinctBy { listOf(it.title.trim(), it.description.trim(), it.content.trim(), it.runAs.name).joinToString("|") }
     }
+    val usesCodexChatGpt = globalConfig.usesCodexChatGptBackend()
     val activeProvider = remember(executionProfileConfig.activeProviderId) {
         ProviderRegistry.getActiveProvider(executionProfileConfig.activeProviderId)
     }
     val activeRelay = executionProfileConfig.getActiveRelay(executionProfileConfig.activeProviderId)
-    val currentConfigurationLabel = activeRelay?.let {
-        executionProfileConfig.configuredConnectionLabel(activeProvider.id, it)
-    }.orEmpty()
+    val currentConfigurationLabel = if (usesCodexChatGpt) {
+        "官方 ChatGPT / Codex"
+    } else {
+        activeRelay?.let { executionProfileConfig.configuredConnectionLabel(activeProvider.id, it) }
+            .orEmpty()
+    }
     val configurationChoiceItems = remember(globalConfig) {
-        ProviderRegistry.getAllProviders().flatMap { provider ->
-            globalConfig.getRelayConfigs(provider.id)
-                .filter { relay -> globalConfig.isRelayConfigured(provider.id, relay) }
-                .map { relay ->
-                    MurongChoiceDialogItem(
-                        key = "${provider.id}|${relay.id}",
-                        title = globalConfig.configuredConnectionLabel(provider.id, relay),
-                        subtitle = provider.name
-                    )
-                }
+        buildList {
+            add(
+                MurongChoiceDialogItem(
+                    key = "__codex_chatgpt_backend__",
+                    title = if (usesCodexChatGpt) "✓ ChatGPT / Codex" else "ChatGPT / Codex",
+                    subtitle = "官方登录 · ${globalConfig.codexModel.trim().ifBlank { "默认模型" }}",
+                ),
+            )
+            addAll(ProviderRegistry.getAllProviders().flatMap { provider ->
+                globalConfig.getRelayConfigs(provider.id)
+                    .filter { relay -> globalConfig.isRelayConfigured(provider.id, relay) }
+                    .map { relay ->
+                        val isSelected = !usesCodexChatGpt &&
+                            provider.id == activeProvider.id && relay.id == activeRelay?.id
+                        val label = globalConfig.configuredConnectionLabel(provider.id, relay)
+                        MurongChoiceDialogItem(
+                            key = "${provider.id}|${relay.id}",
+                            title = if (isSelected) "✓ $label" else label,
+                            subtitle = provider.name,
+                        )
+                    }
+            })
         }
     }
     val activeResolvedModel = executionProfileConfig.getActiveModel()
     val isModelAutoSelectionEnabled = executionProfileConfig.isModelAutoSelectionEnabled(activeProvider.id)
+    val selectedCodexModel = remember(codexModelCatalog.models, globalConfig.codexModel) {
+        val configuredId = globalConfig.codexModel.trim()
+        codexModelCatalog.models.firstOrNull { it.id == configuredId }
+            ?: codexModelCatalog.models.firstOrNull { it.isDefault == true }
+            ?: codexModelCatalog.models.firstOrNull()
+    }
+    val codexModelLabel = globalConfig.codexModel.trim().ifBlank {
+        selectedCodexModel?.displayName?.takeIf { it.isNotBlank() }
+            ?.let { "$it · 官方默认" }
+            ?: when {
+                codexModelCatalog.isLoading -> "正在读取官方模型…"
+                !codexModelCatalog.error.isNullOrBlank() -> "官方模型目录不可用"
+                else -> "等待官方模型目录"
+            }
+    }
     val activeModelChoices = remember(
         activeProvider.id,
         activeResolvedModel,
         activeProviderModelCatalog,
-        isModelAutoSelectionEnabled
+        isModelAutoSelectionEnabled,
+        usesCodexChatGpt,
+        globalConfig.codexModel,
+        codexModelCatalog.models,
+        codexModelCatalog.isLoading,
     ) {
-        buildChatModelChoiceItems(
-            provider = activeProvider,
-            resolvedModel = activeResolvedModel,
-            catalog = activeProviderModelCatalog,
-            autoSelected = isModelAutoSelectionEnabled
-        )
+        if (usesCodexChatGpt) {
+            buildList {
+                if (codexModelCatalog.models.isNotEmpty()) {
+                    add(
+                        MurongChoiceDialogItem(
+                            key = "__codex_official_model__",
+                            title = if (globalConfig.codexModel.isBlank()) "✓ 跟随官方默认" else "跟随官方默认",
+                            subtitle = selectedCodexModel?.displayName?.let { "当前会使用 $it" }
+                                ?: "由官方服务自动选择",
+                        ),
+                    )
+                    addAll(codexModelCatalog.models.map { model ->
+                        MurongChoiceDialogItem(
+                            key = model.id,
+                            title = (model.displayName?.takeIf { it.isNotBlank() } ?: model.id).let { label ->
+                                if (model.id == globalConfig.codexModel.trim()) "✓ $label" else label
+                            },
+                            subtitle = model.description?.takeIf { it.isNotBlank() }
+                                ?: model.id.takeIf { model.displayName != model.id },
+                        )
+                    })
+                } else if (codexModelCatalog.isLoading) {
+                    add(
+                        MurongChoiceDialogItem(
+                            key = "__codex_models_loading__",
+                            title = "正在读取官方可用模型…",
+                            subtitle = null,
+                        ),
+                    )
+                } else {
+                    add(
+                        MurongChoiceDialogItem(
+                            key = "__codex_models_refresh__",
+                            title = "重新读取官方模型目录",
+                            subtitle = codexModelCatalog.error ?: "尚未读取到官方模型目录",
+                        ),
+                    )
+                }
+            }
+        } else {
+            buildChatModelChoiceItems(
+                provider = activeProvider,
+                resolvedModel = activeResolvedModel,
+                catalog = activeProviderModelCatalog,
+                autoSelected = isModelAutoSelectionEnabled,
+            )
+        }
     }
-    val currentReasoningEffort = executionProfileConfig.getActiveReasoningEffort()
-    val isReasoningAutoSelectionEnabled = executionProfileConfig.isReasoningAutoSelectionEnabled(activeProvider.id)
+    val currentReasoningEffort = if (usesCodexChatGpt) {
+        globalConfig.codexReasoningEffort.trim().ifBlank {
+            selectedCodexModel?.defaultReasoningEffort.orEmpty()
+        }
+    } else {
+        executionProfileConfig.getActiveReasoningEffort().orEmpty()
+    }
+    val isReasoningAutoSelectionEnabled = !usesCodexChatGpt &&
+        executionProfileConfig.isReasoningAutoSelectionEnabled(activeProvider.id)
     val reasoningEffortItems = remember(
         activeProvider.id,
         currentReasoningEffort,
-        isReasoningAutoSelectionEnabled
+        isReasoningAutoSelectionEnabled,
+        usesCodexChatGpt,
+        selectedCodexModel,
     ) {
-        if (activeProvider.supportsReasoning) {
+        if (usesCodexChatGpt) {
+            selectedCodexModel?.supportedReasoningEfforts.orEmpty().map { effort ->
+                MurongChoiceDialogItem(
+                    key = effort,
+                    title = if (effort == currentReasoningEffort) "✓ ${formatCodexEffortLabel(effort)}" else formatCodexEffortLabel(effort),
+                    subtitle = null,
+                )
+            }
+        } else if (activeProvider.supportsReasoning) {
             buildList {
                 add(
                     MurongChoiceDialogItem(
@@ -449,14 +557,70 @@ internal fun ChatScreen(
             emptyList()
         }
     }
+    val currentCodexSpeedTier = globalConfig.codexServiceTier.trim().ifBlank {
+        selectedCodexModel?.defaultSpeedTier.orEmpty()
+    }
+    val isCodexSpeedFollowingDefault = globalConfig.codexServiceTier.isBlank()
+    val codexSpeedDisplayLabel = if (isCodexSpeedFollowingDefault) {
+        "默认 · ${formatCodexSpeedLabel(currentCodexSpeedTier)}"
+    } else {
+        formatCodexSpeedLabel(currentCodexSpeedTier)
+    }
+    val codexSpeedTierItems = remember(
+        usesCodexChatGpt,
+        selectedCodexModel,
+        currentCodexSpeedTier,
+        isCodexSpeedFollowingDefault,
+    ) {
+        if (!usesCodexChatGpt) {
+            emptyList()
+        } else {
+            buildList {
+                add(
+                    MurongChoiceDialogItem(
+                        key = CODEX_DEFAULT_SPEED_SELECTION_KEY,
+                        title = if (isCodexSpeedFollowingDefault) "✓ 默认（跟随官方模型）" else "默认（跟随官方模型）",
+                        subtitle = selectedCodexModel?.defaultSpeedTier?.let {
+                            "当前默认：${formatCodexSpeedLabel(it)}"
+                        } ?: "不向本次对话发送速度覆盖",
+                    ),
+                )
+                addAll(selectedCodexModel?.speedTiers.orEmpty().map { tier ->
+                    MurongChoiceDialogItem(
+                        key = tier.id,
+                        title = if (!isCodexSpeedFollowingDefault && tier.id == currentCodexSpeedTier) {
+                            "✓ ${tier.displayName?.takeIf { it.isNotBlank() } ?: tier.id}"
+                        } else {
+                            tier.displayName?.takeIf { it.isNotBlank() } ?: tier.id
+                        },
+                        subtitle = tier.description,
+                    )
+                })
+            }
+        }
+    }
     LaunchedEffect(
         isScreenActive,
+        usesCodexChatGpt,
         activeProvider.id,
         globalConfig.getApiKey(activeProvider.id),
         activeProviderModelCatalog?.syncedAt,
-        activeProviderModelCatalog?.isLoading
+        activeProviderModelCatalog?.isLoading,
+        codexModelCatalog.models,
+        codexModelCatalog.isLoading,
+        codexModelCatalog.error,
     ) {
         if (!isScreenActive) return@LaunchedEffect
+        if (usesCodexChatGpt) {
+            if (
+                codexModelCatalog.models.isEmpty() &&
+                !codexModelCatalog.isLoading &&
+                codexModelCatalog.error == null
+            ) {
+                onRefreshCodexModelCatalog()
+            }
+            return@LaunchedEffect
+        }
         if (globalConfig.getApiKey(activeProvider.id).isBlank()) return@LaunchedEffect
         if (activeProviderModelCatalog?.isLoading == true) return@LaunchedEffect
         if (activeProviderModelCatalog?.syncedAt != null) return@LaunchedEffect
@@ -717,9 +881,18 @@ internal fun ChatScreen(
     val lastMessageContentLength = lastMessage?.content?.length ?: 0
     val lastMessageReasoningLength = lastMessage?.reasoning?.length ?: 0
     val lastMessageStreaming = lastMessage?.isStreaming == true
-    suspend fun scrollMessagesToBottom() {
+    suspend fun scrollMessagesToBottom(settleAfterLayout: Boolean = false) {
         if (itemCount > 0) {
             listState.scrollToItem(itemCount - 1)
+            // Process groups expand after their first measurement. Re-apply the
+            // target after that layout pass so the final command/output card is
+            // reachable instead of ending underneath the composer.
+            if (settleAfterLayout) {
+                delay(180)
+                if (!listState.isScrollInProgress) {
+                    listState.scrollToItem(itemCount - 1)
+                }
+            }
         }
     }
 
@@ -772,7 +945,7 @@ internal fun ChatScreen(
         if (!isScreenActive) return@LaunchedEffect
         val sessionChanged = lastAutoScrolledSessionId != state.sessionId
         if (!listState.isScrollInProgress && (sessionChanged || shouldAutoFollowMessages)) {
-            scrollMessagesToBottom()
+            scrollMessagesToBottom(settleAfterLayout = true)
         }
         lastAutoScrolledSessionId = state.sessionId
     }
@@ -999,6 +1172,7 @@ internal fun ChatScreen(
             if (messages.isEmpty() && !state.isProcessing) {
                 WelcomeView(
                     hasApiKey = hasApiKey,
+                    usesCodexChatGpt = globalConfig.usesCodexChatGptBackend(),
                     onNavigateToSettings = onNavigateToSettings,
                     compactForInput = inputHasFocus,
                     onSizeChanged = {},
@@ -1267,31 +1441,80 @@ internal fun ChatScreen(
                 currentConfigurationLabel = currentConfigurationLabel,
                 configurationChoiceItems = configurationChoiceItems,
                 onSelectConfiguration = { key ->
-                    val separator = key.indexOf('|')
-                    if (separator > 0) {
-                        onUpdateGlobalConfig(
-                            globalConfig.selectConfiguration(
-                                providerId = key.substring(0, separator),
-                                relayId = key.substring(separator + 1)
+                    when {
+                        key == "__codex_chatgpt_backend__" -> {
+                            onUpdateGlobalConfig(
+                                globalConfig.copy(
+                                    activeAgentBackend = AgentBackendKind.CODEX_CHATGPT,
+                                ),
                             )
-                        )
+                        }
+
+                        key.indexOf('|') > 0 -> {
+                            val separator = key.indexOf('|')
+                            // Selecting an API relay must explicitly leave the
+                            // ChatGPT backend; otherwise the selected model label
+                            // and the actual request backend would diverge.
+                            onUpdateGlobalConfig(
+                                globalConfig.selectConfiguration(
+                                    providerId = key.substring(0, separator),
+                                    relayId = key.substring(separator + 1),
+                                ).copy(activeAgentBackend = AgentBackendKind.PROVIDER_API),
+                            )
+                        }
+
+                        else -> Unit
                     }
                 },
-                currentModelLabel = if (isModelAutoSelectionEnabled) {
+                currentModelLabel = if (usesCodexChatGpt) {
+                    codexModelLabel
+                } else if (isModelAutoSelectionEnabled) {
                     "自动 · ${activeProvider.formatModelDisplayName(activeResolvedModel)}"
                 } else {
                     activeProvider.formatModelDisplayName(activeResolvedModel)
                 },
-                modelChoiceTitle = "${activeProvider.name} 模型",
+                aiConfigurationSummary = buildList {
+                    add(
+                        if (usesCodexChatGpt) {
+                            "官方 · $codexModelLabel"
+                        } else {
+                            "${activeProvider.name} · ${if (isModelAutoSelectionEnabled) "自动" else activeProvider.formatModelDisplayName(activeResolvedModel)}"
+                        },
+                    )
+                    currentReasoningEffort
+                        .takeIf { it.isNotBlank() }
+                        ?.let { add("推理 ${formatCodexEffortLabel(it)}") }
+                    currentCodexSpeedTier
+                        .takeIf { usesCodexChatGpt && it.isNotBlank() && formatCodexSpeedLabel(it) != "标准" }
+                        ?.let { add("速度 ${formatCodexSpeedLabel(it)}") }
+                }.joinToString(" · "),
+                modelChoiceTitle = if (usesCodexChatGpt) "ChatGPT / Codex 模型" else "${activeProvider.name} 模型",
+                modelChoiceSubtitle = if (usesCodexChatGpt) {
+                    "仅列出该 ChatGPT 账户当前可用的官方模型"
+                } else {
+                    "切换后会写回当前 API 连接的默认模型配置"
+                },
                 modelChoiceItems = activeModelChoices,
                 onSelectModel = { modelId ->
-                    onUpdateGlobalConfig(
-                        if (modelId == AUTO_PROFILE_SELECTION_KEY) {
-                            globalConfig.withModelAutoSelection(globalConfig.activeProviderId, true)
-                        } else {
-                            globalConfig.withProviderModelSelection(globalConfig.activeProviderId, modelId)
+                    if (usesCodexChatGpt) {
+                        when (modelId) {
+                            "__codex_official_model__" -> onUpdateGlobalConfig(
+                                globalConfig.copy(codexModel = ""),
+                            )
+
+                            "__codex_models_loading__", "__codex_models_refresh__" ->
+                                onRefreshCodexModelCatalog()
+                            else -> onUpdateGlobalConfig(globalConfig.copy(codexModel = modelId))
                         }
-                    )
+                    } else {
+                        onUpdateGlobalConfig(
+                            if (modelId == AUTO_PROFILE_SELECTION_KEY) {
+                                globalConfig.withModelAutoSelection(globalConfig.activeProviderId, true)
+                            } else {
+                                globalConfig.withProviderModelSelection(globalConfig.activeProviderId, modelId)
+                            },
+                        )
+                    }
                 },
                 onPlanModeChange = { enabled ->
                     onUpdateProjectToolPreferences(
@@ -1414,12 +1637,21 @@ internal fun ChatScreen(
                 hasLocalProject = hasLocalProject,
                 onUpdateWorkspaceMode = onUpdateWorkspaceMode,
                 currentReasoningEffort = if (isReasoningAutoSelectionEnabled) {
-                    "自动 · ${currentReasoningEffort ?: "默认"}"
+                    "自动 · $currentReasoningEffort"
                 } else {
-                    currentReasoningEffort
+                    formatCodexEffortLabel(currentReasoningEffort)
                 },
                 reasoningEffortItems = reasoningEffortItems,
-                onSelectReasoningEffort = if (activeProvider.supportsReasoning) {
+                reasoningChoiceSubtitle = if (usesCodexChatGpt) {
+                    "仅显示当前官方模型支持的推理深度"
+                } else {
+                    "切换后会写回当前 API 连接的默认配置"
+                },
+                onSelectReasoningEffort = if (usesCodexChatGpt) {
+                    { effort ->
+                        onUpdateGlobalConfig(globalConfig.copy(codexReasoningEffort = effort))
+                    }
+                } else if (activeProvider.supportsReasoning) {
                     { effort ->
                         onUpdateGlobalConfig(
                             if (effort == AUTO_PROFILE_SELECTION_KEY) {
@@ -1431,7 +1663,26 @@ internal fun ChatScreen(
                     }
                 } else {
                     null
-                }
+                },
+                currentSpeedLabel = if (usesCodexChatGpt) {
+                    codexSpeedDisplayLabel
+                } else {
+                    null
+                },
+                speedChoiceItems = codexSpeedTierItems,
+                onSelectSpeed = if (usesCodexChatGpt && codexSpeedTierItems.isNotEmpty()) {
+                    { tier ->
+                        onUpdateGlobalConfig(
+                            globalConfig.copy(
+                                codexServiceTier = if (tier == CODEX_DEFAULT_SPEED_SELECTION_KEY) "" else tier,
+                            ),
+                        )
+                    }
+                } else {
+                    null
+                },
+                codexUsage = codexUsage.takeIf { usesCodexChatGpt },
+                onRefreshCodexUsage = onRefreshCodexUsage,
             )
 
             if (showSkillPicker) {
@@ -2632,6 +2883,218 @@ private fun buildOverrideExecutionProfileHintSummary(
     } else {
         "独立${overrideParts.joinToString("+")} · $profileLabel"
     }
+}
+
+/**
+ * The colored arc is the quota still available in the weekly window: it shrinks
+ * as usage grows. Details stay behind a tap so the chat header remains quiet.
+ */
+@Composable
+private fun CodexUsageRingButton(
+    usage: CodexUsageUiState,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val accent = rememberMurongAccentColor()
+    val chromeColor = rememberMurongChromeColor()
+    val trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)
+    val usedPercent = usage.secondary?.usedPercent ?: usage.primary?.usedPercent
+    val remainingFraction = ((100 - (usedPercent ?: 0)).coerceIn(0, 100) / 100f)
+    val ringColor = when {
+        usage.error != null -> MaterialTheme.colorScheme.error
+        else -> accent
+    }
+    Surface(
+        modifier = modifier
+            .size(34.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+        shape = CircleShape,
+        color = chromeColor,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Canvas(modifier = Modifier.size(23.dp)) {
+                val stroke = Stroke(width = 3.dp.toPx())
+                drawArc(
+                    color = trackColor,
+                    startAngle = -90f,
+                    sweepAngle = 360f,
+                    useCenter = false,
+                    style = stroke,
+                )
+                drawArc(
+                    color = ringColor,
+                    startAngle = -90f,
+                    sweepAngle = 360f * remainingFraction,
+                    useCenter = false,
+                    style = stroke,
+                )
+            }
+            when {
+                usage.isLoading -> Text("…", style = MaterialTheme.typography.labelSmall, color = ringColor)
+                usage.error != null -> Text("!", style = MaterialTheme.typography.labelSmall, color = ringColor)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CodexUsageDetailsPopup(
+    usage: CodexUsageUiState,
+    onRefresh: (() -> Unit)?,
+    onDismiss: () -> Unit,
+    popupOffset: IntOffset,
+) {
+    val density = LocalDensity.current
+    val mutedTextColor = rememberMurongMutedTextColor()
+    val popupPositionProvider = remember(popupOffset, density) {
+        object : PopupPositionProvider {
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: androidx.compose.ui.unit.LayoutDirection,
+                popupContentSize: IntSize,
+            ): IntOffset {
+                val marginPx = with(density) { 8.dp.roundToPx() }
+                return IntOffset(
+                    x = popupOffset.x.coerceIn(
+                        marginPx,
+                        (windowSize.width - popupContentSize.width - marginPx)
+                            .coerceAtLeast(marginPx),
+                    ),
+                    y = popupOffset.y.coerceIn(
+                        marginPx,
+                        (windowSize.height - popupContentSize.height - marginPx)
+                            .coerceAtLeast(marginPx),
+                    ),
+                )
+            }
+        }
+    }
+    Popup(
+        popupPositionProvider = popupPositionProvider,
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(
+            focusable = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
+            clippingEnabled = true,
+        ),
+    ) {
+        MurongPopupSurface(
+            modifier = Modifier.widthIn(min = 208.dp, max = 248.dp),
+            shape = RoundedCornerShape(18.dp),
+            forceOpaque = true,
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "ChatGPT / Codex 用量",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    TextButton(onClick = onDismiss) {
+                        Text("关闭")
+                    }
+                }
+                usage.secondary?.let { weekly ->
+                    Text(
+                        text = formatCodexRateLimitWindow("本周额度", weekly),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                } ?: Text(
+                    text = if (usage.isLoading) "正在读取本周额度…" else "本周额度暂未返回。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = mutedTextColor,
+                )
+                usage.primary?.let { shortTerm ->
+                    Text(
+                        text = formatCodexRateLimitWindow("短时额度", shortTerm),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor,
+                    )
+                }
+                usage.rateLimitReachedType?.takeIf { it.isNotBlank() }?.let {
+                    Text(
+                        text = "当前限制：$it",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                usage.error?.takeIf { it.isNotBlank() }?.let {
+                    Text(
+                        text = "读取失败：$it",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                Text(
+                    text = "圆环表示本周剩余额度；圆弧变短表示已用得更多。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = mutedTextColor,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    TextButton(
+                        onClick = { onRefresh?.invoke() },
+                        enabled = onRefresh != null && !usage.isLoading,
+                    ) {
+                        Text(if (usage.isLoading) "刷新中" else "刷新")
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun formatCodexRateLimitWindow(label: String, window: CodexRateLimitWindow): String {
+    val remaining = window.usedPercent?.let { (100 - it).coerceIn(0, 100) }
+    val reset = window.resetsAt?.let(::formatCodexRateLimitReset)
+    return buildString {
+        append(label)
+        append("剩余 ")
+        append(remaining?.let { "$it%" } ?: "--")
+        reset?.let {
+            append(" · ")
+            append(it)
+        }
+    }
+}
+
+private fun formatCodexRateLimitReset(resetsAtSeconds: Long): String {
+    val remainingMinutes = ((resetsAtSeconds * 1_000L - System.currentTimeMillis()) / 60_000L)
+        .coerceAtLeast(0L)
+    return when {
+        remainingMinutes == 0L -> "即将重置"
+        remainingMinutes < 60L -> "约 ${remainingMinutes} 分钟后重置"
+        remainingMinutes < 48 * 60L -> "约 ${remainingMinutes / 60} 小时后重置"
+        else -> "约 ${remainingMinutes / (24 * 60)} 天后重置"
+    }
+}
+
+private fun formatCodexEffortLabel(value: String?): String = when (value?.trim()?.lowercase()) {
+    "low" -> "轻度"
+    "medium" -> "中"
+    "high" -> "高"
+    "xhigh" -> "极高"
+    "max" -> "最高"
+    "ultra" -> "极高"
+    else -> value?.trim().takeUnless { it.isNullOrBlank() } ?: "默认"
+}
+
+private fun formatCodexSpeedLabel(value: String?): String = when (value?.trim()?.lowercase()) {
+    null, "", "default", "standard" -> "标准"
+    "fast" -> "快速"
+    else -> value.trim()
 }
 
 @Composable
@@ -4992,7 +5455,9 @@ private fun InputBar(
     configurationChoiceItems: List<MurongChoiceDialogItem>,
     onSelectConfiguration: (String) -> Unit,
     currentModelLabel: String,
+    aiConfigurationSummary: String,
     modelChoiceTitle: String,
+    modelChoiceSubtitle: String,
     modelChoiceItems: List<MurongChoiceDialogItem>,
     onSelectModel: (String) -> Unit,
     onPlanModeChange: (Boolean) -> Unit,
@@ -5023,8 +5488,17 @@ private fun InputBar(
     onUpdateWorkspaceMode: (WorkspaceMode) -> Unit,
     currentReasoningEffort: String? = null,
     reasoningEffortItems: List<MurongChoiceDialogItem> = emptyList(),
-    onSelectReasoningEffort: ((String) -> Unit)? = null
+    reasoningChoiceSubtitle: String = "切换后会写回当前默认配置",
+    onSelectReasoningEffort: ((String) -> Unit)? = null,
+    currentSpeedLabel: String? = null,
+    speedChoiceItems: List<MurongChoiceDialogItem> = emptyList(),
+    onSelectSpeed: ((String) -> Unit)? = null,
+    codexUsage: CodexUsageUiState? = null,
+    onRefreshCodexUsage: (() -> Unit)? = null,
 ) {
+    var showAiConfigurationMenu by remember { mutableStateOf(false) }
+    var aiConfigurationMenuOffset by remember { mutableStateOf(IntOffset.Zero) }
+    var pendingAiConfigurationCategory by remember { mutableStateOf<String?>(null) }
     var showConfigurationChoices by remember { mutableStateOf(false) }
     var configurationMenuOffset by remember { mutableStateOf(IntOffset.Zero) }
     var showModelChoices by remember { mutableStateOf(false) }
@@ -5033,6 +5507,10 @@ private fun InputBar(
     var moreMenuOffset by remember { mutableStateOf(IntOffset.Zero) }
     var showReasoningChoices by remember { mutableStateOf(false) }
     var reasoningMenuOffset by remember { mutableStateOf(IntOffset.Zero) }
+    var showSpeedChoices by remember { mutableStateOf(false) }
+    var speedMenuOffset by remember { mutableStateOf(IntOffset.Zero) }
+    var showCodexUsagePopup by remember { mutableStateOf(false) }
+    var codexUsagePopupOffset by remember { mutableStateOf(IntOffset.Zero) }
     var textFieldFocused by remember { mutableStateOf(false) }
     val actionsEnabled = enabled && !isSending
     val moreActions = remember(
@@ -5097,6 +5575,110 @@ private fun InputBar(
     val compactModelMenuWidthPx = with(density) { 236.dp.roundToPx() }
     val compactModelMenuHeightPx = with(density) {
         ((modelChoiceItems.size.coerceAtMost(6) * 42) + 44).dp.roundToPx()
+    }
+    val aiConfigurationRootItems = remember(
+        currentConfigurationLabel,
+        configurationChoiceItems,
+        currentModelLabel,
+        modelChoiceItems,
+        currentReasoningEffort,
+        reasoningEffortItems,
+        currentSpeedLabel,
+        speedChoiceItems,
+        onSelectReasoningEffort,
+        onSelectSpeed,
+    ) {
+        buildList {
+            if (configurationChoiceItems.isNotEmpty()) {
+                add(
+                    MurongChoiceDialogItem(
+                        key = "configuration",
+                        title = "后端与连接 ›",
+                        subtitle = currentConfigurationLabel.ifBlank { "未选择" },
+                    ),
+                )
+            }
+            if (modelChoiceItems.isNotEmpty()) {
+                add(
+                    MurongChoiceDialogItem(
+                        key = "model",
+                        title = "模型 ›",
+                        subtitle = currentModelLabel,
+                    ),
+                )
+            }
+            if (onSelectReasoningEffort != null) {
+                val canSelectReasoning = reasoningEffortItems.isNotEmpty()
+                add(
+                    MurongChoiceDialogItem(
+                        key = "reasoning",
+                        title = if (canSelectReasoning) "推理深度 ›" else "推理深度",
+                        subtitle = if (canSelectReasoning) {
+                            currentReasoningEffort?.ifBlank { "默认" } ?: "默认"
+                        } else {
+                            "${currentReasoningEffort?.ifBlank { "默认" } ?: "默认"} · 待读取官方模型目录确认"
+                        },
+                        enabled = canSelectReasoning,
+                    ),
+                )
+            }
+            if (currentSpeedLabel != null) {
+                val canSelectSpeed = onSelectSpeed != null && speedChoiceItems.isNotEmpty()
+                add(
+                    MurongChoiceDialogItem(
+                        key = "speed",
+                        title = if (canSelectSpeed) "响应速度 ›" else "响应速度",
+                        subtitle = if (canSelectSpeed) {
+                            currentSpeedLabel
+                        } else {
+                            "$currentSpeedLabel · 待读取官方模型目录确认"
+                        },
+                        enabled = canSelectSpeed,
+                    ),
+                )
+            }
+        }
+    }
+    val compactAiConfigurationMenuHeightPx = with(density) {
+        ((aiConfigurationRootItems.size.coerceAtMost(4) * 48) + 44).dp.roundToPx()
+    }
+    val compactAiConfigurationHeaderHeightPx = with(density) { 44.dp.roundToPx() }
+    val compactAiConfigurationRowHeightPx = with(density) { 48.dp.roundToPx() }
+    val compactUsagePopupWidthPx = with(density) { 236.dp.roundToPx() }
+    val compactUsagePopupHeightPx = with(density) { 184.dp.roundToPx() }
+    LaunchedEffect(pendingAiConfigurationCategory) {
+        val category = pendingAiConfigurationCategory ?: return@LaunchedEffect
+        // The compact popup dismisses itself after its item callback. Deferring
+        // the second-level popup by one composition prevents that dismissal from
+        // consuming the same tap on some Android/Phone Link combinations.
+        val selectedRowIndex = aiConfigurationRootItems.indexOfFirst { it.key == category }
+            .coerceAtLeast(0)
+        // The child menu should originate next to the row the user actually
+        // tapped, rather than from the top edge of the parent menu.
+        val submenuOffset = aiConfigurationMenuOffset.copy(
+            y = aiConfigurationMenuOffset.y +
+                compactAiConfigurationHeaderHeightPx +
+                (selectedRowIndex * compactAiConfigurationRowHeightPx),
+        )
+        when (category) {
+            "configuration" -> {
+                configurationMenuOffset = submenuOffset
+                showConfigurationChoices = true
+            }
+            "model" -> {
+                modelMenuOffset = submenuOffset
+                showModelChoices = true
+            }
+            "reasoning" -> {
+                reasoningMenuOffset = submenuOffset
+                showReasoningChoices = true
+            }
+            "speed" -> {
+                speedMenuOffset = submenuOffset
+                showSpeedChoices = true
+            }
+        }
+        pendingAiConfigurationCategory = null
     }
 
     Box(
@@ -5204,49 +5786,15 @@ private fun InputBar(
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.Start),
                     verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically)
                 ) {
-                    if (configurationChoiceItems.isNotEmpty()) {
+                    if (aiConfigurationRootItems.isNotEmpty()) {
                         MurongTagButton(
-                            text = currentConfigurationLabel.ifBlank { "切换配置" },
-                            onClick = { if (actionsEnabled) showConfigurationChoices = true },
+                            text = aiConfigurationSummary.ifBlank { "模型与运行参数" },
+                            onClick = { if (actionsEnabled) showAiConfigurationMenu = true },
                             modifier = Modifier.onGloballyPositioned { coordinates ->
                                 val bounds = coordinates.boundsInWindow()
-                                configurationMenuOffset = IntOffset(
+                                aiConfigurationMenuOffset = IntOffset(
                                     x = bounds.left.roundToInt(),
-                                    y = bounds.top.roundToInt() - compactModelMenuHeightPx - compactMoreMenuGapPx
-                                )
-                            }
-                        )
-                    }
-                    if (modelChoiceItems.isNotEmpty()) {
-                        MurongTagButton(
-                            text = currentModelLabel,
-                            onClick = {
-                                if (actionsEnabled) {
-                                    showModelChoices = true
-                                }
-                            },
-                            modifier = Modifier.onGloballyPositioned { coordinates ->
-                                val bounds = coordinates.boundsInWindow()
-                                modelMenuOffset = IntOffset(
-                                    x = bounds.left.roundToInt(),
-                                    y = bounds.top.roundToInt() - compactModelMenuHeightPx - compactMoreMenuGapPx
-                                )
-                            }
-                        )
-                    }
-                    if (onSelectReasoningEffort != null && reasoningEffortItems.isNotEmpty()) {
-                        MurongTagButton(
-                            text = currentReasoningEffort ?: "推理",
-                            onClick = {
-                                if (actionsEnabled) {
-                                    showReasoningChoices = true
-                                }
-                            },
-                            modifier = Modifier.onGloballyPositioned { coordinates ->
-                                val bounds = coordinates.boundsInWindow()
-                                reasoningMenuOffset = IntOffset(
-                                    x = bounds.left.roundToInt(),
-                                    y = bounds.top.roundToInt() - compactModelMenuHeightPx - compactMoreMenuGapPx
+                                    y = bounds.top.roundToInt() - compactAiConfigurationMenuHeightPx - compactMoreMenuGapPx
                                 )
                             }
                         )
@@ -5280,6 +5828,19 @@ private fun InputBar(
                             tint = if (canRecallPrevious) accent else accent.copy(alpha = 0.38f)
                         )
                     }
+                    codexUsage?.let { usage ->
+                        CodexUsageRingButton(
+                            usage = usage,
+                            onClick = { showCodexUsagePopup = true },
+                            modifier = Modifier.onGloballyPositioned { coordinates ->
+                                val bounds = coordinates.boundsInWindow()
+                                codexUsagePopupOffset = IntOffset(
+                                    x = bounds.right.roundToInt() - compactUsagePopupWidthPx,
+                                    y = bounds.top.roundToInt() - compactUsagePopupHeightPx - compactMoreMenuGapPx,
+                                )
+                            },
+                        )
+                    }
                     MurongTagButton(
                         onClick = {
                             if (actionsEnabled && canRecallNext) {
@@ -5298,10 +5859,25 @@ private fun InputBar(
             }
         }
     }
+    if (showAiConfigurationMenu) {
+        MurongCompactChoiceDialog(
+            title = "模型与运行参数",
+            subtitle = "先选类别，再修改具体选项",
+            items = aiConfigurationRootItems,
+            modifier = Modifier.widthIn(min = 236.dp, max = 300.dp),
+            dialogAlignment = Alignment.TopStart,
+            popupOffset = aiConfigurationMenuOffset,
+            showCancelButton = false,
+            onDismissRequest = { showAiConfigurationMenu = false },
+            onSelect = { selectedItem ->
+                pendingAiConfigurationCategory = selectedItem.key
+            },
+        )
+    }
     if (showConfigurationChoices) {
         MurongCompactChoiceDialog(
-            title = "切换 AI 配置",
-            subtitle = "选择后会立即切换 Provider 与连接配置",
+            title = "后端与连接",
+            subtitle = "选择官方 ChatGPT / Codex 或已配置 API 连接",
             items = configurationChoiceItems,
             modifier = Modifier.widthIn(min = 220.dp, max = 280.dp),
             dialogAlignment = Alignment.TopStart,
@@ -5317,7 +5893,7 @@ private fun InputBar(
     if (showModelChoices) {
         MurongCompactChoiceDialog(
             title = modelChoiceTitle,
-            subtitle = "切换后会写回当前默认模型配置",
+            subtitle = modelChoiceSubtitle,
             items = modelChoiceItems,
             modifier = Modifier.widthIn(min = 196.dp, max = 236.dp),
             dialogAlignment = Alignment.TopStart,
@@ -5349,7 +5925,7 @@ private fun InputBar(
     if (showReasoningChoices) {
         MurongCompactChoiceDialog(
             title = "推理深度",
-            subtitle = "切换后会写回当前默认配置",
+            subtitle = reasoningChoiceSubtitle,
             items = reasoningEffortItems,
             modifier = Modifier.widthIn(min = 196.dp, max = 236.dp),
             dialogAlignment = Alignment.TopStart,
@@ -5360,6 +5936,30 @@ private fun InputBar(
                 showReasoningChoices = false
                 onSelectReasoningEffort?.invoke(selectedItem.key)
             }
+        )
+    }
+    if (showSpeedChoices) {
+        MurongCompactChoiceDialog(
+            title = "响应速度",
+            subtitle = "仅显示当前官方模型支持的速度档位",
+            items = speedChoiceItems,
+            modifier = Modifier.widthIn(min = 196.dp, max = 236.dp),
+            dialogAlignment = Alignment.TopStart,
+            popupOffset = speedMenuOffset,
+            showCancelButton = false,
+            onDismissRequest = { showSpeedChoices = false },
+            onSelect = { selectedItem ->
+                showSpeedChoices = false
+                onSelectSpeed?.invoke(selectedItem.key)
+            },
+        )
+    }
+    codexUsage?.takeIf { showCodexUsagePopup }?.let { usage ->
+        CodexUsageDetailsPopup(
+            usage = usage,
+            onRefresh = onRefreshCodexUsage,
+            onDismiss = { showCodexUsagePopup = false },
+            popupOffset = codexUsagePopupOffset,
         )
     }
 }
@@ -5776,6 +6376,7 @@ fun LoadingIndicator() {
 @Composable
 private fun WelcomeView(
     hasApiKey: Boolean,
+    usesCodexChatGpt: Boolean,
     onNavigateToSettings: () -> Unit,
     compactForInput: Boolean = false,
     onSizeChanged: (Int) -> Unit = {},
@@ -5825,7 +6426,11 @@ private fun WelcomeView(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "请先配置 AI 提供商和 API Key，\n支持 DeepSeek、OpenAI 兼容中转站、Claude",
+                        text = if (usesCodexChatGpt) {
+                            "请先在设置中完成 ChatGPT / Codex 设备码登录。"
+                        } else {
+                            "请先配置 AI 提供商和 API Key，\n支持 DeepSeek、OpenAI 兼容中转站、Claude"
+                        },
                         fontSize = 13.sp,
                         color = mutedTextColor,
                         lineHeight = 20.sp

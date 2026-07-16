@@ -6,11 +6,16 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import com.murong.agent.common.shell.KeepShellPublic
 import com.murong.agent.core.config.ConfigRepository
+import com.murong.agent.core.config.AgentBackendKind
 import com.murong.agent.core.config.GlobalMemory
 import com.murong.agent.core.config.ProviderConfig
 import com.murong.agent.core.config.RelayConfig
 import com.murong.agent.core.config.ProviderBalanceService
 import com.murong.agent.core.loop.ChatSessionManager
+import com.murong.agent.core.codex.CodexAppServerClient
+import com.murong.agent.core.codex.CodexConnectionPhase
+import com.murong.agent.core.codex.CodexLoginStatus
+import com.murong.agent.core.doctor.SensitiveDataSanitizer
 import com.murong.agent.core.loop.SessionSummary
 import com.murong.agent.core.mcp.McpRegistry
 import com.murong.agent.core.mcp.McpServerConfig
@@ -49,6 +54,20 @@ data class GitHubAuthUiState(
     val authorizationUrl: String? = null,
     val callbackUri: String? = null,
     val pendingState: String? = null,
+    val message: String? = null,
+    val error: String? = null
+)
+
+/** Login information intentionally excludes the private CODEX_HOME auth file. */
+data class CodexChatGptUiState(
+    val isLoading: Boolean = false,
+    val isLoggedIn: Boolean = false,
+    val accountEmail: String? = null,
+    val planType: String? = null,
+    val requiresOpenaiAuth: Boolean? = null,
+    val verificationUrl: String? = null,
+    val userCode: String? = null,
+    val loginId: String? = null,
     val message: String? = null,
     val error: String? = null
 )
@@ -96,7 +115,8 @@ class SettingsViewModel @Inject constructor(
     val configRepository: ConfigRepository,
     private val providerBalanceService: ProviderBalanceService,
     private val mcpRegistry: McpRegistry,
-    private val chatSessionManager: ChatSessionManager
+    private val chatSessionManager: ChatSessionManager,
+    private val codexAppServer: CodexAppServerClient
 ) : ViewModel() {
     private companion object {
         const val AUTO_BALANCE_SYNC_INTERVAL_MS = 10 * 60 * 1000L
@@ -147,6 +167,10 @@ class SettingsViewModel @Inject constructor(
     val gitHubAuthState: StateFlow<GitHubAuthUiState> = _gitHubAuthState.asStateFlow()
     private var lastHandledGitHubCallback: String? = null
 
+    private val _codexChatGptState = MutableStateFlow(CodexChatGptUiState())
+    val codexChatGptState: StateFlow<CodexChatGptUiState> = _codexChatGptState.asStateFlow()
+    private var lastCompletedCodexLoginId: String? = null
+
     private val _appUpdateState = MutableStateFlow(AppUpdateUiState())
     val appUpdateState: StateFlow<AppUpdateUiState> = _appUpdateState.asStateFlow()
 
@@ -191,7 +215,170 @@ class SettingsViewModel @Inject constructor(
                 }
             }
         }
+        viewModelScope.launch {
+            codexAppServer.state.collect { runtime ->
+                val login = runtime.login
+                _codexChatGptState.value = _codexChatGptState.value.copy(
+                    isLoading = runtime.connectionPhase == CodexConnectionPhase.INITIALIZING,
+                    isLoggedIn = runtime.account != null,
+                    accountEmail = runtime.account?.email,
+                    planType = runtime.account?.planType ?: runtime.planType,
+                    requiresOpenaiAuth = runtime.requiresOpenaiAuth,
+                    verificationUrl = login.verificationUrl,
+                    userCode = login.userCode,
+                    loginId = login.loginId,
+                    message = when (login.status) {
+                        CodexLoginStatus.WAITING_FOR_DEVICE_AUTHORIZATION -> "请在浏览器完成 ChatGPT 授权。"
+                        CodexLoginStatus.SUCCEEDED -> "ChatGPT 登录已完成，正在读取账户信息。"
+                        CodexLoginStatus.CANCEL_REQUESTED -> "已取消 ChatGPT 登录。"
+                        else -> _codexChatGptState.value.message
+                    },
+                    error = login.error?.let(::sanitizeCodexMessage)
+                )
+                val completedLoginId = login.loginId
+                if (
+                    login.status == CodexLoginStatus.SUCCEEDED &&
+                    completedLoginId != null &&
+                    completedLoginId != lastCompletedCodexLoginId
+                ) {
+                    lastCompletedCodexLoginId = completedLoginId
+                    refreshCodexChatGptStatus()
+                }
+            }
+        }
     }
+
+    fun selectAgentBackend(kind: AgentBackendKind) {
+        viewModelScope.launch {
+            configRepository.saveConfig(configRepository.getConfig().copy(activeAgentBackend = kind))
+        }
+    }
+
+    fun refreshCodexChatGptStatus() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _codexChatGptState.value = _codexChatGptState.value.copy(
+                isLoading = true,
+                error = null,
+                message = "正在检查 Codex / ChatGPT 登录状态…"
+            )
+            runCatching {
+                codexAppServer.start()
+                codexAppServer.accountRead()
+            }.onSuccess { account ->
+                val isChatGptAccount = account.account?.type.equals("chatgpt", ignoreCase = true)
+                if (isChatGptAccount) {
+                    // A successful official login must also make the chat surface
+                    // use the official backend. Leaving the prior provider active
+                    // makes the UI misleading and keeps consuming an API relay.
+                    val currentConfig = configRepository.getConfig()
+                    if (currentConfig.activeAgentBackend != AgentBackendKind.CODEX_CHATGPT) {
+                        configRepository.saveConfig(
+                            currentConfig.copy(activeAgentBackend = AgentBackendKind.CODEX_CHATGPT),
+                        )
+                    }
+                    // Fetch the server-owned quota snapshot now. Failures here do
+                    // not invalidate a successful login; ChatViewModel can retry.
+                    runCatching { codexAppServer.accountRateLimitsRead() }
+                }
+                _codexChatGptState.value = _codexChatGptState.value.copy(
+                    isLoading = false,
+                    isLoggedIn = account.account != null,
+                    accountEmail = account.account?.email,
+                    planType = account.account?.planType,
+                    requiresOpenaiAuth = account.requiresOpenaiAuth,
+                    message = if (isChatGptAccount) {
+                        "已连接 ChatGPT / Codex，聊天已切换到官方后端。"
+                    } else if (account.account != null) {
+                        "已连接 Codex 账户。"
+                    } else {
+                        "尚未登录 ChatGPT。"
+                    },
+                    error = null
+                )
+            }.onFailure { error ->
+                _codexChatGptState.value = _codexChatGptState.value.copy(
+                    isLoading = false,
+                    error = "无法刷新 ChatGPT 登录状态：${sanitizeCodexMessage(error.message)}",
+                    message = "若浏览器已完成授权，请稍后重试；授权过程不需要跳回本应用。"
+                )
+            }
+        }
+    }
+
+    fun startCodexChatGptLogin() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _codexChatGptState.value = _codexChatGptState.value.copy(
+                isLoading = true,
+                error = null,
+                message = "正在获取 ChatGPT 设备码…"
+            )
+            runCatching {
+                // A failed or abandoned device-code exchange can leave the server
+                // polling the old login id. A fresh process gives every retry a
+                // clean request and, crucially, a fresh browser-open attempt.
+                if (_codexChatGptState.value.loginId.isNullOrBlank()) {
+                    codexAppServer.start()
+                } else {
+                    codexAppServer.restart()
+                }
+                codexAppServer.startDeviceCodeLogin()
+            }.onSuccess { deviceCode ->
+                _codexChatGptState.value = _codexChatGptState.value.copy(
+                    isLoading = false,
+                    verificationUrl = deviceCode.verificationUrl,
+                    userCode = deviceCode.userCode,
+                    loginId = deviceCode.loginId,
+                    message = "请在浏览器输入设备码完成授权。",
+                    error = null
+                )
+            }.onFailure { error ->
+                _codexChatGptState.value = _codexChatGptState.value.copy(
+                    isLoading = false,
+                    error = "无法发起 ChatGPT 登录：${sanitizeCodexMessage(error.message)}"
+                )
+            }
+        }
+    }
+
+    fun cancelCodexChatGptLogin() {
+        val loginId = _codexChatGptState.value.loginId ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { codexAppServer.cancelLogin(loginId) }
+                .onSuccess {
+                    _codexChatGptState.value = CodexChatGptUiState(
+                        message = "已取消本次 ChatGPT 登录。",
+                    )
+                }
+                .onFailure { error ->
+                    _codexChatGptState.value = _codexChatGptState.value.copy(
+                        error = "取消登录失败：${sanitizeCodexMessage(error.message)}"
+                    )
+                }
+        }
+    }
+
+    fun logoutCodexChatGpt() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _codexChatGptState.value = _codexChatGptState.value.copy(isLoading = true, error = null)
+            runCatching { codexAppServer.logout() }
+                .onSuccess {
+                    _codexChatGptState.value = CodexChatGptUiState(message = "已退出 ChatGPT / Codex。")
+                }
+                .onFailure { error ->
+                    _codexChatGptState.value = _codexChatGptState.value.copy(
+                        isLoading = false,
+                        error = "退出失败：${sanitizeCodexMessage(error.message)}"
+                    )
+                }
+        }
+    }
+
+    private fun sanitizeCodexMessage(value: String?): String = SensitiveDataSanitizer
+        .sanitizeText(value.orEmpty())
+        .replace(Regex("\\s+"), " ")
+        .trim()
+        .take(500)
+        .ifBlank { "未知错误" }
 
     fun updateConfig(newConfig: ProviderConfig) {
         viewModelScope.launch {

@@ -44,4 +44,16 @@ class SensitiveDataSanitizerTest {
 
         assertEquals("Bearer abc123 Injected: nope", sanitized)
     }
+
+    @Test
+    fun sanitizeText_canPreservePathsForPrivateToolCardsWhileRedactingSecrets() {
+        val sanitized = SensitiveDataSanitizer.sanitizeText(
+            "command=cat /storage/emulated/0/备份/report.md api_key=super-secret-value",
+            redactPaths = false,
+        )
+
+        assertTrue(sanitized.contains("/storage/emulated/0/备份/report.md"))
+        assertFalse(sanitized.contains("super-secret-value"))
+        assertTrue(sanitized.contains("[REDACTED_SECRET]"))
+    }
 }

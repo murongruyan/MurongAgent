@@ -9,6 +9,8 @@ import com.murong.agent.core.config.ProviderConfig
 import com.murong.agent.core.config.GlobalMemory
 import com.murong.agent.core.config.GlobalRule
 import com.murong.agent.core.config.ProjectToolPreferences
+import com.murong.agent.core.codex.CodexAppServerClient
+import com.murong.agent.core.doctor.SensitiveDataSanitizer
 import com.murong.agent.core.loop.*
 import com.murong.agent.ui.project.ProjectGitHubRepoRef
 import com.murong.agent.ui.project.listProjectGitHubFileNames
@@ -22,6 +24,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -29,7 +32,8 @@ import javax.inject.Inject
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val sessionManager: ChatSessionManager,
-    private val configRepository: ConfigRepository
+    private val configRepository: ConfigRepository,
+    private val codexAppServer: CodexAppServerClient,
 ) : ViewModel() {
     private companion object {
         private const val REMOTE_MENTION_LIMIT = 8
@@ -40,6 +44,14 @@ class ChatViewModel @Inject constructor(
 
     val config: StateFlow<ProviderConfig> = configRepository.configFlow
         .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5000), ProviderConfig())
+
+    private val _codexUsage = MutableStateFlow(CodexUsageUiState())
+    /** Official ChatGPT/Codex quotas; it contains no API key or OAuth material. */
+    val codexUsage: StateFlow<CodexUsageUiState> = _codexUsage.asStateFlow()
+
+    private val _codexModelCatalog = MutableStateFlow(CodexModelCatalogUiState())
+    val codexModelCatalog: StateFlow<CodexModelCatalogUiState> =
+        _codexModelCatalog.asStateFlow()
 
     private val _isSending = MutableStateFlow(false)
     val isSending: StateFlow<Boolean> = _isSending.asStateFlow()
@@ -58,6 +70,30 @@ class ChatViewModel @Inject constructor(
     init {
         refreshSessions()
         viewModelScope.launch {
+            codexAppServer.state.collect { runtime ->
+                runtime.rateLimits?.let { snapshot ->
+                    _codexUsage.value = snapshot.toCodexUsageUiState(
+                        isLoading = _codexUsage.value.isLoading,
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
+            configRepository.configFlow
+                .distinctUntilChanged { old, new ->
+                    old.usesCodexChatGptBackend() == new.usesCodexChatGptBackend()
+                }
+                .collect { currentConfig ->
+                    if (currentConfig.usesCodexChatGptBackend()) {
+                        refreshCodexUsage()
+                        refreshCodexModelCatalog()
+                    } else {
+                        _codexUsage.value = CodexUsageUiState()
+                        _codexModelCatalog.value = CodexModelCatalogUiState()
+                    }
+                }
+        }
+        viewModelScope.launch {
             sessionManager.pendingPromptReplayNotices.collect { notice ->
                 _toastMessages.emit(notice)
             }
@@ -70,7 +106,61 @@ class ChatViewModel @Inject constructor(
     }
 
     fun hasActiveApiKey(config: ProviderConfig): Boolean {
-        return config.getActiveApiKey().isNotBlank()
+        return if (config.usesCodexChatGptBackend()) {
+            sessionManager.hasCodexChatGptAccount()
+        } else {
+            config.getActiveApiKey().isNotBlank()
+        }
+    }
+
+    fun refreshCodexUsage() {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (!configRepository.getConfig().usesCodexChatGptBackend()) return@launch
+            _codexUsage.value = _codexUsage.value.copy(isLoading = true, error = null)
+            runCatching {
+                codexAppServer.start()
+                val account = codexAppServer.accountRead()
+                check(account.account != null) { "ChatGPT 尚未登录" }
+                codexAppServer.accountRateLimitsRead()
+            }.onSuccess { snapshot ->
+                _codexUsage.value = snapshot.toCodexUsageUiState()
+            }.onFailure { error ->
+                _codexUsage.value = _codexUsage.value.copy(
+                    isLoading = false,
+                    error = SensitiveDataSanitizer.sanitizeText(error.message.orEmpty())
+                        .replace(Regex("\\s+"), " ")
+                        .trim()
+                        .take(240)
+                        .ifBlank { "无法读取官方用量" },
+                )
+            }
+        }
+    }
+
+    fun refreshCodexModelCatalog() {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (!configRepository.getConfig().usesCodexChatGptBackend()) return@launch
+            _codexModelCatalog.value = _codexModelCatalog.value.copy(isLoading = true, error = null)
+            runCatching {
+                codexAppServer.start()
+                val account = codexAppServer.accountRead()
+                check(account.account != null) { "ChatGPT 尚未登录" }
+                codexAppServer.modelList().also { catalog ->
+                    check(catalog.models.isNotEmpty()) { "官方没有返回可用模型" }
+                }
+            }.onSuccess { catalog ->
+                _codexModelCatalog.value = catalog.toCodexModelCatalogUiState()
+            }.onFailure { error ->
+                _codexModelCatalog.value = _codexModelCatalog.value.copy(
+                    isLoading = false,
+                    error = SensitiveDataSanitizer.sanitizeText(error.message.orEmpty())
+                        .replace(Regex("\\s+"), " ")
+                        .trim()
+                        .take(240)
+                        .ifBlank { "无法读取官方模型目录" },
+                )
+            }
+        }
     }
 
     fun sendMessage(text: String, mentionedFiles: List<FileMentionUi> = emptyList()) {

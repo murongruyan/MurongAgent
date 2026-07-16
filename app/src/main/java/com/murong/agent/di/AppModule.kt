@@ -8,6 +8,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import com.murong.agent.core.config.ConfigRepository
 import com.murong.agent.core.config.ProviderBalanceService
+import com.murong.agent.core.codex.CodexAppServerClient
 import com.murong.agent.core.loop.ChatSessionManager
 import com.murong.agent.core.mcp.McpRegistry
 import javax.inject.Singleton
@@ -34,9 +35,21 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideCodexAppServerClient(
+        @ApplicationContext context: Context
+    ): CodexAppServerClient = CodexAppServerClient(context)
+
+    @Provides
+    @Singleton
     fun provideChatSessionManager(
         @ApplicationContext context: Context,
         configRepository: ConfigRepository,
-        mcpRegistry: McpRegistry
-    ): ChatSessionManager = ChatSessionManager(context, configRepository, mcpRegistry)
+        mcpRegistry: McpRegistry,
+        codexAppServerClient: CodexAppServerClient
+    ): ChatSessionManager = ChatSessionManager(
+        context = context,
+        configRepository = configRepository,
+        mcpRegistry = mcpRegistry,
+        codexAppServer = codexAppServerClient
+    )
 }

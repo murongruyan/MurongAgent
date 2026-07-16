@@ -212,6 +212,8 @@ fun MainScreen() {
     val authState by authVm.uiState.collectAsState()
     val chatState by chatVm.state.collectAsState()
     val chatConfig by chatVm.config.collectAsState()
+    val codexUsage by chatVm.codexUsage.collectAsState()
+    val codexModelCatalog by chatVm.codexModelCatalog.collectAsState()
     val chatSessions by chatVm.sessions.collectAsState()
     val archivedMemoryCandidates by chatVm.archivedMemoryCandidates.collectAsState()
     val settingsConfig by settingsVm.config.collectAsState()
@@ -239,6 +241,7 @@ fun MainScreen() {
     val mcpStatuses by settingsVm.mcpStatuses.collectAsState()
     val mcpConnectError by settingsVm.mcpConnectError.collectAsState()
     val gitHubAuthState by settingsVm.gitHubAuthState.collectAsState()
+    val codexChatGptState by settingsVm.codexChatGptState.collectAsState()
     val effectiveChatConfig = remember(settingsConfig, chatState.projectToolPreferences) {
         resolveEffectiveProviderConfig(
             globalConfig = settingsConfig,
@@ -1224,6 +1227,8 @@ fun MainScreen() {
                                 executionProfileConfig = effectiveChatConfig,
                                 globalConfig = settingsConfig,
                                 activeProviderModelCatalog = providerModelCatalogs[effectiveChatConfig.activeProviderId],
+                                codexUsage = codexUsage,
+                                codexModelCatalog = codexModelCatalog,
                                 globalApprovalMode = settingsConfig.approvalMode,
                                 projectKnowledgePaths = chatState.projectKnowledgePaths,
                                 onSend = { text, mentions, images, skills ->
@@ -1262,6 +1267,12 @@ fun MainScreen() {
                                 },
                                 onRefreshActiveProviderModels = {
                                     settingsVm.refreshProviderModels(effectiveChatConfig.activeProviderId)
+                                },
+                                onRefreshCodexUsage = {
+                                    chatVm.refreshCodexUsage()
+                                },
+                                onRefreshCodexModelCatalog = {
+                                    chatVm.refreshCodexModelCatalog()
                                 },
                                 onUpdateProjectToolPreferences = { preferences ->
                                     chatVm.updateProjectToolPreferences(
@@ -1654,6 +1665,12 @@ fun MainScreen() {
                             onSelectRelay = { providerId, relayId -> settingsVm.selectRelay(providerId, relayId) },
                             onSetActiveProvider = { providerId -> settingsVm.setActiveProvider(providerId) },
                             gitHubAuthState = gitHubAuthState,
+                            codexChatGptState = codexChatGptState,
+                            onSelectAgentBackend = { settingsVm.selectAgentBackend(it) },
+                            onRefreshCodexChatGptStatus = { settingsVm.refreshCodexChatGptStatus() },
+                            onStartCodexChatGptLogin = { settingsVm.startCodexChatGptLogin() },
+                            onCancelCodexChatGptLogin = { settingsVm.cancelCodexChatGptLogin() },
+                            onLogoutCodexChatGpt = { settingsVm.logoutCodexChatGpt() },
                             rootStatus = rootStatus,
                             isCheckingRoot = isCheckingRoot,
                             onCheckRoot = { settingsVm.checkRoot() },

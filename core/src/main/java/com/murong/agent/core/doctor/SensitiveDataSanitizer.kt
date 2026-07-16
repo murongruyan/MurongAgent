@@ -13,15 +13,15 @@ object SensitiveDataSanitizer {
     private val unixPathPattern = Regex("""(?<!https:)(?<!http:)(?<!file:)(?<!content:)(?<![A-Za-z0-9])/+(?:[^/\s"'`]+/+)+[^/\s"'`]*""")
     private val controlCharacterPattern = Regex("""[\u0000-\u001F]+""")
 
-    fun sanitizeText(value: String): String {
+    fun sanitizeText(value: String, redactPaths: Boolean = true): String {
         if (value.isBlank()) return value
-        return value
+        val withoutSecrets = value
             .let(::sanitizeBearer)
             .let(::sanitizeJwt)
             .let(::sanitizeEmails)
             .let(::sanitizeKeyedSecrets)
             .let(::sanitizeGithubTokens)
-            .let(::sanitizePaths)
+        return if (redactPaths) sanitizePaths(withoutSecrets) else withoutSecrets
     }
 
     fun sanitizeTransportHeaderValue(value: String): String {

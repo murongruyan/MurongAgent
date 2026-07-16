@@ -3,6 +3,8 @@ package com.murong.agent.ui.project
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Build
+import android.os.Environment
 import android.util.Log
 import android.util.TypedValue
 import android.view.KeyEvent
@@ -879,6 +881,45 @@ internal class ProjectTerminalSessionController(
             context.cacheDir.absolutePath
         }
         val systemSuPath = ToolchainManager.resolveSystemCommandPath("su")
+        val storageAccessNotice = if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()
+        ) {
+            """
+                printf '%s\\n' '[慕容] 未授予“全部文件访问”：/storage/emulated/0 下 ZIP、IMG、SH 等普通文件可能不可见。请到 设置 → 设备权限 → 文件访问 授权后新建终端。'
+            """.trimIndent()
+        } else {
+            ""
+        }
+        val packageLinkFallback = if (prefix == ToolchainManager.buildPackageCompatiblePrefix()) {
+            """
+                # Android PRoot can report a versioned Termux symlink as not executable
+                # during Bash PATH lookup (for example: python -> python3.14).  The
+                # regular versioned executable remains usable, so locate it by basename.
+                murong_exec_versioned_command() {
+                  local __murong_requested="${'$'}1"
+                  shift
+                  local __murong_candidate
+                  for __murong_candidate in "${'$'}__murong_prefix/bin/${'$'}__murong_requested"[0-9.-]*; do
+                    [ -f "${'$'}__murong_candidate" ] || continue
+                    [ -x "${'$'}__murong_candidate" ] || continue
+                    "${'$'}__murong_candidate" "${'$'}@"
+                    return ${'$'}?
+                  done
+                  return 125
+                }
+                command_not_found_handle() {
+                  murong_exec_versioned_command "${'$'}@"
+                  __murong_versioned_status=${'$'}?
+                  if [ "${'$'}__murong_versioned_status" -ne 125 ]; then
+                    return "${'$'}__murong_versioned_status"
+                  fi
+                  printf 'bash: %s: command not found\n' "${'$'}1" >&2
+                  return 127
+                }
+            """.trimIndent()
+        } else {
+            ""
+        }
         val desired = if (environmentMode == ProjectTerminalEnvironmentMode.SYSTEM) {
             """
                 __murong_session_path=${shellQuoteForRc(sessionPath)}
@@ -888,6 +929,7 @@ internal class ProjectTerminalSessionController(
                 __murong_tmpdir=${shellQuoteForRc(tmpDir)}
                 __murong_rc_path=${shellQuoteForRc(rcFile.absolutePath)}
                 __murong_session_shell_is_bash=${if (sessionShell.substringAfterLast('/').equals("bash", ignoreCase = true)) 1 else 0}
+                $storageAccessNotice
                 murong_refresh_runtime_env() {
                   export PATH="${'$'}__murong_session_path"
                   export HOME="${'$'}__murong_home_path"
@@ -962,6 +1004,7 @@ internal class ProjectTerminalSessionController(
                 __murong_home_path=${shellQuoteForRc(home)}
                 __murong_tmpdir=${shellQuoteForRc(tmpDir)}
                 __murong_rc_path=${shellQuoteForRc(rcFile.absolutePath)}
+                $storageAccessNotice
                 murong_refresh_runtime_env() {
                   __murong_uid=$(id -u 2>/dev/null)
                   export PATH="${'$'}__murong_session_path"
@@ -1003,6 +1046,7 @@ internal class ProjectTerminalSessionController(
                   fi
                 }
                 ${aliasCommands}
+                $packageLinkFallback
                 murong_prompt() {
                   murong_refresh_runtime_env
                   __murong_home="/storage/emulated/0"

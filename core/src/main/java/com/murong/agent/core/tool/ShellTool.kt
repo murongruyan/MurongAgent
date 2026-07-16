@@ -22,7 +22,7 @@ class ShellTool(
 ) : Tool {
 
     override val name = "shell"
-    override val description = "在 Android 设备上执行 shell 命令。environment=system（默认）使用 Root 系统 shell，适合 pm、dumpsys、settings、进程和系统文件操作；environment=extension 使用应用 UID 下的终端扩展包 PRoot/Termux 环境，适合 pkg、apt、dpkg、python、pip、clang 等开发命令。返回标准输出和错误输出。做代码库定位时，如果你已知类名或文件名但还不知道路径，可先用 find/ls 在 src/main、src/test、app/src、core/src、common/src 等源码目录里找精确文件，再用 file.read 或 code_search 看局部内容；不要把 build、intermediates、mapping 产物当成首选证据。"
+    override val description = "在 Android 设备上执行 shell 命令。environment=system（默认）使用 Root 系统 shell，适合 pm、dumpsys、settings、进程和系统文件操作；environment=extension 使用应用 UID 下的终端扩展包 PRoot/Termux 环境，适合 pkg、apt、dpkg、python、pip、clang 等开发命令。访问 /storage/emulated/0（或 /sdcard）中的普通文件需要在应用设置中授予“全部文件访问”；未授权时目录可能可见，但 ZIP、IMG、SH 等文件会被 Android 隐藏。返回标准输出和错误输出。做代码库定位时，如果你已知类名或文件名但还不知道路径，可先用 find/ls 在 src/main、src/test、app/src、core/src、common/src 等源码目录里找精确文件，再用 file.read 或 code_search 看局部内容；不要把 build、intermediates、mapping 产物当成首选证据。"
     override val parameters: Map<String, Any> = mapOf(
         "type" to "object",
         "properties" to mapOf(

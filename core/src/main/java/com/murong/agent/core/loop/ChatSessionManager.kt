@@ -4,10 +4,24 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.provider.OpenableColumns
 import android.util.Base64
 import com.murong.agent.common.utils.RootFile
 import com.murong.agent.core.command.CustomCommandLoader
+import com.murong.agent.core.codex.CodexAdditionalContext
+import com.murong.agent.core.codex.CodexAdditionalContextKind
+import com.murong.agent.core.codex.CodexAppServerClient
+import com.murong.agent.core.codex.CodexApprovalDecision
+import com.murong.agent.core.codex.CodexApprovalKind
+import com.murong.agent.core.codex.CodexApprovalRequest
+import com.murong.agent.core.codex.CodexNotificationEvent
+import com.murong.agent.core.codex.CodexServerRequestPayload
+import com.murong.agent.core.codex.CodexThreadOptions
+import com.murong.agent.core.codex.CodexTurn
+import com.murong.agent.core.codex.CodexTurnOptions
+import com.murong.agent.core.codex.CodexUserInput
 import com.murong.agent.core.config.ConfigRepository
 import com.murong.agent.core.config.GlobalMemory
 import com.murong.agent.core.config.GlobalRule
@@ -57,6 +71,7 @@ import com.murong.agent.core.tool.ToolApprovalRequest
 import com.murong.agent.core.tool.*
 import com.murong.agent.core.tool.buildDiffPreview
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -65,12 +80,14 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -1037,6 +1054,7 @@ data class SessionState(
     val error: String? = null,
     val sessionId: String = "",
     val sessionTitle: String = "新对话",
+    val codexThreadId: String? = null,
     val sessionGoal: String? = null,
     val projectPath: String? = null,
     val remoteTaskRepositoryOwner: String? = null,
@@ -2040,7 +2058,8 @@ class ChatSessionManager(
     private val context: Context,
     private val configRepository: ConfigRepository,
     private val mcpRegistry: McpRegistry? = null,
-    private val hookBus: HookBusRunner = HookBusRunner()
+    private val hookBus: HookBusRunner = HookBusRunner(),
+    private val codexAppServer: CodexAppServerClient? = null
 ) {
     private companion object {
         val SUBAGENT_TERMINAL_STATUSES = setOf("completed", "failed", "cancelled", "rejected")
@@ -2092,6 +2111,12 @@ class ChatSessionManager(
         val value: ResponsesContinuation
     )
 
+    /** One Codex turn is active per chat manager, matching the single app-server client. */
+    private data class ActiveCodexTurn(
+        val threadId: String,
+        val turnId: String
+    )
+
     private val _state = MutableStateFlow(SessionState())
     val state: StateFlow<SessionState> = _state.asStateFlow()
     private val _pendingPromptReplayNotices = MutableSharedFlow<String>(extraBufferCapacity = 1)
@@ -2102,6 +2127,8 @@ class ChatSessionManager(
     private val conversationStore = ConversationStore(context)
     private var messageCounter = 0L
     private var agentLoop: AgentLoop? = null
+    private var activeCodexTurn: ActiveCodexTurn? = null
+    private var codexEventJob: Job? = null
     private var currentStreamingId: Long? = null
     private var currentSessionId: String = ""
     private var lastSessionConfig: ProviderConfig = ProviderConfig()
@@ -3152,6 +3179,7 @@ class ChatSessionManager(
             backgroundJobs = restoredBackgroundJobs,
             sessionId = session.id,
             sessionTitle = session.title,
+            codexThreadId = session.codexThreadId,
             sessionGoal = session.sessionGoal,
             projectPath = session.projectPath,
             remoteTaskRepositoryOwner = session.remoteTaskRepositoryOwner,
@@ -4264,19 +4292,22 @@ class ChatSessionManager(
             )
             return null
         }
-        val autoCompressionToast = maybeAutoCompressContext(
-            config = config,
-            allowCreateSnapshot = false
-        )
-        val executionConfig = resolveExecutionConfig(
-            baseConfig = config,
-            goal = effectiveText,
-            mentionedFiles = mentionedFiles
-        )
-        val executionToast = buildExecutionProfileToast(
-            baseConfig = config,
-            executionConfig = executionConfig
-        )
+        // Codex owns the native thread history. Do not synthesize a second
+        // compressed provider history or choose a relay execution profile.
+        val usesCodex = config.usesCodexChatGptBackend()
+        val autoCompressionToast = if (usesCodex) null else {
+            maybeAutoCompressContext(config = config, allowCreateSnapshot = false)
+        }
+        val executionConfig = if (usesCodex) config else {
+            resolveExecutionConfig(
+                baseConfig = config,
+                goal = effectiveText,
+                mentionedFiles = mentionedFiles
+            )
+        }
+        val executionToast = if (usesCodex) null else {
+            buildExecutionProfileToast(baseConfig = config, executionConfig = executionConfig)
+        }
         sendMessageInternal(
             userVisibleText = normalizedText,
             modelInput = effectiveText,
@@ -4285,11 +4316,15 @@ class ChatSessionManager(
             configOverride = executionConfig,
             extraUserContext = listOfNotNull(
                 buildSkillSelectionUserContext(selectedSkills),
-                buildExecutionProfileUserContext(
-                    goal = effectiveText,
-                    baseConfig = config,
-                    executionConfig = executionConfig
-                )
+                if (!usesCodex) {
+                    buildExecutionProfileUserContext(
+                        goal = effectiveText,
+                        baseConfig = config,
+                        executionConfig = executionConfig
+                    )
+                } else {
+                    null
+                }
             ).joinToString("\n\n").takeIf { it.isNotBlank() }
         )
         return mergeToastMessages(autoCompressionToast, executionToast)
@@ -4304,6 +4339,10 @@ class ChatSessionManager(
 
         val globalConfig = configRepository.getConfig()
         val config = resolveEffectiveSessionConfig(globalConfig = globalConfig)
+        if (config.usesCodexChatGptBackend()) {
+            // Codex performs its own routing/planning inside the native thread.
+            return sendMessage(normalizedText, mentionedFiles)
+        }
         val plannerConfig = config.getPlannerResolvedConfig()
         val executionConfig = resolveExecutionConfig(
             baseConfig = config,
@@ -4432,6 +4471,16 @@ class ChatSessionManager(
 
         val globalConfig = configRepository.getConfig()
         val config = resolveEffectiveSessionConfig(globalConfig = globalConfig)
+        if (config.usesCodexChatGptBackend()) {
+            sendMessageInternal(
+                userVisibleText = "制定计划: $normalizedGoal",
+                modelInput = "请先为以下目标制定一个可执行的分步计划；若需要工具，请先说明并等待授权。\n\n$normalizedGoal",
+                mentionedFiles = mentionedFiles,
+                executionGoal = normalizedGoal,
+                configOverride = config
+            )
+            return
+        }
         val plannerConfig = config.getPlannerResolvedConfig()
         maybeAutoCompressContext(plannerConfig)
         lastSessionConfig = plannerConfig
@@ -4553,6 +4602,16 @@ class ChatSessionManager(
 
         val globalConfig = configRepository.getConfig()
         val config = resolveEffectiveSessionConfig(globalConfig = globalConfig)
+        if (config.usesCodexChatGptBackend()) {
+            sendMessageInternal(
+                userVisibleText = "澄清需求: $normalizedGoal",
+                modelInput = "请针对以下目标提出最关键、最少量的澄清问题；在信息足够时说明你将如何继续。\n\n$normalizedGoal",
+                mentionedFiles = mentionedFiles,
+                executionGoal = normalizedGoal,
+                configOverride = config
+            )
+            return
+        }
         val plannerConfig = config.getPlannerResolvedConfig()
         lastSessionConfig = plannerConfig
         val apiKey = plannerConfig.getActiveApiKey().trim()
@@ -4874,6 +4933,17 @@ class ChatSessionManager(
             globalConfig = configRepository.getConfig(),
             state = stateBeforeSend
         )
+        if (config.usesCodexChatGptBackend()) {
+            sendCodexMessageInternal(
+                userVisibleText = userVisibleText,
+                modelInput = modelInput,
+                pendingImages = pendingImages,
+                extraUserContext = extraUserContext,
+                config = config,
+                stateBeforeSend = stateBeforeSend
+            )
+            return
+        }
         val responsesContinuation = resolveActiveResponsesContinuation(config)
         val continuationSessionId = currentSessionId
         lastSessionConfig = config
@@ -5206,6 +5276,389 @@ class ChatSessionManager(
             currentTurnCheckpointCaptureState = TurnCheckpointCaptureState()
             processingCancelledByUser = false
         }
+    }
+
+    /**
+     * Runs a complete turn through the official Codex app-server. This branch
+     * intentionally does not construct an AgentLoop or inspect an API key:
+     * authentication and tool execution belong to the signed-in ChatGPT Codex
+     * runtime.
+     */
+    private suspend fun sendCodexMessageInternal(
+        userVisibleText: String,
+        modelInput: String,
+        pendingImages: List<PendingImageAttachmentUi>,
+        extraUserContext: String?,
+        config: ProviderConfig,
+        stateBeforeSend: SessionState
+    ) {
+        val appServer = codexAppServer
+        if (appServer == null) {
+            appendSystemMessage(
+                content = "⚠️ 当前安装包未包含 Codex / ChatGPT 后端。请更新 Murong Agent 和终端扩展包后重试。",
+                source = "codex:client_unavailable"
+            )
+            return
+        }
+        lastSessionConfig = config
+        var eventJob: Job? = null
+        var approvalJob: Job? = null
+        var completedTurn: CodexTurn? = null
+        try {
+            appServer.start()
+            val account = appServer.accountRead()
+            if (account.account == null) {
+                appendSystemMessage(
+                    content = "🔐 ChatGPT 尚未登录。请到「设置 → Codex / ChatGPT」完成设备码登录后再发送任务。",
+                    source = "codex:chatgpt_not_signed_in"
+                )
+                return
+            }
+
+            val importedImages = if (config.isMultimodalEnabled()) {
+                importPendingImageAttachments(pendingImages)
+            } else {
+                emptyList()
+            }
+            if (pendingImages.isNotEmpty() && !config.isMultimodalEnabled()) {
+                appendSystemMessage(
+                    content = "⚠️ 已忽略 ${pendingImages.size} 张图片，因为设置中已关闭多模态。",
+                    source = "codex:multimodal_disabled"
+                )
+            }
+            if (config.isMultimodalEnabled() && pendingImages.isNotEmpty() && importedImages.isEmpty()) {
+                appendSystemMessage(
+                    content = "⚠️ 当前图片读取失败，请重新选择图片后再试。",
+                    source = "codex:image_import_failed"
+                )
+                return
+            }
+
+            val threadOptions = buildCodexThreadOptions(config, stateBeforeSend)
+            val thread = stateBeforeSend.codexThreadId
+                ?.let { threadId -> runCatching { appServer.threadResume(threadId, threadOptions) }.getOrNull() }
+                ?: appServer.threadStart(threadOptions)
+            val threadId = thread.id?.takeIf { it.isNotBlank() }
+                ?: throw IllegalStateException("Codex app-server did not return a thread id")
+            _state.value = _state.value.copy(codexThreadId = threadId)
+
+            val userMsg = ChatMessageUi(
+                id = nextId(),
+                role = "user",
+                content = userVisibleText,
+                imageAttachments = importedImages
+            )
+            // Do not insert an empty assistant placeholder here. Codex can run
+            // command items before it emits the final agent message; assigning
+            // those later deltas to a pre-inserted placeholder made the final
+            // answer appear above its own commands in the transcript.
+            appendMessage(userMsg)
+            currentStreamingId = null
+            _state.value = _state.value.copy(
+                isProcessing = true,
+                error = null,
+                lastWorkflowFallback = null,
+                lastFinalReadinessReceipt = null
+            )
+            processingCancelledByUser = false
+
+            val turnCompletion = CompletableDeferred<CodexTurn>()
+            val collectorScope = CoroutineScope(currentCoroutineContext())
+            eventJob = collectorScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                appServer.notifications.collect { event ->
+                    if (!event.belongsToCodexThread(threadId)) return@collect
+                    when (event) {
+                        is CodexNotificationEvent.AgentMessageDelta -> appendToStreaming(event.delta)
+                        is CodexNotificationEvent.ReasoningDelta -> appendToStreamingReasoning(event.delta)
+                        is CodexNotificationEvent.ItemStarted -> {
+                            finalizeStreaming()
+                            appendCodexToolProgress(event.item)
+                        }
+                        is CodexNotificationEvent.ItemCompleted -> {
+                            finalizeStreaming()
+                            appendCodexToolCompletion(event.item)
+                        }
+                        is CodexNotificationEvent.TurnCompleted -> {
+                            if (!turnCompletion.isCompleted) turnCompletion.complete(event.turn)
+                        }
+                        is CodexNotificationEvent.Error -> {
+                            _state.value = _state.value.copy(
+                                error = "❌ ${sanitizeCodexDiagnostic(event.error.message)}"
+                            )
+                        }
+                        else -> Unit
+                    }
+                }
+            }
+            approvalJob = collectorScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                appServer.approvalRequests.collect { request ->
+                    if (!request.approval.belongsToCodexThread(threadId)) return@collect
+                    val approved = waitForApproval(toToolApprovalRequest(request))
+                    val decision = if (approved) {
+                        CodexApprovalDecision.ACCEPT
+                    } else {
+                        CodexApprovalDecision.DECLINE
+                    }
+                    runCatching { appServer.respondToApproval(request.requestId, decision) }
+                        .onFailure { error ->
+                            _state.value = _state.value.copy(
+                                error = "❌ ${sanitizeCodexDiagnostic(error.message)}"
+                            )
+                        }
+                }
+            }
+            codexEventJob = eventJob
+
+            val input = buildList {
+                add(CodexUserInput.Text(modelInput.ifBlank { "请分析这张图片并回答用户的问题。" }))
+                importedImages.forEach { image ->
+                    image.localCachePath.takeIf { it.isNotBlank() }?.let { path ->
+                        add(addCodexLocalImage(path))
+                    }
+                }
+            }
+            val additionalContext = MurongAgentContextProvider
+                .buildContext(config, stateBeforeSend)
+                .toMutableMap()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+                additionalContext["murong.shared_storage_access"] = CodexAdditionalContext(
+                    value = "Android 的“全部文件访问”当前未授予。/storage/emulated/0（含 /sdcard）下的普通文件可能会显示为空或不可读；不要声称已经读取其中的 ZIP、IMG、SH 等文件。请提示用户到慕容 Agent 的 设置 → 设备权限 → 文件访问 中授权后重试。",
+                    kind = CodexAdditionalContextKind.APPLICATION
+                )
+            }
+            extraUserContext?.trim()?.takeIf { it.isNotBlank() }?.let { userContext ->
+                additionalContext["murong.user_selected_context"] = CodexAdditionalContext(
+                    value = userContext.take(12_000),
+                    kind = CodexAdditionalContextKind.UNTRUSTED
+                )
+            }
+            val turn = appServer.turnStart(
+                threadId = threadId,
+                input = input,
+                options = CodexTurnOptions(
+                    clientUserMessageId = "murong-${currentSessionId.ifBlank { "session" }}-${userMsg.id}",
+                    cwd = buildCodexWorkingDirectory(stateBeforeSend),
+                    model = config.codexModel.trim().takeIf { it.isNotBlank() },
+                    effort = config.codexReasoningEffort.trim().takeIf { it.isNotBlank() },
+                    serviceTier = config.codexServiceTier.trim().takeIf { it.isNotBlank() },
+                    additionalContext = additionalContext
+                )
+            )
+            val turnId = turn.id?.takeIf { it.isNotBlank() }
+                ?: throw IllegalStateException("Codex app-server did not return a turn id")
+            activeCodexTurn = ActiveCodexTurn(threadId = threadId, turnId = turnId)
+            completedTurn = turnCompletion.await()
+            finalizeStreaming()
+
+            completedTurn.error?.message?.takeIf { it.isNotBlank() }?.let { error ->
+                _state.value = _state.value.copy(error = "❌ ${sanitizeCodexDiagnostic(error)}")
+            }
+            if (_state.value.sessionTitle == "新对话") {
+                _state.value = _state.value.copy(
+                    sessionTitle = conversationStore.generateTitle(_state.value.messages)
+                )
+            }
+            saveCurrentSession(config)
+        } catch (error: CancellationException) {
+            finalizeStreaming()
+            if (!processingCancelledByUser) {
+                appendSystemMessage(
+                    content = "⏹️ 当前 Codex 处理已取消。",
+                    source = "codex:cancelled"
+                )
+            }
+        } catch (error: Exception) {
+            finalizeStreaming()
+            _state.value = _state.value.copy(
+                error = "❌ ${sanitizeCodexDiagnostic(error.message ?: error.javaClass.simpleName)}"
+            )
+        } finally {
+            eventJob?.cancel()
+            approvalJob?.cancel()
+            if (codexEventJob === eventJob) codexEventJob = null
+            activeCodexTurn = null
+            _state.value = _state.value.copy(isProcessing = false)
+            processingCancelledByUser = false
+            if (completedTurn != null) saveCurrentSession(config)
+        }
+    }
+
+    private fun addCodexLocalImage(path: String): CodexUserInput = CodexUserInput.LocalImage(path)
+
+    private fun buildCodexThreadOptions(
+        config: ProviderConfig,
+        state: SessionState
+    ): CodexThreadOptions = CodexThreadOptions(
+        model = config.codexModel.trim().takeIf { it.isNotBlank() },
+        cwd = buildCodexWorkingDirectory(state),
+        // Codex asks the app for each approval; Murong then applies the user's
+        // existing approval posture before returning that answer to app-server.
+        approvalPolicy = "on-request",
+        approvalsReviewer = "user",
+        // Android/PRoot cannot depend on the desktop bwrap sandbox. Requests
+        // remain gated by the application approval UI above.
+        sandbox = "danger-full-access",
+        baseInstructions = config.systemPrompt.trim().takeIf { it.isNotBlank() }
+    )
+
+    private fun buildCodexWorkingDirectory(state: SessionState): String {
+        return state.projectPath
+            ?.trim()
+            ?.takeIf { it.isNotBlank() && File(it).exists() }
+            ?: context.filesDir.absolutePath
+    }
+
+    private fun CodexNotificationEvent.belongsToCodexThread(threadId: String): Boolean {
+        val eventThreadId = when (this) {
+            is CodexNotificationEvent.AgentMessageDelta -> this.threadId
+            is CodexNotificationEvent.ReasoningDelta -> this.threadId
+            is CodexNotificationEvent.ItemStarted -> this.threadId
+            is CodexNotificationEvent.ItemCompleted -> this.threadId
+            is CodexNotificationEvent.ServerRequestResolved -> this.threadId
+            is CodexNotificationEvent.TurnCompleted -> this.rawParams["threadId"]
+                ?.jsonPrimitive?.contentOrNull
+            else -> null
+        }
+        return eventThreadId == null || eventThreadId == threadId
+    }
+
+    private fun CodexServerRequestPayload.Approval.belongsToCodexThread(threadId: String): Boolean =
+        this.threadId == null || this.threadId == threadId
+
+    private fun toToolApprovalRequest(request: CodexApprovalRequest): ToolApprovalRequest {
+        val approval = request.approval
+        val command = sanitizeCodexDiagnostic(approval.command?.toString().orEmpty(), limit = 1_200)
+        val cwd = sanitizeCodexDiagnostic(approval.cwd.orEmpty(), limit = 300)
+        val detail = listOfNotNull(
+            approval.reason?.let { "原因：${sanitizeCodexDiagnostic(it, 600)}" },
+            command.takeIf { it.isNotBlank() }?.let { "操作：$it" },
+            cwd.takeIf { it.isNotBlank() }?.let { "工作目录：$it" }
+        ).joinToString("\n").ifBlank { "Codex 请求执行受保护操作。" }
+        val (toolName, summary, risk) = when (approval.kind) {
+            CodexApprovalKind.COMMAND_EXECUTION -> Triple("shell", "Codex 请求执行命令", ApprovalRiskLevel.HIGH)
+            CodexApprovalKind.FILE_CHANGE -> Triple("file", "Codex 请求修改文件", ApprovalRiskLevel.HIGH)
+            CodexApprovalKind.PERMISSIONS -> Triple("permissions", "Codex 请求提升权限", ApprovalRiskLevel.HIGH)
+            CodexApprovalKind.UNKNOWN -> Triple("codex", "Codex 请求授权", ApprovalRiskLevel.HIGH)
+        }
+        return ToolApprovalRequest(
+            toolName = toolName,
+            summary = summary,
+            detail = detail,
+            riskLevel = risk,
+            rawArgs = command,
+            commandBoundaryValue = command.takeIf { approval.kind == CodexApprovalKind.COMMAND_EXECUTION },
+            pathBoundaryValue = approval.grantRoot,
+            approvalScopeTokens = setOf("codex:${approval.kind.name.lowercase()}")
+        )
+    }
+
+    private fun appendCodexToolProgress(item: com.murong.agent.core.codex.CodexThreadItem) {
+        val type = item.type.orEmpty().lowercase()
+        if (!listOf("command", "file", "mcp", "web").any { marker -> marker in type }) return
+        appendMessage(
+            ChatMessageUi(
+                id = nextId(),
+                role = "tool_exec",
+                content = buildToolExecutionMessage(
+                    toolName = codexToolName(type),
+                    args = buildCodexToolArguments(item),
+                )
+            )
+        )
+    }
+
+    private fun appendCodexToolCompletion(item: com.murong.agent.core.codex.CodexThreadItem) {
+        val type = item.type.orEmpty().lowercase()
+        if (!listOf("command", "file", "mcp", "web").any { marker -> marker in type }) return
+        appendMessage(
+            ChatMessageUi(
+                id = nextId(),
+                role = "tool_exec",
+                content = buildToolResultMessage(
+                    toolName = codexToolName(type),
+                    args = buildCodexToolArguments(item),
+                    result = buildCodexToolCompletionResult(item),
+                    fileChanges = emptyList(),
+                )
+            )
+        )
+    }
+
+    /**
+     * app-server emits a tagged ThreadItem for each tool call.  The command and
+     * output are fields on that item rather than agent-message deltas, so keep
+     * a compact, structured projection for the chat transcript.
+     */
+    private fun buildCodexToolArguments(
+        item: com.murong.agent.core.codex.CodexThreadItem,
+    ): String? {
+        val raw = item.raw
+        val args = buildJsonObject {
+            raw.codexText("command")?.let { put("command", it) }
+            raw.codexText("cwd")?.let { put("cwd", it) }
+            raw.codexText("path")?.let { put("path", it) }
+            raw.codexText("query")?.let { put("query", it) }
+            raw.codexText("server")?.let { put("server", it) }
+            raw.codexText("tool")?.let { put("tool", it) }
+            raw["arguments"]?.let { put("arguments", it) }
+        }
+        return args.takeIf { it.isNotEmpty() }?.toString()
+    }
+
+    private fun buildCodexToolCompletionResult(
+        item: com.murong.agent.core.codex.CodexThreadItem,
+    ): String {
+        val raw = item.raw
+        val output = listOf("aggregatedOutput", "output", "result")
+            .asSequence()
+            .mapNotNull { key -> raw.codexText(key) }
+            .firstOrNull()
+        val details = buildList {
+            output?.let(::add)
+            raw.codexText("exitCode")?.let { add("退出码：$it") }
+            raw.codexText("durationMs")?.let { add("耗时：${it}ms") }
+            raw.codexText("status")?.let { status ->
+                if (output == null && status.isNotBlank()) add("状态：$status")
+            }
+        }
+        return details.joinToString("\n").ifBlank { "Codex 已完成 ${codexItemLabel(item.type.orEmpty())}。" }
+    }
+
+    private fun JsonObject.codexText(key: String): String? {
+        return (this[key] as? JsonPrimitive)
+            ?.contentOrNull
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            // Tool cards are shown only inside this local conversation. Keep
+            // filesystem paths visible so a user can audit the actual command,
+            // while still redacting credentials and other secret-like values.
+            ?.let { value ->
+                SensitiveDataSanitizer.sanitizeText(value, redactPaths = false).take(12_000)
+            }
+    }
+
+    private fun codexToolName(type: String): String = when {
+        "command" in type -> "shell"
+        "file" in type -> "file"
+        "mcp" in type -> "mcp"
+        "web" in type -> "web"
+        else -> "codex"
+    }
+
+    private fun codexItemLabel(type: String): String = when {
+        "command" in type -> "命令操作"
+        "file" in type -> "文件操作"
+        "mcp" in type -> "MCP 工具"
+        "web" in type -> "网页操作"
+        else -> "工具操作"
+    }
+
+    private fun sanitizeCodexDiagnostic(value: String?, limit: Int = 1_500): String {
+        return SensitiveDataSanitizer.sanitizeText(value.orEmpty())
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .take(limit)
+            .ifBlank { "Codex app-server 返回了空错误信息" }
     }
 
     /**
@@ -5901,6 +6354,17 @@ class ChatSessionManager(
         if (!hasActiveProcessing) return false
         processingCancelledByUser = true
         agentLoop = null
+        val codexTurn = activeCodexTurn
+        if (codexTurn != null) {
+            streamingAggregationScope.launch {
+                runCatching {
+                    codexAppServer?.turnInterrupt(codexTurn.threadId, codexTurn.turnId)
+                }
+            }
+        }
+        codexEventJob?.cancel()
+        codexEventJob = null
+        activeCodexTurn = null
         pendingApprovalDecision?.let { deferred ->
             if (!deferred.isCompleted) {
                 deferred.complete(false)
@@ -5929,6 +6393,9 @@ class ChatSessionManager(
         saveCurrentSession()
         return true
     }
+
+    /** True only after the official app-server has confirmed a ChatGPT account. */
+    fun hasCodexChatGptAccount(): Boolean = codexAppServer?.state?.value?.account != null
 
     private fun nextId() = ++messageCounter
 
@@ -9953,15 +10420,31 @@ class ChatSessionManager(
             repoScopedConfigs = state.normalizedRepoScopedProjectConfigMap()
         )
         val persistedProjectProjection = persistedProjectConfig.toPersistedSessionProjectConfigProjection()
+        val resolvedBackendId = if (resolvedConfig.usesCodexChatGptBackend()) {
+            "codex_chatgpt"
+        } else {
+            "provider_api"
+        }
         val providerId = when {
+            config != null && resolvedConfig.usesCodexChatGptBackend() -> "codex-chatgpt"
             config != null -> resolvedConfig.activeProviderId
             savedSession != null -> savedSession.providerId
+            resolvedConfig.usesCodexChatGptBackend() -> "codex-chatgpt"
             else -> resolvedConfig.activeProviderId
         }
         val modelName = when {
+            config != null && resolvedConfig.usesCodexChatGptBackend() ->
+                resolvedConfig.codexModel.ifBlank { "Codex 默认模型" }
             config != null -> resolvedConfig.getActiveModel()
             savedSession != null -> savedSession.modelName
+            resolvedConfig.usesCodexChatGptBackend() ->
+                resolvedConfig.codexModel.ifBlank { "Codex 默认模型" }
             else -> resolvedConfig.getActiveModel()
+        }
+        val agentBackend = when {
+            config != null -> resolvedBackendId
+            savedSession != null -> savedSession.agentBackend
+            else -> resolvedBackendId
         }
 
         return PersistedSession(
@@ -9973,6 +10456,8 @@ class ChatSessionManager(
             updatedAt = System.currentTimeMillis(),
             providerId = providerId,
             modelName = modelName,
+            agentBackend = agentBackend,
+            codexThreadId = state.codexThreadId,
             sessionGoal = state.sessionGoal,
             projectPath = state.projectPath,
             remoteTaskRepositoryOwner = state.remoteTaskRepositoryOwner,

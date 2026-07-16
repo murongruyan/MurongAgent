@@ -103,6 +103,16 @@ data class ProjectToolPreferences(
 @Serializable
 enum class RelayKind { OFFICIAL, CUSTOM }
 
+/**
+ * Selects the owner of the agent loop.
+ *
+ * PROVIDER_API keeps Murong's existing provider + tool orchestration path.
+ * CODEX_CHATGPT delegates the complete turn/tool loop to the official Codex
+ * app-server and uses its ChatGPT subscription authentication.
+ */
+@Serializable
+enum class AgentBackendKind { PROVIDER_API, CODEX_CHATGPT }
+
 @Serializable
 data class RelayConfig(
     val id: String,
@@ -130,6 +140,10 @@ data class RelayConfig(
 
 @Serializable
 data class ProviderConfig(
+    val activeAgentBackend: AgentBackendKind = AgentBackendKind.PROVIDER_API,
+    val codexModel: String = "",
+    val codexReasoningEffort: String = "high",
+    val codexServiceTier: String = "",
     val activeProviderId: String = "deepseek",
     val deepseekApiKey: String = "", val deepseekBaseUrl: String = "",
     val deepseekModelPreset: String = "custom", val deepseekModel: String = "deepseek-v4-flash",
@@ -229,6 +243,7 @@ data class ProviderConfig(
         } ?: legacyApiKey
     }
     fun getActiveApiKey(): String = getApiKey(activeProviderId)
+    fun usesCodexChatGptBackend(): Boolean = activeAgentBackend == AgentBackendKind.CODEX_CHATGPT
     fun getBaseUrl(providerId: String = activeProviderId): String? = normalizeBaseUrl(
         getActiveRelay(providerId)?.baseUrl ?: when (providerId) {
             "deepseek" -> deepseekBaseUrl

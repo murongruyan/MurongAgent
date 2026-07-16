@@ -1,5 +1,10 @@
 package com.murong.agent.ui.settings
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
@@ -19,6 +24,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontFamily
@@ -31,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import com.murong.agent.core.config.GlobalMemory
 import com.murong.agent.core.config.GlobalRule
 import com.murong.agent.core.config.GlobalSkill
+import com.murong.agent.core.config.AgentBackendKind
 import com.murong.agent.core.config.ProviderConfig
 import com.murong.agent.core.config.RelayConfig
 import com.murong.agent.core.config.RelayKind
@@ -75,6 +82,12 @@ fun SettingsScreen(
     onSelectRelay: (String, String) -> Unit = { _, _ -> },
     onSetActiveProvider: (String) -> Unit = {},
     gitHubAuthState: GitHubAuthUiState = GitHubAuthUiState(),
+    codexChatGptState: CodexChatGptUiState = CodexChatGptUiState(),
+    onSelectAgentBackend: (AgentBackendKind) -> Unit = {},
+    onRefreshCodexChatGptStatus: () -> Unit = {},
+    onStartCodexChatGptLogin: () -> Unit = {},
+    onCancelCodexChatGptLogin: () -> Unit = {},
+    onLogoutCodexChatGpt: () -> Unit = {},
     rootStatus: Boolean? = null,
     isCheckingRoot: Boolean = false,
     onCheckRoot: () -> Unit = {},
@@ -103,11 +116,29 @@ fun SettingsScreen(
 ) {
     val bottomBarScrollPadding = rememberMurongBottomBarScrollPadding()
     val settingsScrollState = rememberScrollState()
+    val context = LocalContext.current
+    var hasExternalStorageAccess by remember {
+        mutableStateOf(MurongExternalStorageAccess.hasAccess(context))
+    }
+    val allFilesAccessLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        hasExternalStorageAccess = MurongExternalStorageAccess.hasAccess(context)
+    }
+    val legacyStoragePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) {
+        hasExternalStorageAccess = MurongExternalStorageAccess.hasAccess(context)
+    }
     MurongInteractionPerformanceHint(active = settingsScrollState.isScrollInProgress)
     val providers = remember { ProviderRegistry.getAllProviders() }
     var showApiKey by remember { mutableStateOf(false) }
     val uriHandler = LocalUriHandler.current
     var lastOpenedGitHubAuthUrl by remember { mutableStateOf<String?>(null) }
+    // Persist across the Activity leaving for a browser and returning. Without
+    // saveable state, Android recreation can immediately launch the same browser
+    // page again before the user has a chance to read the result.
+    var lastOpenedCodexAuthAttempt by rememberSaveable { mutableStateOf<String?>(null) }
     var providerSectionExpanded by rememberSaveable { mutableStateOf(false) }
     var chatAndSearchExpanded by rememberSaveable { mutableStateOf(false) }
     var systemPromptExpanded by rememberSaveable { mutableStateOf(false) }
@@ -122,9 +153,25 @@ fun SettingsScreen(
         lastOpenedGitHubAuthUrl = uri
     }
 
+    LaunchedEffect(
+        codexChatGptState.loginId,
+        codexChatGptState.verificationUrl,
+        codexChatGptState.userCode,
+    ) {
+        val uri = codexChatGptState.verificationUrl?.trim().orEmpty()
+        // OpenAI currently reuses the same verification URL for successive device
+        // codes. The login id (with the code as a fallback for older servers) is
+        // the attempt identity, not the URL itself.
+        val attempt = codexChatGptState.loginId ?: codexChatGptState.userCode ?: uri
+        if (uri.isBlank() || lastOpenedCodexAuthAttempt == attempt) return@LaunchedEffect
+        runCatching { uriHandler.openUri(uri) }
+        lastOpenedCodexAuthAttempt = attempt
+    }
+
     LaunchedEffect(Unit) {
         onCheckRoot()
         onRefreshDurableGlobalMemories()
+        onRefreshCodexChatGptStatus()
     }
 
     LaunchedEffect(config.githubToken) {
@@ -215,6 +262,60 @@ fun SettingsScreen(
                             modifier = Modifier.size(18.dp),
                             strokeWidth = 2.dp
                         )
+                    }
+                }
+            }
+
+            MurongGlassSurface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                contentPadding = PaddingValues(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "文件访问",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = if (hasExternalStorageAccess) {
+                            "✅ 已可读取共享存储中的普通文件"
+                        } else {
+                            "⚠️ 未授予全部文件访问；终端和 Agent 只能看到部分目录"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (hasExternalStorageAccess) {
+                            Color(0xFF4CAF50)
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        }
+                    )
+                    if (!hasExternalStorageAccess) {
+                        Text(
+                            text = MurongExternalStorageAccess.missingAccessSummary(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    FilledTonalButton(
+                        onClick = {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                allFilesAccessLauncher.launch(
+                                    MurongExternalStorageAccess.settingsIntent(context)
+                                )
+                            } else {
+                                MurongExternalStorageAccess.permissionToRequest()?.let(
+                                    legacyStoragePermissionLauncher::launch
+                                )
+                            }
+                        },
+                        enabled = !hasExternalStorageAccess,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (hasExternalStorageAccess) "全部文件访问已授权" else "授权全部文件访问")
                     }
                 }
             }
@@ -418,11 +519,25 @@ fun SettingsScreen(
         // ═══════════════════════════════════════
         // AI 模型提供商
         // ═══════════════════════════════════════
+        CodexChatGptBackendCard(
+            config = config,
+            state = codexChatGptState,
+            onSelectBackend = onSelectAgentBackend,
+            onRefreshStatus = onRefreshCodexChatGptStatus,
+            onStartLogin = onStartCodexChatGptLogin,
+            onCancelLogin = onCancelCodexChatGptLogin,
+            onLogout = onLogoutCodexChatGpt
+        )
+
             SettingsExpandableSectionCard(
                 title = "AI 连接配置",
-                subtitle = config.getActiveRelay()?.let {
-                    config.configuredConnectionLabel(config.activeProviderId, it)
-                } ?: "未选择配置",
+                subtitle = if (config.usesCodexChatGptBackend()) {
+                    "当前由官方 Codex / ChatGPT 后端处理"
+                } else {
+                    config.getActiveRelay()?.let {
+                        config.configuredConnectionLabel(config.activeProviderId, it)
+                    } ?: "未选择配置"
+                },
                 expanded = providerSectionExpanded,
                 onExpandedChange = { providerSectionExpanded = it }
             ) {
@@ -630,6 +745,179 @@ fun SettingsScreen(
 
         Spacer(modifier = Modifier.height(32.dp))
         }
+    }
+}
+
+@Composable
+private fun CodexChatGptBackendCard(
+    config: ProviderConfig,
+    state: CodexChatGptUiState,
+    onSelectBackend: (AgentBackendKind) -> Unit,
+    onRefreshStatus: () -> Unit,
+    onStartLogin: () -> Unit,
+    onCancelLogin: () -> Unit,
+    onLogout: () -> Unit
+) {
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+    var showCancelConfirmation by rememberSaveable { mutableStateOf(false) }
+    var copiedLoginId by remember { mutableStateOf<String?>(null) }
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text("运行后端", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "ChatGPT / Codex 使用官方设备码登录和 Plus / Pro 的 Codex 权益；不会读取或使用 API Key。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = config.activeAgentBackend == AgentBackendKind.PROVIDER_API,
+                    onClick = { onSelectBackend(AgentBackendKind.PROVIDER_API) },
+                    label = { Text("API Key / 中转") }
+                )
+                FilterChip(
+                    selected = config.activeAgentBackend == AgentBackendKind.CODEX_CHATGPT,
+                    onClick = { onSelectBackend(AgentBackendKind.CODEX_CHATGPT) },
+                    label = { Text("ChatGPT / Codex") }
+                )
+            }
+            if (state.isLoading) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            if (state.isLoggedIn) {
+                Text(
+                    "已登录${state.accountEmail?.let { "：$it" }.orEmpty()}${state.planType?.let { " · $it" }.orEmpty()}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onRefreshStatus, enabled = !state.isLoading) {
+                        Text("刷新状态")
+                    }
+                    TextButton(onClick = onLogout, enabled = !state.isLoading) {
+                        Text("退出登录")
+                    }
+                }
+            } else {
+                state.userCode?.takeIf { it.isNotBlank() }?.let { code ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "设备码：$code",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.titleLarge.copy(fontFamily = FontFamily.Monospace),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        OutlinedButton(
+                            onClick = {
+                                context.getSystemService(ClipboardManager::class.java)
+                                    ?.setPrimaryClip(ClipData.newPlainText("Codex device code", code))
+                                copiedLoginId = state.loginId ?: code
+                            },
+                        ) {
+                            Text(if (copiedLoginId == (state.loginId ?: code)) "已复制" else "复制设备码")
+                        }
+                    }
+                    Text(
+                        "浏览器会自动打开。页面显示“已登录 Codex”后可关闭；本应用会在后台完成确认。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    TextButton(
+                        onClick = {
+                            state.verificationUrl?.takeIf { it.isNotBlank() }?.let { uri ->
+                                runCatching { uriHandler.openUri(uri) }
+                            }
+                        },
+                        enabled = !state.verificationUrl.isNullOrBlank(),
+                    ) {
+                        Text("打开授权页面")
+                    }
+                }
+                Button(
+                    onClick = onStartLogin,
+                    enabled = !state.isLoading,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (state.userCode.isNullOrBlank()) "登录 ChatGPT" else "重新发起登录")
+                }
+                if (!state.loginId.isNullOrBlank()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        OutlinedButton(
+                            onClick = onRefreshStatus,
+                            enabled = !state.isLoading,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("检查登录状态")
+                        }
+                        OutlinedButton(
+                            onClick = { showCancelConfirmation = true },
+                            enabled = !state.isLoading,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error,
+                            ),
+                        ) {
+                            Text("取消本次登录")
+                        }
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = onRefreshStatus,
+                        enabled = !state.isLoading,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("检查登录状态")
+                    }
+                }
+            }
+            state.message?.takeIf { it.isNotBlank() }?.let { message ->
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            state.error?.takeIf { it.isNotBlank() }?.let { error ->
+                Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+    if (showCancelConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showCancelConfirmation = false },
+            title = { Text("取消本次 ChatGPT 登录？") },
+            text = { Text("当前设备码会立即失效。若要继续，请重新发起登录。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showCancelConfirmation = false
+                        onCancelLogin()
+                    },
+                ) {
+                    Text("确认取消", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCancelConfirmation = false }) {
+                    Text("继续等待")
+                }
+            },
+        )
     }
 }
 
