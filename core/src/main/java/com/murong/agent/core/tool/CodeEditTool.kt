@@ -11,14 +11,14 @@ class CodeEditTool(
 ) : Tool {
 
     override val name = "code_edit"
-    override val description = "查看、搜索和编辑代码文件。使用 SEARCH/REPLACE 块精确修改文件内容。"
+    override val description = "查看、搜索和编辑代码文件。支持精确 SEARCH/REPLACE 和单文件多段 apply_patch。"
     override val parameters: Map<String, Any> = mapOf(
         "type" to "object",
         "properties" to mapOf(
             "operation" to mapOf(
                 "type" to "string",
-                "enum" to listOf("view", "search_replace", "create"),
-                "description" to "操作：view=查看文件, search_replace=搜索替换, create=创建新文件"
+                "enum" to listOf("view", "search_replace", "apply_patch", "create"),
+                "description" to "操作：view=查看文件, search_replace=精确搜索替换, apply_patch=应用单文件多段补丁, create=创建新文件"
             ),
             "path" to mapOf(
                 "type" to "string",
@@ -35,6 +35,10 @@ class CodeEditTool(
             "content" to mapOf(
                 "type" to "string",
                 "description" to "新文件内容（仅 create 需要）"
+            ),
+            "patch_text" to mapOf(
+                "type" to "string",
+                "description" to "包含一个 *** Update File 区块和一个或多个 @@ hunk 的补丁（仅 apply_patch 需要）"
             ),
             "startLine" to mapOf(
                 "type" to "integer",
@@ -60,7 +64,7 @@ class CodeEditTool(
             val approvedPath = (resolved as? WorkspacePathPolicy.Result.Allowed)?.canonicalPath ?: path
 
             when (op) {
-                "search_replace" -> ToolApprovalRequest(
+                "search_replace", "apply_patch" -> ToolApprovalRequest(
                     toolName = name,
                     summary = "修改代码文件",
                     detail = approvedPath,
@@ -180,6 +184,39 @@ class CodeEditTool(
                         )
                     } else {
                         ToolExecutionResult("Error writing updated content to $path: ${result.error ?: result.output}")
+                    }
+                }
+                "apply_patch" -> {
+                    val patchText = obj["patch_text"]?.jsonPrimitive?.content
+                        ?: return ToolExecutionResult("Error: 'patch_text' required for apply_patch")
+                    if (!RootFile.exists(path)) {
+                        return ToolExecutionResult("File not found: $path")
+                    }
+                    val currentContent = RootFile.readFile(path)
+                    if (currentContent.startsWith("error:")) {
+                        return ToolExecutionResult("Error reading $path: $currentContent")
+                    }
+                    val patched = applyLocalUpdatePatch(
+                        expectedPath = path,
+                        currentContent = currentContent,
+                        patchText = patchText
+                    )
+                    val result = RootFile.writeFileChecked(path, patched.content)
+                    if (result.success) {
+                        ToolExecutionResult(
+                            output = "Applied ${patched.hunkCount} patch hunk(s) to $path",
+                            fileChanges = listOf(
+                                ToolFileChange(
+                                    path = path,
+                                    operation = "apply_patch",
+                                    beforeContent = currentContent,
+                                    afterContent = patched.content,
+                                    diffPreview = buildDiffPreview(currentContent, patched.content)
+                                )
+                            )
+                        )
+                    } else {
+                        ToolExecutionResult("Error writing patched content to $path: ${result.error ?: result.output}")
                     }
                 }
                 "create" -> {

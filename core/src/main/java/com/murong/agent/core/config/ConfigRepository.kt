@@ -51,6 +51,7 @@ class ConfigRepository(private val context: Context) {
     val configFlow: Flow<ProviderConfig> = context.dataStore.data.map { prefs ->
         decodeConfig(prefs[CONFIG_KEY])
             .withLegacyRelayConfigurations()
+            .withCurrentAgentBehaviorDefaults()
             .withSensitiveSecrets(readSensitiveSecrets())
     }
 
@@ -60,7 +61,9 @@ class ConfigRepository(private val context: Context) {
     }
 
     suspend fun saveConfig(config: ProviderConfig) {
-        val migratedConfig = config.withLegacyRelayConfigurations()
+        val migratedConfig = config
+            .withLegacyRelayConfigurations()
+            .withCurrentAgentBehaviorDefaults()
         writeSensitiveSecrets(migratedConfig)
         val sanitizedConfig = migratedConfig.withSensitiveSecretsCleared()
         context.dataStore.edit { prefs ->
@@ -189,6 +192,7 @@ class ConfigRepository(private val context: Context) {
             rawConfig.claudeRelays.isEmpty()
         val config = rawConfig
             .withLegacyRelayConfigurations()
+            .withCurrentAgentBehaviorDefaults()
             .withSensitiveSecrets(readSensitiveSecrets())
         if (!requiresRelayMigration && !config.hasPlaintextSensitiveSecrets()) return
         writeSensitiveSecrets(config)

@@ -97,6 +97,43 @@ class ToolRegistryTest {
     }
 
     @Test
+    fun buildToolsJson_neverExposesDisabledToolEvenWhenPromptOverrideIsTrue() {
+        var enabled = false
+        val registry = ToolRegistry().apply {
+            register(
+                FakeTool("write_tool", emptyMap()),
+                isEnabled = { enabled },
+                isPromptExposed = { true }
+            )
+        }
+
+        assertEquals("[]", registry.buildToolsJson())
+        assertFalse(registry.isPromptExposed("write_tool"))
+        assertTrue(registry.getPromptVisibleTools().isEmpty())
+
+        enabled = true
+
+        assertTrue(registry.buildToolsJson().contains("write_tool"))
+        assertTrue(registry.isPromptExposed("write_tool"))
+    }
+
+    @Test
+    fun buildToolsJson_appliesTurnContextFilterWithoutRemovingExecutionEntry() {
+        val registry = ToolRegistry(promptExposureFilter = { tool -> tool.name == "relevant" }).apply {
+            register(FakeTool("relevant", emptyMap()))
+            register(FakeTool("high_noise", emptyMap()))
+        }
+
+        val toolsJson = registry.buildToolsJson()
+
+        assertTrue(toolsJson.contains("relevant"))
+        assertFalse(toolsJson.contains("high_noise"))
+        assertEquals(setOf("relevant", "high_noise"), registry.getAllTools().map { it.name }.toSet())
+        assertTrue(registry.hasTool("high_noise"))
+        assertTrue(registry.getTool("high_noise") != null)
+    }
+
+    @Test
     fun buildToolsJson_escapesControlCharactersAndPreservesLists() {
         val registry = ToolRegistry().apply {
             register(

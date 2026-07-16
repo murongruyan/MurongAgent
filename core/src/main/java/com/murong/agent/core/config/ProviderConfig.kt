@@ -4,6 +4,39 @@ import com.murong.agent.core.tool.ApprovalRiskLevel
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
 
+internal const val MIN_CUSTOM_CONTEXT_WINDOW_TOKENS = 4_096
+internal const val MAX_CUSTOM_CONTEXT_WINDOW_TOKENS = 2_000_000
+
+internal val DEFAULT_SYSTEM_PROMPT = """
+    You are Murong Agent, a coding agent running on an Android device.
+    Match the user's language unless source text must remain verbatim.
+    Use the available tools to inspect the real environment, make requested changes, and verify the outcome.
+    For coding and debugging, prefer primary source files and focused reads/searches; ignore generated artifacts unless they are relevant.
+    Keep progress updates brief and meaningful. Lead the final response with the outcome, then include only useful evidence, risks, or next steps.
+    Respect approval and workspace boundaries. Never claim a change or verification that did not happen.
+    If asked which model you are, use the runtime provider/model configuration instead of guessing.
+""".trimIndent()
+
+internal val LEGACY_DEFAULT_SYSTEM_PROMPT = """
+    You are Murong Agent, a coding assistant running on an Android device with root access. You have shell access and file system access.
+    Match the user's language by default.
+    If the user primarily speaks Chinese, keep responses, progress updates, and any visible reasoning in Chinese unless quoting code, logs, errors, or other source text that should stay verbatim.
+
+    Default to a detailed, explanatory, highly communicative style.
+    Do not be overly brief unless the user explicitly asks for a short answer.
+    Explain what you are doing, why you are doing it, what you found, and what the result means.
+    For coding and debugging tasks, prefer a short conclusion first, then key findings, then concrete changes or next steps, and finally any important risks or follow-up notes.
+    When using tools, briefly narrate important intent and summarize the outcome in natural language after the tool result arrives.
+    For large files, prefer file.read with line offsets or code_search instead of dumping whole files with shell cat.
+    For code lookup, first locate the real source file, then read only the local context you need.
+    When a class, symbol, or file name is known, prefer finding the exact file path first, then run code_search inside source trees or read that file directly.
+    Prefer source directories such as src/main, src/test, app/src, core/src, common/src, and avoid treating build, .gradle, out, target, intermediates, and mapping outputs as primary evidence unless the user explicitly asks for generated artifacts.
+    If an initial search only hits generated outputs, compiled artifacts, or unrelated noise, change strategy instead of stopping: narrow to source directories, try the exact class/file name, then read nearby lines for confirmation.
+    If a result is complex, break it into clear sections and keep it easy to scan.
+    Be proactive, specific, and helpful. Prefer slightly verbose explanations over terse replies.
+    Never invent your own model identity. If the user asks what model you are, answer according to the actual runtime provider/model configuration supplied by the app, not by guessing from style.
+""".trimIndent()
+
 @Serializable
 data class GlobalRule(val id: String, val title: String, val content: String, val enabled: Boolean = true)
 
@@ -87,6 +120,7 @@ data class RelayConfig(
     val balanceCurrency: String = "USD",
     val balanceSyncedAt: Long? = null,
     val balanceApiPath: String = "",
+    val contextWindowTokens: Int? = null,
     val kind: RelayKind = RelayKind.CUSTOM
 ) {
     fun displayName(fallbackIndex: Int): String {
@@ -122,25 +156,7 @@ data class ProviderConfig(
     val githubViewerName: String = "", val githubViewerAvatarUrl: String = "",
     val skippedAppUpdateVersionCode: Int? = null,
     val ignoredExtensionUpdateVersionCode: Int? = null,
-    val systemPrompt: String = """
-        You are Murong Agent, a coding assistant running on an Android device with root access. You have shell access and file system access.
-        Match the user's language by default.
-        If the user primarily speaks Chinese, keep responses, progress updates, and any visible reasoning in Chinese unless quoting code, logs, errors, or other source text that should stay verbatim.
-
-        Default to a detailed, explanatory, highly communicative style.
-        Do not be overly brief unless the user explicitly asks for a short answer.
-        Explain what you are doing, why you are doing it, what you found, and what the result means.
-        For coding and debugging tasks, prefer a short conclusion first, then key findings, then concrete changes or next steps, and finally any important risks or follow-up notes.
-        When using tools, briefly narrate important intent and summarize the outcome in natural language after the tool result arrives.
-        For large files, prefer file.read with line offsets or code_search instead of dumping whole files with shell cat.
-        For code lookup, first locate the real source file, then read only the local context you need.
-        When a class, symbol, or file name is known, prefer finding the exact file path first, then run code_search inside source trees or read that file directly.
-        Prefer source directories such as src/main, src/test, app/src, core/src, common/src, and avoid treating build, .gradle, out, target, intermediates, and mapping outputs as primary evidence unless the user explicitly asks for generated artifacts.
-        If an initial search only hits generated outputs, compiled artifacts, or unrelated noise, change strategy instead of stopping: narrow to source directories, try the exact class/file name, then read nearby lines for confirmation.
-        If a result is complex, break it into clear sections and keep it easy to scan.
-        Be proactive, specific, and helpful. Prefer slightly verbose explanations over terse replies.
-        Never invent your own model identity. If the user asks what model you are, answer according to the actual runtime provider/model configuration supplied by the app, not by guessing from style.
-    """.trimIndent(),
+    val systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
     val globalRules: List<GlobalRule> = emptyList(),
     val globalMemories: List<GlobalMemory> = emptyList(),
     val globalSkills: List<GlobalSkill> = emptyList(),
@@ -171,7 +187,7 @@ data class ProviderConfig(
     val subagentDefaultReasoningEffort: String = "",
     val enableStreamingResponses: Boolean = true,
     val enableMultimodalMessages: Boolean = true,
-    val responseVerbosity: ResponseVerbosity = ResponseVerbosity.DETAILED,
+    val responseVerbosity: ResponseVerbosity = ResponseVerbosity.BALANCED,
     val webSearchSearxngBaseUrl: String = "",
     val webSearchBingApiKey: String = "",
     val temperature: Double = 0.7,
@@ -232,6 +248,10 @@ data class ProviderConfig(
         "claude" -> claudeReasoningEffort
         else -> null
     }
+    fun getActiveContextWindowTokens(): Int? = getActiveRelay()
+        ?.contextWindowTokens
+        ?.takeIf { it >= MIN_CUSTOM_CONTEXT_WINDOW_TOKENS }
+        ?.coerceAtMost(MAX_CUSTOM_CONTEXT_WINDOW_TOKENS)
 
     fun withLegacyRelayConfigurations(): ProviderConfig {
         fun officialName(providerId: String): String = when (providerId) {
@@ -265,6 +285,19 @@ data class ProviderConfig(
             activeOpenaiRelayId = activeOpenaiRelayId ?: migratedOpenai.firstOrNull()?.id,
             claudeRelays = migratedClaude,
             activeClaudeRelayId = activeClaudeRelayId ?: migratedClaude.firstOrNull()?.id
+        )
+    }
+
+    /** Upgrades only the exact historical built-in prompt; custom prompts stay untouched. */
+    fun withCurrentAgentBehaviorDefaults(): ProviderConfig {
+        if (systemPrompt.trim() != LEGACY_DEFAULT_SYSTEM_PROMPT) return this
+        return copy(
+            systemPrompt = DEFAULT_SYSTEM_PROMPT,
+            responseVerbosity = if (responseVerbosity == ResponseVerbosity.DETAILED) {
+                ResponseVerbosity.BALANCED
+            } else {
+                responseVerbosity
+            }
         )
     }
 
@@ -547,7 +580,7 @@ data class ProviderConfig(
         val enabledSkills = buildSkillsInstruction(skills = globalSkills, heading = "Active Global Skills")
         val rulesText = enabledRules.joinToString("\n\n") { "Rule: ${it.title}\n${it.content.trim()}" }
         return buildString {
-            append(systemPrompt.trim())
+            append(resolveBaseSystemPrompt())
             val wfInstr = buildWorkflowInstruction()
             if (wfInstr.isNotEmpty()) append("\n\n$wfInstr")
             val verbosityInstr = buildResponseVerbosityInstruction()
@@ -565,17 +598,17 @@ data class ProviderConfig(
                 """
 
 Global configuration management:
-- If the user explicitly asks to save or add a reusable global rule, use `create_global_rule`.
-- If the user explicitly asks to save or add a reusable global memory, prefer `remember_memory` with `"scope":"global"`; `create_global_memory` remains a compatibility path.
-- If the user explicitly asks to delete a durable memory, use `forget_memory`.
-- If the user explicitly asks to migrate old legacy global/project memories into durable memory, use `migrate_legacy_memories`.
-- If the user explicitly asks to import or save a reusable global skill, use `create_global_skill`.
-- When the current task may match an existing global or project Skill, first use `read_skill` to inspect the Skill, then use `run_skill` if it is relevant.
-- If the user explicitly asks to import or add an MCP server, use `create_mcp_server`.
-- Never auto-create global rules, memories, skills, or MCP entries from ordinary conversation.
+- Only persist a rule, memory, skill, or MCP server when the user explicitly asks.
+- Use the matching management tool; use `remember_memory`/`forget_memory` for durable memory.
+- Read a potentially relevant Skill before running it.
                 """.trimIndent()
             )
         }
+    }
+
+    private fun resolveBaseSystemPrompt(): String {
+        val configured = systemPrompt.trim()
+        return if (configured == LEGACY_DEFAULT_SYSTEM_PROMPT) DEFAULT_SYSTEM_PROMPT else configured
     }
     fun buildSkillsInstruction(skills: List<GlobalSkill>, heading: String): String {
         val enabled = skills.filter { it.enabled }; if (enabled.isEmpty()) return ""
@@ -611,29 +644,23 @@ Global configuration management:
     private fun requiresFreshApproval(toolName: String): Boolean = isFreshApprovalToolName(toolName)
 
     fun buildWorkflowInstruction(): String = """
-        Prefer completing the whole workflow in as few assistant turns as practical.
-        Plan internally first, then batch related analysis and execution together.
-        Keep the workflow efficient, but narrate meaningful progress in a user-friendly way.
-        Only interrupt for user confirmation when information is missing, a decision is required, or an approval gate blocks execution.
-        When a task is long or complex, aim to finish the full chain in one continuous run while still providing richer progress updates and a detailed final summary.
-        After tool execution, do not stop abruptly. Explain what changed, what was learned, and what should happen next.
+        Complete the requested workflow in one continuous run when practical.
+        Batch related work and interrupt only for missing decisions, required authority, or approval gates.
+        Continue after tool calls until the outcome is verified or a concrete blocker remains.
     """.trimIndent()
 
     fun buildResponseVerbosityInstruction(): String = when (responseVerbosity) {
         ResponseVerbosity.CONCISE -> """
             Response style: concise.
-            Prefer short, direct answers and compact progress updates.
-            Summarize tool results briefly and avoid extended explanation unless the user asks for more detail.
+            Prefer short, direct answers and mention only material tool results.
         """.trimIndent()
         ResponseVerbosity.BALANCED -> """
             Response style: balanced.
-            Give a clear conclusion, the key findings, and the next step without being too terse or too verbose.
-            Summarize tool results naturally and expand only where the extra context is useful.
+            Give the conclusion, key evidence, and next step; expand only where context helps.
         """.trimIndent()
         ResponseVerbosity.DETAILED -> """
             Response style: detailed.
-            Prefer rich explanations, clearer progress narration, and a more complete final summary.
-            After tool use, explain what was done, what changed, what was learned, and what should happen next.
+            Explain important reasoning, tradeoffs, changes, and verification, without narrating routine tool mechanics.
         """.trimIndent()
     }
 

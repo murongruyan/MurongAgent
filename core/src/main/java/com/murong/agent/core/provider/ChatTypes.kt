@@ -17,7 +17,24 @@ data class ChatRequest(
     /** DeepSeek V4 thinking 开关：enabled / disabled */
     val thinkingMode: String? = null,
     /** Tool 定义（JSON 数组字符串） */
-    val tools: String? = null
+    val tools: String? = null,
+    /**
+     * OpenAI Responses API 的连续推理状态。
+     *
+     * 调用方可以只保存 previousResponseId（服务端保存状态），也可以在无状态
+     * relay 场景中原样回传 reasoningItems。其他 Provider 会忽略此字段。
+     */
+    val responsesContinuation: ResponsesContinuation? = null
+)
+
+/**
+ * Responses API 的最小可持久化连续状态。
+ * reasoningItems 保存服务端返回的完整 JSON item，避免协议升级时丢字段。
+ */
+@Serializable
+data class ResponsesContinuation(
+    val previousResponseId: String? = null,
+    val reasoningItems: List<String> = emptyList()
 )
 
 /**
@@ -101,7 +118,9 @@ sealed class StreamDelta {
 data class ChatResponse(
     val content: String?,
     val toolCalls: List<ToolCall>?,
-    val usage: Usage? = null
+    val usage: Usage? = null,
+    /** 仅 Responses API 返回；调用方应在下一轮放回 ChatRequest。 */
+    val responsesContinuation: ResponsesContinuation? = null
 )
 
 data class Usage(
@@ -110,5 +129,7 @@ data class Usage(
     val totalTokens: Int = 0,
     /** DeepSeek-specific */
     val promptCacheHitTokens: Int? = null,
-    val promptCacheMissTokens: Int? = null
+    val promptCacheMissTokens: Int? = null,
+    /** OpenAI Responses API: output_tokens_details.reasoning_tokens */
+    val reasoningTokens: Int? = null
 )

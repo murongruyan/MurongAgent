@@ -62,12 +62,45 @@ data class ToolStructuredPayload(
     val skill: SkillToolPayload? = null
 )
 
+enum class ToolExecutionStatus {
+    UNKNOWN,
+    SUCCESS,
+    FAILURE,
+    TIMED_OUT
+}
+
 data class ToolExecutionResult(
     val output: String,
     val fileChanges: List<ToolFileChange> = emptyList(),
     val stepSignOffReceipt: StepSignOffReceipt? = null,
-    val structuredPayload: ToolStructuredPayload? = null
-)
+    val structuredPayload: ToolStructuredPayload? = null,
+    /**
+     * Structured execution state. UNKNOWN keeps existing tools source-compatible while
+     * callers migrate away from interpreting human-readable output.
+     */
+    val status: ToolExecutionStatus = ToolExecutionStatus.UNKNOWN,
+    /** Explicit success supplied by the tool. Null means the legacy text fallback is required. */
+    val success: Boolean? = null,
+    /** Process exit code when the tool launches a command. */
+    val exitCode: Int? = null,
+    /** True when execution was stopped by its timeout. */
+    val timedOut: Boolean = false
+) {
+    /**
+     * Resolve only structured state. Null deliberately means "unknown" so legacy tools can
+     * continue using the AgentLoop text fallback until they expose structured status.
+     * Contradictory failure signals always win over a claimed success.
+     */
+    val resolvedSuccess: Boolean?
+        get() {
+            if (success == false || timedOut || exitCode?.let { it != 0 } == true) return false
+            if (status == ToolExecutionStatus.FAILURE || status == ToolExecutionStatus.TIMED_OUT) {
+                return false
+            }
+            if (success == true || status == ToolExecutionStatus.SUCCESS || exitCode == 0) return true
+            return null
+        }
+}
 
 data class ToolExecutionReceipt(
     val toolName: String,

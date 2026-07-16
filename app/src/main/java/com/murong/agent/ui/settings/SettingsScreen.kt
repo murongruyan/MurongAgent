@@ -1106,6 +1106,7 @@ private fun NewRelayConfigurationDialog(
     var apiKey by remember { mutableStateOf("") }
     var baseUrl by remember { mutableStateOf("") }
     var model by remember { mutableStateOf(provider.defaultModel) }
+    var contextWindowTokens by remember { mutableStateOf("") }
     MurongDialog(onDismissRequest = onDismiss) {
         Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
             Column(
@@ -1119,6 +1120,17 @@ private fun NewRelayConfigurationDialog(
                 }
                 OutlinedTextField(apiKey, { apiKey = it }, label = { Text("API Key") }, modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation())
                 OutlinedTextField(model, { model = it }, label = { Text("模型") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                OutlinedTextField(
+                    value = contextWindowTokens,
+                    onValueChange = { value ->
+                        if (value.all(Char::isDigit)) contextWindowTokens = value
+                    },
+                    label = { Text("上下文窗口 tokens（可选）") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    supportingText = { Text("留空自动识别；用于决定何时压缩上下文。", fontSize = 10.sp) }
+                )
                 Text("取消不会创建配置，也不会保存 API Key。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     TextButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("取消") }
@@ -1131,6 +1143,8 @@ private fun NewRelayConfigurationDialog(
                                     baseUrl = if (kind == RelayKind.OFFICIAL) "" else baseUrl.trim(),
                                     apiKey = apiKey,
                                     model = model.trim().ifBlank { provider.defaultModel },
+                                    contextWindowTokens = contextWindowTokens.toIntOrNull()
+                                        ?.coerceIn(4_096, 2_000_000),
                                     kind = kind
                                 )
                             )
@@ -1272,6 +1286,7 @@ private fun LegacyProviderSettingsSection(
                         val baseUrl = activeRelay?.baseUrl.orEmpty()
                         val model = activeRelay?.model.orEmpty()
                         val resolvedModel = config.getResolvedModel(provider.id)
+                        val contextWindowTokens = activeRelay?.contextWindowTokens
                         val supportsAutoModelSelection = provider.id == "deepseek"
                         val modelAutoSelectionEnabled = supportsAutoModelSelection &&
                             config.isModelAutoSelectionEnabled(provider.id)
@@ -1728,6 +1743,22 @@ private fun LegacyProviderSettingsSection(
                                                 }
                                             }
                                         }
+
+                                        DeferredOptionalIntField(
+                                            fieldKey = "${provider.id}-${activeRelay?.id}-context-window",
+                                            currentValue = contextWindowTokens,
+                                            label = "上下文窗口 tokens（可选）",
+                                            supportingText = "留空时按模型自动选择安全水位；自建中转或受限模型可填写实际上限。",
+                                            minValue = 4_096,
+                                            maxValue = 2_000_000,
+                                            onCommit = { value ->
+                                                onConfigChanged(
+                                                    config.updateActiveRelay(provider.id) {
+                                                        it.copy(contextWindowTokens = value)
+                                                    }
+                                                )
+                                            }
+                                        )
 
                                         if (provider.supportsReasoning && provider.supportedReasoningEfforts.isNotEmpty()) {
                                             Text(
@@ -2210,6 +2241,66 @@ private fun DeferredDoubleField(
         singleLine = true,
         keyboardOptions = KeyboardOptions(
             keyboardType = KeyboardType.Decimal,
+            imeAction = ImeAction.Done
+        ),
+        keyboardActions = KeyboardActions(
+            onDone = {
+                commitValue()
+                focusManager.clearFocus()
+            }
+        ),
+        textStyle = MaterialTheme.typography.bodySmall,
+        supportingText = supportingText?.let { text ->
+            { Text(text, fontSize = 10.sp) }
+        }
+    )
+}
+
+@Composable
+private fun DeferredOptionalIntField(
+    fieldKey: String,
+    currentValue: Int?,
+    label: String,
+    supportingText: String? = null,
+    minValue: Int,
+    maxValue: Int,
+    onCommit: (Int?) -> Unit
+) {
+    val focusManager = LocalFocusManager.current
+    var isFocused by remember(fieldKey) { mutableStateOf(false) }
+    var draft by rememberSaveable(fieldKey) { mutableStateOf(currentValue?.toString().orEmpty()) }
+
+    LaunchedEffect(fieldKey, currentValue, isFocused) {
+        if (!isFocused) draft = currentValue?.toString().orEmpty()
+    }
+
+    val commitValue = {
+        val parsed = draft.trim().takeIf { it.isNotEmpty() }?.toIntOrNull()
+        val resolved = when {
+            draft.isBlank() -> null
+            parsed != null -> parsed.coerceIn(minValue, maxValue)
+            else -> currentValue
+        }
+        if (resolved != currentValue) onCommit(resolved)
+        draft = resolved?.toString().orEmpty()
+    }
+
+    OutlinedTextField(
+        value = draft,
+        onValueChange = { value ->
+            if (value.all(Char::isDigit)) draft = value
+        },
+        label = { Text(label) },
+        modifier = Modifier
+            .fillMaxWidth()
+            .onFocusChanged {
+                val wasFocused = isFocused
+                isFocused = it.isFocused
+                if (wasFocused && !it.isFocused) commitValue()
+            },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Number,
             imeAction = ImeAction.Done
         ),
         keyboardActions = KeyboardActions(

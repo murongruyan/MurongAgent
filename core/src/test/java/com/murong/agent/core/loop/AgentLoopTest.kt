@@ -5,6 +5,7 @@ import com.murong.agent.core.provider.ChatMessage
 import com.murong.agent.core.provider.ChatRequest
 import com.murong.agent.core.provider.ChatResponse
 import com.murong.agent.core.provider.ModelProvider
+import com.murong.agent.core.provider.ResponsesContinuation
 import com.murong.agent.core.provider.StreamDelta
 import com.murong.agent.core.provider.ToolCall
 import com.murong.agent.core.provider.ToolCallFunction
@@ -13,6 +14,7 @@ import com.murong.agent.core.tool.SessionHistoryToolPayload
 import com.murong.agent.core.tool.StepSignOffReceipt
 import com.murong.agent.core.tool.Tool
 import com.murong.agent.core.tool.ToolExecutionResult
+import com.murong.agent.core.tool.ToolExecutionStatus
 import com.murong.agent.core.tool.ToolRuntimeContext
 import com.murong.agent.core.tool.ToolRegistry
 import com.murong.agent.core.tool.ToolStructuredPayload
@@ -23,6 +25,87 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class AgentLoopTest {
+
+    @Test
+    fun processMessage_forwardsResponsesContinuationAcrossToolLoop() = runBlocking {
+        val initial = ResponsesContinuation(previousResponseId = "resp-0")
+        val afterToolCall = ResponsesContinuation(previousResponseId = "resp-1")
+        val completed = ResponsesContinuation(previousResponseId = "resp-2")
+        val provider = FakeModelProvider(
+            responses = ArrayDeque(
+                listOf(
+                    ChatResponse(
+                        content = null,
+                        toolCalls = listOf(
+                            ToolCall(
+                                id = "call-1",
+                                function = ToolCallFunction("fake_tool", "{}")
+                            )
+                        ),
+                        responsesContinuation = afterToolCall
+                    ),
+                    ChatResponse(
+                        content = "done",
+                        toolCalls = null,
+                        responsesContinuation = completed
+                    )
+                )
+            )
+        )
+        val continuations = mutableListOf<ResponsesContinuation?>()
+        val loop = AgentLoop(
+            provider = provider,
+            toolRegistry = ToolRegistry().apply { register(FakeTool()) },
+            config = ProviderConfig(activeProviderId = "openai-compatible", openaiModel = "fake-model")
+        )
+
+        loop.processMessage(
+            userMessage = ChatMessage(role = "user", content = "continue"),
+            history = emptyList(),
+            onEvent = {},
+            initialResponsesContinuation = initial,
+            onResponsesContinuationChanged = continuations::add
+        )
+
+        assertEquals(initial, provider.requests[0].responsesContinuation)
+        assertEquals(afterToolCall, provider.requests[1].responsesContinuation)
+        assertEquals(listOf<ResponsesContinuation?>(afterToolCall, completed), continuations)
+    }
+
+    @Test
+    fun processMessage_preservesPreparedHistoryOlderThanThirtyTwoMessages() = runBlocking {
+        val provider = FakeModelProvider(
+            responses = ArrayDeque(listOf(ChatResponse(content = "done", toolCalls = null)))
+        )
+        val loop = AgentLoop(
+            provider = provider,
+            toolRegistry = ToolRegistry(),
+            config = ProviderConfig(
+                activeProviderId = "openai-compatible",
+                openaiModel = "fake-model"
+            )
+        )
+        val history = (1..40).map { index ->
+            ChatMessage(
+                role = if (index % 2 == 0) "assistant" else "user",
+                content = "history-message-$index"
+            )
+        }
+
+        loop.processMessage(
+            userMessage = ChatMessage(role = "user", content = "current-message"),
+            history = history,
+            onEvent = {}
+        )
+
+        val requestMessages = provider.requests.single().messages
+        assertTrue(requestMessages.any { it.content == "history-message-1" })
+        assertTrue(requestMessages.any { it.content == "history-message-8" })
+        assertTrue(
+            requestMessages.indexOfFirst { it.content == "history-message-1" } <
+                requestMessages.indexOfFirst { it.content == "history-message-40" }
+        )
+    }
 
     @Test
     fun processMessage_whenModelStopsAfterToolResults_emitsSyntheticSummaryInsteadOfSilentDone() = runBlocking {
@@ -263,7 +346,7 @@ class AgentLoopTest {
     }
 
     @Test
-    fun processMessage_whenPromptExposedButDisabledWriteToolIsCalled_returnsGuardBlockInsteadOfUnknownTool() = runBlocking {
+    fun processMessage_whenHiddenDisabledWriteToolIsCalled_returnsGuardBlockInsteadOfUnknownTool() = runBlocking {
         val provider = FakeModelProvider(
             responses = ArrayDeque(
                 listOf(
@@ -314,7 +397,7 @@ class AgentLoopTest {
             }
         )
 
-        assertTrue(provider.requests.first().tools.orEmpty().contains("mutating_tool"))
+        assertTrue(!provider.requests.first().tools.orEmpty().contains("mutating_tool"))
         val toolResult = events.filterIsInstance<AgentEvent.ToolResult>().single()
         assertEquals("Blocked by planning mode", toolResult.result)
         assertEquals(0, mutatingTool.executionCount)
@@ -607,7 +690,7 @@ class AgentLoopTest {
     }
 
     @Test
-    fun processMessage_whenWriteToolHasNoCompleteStep_finalReadinessRetriesBeforeAllowingFinish() = runBlocking {
+    fun processMessage_whenOrdinaryWriteHasNoCompleteStep_allowsNaturalLanguageFinish() = runBlocking {
         val provider = FakeModelProvider(
             responses = ArrayDeque(
                 listOf(
@@ -623,38 +706,12 @@ class AgentLoopTest {
                             )
                         )
                     ),
-                    ChatResponse(content = "done too early", toolCalls = null),
-                    ChatResponse(
-                        content = null,
-                        toolCalls = listOf(
-                            ToolCall(
-                                id = "call-2",
-                                function = ToolCallFunction(
-                                    name = "complete_step",
-                                    arguments = """
-                                    {
-                                      "step": "修改文件",
-                                      "result": "demo.txt 已更新",
-                                      "evidence": [
-                                        {
-                                          "summary": "已写入 demo.txt",
-                                          "toolName": "mutating_tool",
-                                          "path": "demo.txt"
-                                        }
-                                      ]
-                                    }
-                                    """.trimIndent()
-                                )
-                            )
-                        )
-                    ),
-                    ChatResponse(content = "now done", toolCalls = null)
+                    ChatResponse(content = "done", toolCalls = null)
                 )
             )
         )
         val registry = ToolRegistry().apply {
             register(CountingTool("mutating_tool", "write succeeded"))
-            register(CompleteStepTool())
         }
         val loop = AgentLoop(
             provider = provider,
@@ -672,28 +729,16 @@ class AgentLoopTest {
             onEvent = events::add
         )
 
-        assertEquals(4, provider.callCount, "缺少 complete_step 时应先触发 final readiness 重试，再允许结束")
-        val thirdRequest = provider.requests.getOrNull(2)
-        assertNotNull(thirdRequest, "应有带 final readiness 提醒的补充请求")
-        val reminder = thirdRequest.messages.lastOrNull { it.role == "system" }?.content.orEmpty()
-        assertTrue(reminder.contains("Final Readiness Gate"))
-        assertTrue(reminder.contains("complete_step"))
+        assertEquals(2, provider.callCount, "普通写入后有自然语言结论时不应强制 complete_step")
         val toolResults = events.filterIsInstance<AgentEvent.ToolResult>()
-        assertEquals(2, toolResults.size)
-        assertTrue(toolResults[1].result.contains("Step signed off."))
-        assertTrue(events.filterIsInstance<AgentEvent.Error>().isEmpty(), "补签收成功后不应报错")
-        val audits = events.filterIsInstance<AgentEvent.ReadinessAudit>().map(AgentEvent.ReadinessAudit::audit)
-        assertEquals(2, audits.size, "final readiness 应先记录 blocked，再在补签收后记录 recovered")
-        assertEquals(FinalReadinessAuditResult.BLOCKED, audits[0].result)
-        assertEquals(false, audits[0].recovered)
-        assertEquals(FinalReadinessReceiptKind.MISSING_COMPLETE_STEP_AFTER_WRITE, audits[0].receiptKind)
-        assertEquals(FinalReadinessAuditResult.ALLOWED, audits[1].result)
-        assertEquals(true, audits[1].recovered)
-        assertEquals(FinalReadinessReceiptKind.MISSING_COMPLETE_STEP_AFTER_WRITE, audits[1].receiptKind)
+        assertEquals(1, toolResults.size)
+        assertEquals("write succeeded", toolResults.single().result)
+        assertTrue(events.filterIsInstance<AgentEvent.Error>().isEmpty())
+        assertTrue(events.filterIsInstance<AgentEvent.ReadinessAudit>().isEmpty())
     }
 
     @Test
-    fun processMessage_whenCompleteStepProvidesStructuredReceipt_finalReadinessDoesNotDependOnLegacyText() = runBlocking {
+    fun processMessage_whenCompleteStepIsExplicitlyRequested_keepsStructuredReceiptAvailable() = runBlocking {
         val provider = FakeModelProvider(
             responses = ArrayDeque(
                 listOf(
@@ -709,7 +754,6 @@ class AgentLoopTest {
                             )
                         )
                     ),
-                    ChatResponse(content = "done too early", toolCalls = null),
                     ChatResponse(
                         content = null,
                         toolCalls = listOf(
@@ -746,14 +790,16 @@ class AgentLoopTest {
             onEvent = events::add
         )
 
-        assertEquals(4, provider.callCount)
-        assertTrue(events.filterIsInstance<AgentEvent.Error>().isEmpty(), "结构化签收成功后不应再被 final readiness 拦截")
+        assertEquals(3, provider.callCount)
+        assertTrue(events.filterIsInstance<AgentEvent.Error>().isEmpty())
         val toolResults = events.filterIsInstance<AgentEvent.ToolResult>()
         assertEquals("structured sign-off receipt", toolResults[1].result)
+        assertNotNull(toolResults[1].stepSignOffReceipt)
+        Unit
     }
 
     @Test
-    fun processMessage_whenWriteToolStillHasNoCompleteStepAfterReminder_stopsWithFinalReadinessError() = runBlocking {
+    fun processMessage_whenShellFailsStructurally_completeStepCannotUseItAsSuccessfulEvidence() = runBlocking {
         val provider = FakeModelProvider(
             responses = ArrayDeque(
                 listOf(
@@ -763,20 +809,81 @@ class AgentLoopTest {
                             ToolCall(
                                 id = "call-1",
                                 function = ToolCallFunction(
-                                    name = "mutating_tool",
-                                    arguments = """{"path":"demo.txt","content":"hello"}"""
+                                    name = "shell",
+                                    arguments = """{"command":"false"}"""
+                                )
+                            ),
+                            ToolCall(
+                                id = "call-1b",
+                                function = ToolCallFunction(
+                                    name = "legacy_shell",
+                                    arguments = """{"command":"missing"}"""
                                 )
                             )
                         )
                     ),
-                    ChatResponse(content = "done too early", toolCalls = null),
-                    ChatResponse(content = "still done too early", toolCalls = null)
+                    ChatResponse(
+                        content = null,
+                        toolCalls = listOf(
+                            ToolCall(
+                                id = "call-2",
+                                function = ToolCallFunction(
+                                    name = "complete_step",
+                                    arguments = """
+                                    {
+                                      "step": "运行命令",
+                                      "result": "命令已完成",
+                                      "evidence": [
+                                        {
+                                          "summary": "已运行 false",
+                                          "toolName": "shell",
+                                          "command": "false"
+                                        },
+                                        {
+                                          "summary": "已运行 missing",
+                                          "toolName": "legacy_shell",
+                                          "command": "missing"
+                                        }
+                                      ]
+                                    }
+                                    """.trimIndent()
+                                )
+                            )
+                        )
+                    ),
+                    ChatResponse(content = "command failed", toolCalls = null)
                 )
             )
         )
-        val mutatingTool = CountingTool("mutating_tool", "write succeeded")
         val registry = ToolRegistry().apply {
-            register(mutatingTool)
+            register(object : Tool {
+                override val name: String = "shell"
+                override val description: String = "shell"
+                override val parameters: Map<String, Any> = emptyMap()
+
+                override suspend fun execute(args: String): String {
+                    return "failed without a legacy error prefix"
+                }
+
+                override suspend fun executeWithResult(args: String): ToolExecutionResult {
+                    return ToolExecutionResult(
+                        output = execute(args),
+                        status = ToolExecutionStatus.FAILURE,
+                        success = false,
+                        exitCode = 1
+                    )
+                }
+            })
+            register(object : Tool {
+                override val name: String = "legacy_shell"
+                override val description: String = "legacy shell"
+                override val parameters: Map<String, Any> = emptyMap()
+
+                override suspend fun execute(args: String): String {
+                    return "Command execution error (exit 127):\nmissing"
+                }
+            })
+            register(CompleteStepTool())
         }
         val loop = AgentLoop(
             provider = provider,
@@ -789,29 +896,27 @@ class AgentLoopTest {
         val events = mutableListOf<AgentEvent>()
 
         loop.processMessage(
-            userMessage = ChatMessage(role = "user", content = "修改完别忘了签收"),
+            userMessage = ChatMessage(role = "user", content = "运行命令并签收"),
             history = emptyList(),
             onEvent = events::add
         )
 
-        assertEquals(1, mutatingTool.executionCount)
-        assertEquals(3, provider.callCount, "提醒一次后若仍缺签收，应直接停止")
-        val errorEvent = events.filterIsInstance<AgentEvent.Error>().lastOrNull()
-        assertNotNull(errorEvent, "最终收口失败时应发错误事件")
-        assertTrue(errorEvent.message.contains("complete_step"))
-        assertTrue(errorEvent.message.contains("已成功执行"))
-        assertNotNull(errorEvent.userVisibleMessage)
-        assertTrue(errorEvent.userVisibleMessage.contains("当前执行已暂停"))
-        assertTrue(!errorEvent.userVisibleMessage.contains("complete_step"))
-        assertEquals(
-            FinalReadinessReceiptKind.MISSING_COMPLETE_STEP_AFTER_WRITE,
-            errorEvent.finalReadinessReceipt?.kind
-        )
-        val audits = events.filterIsInstance<AgentEvent.ReadinessAudit>().map(AgentEvent.ReadinessAudit::audit)
-        assertEquals(1, audits.size, "提醒后仍失败时只应记录一次 blocked audit")
-        assertEquals(FinalReadinessAuditResult.BLOCKED, audits.single().result)
-        assertEquals(false, audits.single().recovered)
-        assertEquals(FinalReadinessReceiptKind.MISSING_COMPLETE_STEP_AFTER_WRITE, audits.single().receiptKind)
+        assertEquals(3, provider.callCount)
+        val toolResults = events.filterIsInstance<AgentEvent.ToolResult>()
+        assertEquals(3, toolResults.size)
+        assertEquals("failed without a legacy error prefix", toolResults[0].result)
+        assertEquals(false, toolResults[0].isSuccess)
+        assertEquals(ToolExecutionStatus.FAILURE, toolResults[0].status)
+        assertEquals(1, toolResults[0].exitCode)
+        assertEquals("Command execution error (exit 127):\nmissing", toolResults[1].result)
+        assertEquals(false, toolResults[1].isSuccess)
+        assertTrue(toolResults[2].result.startsWith("Error:"))
+        assertTrue(toolResults[2].result.contains("没有匹配到真实工具收据"))
+        assertTrue(toolResults[2].result.contains("shell"))
+        assertTrue(toolResults[2].result.contains("legacy_shell"))
+        assertEquals(null, toolResults[2].stepSignOffReceipt)
+        assertTrue(events.filterIsInstance<AgentEvent.ReadinessAudit>().isEmpty())
+        assertTrue(events.filterIsInstance<AgentEvent.Error>().isEmpty())
         assertTrue(events.last() is AgentEvent.Done)
     }
 
@@ -1075,7 +1180,15 @@ class AgentLoopTest {
         loop.processMessage(
             userMessage = ChatMessage(role = "user", content = "改完后继续确认"),
             history = emptyList(),
-            onEvent = events::add
+            onEvent = events::add,
+            finalReadinessGuard = {
+                FinalReadinessReceipt(
+                    kind = FinalReadinessReceiptKind.MISSING_COMPLETE_STEP_AFTER_WRITE,
+                    requiredAction = FinalReadinessRequiredAction.SIGN_OFF_WITH_EVIDENCE,
+                    message = "canonical workflow still requires evidence",
+                    latestSuccessfulWriteToolName = "mutating_tool"
+                )
+            }
         )
 
         assertEquals(4, provider.callCount, "提醒后即使执行了无关工具，也不应再获得第二次 final readiness 提醒")

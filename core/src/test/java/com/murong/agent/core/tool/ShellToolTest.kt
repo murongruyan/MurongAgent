@@ -30,9 +30,11 @@ class ShellToolTest {
             }
         )
 
-        val result = tool.execute("""{"command":"pwd","timeout":7}""")
+        val result = tool.executeWithResult("""{"command":"pwd","timeout":7}""")
 
-        assertEquals("system-ok", result)
+        assertEquals("system-ok", result.output)
+        assertEquals(ToolExecutionStatus.SUCCESS, result.status)
+        assertEquals(true, result.success)
         assertEquals(7, executedTimeout)
         assertTrue(executedCommand.startsWith("export PATH='/system/bin:"))
         assertTrue(executedCommand.contains("unset PREFIX TERMUX__PREFIX"))
@@ -84,9 +86,51 @@ class ShellToolTest {
             }
         )
 
-        val result = tool.execute("""{"command":"missing","environment":"extension"}""")
+        val result = tool.executeWithResult("""{"command":"missing","environment":"extension"}""")
 
-        assertEquals("Command execution error (exit 127):\nmissing", result)
+        assertEquals("Command execution error (exit 127):\nmissing", result.output)
+        assertEquals(ToolExecutionStatus.FAILURE, result.status)
+        assertEquals(false, result.success)
+        assertEquals(127, result.exitCode)
+        assertFalse(result.timedOut)
+        assertEquals(false, result.resolvedSuccess)
+    }
+
+    @Test
+    fun executeWithResult_reportsRootSystemExitCodeFromCommandMarker() = runBlocking {
+        val tool = ShellTool(
+            rootAvailableProvider = { true },
+            systemCommandExecutor = { _, _ ->
+                "permission denied\n__RSNX_EXIT_CODE__126"
+            }
+        )
+
+        val result = tool.executeWithResult("""{"command":"./script.sh","environment":"system"}""")
+
+        assertEquals("Command execution error (exit 126):\npermission denied", result.output)
+        assertEquals(ToolExecutionStatus.FAILURE, result.status)
+        assertEquals(false, result.success)
+        assertEquals(126, result.exitCode)
+        assertFalse(result.timedOut)
+    }
+
+    @Test
+    fun executeWithResult_reportsRootSystemTimeoutStructurally() = runBlocking {
+        val tool = ShellTool(
+            rootAvailableProvider = { true },
+            systemCommandExecutor = { _, _ ->
+                "partial output\n__RSNX_TIMEOUT__\n__RSNX_EXIT_CODE__143"
+            }
+        )
+
+        val result = tool.executeWithResult("""{"command":"sleep 30","timeout":2}""")
+
+        assertTrue(result.output.startsWith("partial output"))
+        assertEquals(ToolExecutionStatus.TIMED_OUT, result.status)
+        assertEquals(false, result.success)
+        assertEquals(143, result.exitCode)
+        assertTrue(result.timedOut)
+        assertEquals(false, result.resolvedSuccess)
     }
 
     @Test

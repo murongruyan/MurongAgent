@@ -48,6 +48,7 @@ import com.murong.agent.core.mcp.McpTransportType
 import com.murong.agent.core.skill.PersistedSkillStore
 import com.murong.agent.core.provider.ChatRequest
 import com.murong.agent.core.provider.ChatMessage
+import com.murong.agent.core.provider.ResponsesContinuation
 import com.murong.agent.core.provider.Usage
 import com.murong.agent.core.provider.ProviderRegistry
 import com.murong.agent.core.tool.ApprovalRiskLevel
@@ -2082,6 +2083,15 @@ class ChatSessionManager(
         val removedMessages: List<ChatMessageUi>
     )
 
+    /** Ephemeral Responses API state. Response ids must never leak across session/model boundaries. */
+    private data class ActiveResponsesContinuation(
+        val sessionId: String,
+        val providerId: String,
+        val model: String,
+        val baseUrl: String?,
+        val value: ResponsesContinuation
+    )
+
     private val _state = MutableStateFlow(SessionState())
     val state: StateFlow<SessionState> = _state.asStateFlow()
     private val _pendingPromptReplayNotices = MutableSharedFlow<String>(extraBufferCapacity = 1)
@@ -2095,6 +2105,7 @@ class ChatSessionManager(
     private var currentStreamingId: Long? = null
     private var currentSessionId: String = ""
     private var lastSessionConfig: ProviderConfig = ProviderConfig()
+    private var activeResponsesContinuation: ActiveResponsesContinuation? = null
     private var currentTurnCheckpointCaptureState: TurnCheckpointCaptureState = TurnCheckpointCaptureState()
     private var pendingApprovalDecision: CompletableDeferred<Boolean>? = null
     private var pendingAskDecision: CompletableDeferred<List<AskAnswerUi>?>? = null
@@ -3124,6 +3135,7 @@ class ChatSessionManager(
         subagentSchedulerJobs = emptyList()
         pendingApprovalDecision = null
         pendingAskDecision = null
+        clearActiveResponsesContinuation()
         currentSessionId = session.id
         cachedCurrentPersistedSession = session
         restoreApprovedApprovalScopes(
@@ -3300,6 +3312,7 @@ class ChatSessionManager(
             repoScopedConfigs = inheritedProjectSeed?.repoScopedConfigs.orEmpty()
         )
         saveCurrentSession()
+        clearActiveResponsesContinuation()
         currentSessionId = UUID.randomUUID().toString().take(8)
         cachedCurrentPersistedSession = null
         clearApprovedApprovalScopes()
@@ -4114,6 +4127,7 @@ class ChatSessionManager(
                 compressionSnapshot = snapshot,
                 compressionSnapshots = updatedSnapshots
             )
+            clearActiveResponsesContinuation()
             saveCurrentSession()
             snapshot
         }
@@ -4132,6 +4146,7 @@ class ChatSessionManager(
                 updatedSnapshot = updatedSnapshot
             )
         )
+        clearActiveResponsesContinuation()
         saveCurrentSession()
         return true
     }
@@ -4152,6 +4167,7 @@ class ChatSessionManager(
                 }
             }
         )
+        clearActiveResponsesContinuation()
         saveCurrentSession()
         return true
     }
@@ -4162,7 +4178,7 @@ class ChatSessionManager(
     ): String? {
         val state = _state.value
         val preview = estimateContextCompressionPreview(state) ?: return null
-        if (!shouldAutoCompressContext(state, preview)) return null
+        if (!shouldAutoCompressContext(state, preview, config)) return null
         lastSessionConfig = config
 
         val existingSnapshot = state.compressionSnapshot
@@ -4182,10 +4198,15 @@ class ChatSessionManager(
 
     private fun shouldAutoCompressContext(
         state: SessionState,
-        preview: ContextCompressionPreviewUi
+        preview: ContextCompressionPreviewUi,
+        config: ProviderConfig
     ): Boolean {
-        val largeEnough = preview.compressibleMessageCount >= AUTO_COMPRESSION_MIN_COMPRESSIBLE_MESSAGES ||
-            preview.estimatedCurrentContextTokens >= AUTO_COMPRESSION_TRIGGER_TOKENS
+        val triggerTokens = resolveAutoCompressionTriggerTokens(config)
+        val largeEnough = preview.estimatedCurrentContextTokens >= triggerTokens ||
+            (
+                preview.compressibleMessageCount >= AUTO_COMPRESSION_LARGE_MESSAGE_COUNT &&
+                    preview.estimatedCurrentContextTokens >= triggerTokens / 2
+                )
         if (!largeEnough) return false
 
         val savingsWorthwhile = preview.estimatedTokensSaved >= AUTO_COMPRESSION_MIN_SAVED_TOKENS ||
@@ -4853,6 +4874,8 @@ class ChatSessionManager(
             globalConfig = configRepository.getConfig(),
             state = stateBeforeSend
         )
+        val responsesContinuation = resolveActiveResponsesContinuation(config)
+        val continuationSessionId = currentSessionId
         lastSessionConfig = config
         val apiKey = config.getActiveApiKey()
         if (apiKey.isBlank()) {
@@ -4873,7 +4896,8 @@ class ChatSessionManager(
         val toolRegistry = createToolRegistry(
             provider = provider,
             config = config,
-            allowWriteTools = orchestratorDecision.allowWriteTools
+            allowWriteTools = orchestratorDecision.allowWriteTools,
+            requestContext = requestedExecutionGoal.orEmpty()
         )
         if (orchestratorDecision.allowWriteTools) {
             mcpRegistry?.let { mcp ->
@@ -5025,14 +5049,11 @@ class ChatSessionManager(
                             appendMessage(toolMsg)
                         }
                         is AgentEvent.ToolResult -> {
-                            val toolExecutionSucceeded = !event.result.startsWith("Error:", ignoreCase = true) &&
-                                !event.result.startsWith("Blocked by", ignoreCase = true) &&
-                                !event.result.startsWith("Rejected by user:", ignoreCase = true)
                             recordToolCall(
                                 toolName = event.toolName,
                                 args = event.args,
                                 result = event.result,
-                                isSuccess = toolExecutionSucceeded,
+                                isSuccess = event.isSuccess,
                                 stepSignOffReceipt = event.stepSignOffReceipt,
                                 structuredPayload = event.structuredPayload
                             )
@@ -5068,14 +5089,6 @@ class ChatSessionManager(
                             _state.value = _state.value.copy(
                                 lastFinalReadinessReceipt = event.finalReadinessReceipt
                             )
-                            recordError(
-                                message = event.message,
-                                kind = if (event.finalReadinessReceipt != null) {
-                                    ErrorRecordKind.FINAL_READINESS
-                                } else {
-                                    ErrorRecordKind.GENERAL
-                                }
-                            )
                             event.userVisibleMessage
                                 ?.takeIf(String::isNotBlank)
                                 ?.let { userVisibleMessage ->
@@ -5105,7 +5118,15 @@ class ChatSessionManager(
                         executionGoal = executionGoal
                     )
                 },
-                enforceFinalReadinessWithoutCurrentToolRuns = shouldEnforcePersistentFinalReadiness
+                enforceFinalReadinessWithoutCurrentToolRuns = shouldEnforcePersistentFinalReadiness,
+                initialResponsesContinuation = responsesContinuation,
+                onResponsesContinuationChanged = { continuation ->
+                    updateActiveResponsesContinuation(
+                        sessionId = continuationSessionId,
+                        config = config,
+                        continuation = continuation
+                    )
+                }
             )
 
             // 更新会话标题（取第一条用户输入）
@@ -5193,6 +5214,7 @@ class ChatSessionManager(
     fun clear() {
         val previousState = _state.value
         resetPendingStreamingUpdates()
+        clearActiveResponsesContinuation()
         _state.value = SessionState(sessionId = currentSessionId)
         messageCounter = 0
         currentStreamingId = null
@@ -5658,6 +5680,7 @@ class ChatSessionManager(
     fun importConversation(rawText: String, sourceName: String? = null): Int {
         val imported = ConversationImportParser.parse(rawText, sourceName)
         val sessionId = UUID.randomUUID().toString().take(8)
+        clearActiveResponsesContinuation()
         currentSessionId = sessionId
         messageCounter = imported.messages.maxOfOrNull { it.id } ?: 0
 
@@ -5715,6 +5738,39 @@ class ChatSessionManager(
         )
     }
 
+    private fun resolveActiveResponsesContinuation(config: ProviderConfig): ResponsesContinuation? {
+        val active = activeResponsesContinuation ?: return null
+        val matchesCurrentRequest = active.sessionId == currentSessionId &&
+            active.providerId == config.activeProviderId &&
+            active.model == config.getActiveModel() &&
+            active.baseUrl == config.getActiveBaseUrl()
+        if (!matchesCurrentRequest) {
+            clearActiveResponsesContinuation()
+            return null
+        }
+        return active.value
+    }
+
+    private fun updateActiveResponsesContinuation(
+        sessionId: String,
+        config: ProviderConfig,
+        continuation: ResponsesContinuation?
+    ) {
+        activeResponsesContinuation = continuation?.let { value ->
+            ActiveResponsesContinuation(
+                sessionId = sessionId,
+                providerId = config.activeProviderId,
+                model = config.getActiveModel(),
+                baseUrl = config.getActiveBaseUrl(),
+                value = value
+            )
+        }
+    }
+
+    private fun clearActiveResponsesContinuation() {
+        activeResponsesContinuation = null
+    }
+
     private fun resolveEffectiveSessionConfig(
         globalConfig: ProviderConfig,
         state: SessionState = _state.value
@@ -5748,6 +5804,7 @@ class ChatSessionManager(
             saveCurrentSession()
         }
         resetPendingStreamingUpdates()
+        clearActiveResponsesContinuation()
         currentSessionId = UUID.randomUUID().toString().take(8)
         cachedCurrentPersistedSession = null
         clearApprovedApprovalScopes()
@@ -6438,9 +6495,28 @@ class ChatSessionManager(
     private fun createToolRegistry(
         provider: com.murong.agent.core.provider.ModelProvider,
         config: ProviderConfig,
-        allowWriteTools: Boolean = true
+        allowWriteTools: Boolean = true,
+        requestContext: String = ""
     ): ToolRegistry {
-        val registry = ToolRegistry()
+        val promptExposureContext = buildPromptToolExposureContext(
+            state = _state.value,
+            requestText = requestContext,
+            allowWriteTools = allowWriteTools
+        )
+        val registry = ToolRegistry { tool ->
+            shouldExposeToolForPrompt(tool.name, promptExposureContext)
+        }
+        val hasRemoteRepository: () -> Boolean = {
+            hasRemoteTaskRepositoryContext(_state.value)
+        }
+        val canWriteRemoteRepository: () -> Boolean = {
+            allowWriteTools &&
+                hasRemoteTaskRepositoryContext(_state.value) &&
+                _state.value.remoteTaskRepositoryEditable
+        }
+        val canWriteProjectConfig: () -> Boolean = {
+            allowWriteTools && hasLocalProjectContext(_state.value)
+        }
         val latestGitHubConfigProvider: () -> ProviderConfig = {
             runBlocking { configRepository.getConfig() }
         }
@@ -6482,12 +6558,14 @@ class ChatSessionManager(
             CreateGlobalRuleTool(
                 configProvider = { configRepository.getConfig() },
                 saveConfig = { configRepository.saveConfig(it) }
-            )
+            ),
+            isEnabled = { allowWriteTools }
         )
         registry.register(
             CreateGlobalMemoryTool(
                 memoryStore = memoryStore
-            )
+            ),
+            isEnabled = { allowWriteTools }
         )
         registry.register(
             MemoryListTool(
@@ -6503,7 +6581,8 @@ class ChatSessionManager(
                         projectPath = _state.value.projectPath
                     )
                 }
-            )
+            ),
+            isEnabled = { allowWriteTools }
         )
         registry.register(
             RememberMemoryTool(
@@ -6516,7 +6595,8 @@ class ChatSessionManager(
                 },
                 suggestionProvider = ::findRememberMemorySuggestion,
                 onSuggestionApplied = ::markMemoryUpdateSuggestionApplied
-            )
+            ),
+            isEnabled = { allowWriteTools }
         )
         registry.register(
             MemorySearchTool(
@@ -6531,12 +6611,14 @@ class ChatSessionManager(
         registry.register(
             ForgetMemoryTool(
                 memoryStore = memoryStore
-            )
+            ),
+            isEnabled = { allowWriteTools }
         )
         registry.register(
             CreateGlobalSkillTool(
                 skillStore = skillStore
-            )
+            ),
+            isEnabled = { allowWriteTools }
         )
         registry.register(
             ReadSkillTool(
@@ -6549,7 +6631,8 @@ class ChatSessionManager(
                 subagentExecutor = subagentTool?.let { tool ->
                     { args -> tool.executeWithResult(args) }
                 }
-            )
+            ),
+            isEnabled = { allowWriteTools }
         )
         if (mcpRegistry != null) {
             registry.register(
@@ -6562,7 +6645,8 @@ class ChatSessionManager(
                             trigger = "create_mcp_server"
                         )
                     }
-                )
+                ),
+                isEnabled = { allowWriteTools }
             )
         }
         registry.register(
@@ -6576,7 +6660,8 @@ class ChatSessionManager(
                 scopeLabelProvider = ::currentProjectScopeLabel,
                 rulesProvider = { _state.value.projectRules },
                 updateRules = { updateProjectConfig(rules = it) }
-            )
+            ),
+            isEnabled = canWriteProjectConfig
         )
         registry.register(
             CreateProjectMemoryTool(
@@ -6588,7 +6673,8 @@ class ChatSessionManager(
                 },
                 scopeLabelProvider = ::currentProjectScopeLabel,
                 memoryStore = memoryStore
-            )
+            ),
+            isEnabled = canWriteProjectConfig
         )
         registry.register(
             CreateProjectSkillTool(
@@ -6600,7 +6686,8 @@ class ChatSessionManager(
                 },
                 scopeLabelProvider = ::currentProjectScopeLabel,
                 skillStore = skillStore
-            )
+            ),
+            isEnabled = canWriteProjectConfig
         )
         registry.register(
             SessionHistorySearchTool(
@@ -6615,21 +6702,24 @@ class ChatSessionManager(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
                 githubTokenProvider = { latestGitHubConfigProvider().githubToken },
                 githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
-            )
+            ),
+            isEnabled = hasRemoteRepository
         )
         registry.register(
             TaskRepoListDirTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
                 githubTokenProvider = { latestGitHubConfigProvider().githubToken },
                 githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
-            )
+            ),
+            isEnabled = hasRemoteRepository
         )
         registry.register(
             TaskRepoListBranchesTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
                 githubTokenProvider = { latestGitHubConfigProvider().githubToken },
                 githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
-            )
+            ),
+            isEnabled = hasRemoteRepository
         )
         registry.register(
             TaskRepoCreateBranchTool(
@@ -6637,8 +6727,7 @@ class ChatSessionManager(
                 githubTokenProvider = { latestGitHubConfigProvider().githubToken },
                 githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
-            isEnabled = { allowWriteTools },
-            isPromptExposed = { true }
+            isEnabled = canWriteRemoteRepository
         )
         registry.register(
             TaskRepoCreatePrTool(
@@ -6646,8 +6735,7 @@ class ChatSessionManager(
                 githubTokenProvider = { latestGitHubConfigProvider().githubToken },
                 githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
-            isEnabled = { allowWriteTools },
-            isPromptExposed = { true }
+            isEnabled = canWriteRemoteRepository
         )
         registry.register(
             TaskRepoClosePrTool(
@@ -6655,8 +6743,7 @@ class ChatSessionManager(
                 githubTokenProvider = { latestGitHubConfigProvider().githubToken },
                 githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
-            isEnabled = { allowWriteTools },
-            isPromptExposed = { true }
+            isEnabled = canWriteRemoteRepository
         )
         registry.register(
             TaskRepoDeleteBranchTool(
@@ -6664,15 +6751,15 @@ class ChatSessionManager(
                 githubTokenProvider = { latestGitHubConfigProvider().githubToken },
                 githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
-            isEnabled = { allowWriteTools },
-            isPromptExposed = { true }
+            isEnabled = canWriteRemoteRepository
         )
         registry.register(
             TaskRepoReadFileTool(
                 repositoryProvider = ::currentRemoteTaskRepositoryTarget,
                 githubTokenProvider = { latestGitHubConfigProvider().githubToken },
                 githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
-            )
+            ),
+            isEnabled = hasRemoteRepository
         )
         registry.register(
             TaskRepoSearchReplaceTool(
@@ -6680,8 +6767,7 @@ class ChatSessionManager(
                 githubTokenProvider = { latestGitHubConfigProvider().githubToken },
                 githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
-            isEnabled = { allowWriteTools },
-            isPromptExposed = { true }
+            isEnabled = canWriteRemoteRepository
         )
         registry.register(
             TaskRepoApplyPatchTool(
@@ -6689,8 +6775,7 @@ class ChatSessionManager(
                 githubTokenProvider = { latestGitHubConfigProvider().githubToken },
                 githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
-            isEnabled = { allowWriteTools },
-            isPromptExposed = { true }
+            isEnabled = canWriteRemoteRepository
         )
         registry.register(
             TaskRepoUpdateFileTool(
@@ -6698,8 +6783,7 @@ class ChatSessionManager(
                 githubTokenProvider = { latestGitHubConfigProvider().githubToken },
                 githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
-            isEnabled = { allowWriteTools },
-            isPromptExposed = { true }
+            isEnabled = canWriteRemoteRepository
         )
         registry.register(
             TaskRepoDeleteFileTool(
@@ -6707,8 +6791,7 @@ class ChatSessionManager(
                 githubTokenProvider = { latestGitHubConfigProvider().githubToken },
                 githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
-            isEnabled = { allowWriteTools },
-            isPromptExposed = { true }
+            isEnabled = canWriteRemoteRepository
         )
         registry.register(
             TaskRepoCommitFilesTool(
@@ -6716,8 +6799,7 @@ class ChatSessionManager(
                 githubTokenProvider = { latestGitHubConfigProvider().githubToken },
                 githubApiBaseUrlProvider = { latestGitHubConfigProvider().getGitHubApiBaseUrl() }
             ),
-            isEnabled = { allowWriteTools },
-            isPromptExposed = { true }
+            isEnabled = canWriteRemoteRepository
         )
         registry.register(
             CompleteStepTool(
@@ -6744,13 +6826,12 @@ class ChatSessionManager(
         if (config.isBuiltinToolEnabled("android")) {
             registry.register(
                 AndroidTool(),
-                isEnabled = { shouldExposeLocalShellTool() },
-                isPromptExposed = { shouldExposeLocalShellTool() }
+                isEnabled = { allowWriteTools && shouldExposeLocalShellTool() }
             )
         }
         if (config.isBuiltinToolEnabled("file")) {
             val fileOps = config.getEnabledFileToolOperations()
-            val filteredOps = if (shouldExposeLocalFileWriteTool()) {
+            val filteredOps = if (allowWriteTools && shouldExposeLocalFileWriteTool()) {
                 fileOps
             } else {
                 fileOps.filter { it in setOf("read", "list", "exists") }.toSet()
@@ -6795,7 +6876,7 @@ class ChatSessionManager(
             registry.register(WebFetchTool())
         }
         if (subagentTool != null) {
-            registry.register(subagentTool)
+            registry.register(subagentTool, isEnabled = { allowWriteTools })
             createSubagentPresetTools(subagentTool)
                 .filter { preset -> config.isBuiltinToolEnabled(preset.name) }
                 .forEach { registry.register(it) }
@@ -11211,8 +11292,15 @@ internal const val MAX_CLARIFICATION_TURNS = 3
 private const val MAX_TOOL_RESULTS_IN_HISTORY = 4
 private const val TOOL_RESULT_RECENT_MESSAGE_WINDOW = 10
 private const val MAX_COMBINED_TOOL_SUMMARY_ITEMS = 6
-private const val AUTO_COMPRESSION_TRIGGER_TOKENS = 6000
-private const val AUTO_COMPRESSION_MIN_COMPRESSIBLE_MESSAGES = 14
+private const val AUTO_COMPRESSION_DEFAULT_TRIGGER_TOKENS = 24_000
+private const val AUTO_COMPRESSION_LARGE_CONTEXT_TRIGGER_TOKENS = 48_000
+private const val AUTO_COMPRESSION_GPT_5_6_TRIGGER_TOKENS = 96_000
+private const val AUTO_COMPRESSION_LARGE_MESSAGE_COUNT = 64
+private const val CONTEXT_WINDOW_SAFETY_RESERVE_TOKENS = 2_048
+private const val CONTEXT_FIXED_PROMPT_RESERVE_TOKENS = 6_144
+private const val CUSTOM_CONTEXT_COMPRESSION_RATIO = 0.8
+private const val MIN_CUSTOM_COMPRESSION_TRIGGER_TOKENS = 4_000
+private const val MAX_CUSTOM_COMPRESSION_TRIGGER_TOKENS = 1_500_000
 private const val AUTO_COMPRESSION_MIN_SAVED_TOKENS = 900
 private const val AUTO_COMPRESSION_MIN_REDUCTION_PERCENT = 22
 private const val AUTO_COMPRESSION_NEW_MESSAGES_THRESHOLD = 8
@@ -11226,8 +11314,30 @@ private val DEFAULT_COMPRESSION_CONTINUE_REQUIREMENTS = listOf(
 
 private fun compressionEligibleMessages(state: SessionState): List<ChatMessageUi> {
     return state.messages.filter { message ->
-        (message.role == "user" || message.role == "assistant") &&
+        message.role in COMPRESSION_ELIGIBLE_ROLES &&
             (message.content.isNotBlank() || !message.reasoning.isNullOrBlank())
+    }
+}
+
+private val COMPRESSION_ELIGIBLE_ROLES = setOf("user", "assistant", "tool_exec", "subagent")
+
+internal fun resolveAutoCompressionTriggerTokens(config: ProviderConfig): Int {
+    config.getActiveContextWindowTokens()?.let { contextWindowTokens ->
+        val reservedTokens = config.maxTokens.coerceAtLeast(1_024) +
+            CONTEXT_WINDOW_SAFETY_RESERVE_TOKENS +
+            CONTEXT_FIXED_PROMPT_RESERVE_TOKENS
+        val usableInputTokens = (contextWindowTokens - reservedTokens)
+            .coerceAtLeast(contextWindowTokens / 2)
+        return (usableInputTokens * CUSTOM_CONTEXT_COMPRESSION_RATIO)
+            .roundToInt()
+            .coerceIn(MIN_CUSTOM_COMPRESSION_TRIGGER_TOKENS, MAX_CUSTOM_COMPRESSION_TRIGGER_TOKENS)
+    }
+    val model = config.getActiveModel().trim().lowercase()
+    return when {
+        model.startsWith("gpt-5.6") -> AUTO_COMPRESSION_GPT_5_6_TRIGGER_TOKENS
+        config.activeProviderId == "openai-compatible" || config.activeProviderId == "claude" ->
+            AUTO_COMPRESSION_LARGE_CONTEXT_TRIGGER_TOKENS
+        else -> AUTO_COMPRESSION_DEFAULT_TRIGGER_TOKENS
     }
 }
 

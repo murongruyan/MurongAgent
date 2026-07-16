@@ -86,11 +86,13 @@ class ShellTool(
         }
     }
 
-    override suspend fun execute(args: String): String {
+    override suspend fun execute(args: String): String = executeWithResult(args).output
+
+    override suspend fun executeWithResult(args: String): ToolExecutionResult {
         return try {
             val jsonObj = json.parseToJsonElement(args).jsonObject
             val command = jsonObj["command"]?.jsonPrimitive?.content
-                ?: return "Error: 'command' parameter is required"
+                ?: return failureResult("Error: 'command' parameter is required")
 
             val timeout = jsonObj["timeout"]?.jsonPrimitive?.intOrNull ?: 10
             val environment = when (
@@ -98,7 +100,7 @@ class ShellTool(
             ) {
                 "", "system" -> ShellEnvironment.SYSTEM
                 "extension" -> ShellEnvironment.EXTENSION
-                else -> return "Error: 'environment' must be 'system' or 'extension'."
+                else -> return failureResult("Error: 'environment' must be 'system' or 'extension'.")
             }
             val workingDirectory = jsonObj["working_directory"]
                 ?.jsonPrimitive
@@ -110,16 +112,18 @@ class ShellTool(
                 jsonObj["background"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false
 
             if (environment == ShellEnvironment.SYSTEM && !rootAvailableProvider()) {
-                return "Error: Root shell is not available. Please check root permissions."
+                return failureResult("Error: Root shell is not available. Please check root permissions.")
             }
             if (environment == ShellEnvironment.EXTENSION && !extensionAvailableProvider()) {
-                return "Error: Terminal extension environment is unavailable. Please install or update the terminal extension package."
+                return failureResult(
+                    "Error: Terminal extension environment is unavailable. Please install or update the terminal extension package."
+                )
             }
 
             if (runInBackground) {
                 val scheduler = scheduleBackgroundExecution
-                    ?: return "Error: Background shell jobs are not available in this session."
-                return scheduler(
+                    ?: return failureResult("Error: Background shell jobs are not available in this session.")
+                val scheduleOutput = scheduler(
                     BackgroundJobRequest(
                         toolName = name,
                         title = "Shell 后台任务 · ${environment.label}",
@@ -128,8 +132,9 @@ class ShellTool(
                         timeoutSeconds = timeout.coerceAtLeast(1)
                     )
                 ) {
-                    val output = executeCommand(command, timeout, environment, workingDirectory)
-                    val failed = isFailureOutput(output)
+                    val commandResult = executeCommand(command, timeout, environment, workingDirectory)
+                    val failed = commandResult.resolvedSuccess == false ||
+                        (commandResult.resolvedSuccess == null && isFailureOutput(commandResult.output))
                     BackgroundJobCompletion(
                         status = if (failed) "failed" else "completed",
                         statusMessage = if (failed) {
@@ -137,13 +142,18 @@ class ShellTool(
                         } else {
                             "后台 shell 命令执行完成。"
                         },
-                        resultPreview = output
+                        resultPreview = commandResult.output
                     )
+                }
+                return if (isFailureOutput(scheduleOutput)) {
+                    failureResult(scheduleOutput)
+                } else {
+                    successResult(scheduleOutput)
                 }
             }
             executeCommand(command, timeout, environment, workingDirectory)
         } catch (e: Exception) {
-            "Error executing shell command: ${e.message}"
+            failureResult("Error executing shell command: ${e.message}")
         }
     }
 
@@ -152,7 +162,7 @@ class ShellTool(
         timeout: Int,
         environment: ShellEnvironment,
         workingDirectory: String?
-    ): String {
+    ): ToolExecutionResult {
         if (environment == ShellEnvironment.EXTENSION) {
             return formatExtensionResult(
                 extensionCommandExecutor(
@@ -164,27 +174,78 @@ class ShellTool(
             )
         }
         val scopedCommand = buildWorkingDirectoryCommand(command, workingDirectory)
-        return systemCommandExecutor(scopedCommand, timeout)
+        return formatSystemResult(systemCommandExecutor(scopedCommand, timeout), timeout)
     }
 
-    private fun formatExtensionResult(result: ExtensionShellExecutor.Result, timeout: Int): String {
-        result.error?.let { return "Command execution error: $it" }
+    private fun formatExtensionResult(
+        result: ExtensionShellExecutor.Result,
+        timeout: Int
+    ): ToolExecutionResult {
+        result.error?.let {
+            return failureResult(
+                output = "Command execution error: $it",
+                exitCode = result.exitCode,
+                timedOut = result.timedOut
+            )
+        }
         val normalizedResult = result.output.trim()
         if (result.timedOut) {
-            return if (normalizedResult.isBlank()) {
+            val output = if (normalizedResult.isBlank()) {
                 "Command timed out after ${timeout.coerceAtLeast(1)}s with no output."
             } else {
                 "$normalizedResult\n\n...(命令执行超时，已中止，timeout=${timeout.coerceAtLeast(1)}s)"
             }
+            return failureResult(output, exitCode = result.exitCode, timedOut = true)
         }
         if (result.exitCode != null && result.exitCode != 0) {
-            return if (normalizedResult.isBlank()) {
+            val output = if (normalizedResult.isBlank()) {
                 "Command execution error: extension command exited with code ${result.exitCode}."
             } else {
                 "Command execution error (exit ${result.exitCode}):\n$normalizedResult"
             }
+            return failureResult(output, exitCode = result.exitCode)
         }
-        return normalizedResult.ifBlank { "(command completed, no output)" }
+        return successResult(
+            output = normalizedResult.ifBlank { "(command completed, no output)" },
+            exitCode = result.exitCode
+        )
+    }
+
+    private fun formatSystemResult(rawResult: String, timeout: Int): ToolExecutionResult {
+        val timedOut = rawResult.contains(TIMEOUT_MARKER)
+        val exitCode = EXIT_CODE_PATTERN.findAll(rawResult)
+            .lastOrNull()
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+        val normalizedResult = rawResult
+            .replace(TIMEOUT_MARKER, "")
+            .replace(EXIT_CODE_PATTERN, "")
+            .trim()
+
+        if (timedOut) {
+            val output = if (normalizedResult.isBlank()) {
+                "Command timed out after ${timeout.coerceAtLeast(1)}s with no output."
+            } else {
+                "$normalizedResult\n\n...(命令执行超时，已中止，timeout=${timeout.coerceAtLeast(1)}s)"
+            }
+            return failureResult(output, exitCode = exitCode, timedOut = true)
+        }
+        if (exitCode != null && exitCode != 0) {
+            val output = if (normalizedResult.isBlank()) {
+                "Command execution error: system command exited with code $exitCode."
+            } else {
+                "Command execution error (exit $exitCode):\n$normalizedResult"
+            }
+            return failureResult(output, exitCode = exitCode)
+        }
+        if (exitCode == null && normalizedResult.startsWith("error:", ignoreCase = true)) {
+            return failureResult("Command execution error: $normalizedResult")
+        }
+        return successResult(
+            output = normalizedResult.ifBlank { "(command completed, no output)" },
+            exitCode = exitCode
+        )
     }
 
     private fun buildWorkingDirectoryCommand(command: String, workingDirectory: String?): String {
@@ -212,25 +273,11 @@ class ShellTool(
 
     private companion object {
         const val TIMEOUT_MARKER = "__RSNX_TIMEOUT__"
+        const val EXIT_CODE_MARKER = "__RSNX_EXIT_CODE__"
+        val EXIT_CODE_PATTERN = Regex("(?m)^${EXIT_CODE_MARKER}(-?\\d+)\\s*$")
 
         fun executeSystemCommand(command: String, timeout: Int): String {
-            val result = KeepShellPublic.doCmdSync(wrapCommandWithTimeout(command, timeout))
-            val timedOut = result.contains(TIMEOUT_MARKER)
-            val normalizedResult = result
-                .replace(TIMEOUT_MARKER, "")
-                .trim()
-
-            return if (normalizedResult.startsWith("error:")) {
-                "Command execution error: $normalizedResult"
-            } else if (timedOut) {
-                if (normalizedResult.isBlank()) {
-                    "Command timed out after ${timeout.coerceAtLeast(1)}s with no output."
-                } else {
-                    "$normalizedResult\n\n...(命令执行超时，已中止，timeout=${timeout.coerceAtLeast(1)}s)"
-                }
-            } else {
-                normalizedResult.ifBlank { "(command completed, no output)" }
-            }
+            return KeepShellPublic.doCmdSync(wrapCommandWithTimeout(command, timeout))
         }
 
         fun wrapCommandWithTimeout(command: String, timeoutSeconds: Int): String {
@@ -255,6 +302,7 @@ class ShellTool(
                     status=${'$'}?
                     kill ${'$'}watchdog_pid 2>/dev/null
                     wait ${'$'}watchdog_pid 2>/dev/null
+                    echo "${EXIT_CODE_MARKER}${'$'}status"
                     exit ${'$'}status
                 )
             """.trimIndent()
@@ -267,7 +315,32 @@ class ShellTool(
 
     private fun isFailureOutput(output: String): Boolean {
         return output.startsWith("Error:", ignoreCase = true) ||
-            output.startsWith("Command execution error:", ignoreCase = true)
+            output.startsWith("Command execution error", ignoreCase = true) ||
+            output.startsWith("Command timed out", ignoreCase = true)
+    }
+
+    private fun successResult(output: String, exitCode: Int? = null): ToolExecutionResult {
+        return ToolExecutionResult(
+            output = output,
+            status = ToolExecutionStatus.SUCCESS,
+            success = true,
+            exitCode = exitCode,
+            timedOut = false
+        )
+    }
+
+    private fun failureResult(
+        output: String,
+        exitCode: Int? = null,
+        timedOut: Boolean = false
+    ): ToolExecutionResult {
+        return ToolExecutionResult(
+            output = output,
+            status = if (timedOut) ToolExecutionStatus.TIMED_OUT else ToolExecutionStatus.FAILURE,
+            success = false,
+            exitCode = exitCode,
+            timedOut = timedOut
+        )
     }
 
 }

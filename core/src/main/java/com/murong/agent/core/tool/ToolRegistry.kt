@@ -11,7 +11,9 @@ import kotlinx.serialization.json.JsonPrimitive
  * 工具定义在注册时转换成规范化 JSON，避免每次请求时受 Map 迭代顺序影响而改变
  * prompt 前缀；启用状态仍在构建请求时动态判断。
  */
-class ToolRegistry {
+class ToolRegistry(
+    private val promptExposureFilter: (Tool) -> Boolean = { true }
+) {
 
     private data class RegisteredTool(
         val tool: Tool,
@@ -41,14 +43,14 @@ class ToolRegistry {
 
     fun hasTool(name: String): Boolean = tools.containsKey(name)
 
-    fun isPromptExposed(name: String): Boolean = tools[name]?.isPromptExposed?.invoke() == true
+    fun isPromptExposed(name: String): Boolean = tools[name]?.let(::isPromptVisible) == true
 
     fun getAllTools(): List<Tool> = tools.values.mapNotNull { entry ->
         entry.tool.takeIf { entry.isEnabled() }
     }
 
     fun getPromptVisibleTools(): List<Tool> = tools.values.mapNotNull { entry ->
-        entry.tool.takeIf { entry.isPromptExposed() }
+        entry.tool.takeIf { isPromptVisible(entry) }
     }
 
     /**
@@ -60,11 +62,23 @@ class ToolRegistry {
     fun buildToolsJson(): String {
         return tools.entries
             .asSequence()
-            .filter { (_, entry) -> entry.isPromptExposed() }
+            .filter { (_, entry) -> isPromptVisible(entry) }
             .sortedBy { (name, _) -> name }
             .joinToString(prefix = "[", postfix = "]", separator = ",") { (_, entry) ->
                 entry.definitionJson
             }
+    }
+
+    /**
+     * 模型只能看到当前可执行且与本轮上下文相关的工具。
+     *
+     * [isPromptExposed] 是注册点的额外收紧条件，不能绕过 [isEnabled]；
+     * [promptExposureFilter] 则用于按当前任务上下文裁剪高噪声工具。
+     */
+    private fun isPromptVisible(entry: RegisteredTool): Boolean {
+        return entry.isEnabled() &&
+            entry.isPromptExposed() &&
+            promptExposureFilter(entry.tool)
     }
 
     private fun buildToolDefinitionJson(tool: Tool): String {

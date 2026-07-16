@@ -2,6 +2,7 @@ package com.murong.agent.core.config
 
 import com.murong.agent.core.tool.ApprovalRiskLevel
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -120,5 +121,53 @@ class ProviderConfigApprovalPolicyTest {
         assertTrue(prompt.contains("migrate_legacy_memories"))
         assertFalse(prompt.contains("Active Global Memories"))
         assertFalse(prompt.contains("先核对版本号，再检查 changelog。"))
+    }
+
+    @Test
+    fun defaultConfig_usesBalancedResponsesAndLeanPrompt() {
+        val config = ProviderConfig()
+
+        assertEquals(ResponseVerbosity.BALANCED, config.responseVerbosity)
+        assertEquals(DEFAULT_SYSTEM_PROMPT, config.systemPrompt)
+        assertFalse(config.buildEffectiveSystemPrompt().contains("Default to a detailed"))
+    }
+
+    @Test
+    fun buildEffectiveSystemPrompt_migratesPersistedLegacyDefault() {
+        val prompt = ProviderConfig(systemPrompt = LEGACY_DEFAULT_SYSTEM_PROMPT)
+            .buildEffectiveSystemPrompt()
+
+        assertTrue(prompt.startsWith(DEFAULT_SYSTEM_PROMPT))
+        assertFalse(prompt.contains("highly communicative style"))
+    }
+
+    @Test
+    fun withCurrentAgentBehaviorDefaults_migratesLegacyDetailedDefaults() {
+        val migrated = ProviderConfig(
+            systemPrompt = LEGACY_DEFAULT_SYSTEM_PROMPT,
+            responseVerbosity = ResponseVerbosity.DETAILED
+        ).withCurrentAgentBehaviorDefaults()
+
+        assertEquals(DEFAULT_SYSTEM_PROMPT, migrated.systemPrompt)
+        assertEquals(ResponseVerbosity.BALANCED, migrated.responseVerbosity)
+    }
+
+    @Test
+    fun withCurrentAgentBehaviorDefaults_preservesCustomDetailedConfiguration() {
+        val migrated = ProviderConfig(
+            systemPrompt = "Custom prompt",
+            responseVerbosity = ResponseVerbosity.DETAILED
+        ).withCurrentAgentBehaviorDefaults()
+
+        assertEquals("Custom prompt", migrated.systemPrompt)
+        assertEquals(ResponseVerbosity.DETAILED, migrated.responseVerbosity)
+    }
+
+    @Test
+    fun buildEffectiveSystemPrompt_preservesCustomPrompt() {
+        val prompt = ProviderConfig(systemPrompt = "My deliberately custom system prompt.")
+            .buildEffectiveSystemPrompt()
+
+        assertTrue(prompt.startsWith("My deliberately custom system prompt."))
     }
 }
