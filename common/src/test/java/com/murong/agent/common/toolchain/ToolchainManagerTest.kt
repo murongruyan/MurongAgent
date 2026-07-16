@@ -9,6 +9,25 @@ import java.io.File
 class ToolchainManagerTest {
 
     @Test
+    fun mutablePackageManagerScaffold_isNotARuntimeRequirement() {
+        assertTrue(
+            ToolchainManager.isMutablePackageManagerScaffoldPath(
+                "var/lib/apt/lists/partial/.murong-keep"
+            )
+        )
+        assertTrue(
+            ToolchainManager.isMutablePackageManagerScaffoldPath(
+                "var/cache/apt/archives/partial/.murong-keep"
+            )
+        )
+        assertFalse(
+            ToolchainManager.isMutablePackageManagerScaffoldPath(
+                "var/lib/dpkg/status"
+            )
+        )
+    }
+
+    @Test
     fun isRuntimeToolchainLinkTarget_acceptsRelativeTarget() {
         assertTrue(ToolchainManager.isRuntimeToolchainLinkTarget("../../share/termux-keyring/key.gpg"))
     }

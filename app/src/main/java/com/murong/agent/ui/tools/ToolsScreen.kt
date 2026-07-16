@@ -1894,7 +1894,7 @@ private fun CodeBlock(content: String) {
 
 private fun builtInToolCatalog(): List<ToolEntry> {
     return listOf(
-        ToolEntry("shell", "命令工具", "执行 root shell 命令。", ""),
+        ToolEntry("shell", "命令工具", "可选择 Root 系统环境或终端扩展环境执行命令。", ""),
         ToolEntry("file", "文件工具", "读写、列目录、删除和 chmod。", ""),
         ToolEntry("code_edit", "代码编辑", "查看文件并执行 SEARCH/REPLACE。", ""),
         ToolEntry("web_search", "联网搜索", "联网检索文档与网页内容。", ""),

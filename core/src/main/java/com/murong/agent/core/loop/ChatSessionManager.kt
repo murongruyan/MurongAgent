@@ -6729,7 +6729,13 @@ class ChatSessionManager(
         if (config.isBuiltinToolEnabled("shell")) {
             registry.register(
                 ShellTool(
-                    scheduleBackgroundExecution = ::scheduleBackgroundShellExecution
+                    scheduleBackgroundExecution = ::scheduleBackgroundShellExecution,
+                    workingDirectoryProvider = {
+                        activeProjectScopePath(
+                            activeScopePath = _state.value.activeProjectScopePath,
+                            projectPath = _state.value.projectPath
+                        )
+                    }
                 ),
                 isEnabled = { allowWriteTools && shouldExposeLocalShellTool() },
                 isPromptExposed = { shouldExposeLocalShellTool() }

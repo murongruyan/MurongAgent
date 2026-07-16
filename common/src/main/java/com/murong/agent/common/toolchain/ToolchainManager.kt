@@ -144,10 +144,16 @@ object ToolchainManager {
                 File(binDir, command).absolutePath
             }
             val runtimeLinks = manifest.links.filter { entry ->
-                isRuntimeToolchainLinkTarget(entry.target)
+                isRuntimeToolchainLinkTarget(entry.target) &&
+                    !isMutablePackageManagerScaffoldPath(entry.path)
             }
-            val requiredFiles = manifest.files.map { entry ->
-                File(rootDir, entry.path.ifBlank { entry.asset.removePrefix("bin/") })
+            val requiredFiles = manifest.files.mapNotNull { entry ->
+                val relativePath = entry.path.ifBlank { entry.asset.removePrefix("bin/") }
+                if (isMutablePackageManagerScaffoldPath(relativePath)) {
+                    null
+                } else {
+                    File(rootDir, relativePath)
+                }
             } + runtimeLinks.map { entry ->
                 File(rootDir, entry.path)
             } + commandTargetPaths.values.map(::File)
@@ -621,6 +627,10 @@ object ToolchainManager {
 
     internal fun isRuntimeToolchainLinkTarget(target: String): Boolean {
         return !target.startsWith('/')
+    }
+
+    internal fun isMutablePackageManagerScaffoldPath(path: String): Boolean {
+        return path.replace('\\', '/').substringAfterLast('/') == ".murong-keep"
     }
 
     internal fun isSafeToolchainCommandName(name: String): Boolean {
