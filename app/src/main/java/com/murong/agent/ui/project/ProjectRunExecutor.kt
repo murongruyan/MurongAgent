@@ -84,10 +84,22 @@ internal object ProjectRunExecutor {
     ): ProjectRunResult {
         val safeDirectory = workingDirectory.takeIf(File::exists) ?: return ProjectRunResult(command, "", null, error = "工作目录不存在")
         return runCatching {
-            val process = ProcessBuilder(command)
+            val packageCompatible = ToolchainManager.hasRelocatablePackageManager(context)
+            val launchCommand = if (packageCompatible) {
+                ToolchainManager.buildPackageCompatibleCommand(command, context)
+            } else {
+                command
+            }
+            val process = ProcessBuilder(launchCommand)
                 .directory(safeDirectory)
                 .redirectErrorStream(true)
-                .apply { ToolchainManager.applyProcessEnvironment(environment(), context) }
+                .apply {
+                    if (packageCompatible) {
+                        ToolchainManager.applyPackageCompatibleEnvironment(environment(), context)
+                    } else {
+                        ToolchainManager.applyProcessEnvironment(environment(), context)
+                    }
+                }
                 .start()
             onProcessStarted(process)
             val output = StringBuilder()

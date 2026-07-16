@@ -668,6 +668,8 @@ internal class ProjectTerminalSessionController(
         val home = File("/storage/emulated/0").takeIf { it.exists() }?.absolutePath
             ?: context.filesDir.absolutePath
         val preferSystemEnvironment = environmentMode == ProjectTerminalEnvironmentMode.SYSTEM
+        val packageCompatibilityAvailable =
+            !preferSystemEnvironment && ToolchainManager.hasRelocatablePackageManager(context)
         val preferredBash = if (preferSystemEnvironment) {
             if (isSystemBashEnabled(context)) {
                 PROJECT_TERMINAL_SYSTEM_BASH
@@ -683,6 +685,8 @@ internal class ProjectTerminalSessionController(
         val usingRcFileShell = isBashShell && !preferSystemEnvironment
         val sessionPath = if (preferSystemEnvironment) {
             ToolchainManager.buildSystemPath()
+        } else if (packageCompatibilityAvailable) {
+            ToolchainManager.buildPackageCompatiblePath()
         } else {
             ToolchainManager.buildPreferredPath(context)
         }
@@ -693,6 +697,8 @@ internal class ProjectTerminalSessionController(
         }
         val prefix = if (preferSystemEnvironment || !installedToolchain.available) {
             ""
+        } else if (packageCompatibilityAvailable) {
+            ToolchainManager.buildPackageCompatiblePrefix()
         } else {
             installedToolchain.rootDir.absolutePath
         }
@@ -704,28 +710,33 @@ internal class ProjectTerminalSessionController(
             prefix = prefix,
             aliasCommands = if (preferSystemEnvironment) "" else ToolchainManager.buildAliasCommands(context)
         ).takeIf { it.isNotBlank() }
-        val args = when {
+        val shellArgs = when {
             usingRcFileShell && !shellRcPath.isNullOrBlank() -> arrayOf(shell, "--rcfile", shellRcPath, "-i")
             preferSystemEnvironment && isBashShell -> arrayOf(shell, "--noprofile", "--norc", "--noediting")
             usingRcFileShell -> arrayOf(shell, "-i")
             else -> arrayOf(shell, "-i")
         }
-        val env = buildList {
-            add("TERM=xterm-256color")
-            add("HOME=$home")
-            add("TMPDIR=${context.cacheDir.absolutePath}")
-            add("PATH=$sessionPath")
-            add("SHELL=$shell")
-            if (prefix.isNotBlank()) {
-                add("PREFIX=$prefix")
-            }
-            if (libraryPath.isNotBlank()) {
-                add("LD_LIBRARY_PATH=$libraryPath")
-            }
-            if (!usingRcFileShell && !shellRcPath.isNullOrBlank()) {
-                add("ENV=$shellRcPath")
-            }
-        }.toTypedArray()
+        val launchCommand = if (packageCompatibilityAvailable) {
+            ToolchainManager.buildPackageCompatibleCommand(shellArgs.toList(), context)
+        } else {
+            shellArgs.toList()
+        }
+        val environment = linkedMapOf<String, String>()
+        if (packageCompatibilityAvailable) {
+            ToolchainManager.applyPackageCompatibleEnvironment(environment, context)
+        } else {
+            environment["TMPDIR"] = context.cacheDir.absolutePath
+            environment["PATH"] = sessionPath
+            if (prefix.isNotBlank()) environment["PREFIX"] = prefix
+            if (libraryPath.isNotBlank()) environment["LD_LIBRARY_PATH"] = libraryPath
+        }
+        environment["TERM"] = "xterm-256color"
+        if (!packageCompatibilityAvailable) environment["HOME"] = home
+        environment["SHELL"] = shell
+        if (!usingRcFileShell && !shellRcPath.isNullOrBlank()) {
+            environment["ENV"] = shellRcPath
+        }
+        val env = environment.map { (name, value) -> "$name=$value" }.toTypedArray()
         val cwd = File(workingDirectory).takeIf { it.exists() }?.absolutePath ?: home
         if (preferSystemEnvironment && shell == PROJECT_TERMINAL_SYSTEM_BASH) {
             val helperHome = home
@@ -743,7 +754,7 @@ internal class ProjectTerminalSessionController(
                 return TerminalSession(
                     shell,
                     helperCwd,
-                    args,
+                    shellArgs,
                     env,
                     5000,
                     helperSession.terminalFd,
@@ -758,9 +769,9 @@ internal class ProjectTerminalSessionController(
             )
         }
         return TerminalSession(
-            shell,
+            launchCommand.first(),
             cwd,
-            args,
+            launchCommand.toTypedArray(),
             env,
             5000,
             sessionClient
@@ -856,9 +867,17 @@ internal class ProjectTerminalSessionController(
         val iconAnsi = iconColor.toPromptAnsi()
         val pathAnsi = pathColor.toPromptAnsi()
         val errorAnsi = errorColor.toPromptAnsi()
-        val home = File("/storage/emulated/0").takeIf { it.exists() }?.absolutePath
-            ?: context.filesDir.absolutePath
-        val tmpDir = context.cacheDir.absolutePath
+        val home = if (prefix == ToolchainManager.buildPackageCompatiblePrefix()) {
+            ToolchainManager.buildPackageCompatibleHome()
+        } else {
+            File("/storage/emulated/0").takeIf { it.exists() }?.absolutePath
+                ?: context.filesDir.absolutePath
+        }
+        val tmpDir = if (prefix == ToolchainManager.buildPackageCompatiblePrefix()) {
+            "$prefix/tmp"
+        } else {
+            context.cacheDir.absolutePath
+        }
         val systemSuPath = ToolchainManager.resolveSystemCommandPath("su")
         val desired = if (environmentMode == ProjectTerminalEnvironmentMode.SYSTEM) {
             """
@@ -923,7 +942,11 @@ internal class ProjectTerminalSessionController(
                   else
                     __murong_symbol="${'$'}"
                   fi
-                  printf '%s' "${'$'}{__murong_np_start}${'$'}{__murong_symbol_color}${'$'}{__murong_np_end}${'$'}__murong_symbol${'$'}{__murong_np_start}${'$'}{__murong_reset}${'$'}{__murong_np_end} ${'$'}{__murong_np_start}${'$'}{__murong_path_color}${'$'}{__murong_np_end}${'$'}__murong_path >${'$'}{__murong_np_start}${'$'}{__murong_reset}${'$'}{__murong_np_end} "
+                  if [ "${'$'}__murong_session_shell_is_bash" = "1" ]; then
+                    printf '%s' "${'$'}{__murong_np_start}${'$'}{__murong_symbol_color}${'$'}{__murong_np_end}${'$'}__murong_symbol${'$'}{__murong_np_start}${'$'}{__murong_reset}${'$'}{__murong_np_end} ${'$'}{__murong_np_start}${'$'}{__murong_path_color}${'$'}{__murong_np_end}${'$'}__murong_path >${'$'}{__murong_np_start}${'$'}{__murong_reset}${'$'}{__murong_np_end} "
+                  else
+                    printf '%s' "${'$'}__murong_symbol ${'$'}__murong_path > "
+                  fi
                 }
                 PROMPT_COMMAND=
                 PS1='$(murong_prompt)'
