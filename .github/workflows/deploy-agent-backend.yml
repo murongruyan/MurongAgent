@@ -1,0 +1,118 @@
+name: Bootstrap Or Recover Agent Go Backend
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend_release_tag:
+        description: murongagent-backend 的已验证部署 Release
+        required: true
+        default: server-latest
+      nginx_vhost_path:
+        description: Agent 服务器 Nginx 站点配置绝对路径
+        required: true
+        default: /www/server/panel/vhost/nginx/murongagent.rl1.cc.conf
+      confirmation:
+        description: 输入 DEPLOY MURONG BACKEND
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  BACKEND_REPOSITORY: murongruyan/murongagent-backend
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    environment: murongagent-production
+    steps:
+      - name: 校验正式部署确认
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+          NGINX_VHOST_PATH: ${{ inputs.nginx_vhost_path }}
+          RELEASE_TAG: ${{ inputs.backend_release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "${CONFIRMATION}" == "DEPLOY MURONG BACKEND" ]] || { echo "确认文本不匹配" >&2; exit 1; }
+          [[ "${NGINX_VHOST_PATH}" =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "Nginx 路径不安全" >&2; exit 1; }
+          [[ "${NGINX_VHOST_PATH}" != *"/../"* && "${NGINX_VHOST_PATH}" == */murongagent.rl1.cc.conf ]] || { echo "必须选择 Murong Agent 站点配置" >&2; exit 1; }
+          [[ "${RELEASE_TAG}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "Release 标签不安全" >&2; exit 1; }
+
+      - name: 配置 SSH 并确认服务器架构
+        env:
+          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
+          DEPLOY_USERNAME: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
+          DEPLOY_KEY: ${{ secrets.MURONG_AGENT_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          for value in DEPLOY_HOST DEPLOY_PORT DEPLOY_USERNAME DEPLOY_KEY; do
+            [[ -n "${!value:-}" ]] || { echo "缺少 Secret: ${value}" >&2; exit 1; }
+          done
+          [[ "${DEPLOY_HOST}" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "部署主机不安全" >&2; exit 1; }
+          [[ "${DEPLOY_PORT}" =~ ^[0-9]{1,5}$ ]] && (( DEPLOY_PORT >= 1 && DEPLOY_PORT <= 65535 )) || { echo "部署端口无效" >&2; exit 1; }
+          [[ "${DEPLOY_USERNAME}" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "部署用户名不安全" >&2; exit 1; }
+          install -d -m 0700 ~/.ssh
+          printf '%s' "${DEPLOY_KEY}" > ~/.ssh/id_ed25519
+          chmod 0600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "${DEPLOY_PORT}" -H "${DEPLOY_HOST}" >> ~/.ssh/known_hosts
+          remote="${DEPLOY_USERNAME}@${DEPLOY_HOST}"
+          arch="$(ssh -i ~/.ssh/id_ed25519 -p "${DEPLOY_PORT}" -o BatchMode=yes -o StrictHostKeyChecking=yes "${remote}" 'uname -m')"
+          case "${arch}" in
+            x86_64|amd64) package_arch=amd64 ;;
+            aarch64|arm64) package_arch=arm64 ;;
+            *) echo "不支持的服务器架构: ${arch}" >&2; exit 1 ;;
+          esac
+          echo "PACKAGE_ARCH=${package_arch}" >> "${GITHUB_ENV}"
+
+      - name: 下载并校验 Go 后端部署包
+        env:
+          GH_TOKEN: ${{ secrets.MURONG_AGENT_BACKEND_RELEASE_TOKEN || github.token }}
+          RELEASE_TAG: ${{ inputs.backend_release_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p candidate package
+          asset="murongagent-backend-deploy-${PACKAGE_ARCH}.tar.gz"
+          gh release download "${RELEASE_TAG}" --repo "${BACKEND_REPOSITORY}" --dir candidate --pattern "${asset}" --pattern "${asset}.sha256"
+          (cd candidate && sha256sum -c "${asset}.sha256")
+          tar -C package -xzf "candidate/${asset}"
+          (cd package && sha256sum -c SHA256SUMS.txt)
+          [[ "$(cat package/SOURCE_REVISION)" =~ ^[0-9a-f]{40}$ ]] || { echo "源码提交清单无效" >&2; exit 1; }
+
+      - name: 上传并执行首次引导/恢复安装
+        env:
+          DEPLOY_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.MURONG_AGENT_DEPLOY_PORT }}
+          DEPLOY_USERNAME: ${{ secrets.MURONG_AGENT_DEPLOY_USERNAME }}
+          NGINX_VHOST_PATH: ${{ inputs.nginx_vhost_path }}
+          BACKEND_DEPLOY_TOKEN: ${{ secrets.MURONG_AGENT_BACKEND_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ -n "${BACKEND_DEPLOY_TOKEN:-}" ]] || { echo "缺少 MURONG_AGENT_BACKEND_DEPLOY_TOKEN" >&2; exit 1; }
+          remote="${DEPLOY_USERNAME}@${DEPLOY_HOST}"
+          ssh_args=(-i ~/.ssh/id_ed25519 -p "${DEPLOY_PORT}" -o BatchMode=yes -o StrictHostKeyChecking=yes)
+          ssh "${ssh_args[@]}" "${remote}" "sudo -n true && test -f '${NGINX_VHOST_PATH}' && command -v nginx >/dev/null && command -v systemctl >/dev/null"
+          stage="/tmp/murongagent-backend-${GITHUB_RUN_ID}"
+          ssh "${ssh_args[@]}" "${remote}" "install -d -m 0700 '${stage}'"
+          cleanup() { ssh "${ssh_args[@]}" "${remote}" "rm -rf '${stage}'" || true; }
+          trap cleanup EXIT
+          tar -C package -czf /tmp/murongagent-backend-bootstrap.tar.gz .
+          printf 'DEPLOY_HOOK_ADDR=127.0.0.1:8789\nDEPLOY_TOKEN=%s\nDEPLOY_MAX_BYTES=524288000\nDEPLOY_MAX_EXTRACTED_BYTES=1073741824\nDEPLOY_SELF_RESTART=1\n' "${BACKEND_DEPLOY_TOKEN}" > /tmp/deployhook.env
+          chmod 0600 /tmp/deployhook.env
+          scp -i ~/.ssh/id_ed25519 -P "${DEPLOY_PORT}" /tmp/murongagent-backend-bootstrap.tar.gz /tmp/deployhook.env "${remote}:${stage}/"
+          ssh "${ssh_args[@]}" "${remote}" "set -e; mkdir -p '${stage}/package'; tar -C '${stage}/package' -xzf '${stage}/murongagent-backend-bootstrap.tar.gz'; cd '${stage}/package'; sha256sum -c SHA256SUMS.txt; sudo -n install -d -m 0755 /opt/murongagent; sudo -n install -m 0600 '${stage}/deployhook.env' /opt/murongagent/deployhook.env; sudo -n env MURONG_PACKAGE_ROOT='${stage}/package' MURONG_NGINX_VHOST_PATH='${NGINX_VHOST_PATH}' bash '${stage}/package/install-linux.sh'"
+          trap - EXIT
+          cleanup
+
+      - name: 验证公网 API、部署钩子和版本数据
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 30 https://murongagent.rl1.cc/api/health.php | tee /tmp/api-health.json
+          curl --fail --silent --show-error --max-time 30 'https://murongagent.rl1.cc/api/deploy.php?action=healthz' | tee /tmp/deploy-health.json
+          curl --fail --silent --show-error --max-time 30 'https://murongagent.rl1.cc/api/releases.php?action=current&channel=stable&artifact=murongagent-app' | tee /tmp/app-release.json
+          curl --fail --silent --show-error --max-time 30 'https://murongagent.rl1.cc/api/releases.php?action=current&channel=stable&artifact=murong-terminal-extension' | tee /tmp/extension-release.json
+          jq -e '.success == true and .data.project == "murongagent-backend-go"' /tmp/api-health.json >/dev/null
+          jq -e '.success == true and .data.deployMode == "atomic-go-v1"' /tmp/deploy-health.json >/dev/null
+          jq -e '.success == true and (.data.versionCode | type == "number")' /tmp/app-release.json >/dev/null
+          jq -e '.success == true and (.data.versionCode | type == "number")' /tmp/extension-release.json >/dev/null

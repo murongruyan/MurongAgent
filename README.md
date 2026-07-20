@@ -27,6 +27,7 @@ MurongAgent 不是单纯的聊天壳。Android 端强调随身使用、语音、
 | 跨平台桌面端 | 原生支持 Windows、macOS、Linux 的 amd64 与 arm64，不依赖手机在线 |
 | 跨端协作 | 手机可通过局域网/自有私网直连，或通过端到端加密云中继异网查看和控制共享桌面任务，并可显式同步配置与所选凭据 |
 | 备份恢复 | `murong-backup` v2 支持同系统精确恢复和 Android/桌面跨系统安全合并 |
+| Go 云后端 | OAuth、发布更新、使用统计、管理后台、APK 分发与密文中继统一由 Go 服务提供，并支持 GitHub Actions 一键原子部署 |
 
 ## 借鉴与参考项目
 
@@ -137,9 +138,11 @@ MurongAgent/
 ├── common/          # RootFile、KeepShell、共享工具与通用能力
 ├── desktop-agent/   # Windows/macOS/Linux 的 Wails/Go 桌面 Agent
 ├── desktop-bridge/  # 手机与桌面节点共享的 Go 协议和宿主能力
-├── .github/         # Android 与六目标桌面原生构建工作流
+├── .github/         # 一份工作流构建 Android、扩展、六目标桌面端与双架构中继
 └── gradle/          # Android 版本目录与构建配置
 ```
+
+云 API、官网和加密中继位于独立的 [`murongagent-backend`](https://github.com/murongruyan/murongagent-backend) Go 仓库；它与 GitHub 回传使用的 `murongdiaodu-backend-go` 是两台服务器、两套安全边界。
 
 ## 构建
 
@@ -170,7 +173,9 @@ cd MurongAgent
 | macOS | amd64 / arm64 | `.app.zip` |
 | Linux | amd64 / arm64 | `.tar.gz` |
 
-工作流位于 `.github/workflows/build-desktop.yml`，每个目标都会运行 Desktop Agent 与 Desktop Bridge 测试、校验对应架构的内置 Codex 运行时、生成 SHA-256；只有六个原生包及校验文件精确齐全时才允许手动发布 Release。Android APK 继续由 `.github/workflows/build-apk.yml` 独立构建。
+统一工作流位于 `.github/workflows/build-all.yml`。一次运行会构建并校验 10 个正式包：Android 主应用、终端扩展、Windows/macOS/Linux 的 amd64/arm64 桌面端，以及 amd64/arm64 自托管中继。只有包名、数量和 SHA-256 清单全部精确匹配时才允许发布完整 Release；不再维护相互割裂的 APK 与桌面端构建工作流。
+
+后端由 [`murongagent-backend/.github/workflows/build-go-backend.yml`](https://github.com/murongruyan/murongagent-backend/actions) 独立构建。手动运行时默认部署到正式服务器：工作流生成 amd64/arm64 后端包、更新 `server-latest`，再通过受认证部署钩子完成备份、原子替换、健康检查和失败回滚。
 
 Windows 本机构建可使用：
 
@@ -204,6 +209,7 @@ Windows 本机构建可使用：
 - [x] MCP stdio、Streamable HTTP 与旧版 HTTP+SSE 核心能力
 - [x] 手机/电脑异网端到端加密云中继与自托管中继包
 - [x] 跨端实时单权威会话、离线显式接管/归还与冲突分支保护
+- [x] PHP API 兼容迁移到 Go，并接入 GitHub Actions 一键原子部署
 - [ ] 更完整的 Agent 工作流与后台能力
 
 ## 许可证

@@ -612,3 +612,10 @@ Murong Desktop Agent（Windows / macOS / Linux）
 - 最终门禁要求恰好 10 个包，逐包复算 SHA-256 后生成统一 `SHA256SUMS.txt` 与带两个源码提交、移动端版本、大小和哈希的 `release-manifest.json`。任何平台缺包、多包或校验失败都会阻止发布。手动开关可把这 10 个包发布到同一个 GitHub Release，也可在完整门禁通过后把两个移动 APK 同步到 Murong 下载后端。
 - `build-all.yml` 已以提交 `9e9a861` 推送。Push 运行 `29738520339` 的 Android 主程序、Android 终端扩展、Windows x64/ARM64、macOS Intel/Apple Silicon、Linux x64/ARM64、Cloud Relay x64/ARM64 和最终 `Verify Complete Release Set` 全部成功；清单确认恰好 10 个包，来源为主仓库 `9e9a861` 与扩展仓库 `5385cbf`。
 - 正式运行 `29739234378` 再次通过全部构建和完整性门禁，并成功发布 `murong-suite-v1.30`：10 个包加 `SHA256SUMS.txt`、`release-manifest.json` 共 12 个 Release 资产。可选后端同步先成功上传并回写 29,368,722 字节的主 APK 1.30，随后在上传约 120 MB 的扩展 1.10 时收到 Nginx `413 Request Entity Too Large`；因此线上动态版本现为主程序 1.30、扩展 1.9，这是站点请求体上限，不是构建或签名失败。修复要求站点 `client_max_body_size 256m`，PHP 8.2 `upload_max_filesize=256M`、`post_max_size=260M`，生效后只需重跑移动同步，无需重建桌面包。工作流同步步骤增加 150 分钟总上限、慢速停滞检测、明确文件大小日志和 `Expect: 100-continue`，避免下次传完整个文件后才暴露 413。
+
+### 2026-07-20 P5b.17（完整 Go 后端与一键原子部署，实施中）
+
+- 用户决定不再继续为旧 PHP/宝塔链路单独调大上传限制，而是先把 `murongagent-backend` 改成与 `murongdiaodu-backend-go` 同类的 Go 服务和 GitHub 一键部署方案。GitNexus 重新索引两个后端后，现有 Go `Load`/`NewHandler` 只有主进程一个直接调用者，发布、OAuth、用量和管理统计各自只被对应 PHP API 入口使用，影响均为 LOW；因此采用保留 `.php` URL、Nginx 一次切流、旧 PHP 继续留作回滚的兼容迁移，不改 Android、桌面或管理端地址。
+- Go 主进程已新增 MySQL 连接池和最终态兼容建表，接管 `/api/health.php`、`github_auth.php`、`releases.php`、`download.php`、`usage.php`、`admin.php`、`/downloads/*` 与原有 `/relay/*`。发布上传默认允许 300 MiB，先写同目录临时文件、计算 SHA-256 后原子替换；OAuth `state` 使用 HMAC-SHA256、10 分钟有效期，并限制回跳到应用协议或本站 HTTPS；GitHub Token 交换仍走另一台调度服务器的受认证代理。
+- 后端加入独立 deployhook、ZIP 路径/符号链接/大小校验、并发部署锁、静态官网打包、旧 PHP 配置无日志迁移、固定用户数据目录、systemd/Nginx 配置、服务/网页/Nginx 备份和失败回滚。唯一后端工作流同时生成 Linux amd64/arm64 ZIP/TAR、更新 `server-latest`，手动运行时 `deploy_to_server` 默认开启；主仓库原 Relay 引导工作流改为从后端 Release 选择服务器架构、通过现有 SSH Secrets 首次安装同一 deploy Token，后续不再依赖宝塔手工操作。
+- 当前本地 `go test -count=1 ./...`、`go vet ./...`、PHP 迁移器语法、旧 OAuth 代理契约和 amd64 正式部署包构建均通过；部署包约 16 MB，逐文件 SHA-256 复算无差异。Windows 本机缺少 GCC，不能执行 `go test -race`，该项已放在 Ubuntu 工作流强制执行。尚未提交、推送或切换生产 Nginx；下一步是完成文档/工作流门禁、提交两个仓库、生成 `server-latest`、首次引导部署，再重跑原失败的扩展 1.10 同步并核对线上主页、API、部署健康和版本数据。
