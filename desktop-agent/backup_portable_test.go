@@ -55,7 +55,7 @@ func TestDesktopRestoresAndroidPortableBackupByMergeAndKeepsConflictCopiesStable
 		t.Fatalf("restore was not reported as cross-platform: %#v", first)
 	}
 	afterFirst := store.backupSnapshot()
-	if afterFirst.Config.ProjectPath != current.Config.ProjectPath || afterFirst.Config.ProviderProfiles[0].ProtectedAPIKey != "LOCAL_SECRET_KEEP" {
+	if !sameWorkspacePath(afterFirst.Config.ProjectPath, current.Config.ProjectPath) || afterFirst.Config.ProviderProfiles[0].ProtectedAPIKey != "LOCAL_SECRET_KEEP" {
 		t.Fatalf("cross restore replaced local paths or credentials: %#v", afterFirst.Config)
 	}
 	if len(afterFirst.Sessions) != 2 {
