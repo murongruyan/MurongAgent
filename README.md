@@ -175,7 +175,7 @@ cd MurongAgent
 
 统一工作流位于 `.github/workflows/build-all.yml`。一次运行会构建并校验 10 个正式包：Android 主应用、终端扩展、Windows/macOS/Linux 的 amd64/arm64 桌面端，以及 amd64/arm64 自托管中继。只有包名、数量和 SHA-256 清单全部精确匹配时才允许发布完整 Release；不再维护相互割裂的 APK 与桌面端构建工作流。
 
-后端由 [`murongagent-backend/.github/workflows/build-go-backend.yml`](https://github.com/murongruyan/murongagent-backend/actions) 独立构建。手动运行时默认部署到正式服务器：工作流生成 amd64/arm64 后端包、更新 `server-latest`，再通过受认证部署钩子完成备份、原子替换、健康检查和失败回滚。
+后端由 [`murongagent-backend/.github/workflows/build-go-backend.yml`](https://github.com/murongruyan/murongagent-backend/actions) 独立构建。手动运行时默认部署到正式服务器：工作流生成 amd64/arm64 后端包、更新 `server-latest`，再通过受认证部署钩子完成备份、原子替换、健康检查和失败回滚。GitHub 仅保存高熵原始部署令牌，服务器仅保存其 SHA-256 摘要，首次引导无需把原始令牌粘贴进终端。
 
 Windows 本机构建可使用：
 
