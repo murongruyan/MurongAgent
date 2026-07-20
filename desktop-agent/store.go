@@ -199,6 +199,7 @@ func normalizeDesktopConfig(config desktopConfig) desktopConfig {
 	config.PlannerReasoningEffort = normalizeExecutionProfileReasoning(config.PlannerReasoningEffort)
 	config.SubagentModel = normalizeExecutionProfileModel(config.SubagentModel)
 	config.SubagentReasoningEffort = normalizeExecutionProfileReasoning(config.SubagentReasoningEffort)
+	config.ProjectPath = canonicalWorkspacePath(config.ProjectPath)
 	config.GlobalRules = normalizeRules(config.GlobalRules)
 	config.GlobalMemories = normalizeMemories(config.GlobalMemories)
 	config.GlobalSkills = normalizeSkills(config.GlobalSkills)
@@ -438,7 +439,7 @@ func validateProjectSubagentTemplates(values []ProjectSubagentTemplate) error {
 func normalizeProjectToolPreferences(values map[string]ToolPreferences) map[string]ToolPreferences {
 	result := map[string]ToolPreferences{}
 	for key, value := range values {
-		key = strings.TrimSpace(key)
+		key = projectKnowledgeKey(key)
 		if key == "" {
 			continue
 		}
@@ -850,11 +851,11 @@ func cloneProjectKnowledge(values map[string]KnowledgeLibrary) map[string]Knowle
 }
 
 func projectKnowledgeKey(path string) string {
-	path = strings.TrimSpace(path)
+	path = canonicalWorkspacePath(path)
 	if path == "" {
 		return ""
 	}
-	return strings.ToLower(filepath.Clean(path))
+	return strings.ToLower(path)
 }
 
 func normalizeRules(values []GlobalRule) []GlobalRule {

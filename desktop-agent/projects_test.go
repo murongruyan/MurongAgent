@@ -22,7 +22,7 @@ func TestProjectActivationPersistsRecentProjectsAndCloseKeepsHistory(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.ProjectPath != second || len(config.RecentProjects) != 2 || config.RecentProjects[0].Path != second || !config.RecentProjects[0].Exists {
+	if !sameWorkspacePath(config.ProjectPath, second) || len(config.RecentProjects) != 2 || !sameWorkspacePath(config.RecentProjects[0].Path, second) || !config.RecentProjects[0].Exists {
 		t.Fatalf("unexpected activated project config: %#v", config)
 	}
 	closed, err := store.closeProject()
@@ -37,15 +37,33 @@ func TestProjectActivationPersistsRecentProjectsAndCloseKeepsHistory(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := reloaded.publicConfig(); got.ProjectPath != "" || len(got.RecentProjects) != 2 || got.RecentProjects[0].Path != second {
+	if got := reloaded.publicConfig(); got.ProjectPath != "" || len(got.RecentProjects) != 2 || !sameWorkspacePath(got.RecentProjects[0].Path, second) {
 		t.Fatalf("recent projects were not persisted: %#v", got)
 	}
 	forgotten, err := reloaded.forgetRecentProject(second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(forgotten.RecentProjects) != 1 || forgotten.RecentProjects[0].Path != first {
+	if len(forgotten.RecentProjects) != 1 || !sameWorkspacePath(forgotten.RecentProjects[0].Path, first) {
 		t.Fatalf("recent project was not removed: %#v", forgotten)
+	}
+}
+
+func TestWorkspaceIdentityResolvesDirectorySymlinkAliases(t *testing.T) {
+	parent := t.TempDir()
+	realProject := filepath.Join(parent, "real-project")
+	aliasProject := filepath.Join(parent, "alias-project")
+	if err := os.MkdirAll(realProject, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realProject, aliasProject); err != nil {
+		t.Skipf("directory symlinks are unavailable: %v", err)
+	}
+	if !sameWorkspacePath(realProject, aliasProject) {
+		t.Fatalf("workspace aliases were treated as different: real=%q alias=%q", realProject, aliasProject)
+	}
+	if projectKnowledgeKey(realProject) != projectKnowledgeKey(aliasProject) {
+		t.Fatalf("workspace aliases produced different project keys: real=%q alias=%q", projectKnowledgeKey(realProject), projectKnowledgeKey(aliasProject))
 	}
 }
 

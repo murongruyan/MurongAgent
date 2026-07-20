@@ -28,32 +28,40 @@ func normalizeExistingProjectPath(value string) (string, error) {
 	if value == "" {
 		return "", errors.New("项目目录不能为空")
 	}
-	absolute, err := filepath.Abs(value)
-	if err != nil {
-		return "", err
-	}
-	resolved, err := filepath.EvalSymlinks(absolute)
-	if err != nil {
-		return "", err
-	}
+	resolved := canonicalWorkspacePath(value)
 	info, err := os.Stat(resolved)
 	if err != nil || !info.IsDir() {
 		return "", errors.New("项目目录不存在或不是目录")
 	}
-	return filepath.Clean(resolved), nil
+	return resolved, nil
+}
+
+// canonicalWorkspacePath gives every spelling of the same workspace one
+// stable identity. This matters on macOS where temporary paths commonly enter
+// the process as /var/... while EvalSymlinks resolves them to /private/var/....
+// Missing paths are still kept as cleaned absolute paths so a session can show
+// its broken binding and let the user repair it.
+func canonicalWorkspacePath(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if absolute, err := filepath.Abs(value); err == nil {
+		value = absolute
+	}
+	value = filepath.Clean(value)
+	if resolved, err := filepath.EvalSymlinks(value); err == nil {
+		value = filepath.Clean(resolved)
+	}
+	return value
 }
 
 func normalizeRecentProjectRecords(values []RecentProjectRecord) []RecentProjectRecord {
 	result := make([]RecentProjectRecord, 0, len(values))
 	seen := map[string]bool{}
 	for _, value := range values {
-		path := strings.TrimSpace(value.Path)
+		path := canonicalWorkspacePath(value.Path)
 		if path == "" {
-			continue
-		}
-		if absolute, err := filepath.Abs(path); err == nil {
-			path = filepath.Clean(absolute)
-		} else {
 			continue
 		}
 		key := strings.ToLower(path)
@@ -71,11 +79,10 @@ func normalizeRecentProjectRecords(values []RecentProjectRecord) []RecentProject
 }
 
 func touchRecentProject(values []RecentProjectRecord, path string, openedAt int64) []RecentProjectRecord {
-	path = filepath.Clean(path)
+	path = canonicalWorkspacePath(path)
 	result := []RecentProjectRecord{{Path: path, LastOpenedAt: openedAt}}
-	key := strings.ToLower(path)
 	for _, value := range normalizeRecentProjectRecords(values) {
-		if strings.ToLower(filepath.Clean(value.Path)) != key {
+		if !sameWorkspacePath(value.Path, path) {
 			result = append(result, value)
 		}
 	}
@@ -145,11 +152,10 @@ func (store *desktopStore) closeProject() (PublicDesktopConfig, error) {
 func (store *desktopStore) forgetRecentProject(path string) (PublicDesktopConfig, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	key := strings.ToLower(filepath.Clean(strings.TrimSpace(path)))
 	updated := store.config
 	updated.RecentProjects = make([]RecentProjectRecord, 0, len(store.config.RecentProjects))
 	for _, value := range store.config.RecentProjects {
-		if strings.ToLower(filepath.Clean(value.Path)) != key {
+		if !sameWorkspacePath(value.Path, path) {
 			updated.RecentProjects = append(updated.RecentProjects, value)
 		}
 	}

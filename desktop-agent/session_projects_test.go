@@ -57,7 +57,7 @@ func TestRebindingSessionProjectInvalidatesCodexThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.ProjectPath != second || updated.CodexThreadID != "" || updated.CodexSyncedID != "" || updated.CodexToolsVersion != 0 {
+	if !sameWorkspacePath(updated.ProjectPath, second) || updated.CodexThreadID != "" || updated.CodexSyncedID != "" || updated.CodexToolsVersion != 0 {
 		t.Fatalf("project rebind kept stale Codex state: %#v", updated)
 	}
 }

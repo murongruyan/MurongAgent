@@ -118,6 +118,7 @@ func TestSavedWorkflowManagerExportsSelectedSessionAfterConfirmation(t *testing.
 	dataDirectory := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("MURONG_DESKTOP_DATA_DIR", dataDirectory)
+	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	desktopStore, err := newDesktopStore()
 	if err != nil {

@@ -44,7 +44,7 @@ func TestDesktopStorePersistsProtectedSettingsAndSessions(t *testing.T) {
 		Memories: []GlobalMemory{{ID: "project-memory", Title: "项目背景", Content: "这是 Windows 项目", Enabled: true}},
 		Skills:   []GlobalSkill{{ID: "project-skill", Title: "项目审查", Content: "检查 diff", RunAs: "INLINE", Enabled: true}},
 	})
-	if err != nil || !projectKnowledge.HasProject || projectKnowledge.ProjectPath != project {
+	if err != nil || !projectKnowledge.HasProject || !sameWorkspacePath(projectKnowledge.ProjectPath, project) {
 		t.Fatalf("unexpected project knowledge snapshot: %#v, %v", projectKnowledge, err)
 	}
 	data, err := os.ReadFile(store.configPath)

@@ -118,15 +118,21 @@ jobs:
           $testTags = if ("${{ matrix.goos }}" -eq "linux") { "webkit2_41" } else { "" }
           if ($testTags) {
             go test -count=1 -tags $testTags ./...
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             go vet -tags $testTags ./...
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           } else {
             go test -count=1 ./...
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             go vet ./...
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           Push-Location ../desktop-bridge
           try {
             go test -count=1 ./...
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             go vet ./...
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           } finally {
             Pop-Location
           }
@@ -153,6 +159,7 @@ jobs:
           $name = "murong-desktop-agent-${{ matrix.goos }}-${{ matrix.goarch }}"
           $outputName = if ("${{ matrix.goos }}" -eq "windows") { "$name.exe" } else { $name }
           wails build -clean -m -s -skipbindings -skipembedcreate -platform "${{ matrix.goos }}/${{ matrix.goarch }}" -tags "${{ matrix.build_tags }}" -trimpath -o $outputName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows EXE
         if: matrix.goos == 'windows'
@@ -163,6 +170,7 @@ jobs:
           $builtPath = (Resolve-Path "build/bin/$name.exe").Path
           $env:MURONG_BUILT_EXE = $builtPath
           go test -count=1 -run TestBuiltWindowsApplicationResources .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item -LiteralPath $builtPath -Destination "dist/$name.exe" -Force
 
       - name: Package macOS App
@@ -171,8 +179,10 @@ jobs:
         run: |
           set -euo pipefail
           name="murong-desktop-agent-${{ matrix.goos }}-${{ matrix.goarch }}"
+          app_path="build/bin/Murong Desktop Agent.app"
+          test -d "$app_path"
           mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent "build/bin/${name}.app" "dist/${name}.app.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" "dist/${name}.app.zip"
 
       - name: Package Linux Binary
         if: matrix.goos == 'linux'

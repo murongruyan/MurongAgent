@@ -367,11 +367,10 @@ func (tracker *workspaceChangeTracker) notifyNow() {
 }
 
 func sameWorkspacePath(first, second string) bool {
-	first, second = strings.TrimSpace(first), strings.TrimSpace(second)
+	first, second = canonicalWorkspacePath(first), canonicalWorkspacePath(second)
 	if first == "" || second == "" {
 		return first == second
 	}
-	first, second = filepath.Clean(first), filepath.Clean(second)
 	if goruntime.GOOS == "windows" {
 		return strings.EqualFold(first, second)
 	}
