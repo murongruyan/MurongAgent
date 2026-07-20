@@ -864,6 +864,7 @@ jobs:
     needs: [android_app, terminal_extension, verify]
     if: github.event_name == 'workflow_dispatch' && inputs.sync_mobile_to_server
     runs-on: ubuntu-24.04
+    timeout-minutes: 150
     steps:
       - name: Download Main APK Artifact
         uses: actions/download-artifact@v8
@@ -891,11 +892,18 @@ jobs:
             file_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["fileName"])' "$metadata_file")"
             version_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["versionName"])' "$metadata_file")"
             version_code="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["versionCode"])' "$metadata_file")"
+            file_size="$(stat -c%s "${directory}/${file_name}")"
+            echo "Uploading ${artifact} ${version_name} (${version_code}): ${file_name}, ${file_size} bytes"
             response_file="$(mktemp)"
             status="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}' \
+              --connect-timeout 30 \
+              --max-time 7200 \
+              --speed-time 300 \
+              --speed-limit 1024 \
               -X POST \
               -H "Authorization: Bearer ${RELEASES_ADMIN_TOKEN}" \
               -H 'Accept: application/json' \
+              -H 'Expect: 100-continue' \
               -F "token=${RELEASES_ADMIN_TOKEN}" \
               -F "artifact=${artifact}" \
               -F "apk_file=@${directory}/${file_name};type=application/vnd.android.package-archive" \
