@@ -1,0 +1,937 @@
+name: 构建全部正式产物
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+  workflow_dispatch:
+    inputs:
+      extension_ref:
+        description: "终端扩展仓库分支、标签或提交"
+        type: string
+        required: false
+        default: "main"
+      refresh_extension_toolchain:
+        description: "构建扩展前是否重新下载完整工具链"
+        type: boolean
+        required: false
+        default: false
+      publish_release:
+        description: "完整门禁通过后是否发布包含全部产物的 GitHub Release"
+        type: boolean
+        required: false
+        default: false
+      release_tag:
+        description: "统一 Release 标签；为空时使用 murong-suite-v<run number>"
+        required: false
+      sync_mobile_to_server:
+        description: "是否把主 APK 与扩展 APK 同步到 Murong 下载后端"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: murong-complete-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  GO_VERSION: "1.25.0"
+  WAILS_VERSION: "2.13.0"
+  CODEX_VERSION: "0.144.6"
+  JAVA_VERSION: "26"
+  GRADLE_VERSION: "9.6.1"
+  ANDROID_PLATFORM_PACKAGE: "platforms;android-37.0"
+  ANDROID_BUILD_TOOLS_VERSION: "37.0.0"
+  ANDROID_SDK_CHANNEL: "3"
+
+jobs:
+  android_app:
+    name: Android 主程序
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      apk_file: ${{ steps.metadata.outputs.apk_file }}
+      version_name: ${{ steps.metadata.outputs.version_name }}
+      version_code: ${{ steps.metadata.outputs.version_code }}
+    steps:
+      - name: Checkout Main Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Sanitize Gradle Properties For Linux CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("gradle.properties")
+          lines = [
+              line for line in path.read_text(encoding="utf-8").splitlines()
+              if not line.startswith("org.gradle.java.home=")
+          ]
+          path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: Set Up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v5
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          check-latest: true
+
+      - name: Set Up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+          cache-cleanup: never
+
+      - name: Set Up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android Packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --channel="${ANDROID_SDK_CHANNEL}" --install \
+            "platform-tools" \
+            "${ANDROID_PLATFORM_PACKAGE}" \
+            "build-tools;${ANDROID_BUILD_TOOLS_VERSION}"
+
+      - name: Prepare Main APK Metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          read_gradle_default() {
+            python3 - "$1" <<'PY'
+          import pathlib, re, sys
+          key = sys.argv[1]
+          text = pathlib.Path("app/build.gradle.kts").read_text(encoding="utf-8")
+          patterns = {
+              "versionName": [r'val\s+appVersionName\s*=.*?\?:\s*"([^"]+)"', r'versionName\s*=\s*"([^"]+)"'],
+              "versionCode": [r'val\s+appVersionCode\s*=.*?\?:\s*([0-9]+)', r'versionCode\s*=\s*([0-9]+)'],
+          }
+          match = next((m for pattern in patterns[key] if (m := re.search(pattern, text, re.S))), None)
+          if not match:
+              raise SystemExit(f"Failed to read default {key}")
+          print(match.group(1))
+          PY
+          }
+          version_name="$(read_gradle_default versionName)"
+          version_code="$(read_gradle_default versionCode)"
+          apk_file="murongagent-${version_name}-${version_code}.apk"
+          {
+            echo "version_name=${version_name}"
+            echo "version_code=${version_code}"
+            echo "apk_file=${apk_file}"
+          } >> "${GITHUB_OUTPUT}"
+          {
+            echo "APP_VERSION_NAME=${version_name}"
+            echo "APP_VERSION_CODE=${version_code}"
+            echo "APK_FILE=${apk_file}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Test And Build Main Release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-daemon \
+            test \
+            :app:assembleRelease \
+            -PAPP_VERSION_NAME="${APP_VERSION_NAME}" \
+            -PAPP_VERSION_CODE="${APP_VERSION_CODE}" \
+            -PSTORE_PASSWORD="${{ secrets.STORE_PASSWORD }}" \
+            -PKEY_PASSWORD="${{ secrets.KEY_PASSWORD }}" \
+            -PKEYSTORE_BASE64="${{ secrets.KEYSTORE_BASE64 }}"
+
+      - name: Package Main APK And Metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          mapfile -t apks < <(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk')
+          [[ ${#apks[@]} -eq 1 ]] || { echo "Expected one main release APK, found ${#apks[@]}" >&2; exit 1; }
+          cp "${apks[0]}" "dist/${APK_FILE}"
+          (cd dist && sha256sum "${APK_FILE}" > "${APK_FILE}.sha256")
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          notes_path = Path("release-notes/latest.md")
+          changelog = notes_path.read_text(encoding="utf-8").strip() if notes_path.is_file() else ""
+          payload = {
+              "artifactKey": "murongagent-app",
+              "channel": "stable",
+              "versionName": os.environ["APP_VERSION_NAME"],
+              "versionCode": int(os.environ["APP_VERSION_CODE"]),
+              "fileName": os.environ["APK_FILE"],
+              "changelog": changelog,
+              "updateMessage": f"MurongAgent {os.environ['APP_VERSION_NAME']} 已可安装。",
+              "sourceCommit": os.environ["GITHUB_SHA"],
+          }
+          Path("dist/android-app.json").write_text(
+              json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Upload Main APK Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: murong-android-app
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  terminal_extension:
+    name: Android 终端扩展
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    outputs:
+      apk_file: ${{ steps.metadata.outputs.apk_file }}
+      version_name: ${{ steps.metadata.outputs.version_name }}
+      version_code: ${{ steps.metadata.outputs.version_code }}
+      source_commit: ${{ steps.source.outputs.commit }}
+    defaults:
+      run:
+        working-directory: terminal-extension
+    steps:
+      - name: Checkout Terminal Extension Repository
+        uses: actions/checkout@v6
+        with:
+          repository: murongruyan/murong-terminal-extension
+          ref: ${{ inputs.extension_ref || 'main' }}
+          path: terminal-extension
+
+      - name: Record Extension Source Commit
+        id: source
+        shell: bash
+        run: echo "commit=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+      - name: Set Up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v5
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          check-latest: true
+
+      - name: Set Up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+          cache-cleanup: never
+
+      - name: Set Up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set Up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android Packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --channel="${ANDROID_SDK_CHANNEL}" --install \
+            "platform-tools" \
+            "${ANDROID_PLATFORM_PACKAGE}" \
+            "build-tools;${ANDROID_BUILD_TOOLS_VERSION}"
+
+      - name: Prepare Extension APK Metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          read_gradle_default() {
+            python3 - "$1" <<'PY'
+          import pathlib, re, sys
+          key = sys.argv[1]
+          text = pathlib.Path("app/build.gradle.kts").read_text(encoding="utf-8")
+          patterns = {
+              "versionName": [r'val\s+appVersionName\s*=.*?\?:\s*"([^"]+)"', r'versionName\s*=\s*"([^"]+)"'],
+              "versionCode": [r'val\s+appVersionCode\s*=.*?\?:\s*([0-9]+)', r'versionCode\s*=\s*([0-9]+)'],
+              "toolchainVersion": [r'val\s+bundledToolchainVersion\s*=.*?\?:\s*"([^"]+)"'],
+          }
+          match = next((m for pattern in patterns[key] if (m := re.search(pattern, text, re.S))), None)
+          if not match:
+              raise SystemExit(f"Failed to read default {key}")
+          print(match.group(1))
+          PY
+          }
+          version_name="$(read_gradle_default versionName)"
+          version_code="$(read_gradle_default versionCode)"
+          toolchain_version="$(read_gradle_default toolchainVersion)"
+          apk_file="murong-terminal-extension-${version_name}-${version_code}-arm64-v8a.apk"
+          {
+            echo "version_name=${version_name}"
+            echo "version_code=${version_code}"
+            echo "apk_file=${apk_file}"
+          } >> "${GITHUB_OUTPUT}"
+          {
+            echo "EXTENSION_VERSION_NAME=${version_name}"
+            echo "EXTENSION_VERSION_CODE=${version_code}"
+            echo "TOOLCHAIN_VERSION=${toolchain_version}"
+            echo "EXTENSION_APK_FILE=${apk_file}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Test Toolchain Synchronizers
+        shell: bash
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+
+      - name: Refresh Bundled Toolchain Prebuilt
+        if: github.event_name == 'workflow_dispatch' && inputs.refresh_extension_toolchain
+        shell: bash
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-configuration-cache \
+            -PBUNDLED_TOOLCHAIN_DOWNLOAD_TIMEOUT=60 \
+            -PBUNDLED_TOOLCHAIN_DOWNLOAD_RETRIES=4 \
+            :app:refreshBundledToolchainPrebuilt
+
+      - name: Build Extension With Complete Toolchain
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-configuration-cache \
+            -PBUNDLED_TOOLCHAIN_VERSION="${TOOLCHAIN_VERSION}" \
+            -PBUNDLED_TOOLCHAIN_ENABLE_DOWNLOAD=true \
+            -PBUNDLED_TOOLCHAIN_DOWNLOAD_TIMEOUT=60 \
+            -PBUNDLED_TOOLCHAIN_DOWNLOAD_RETRIES=4 \
+            -PAPP_VERSION_NAME="${EXTENSION_VERSION_NAME}" \
+            -PAPP_VERSION_CODE="${EXTENSION_VERSION_CODE}" \
+            :app:assembleRelease
+
+      - name: Verify Packaged Extension Toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import struct
+          import zipfile
+
+          apks = sorted(pathlib.Path("app/build/outputs/apk/release").glob("*.apk"))
+          if len(apks) != 1:
+              raise SystemExit(f"Expected one extension release APK, found {len(apks)}")
+          with zipfile.ZipFile(apks[0]) as apk:
+              manifest = json.loads(apk.read("assets/toolchain/arm64-v8a/manifest.json"))
+              entries = set(apk.namelist())
+              commands = manifest.get("commands", {})
+              required = {"apt", "bash", "codex-app-server", "dpkg", "pkg", "proot"}
+              missing = sorted(required.difference(commands))
+              if missing:
+                  raise SystemExit(f"Toolchain manifest is missing commands: {missing}")
+              packaged = {item.get("path") or item.get("asset") for item in manifest.get("files", [])}
+              packaged.update(link.get("path") for link in manifest.get("links", []))
+              absolute = [link for link in manifest.get("links", []) if str(link.get("target", "")).startswith("/")]
+              if absolute:
+                  raise SystemExit(f"Toolchain manifest contains absolute links: {absolute}")
+              for command, target in commands.items():
+                  if target.startswith("native/"):
+                      candidate = f"lib/arm64-v8a/{target.removeprefix('native/')}"
+                      if candidate not in entries:
+                          raise SystemExit(f"Missing native target for {command}: {candidate}")
+                  elif target not in packaged:
+                      raise SystemExit(f"Missing asset target for {command}: {target}")
+              codex_target = commands["codex-app-server"]
+              if not codex_target.startswith("native/"):
+                  raise SystemExit(f"codex-app-server is not native: {codex_target}")
+              with apk.open(f"lib/arm64-v8a/{codex_target.removeprefix('native/')}") as binary:
+                  header = binary.read(64)
+              metadata = json.loads(apk.read("assets/toolchain/arm64-v8a/metadata/codex-app-server.json"))
+              license_text = apk.read("assets/toolchain/arm64-v8a/share/LICENSES/codex-app-server/LICENSE").decode("utf-8")
+          if len(header) < 64 or header[:4] != b"\x7fELF":
+              raise SystemExit("Packaged codex-app-server is not ELF")
+          elf_type, elf_machine = struct.unpack_from("<HH", header, 16)
+          if header[4] != 2 or header[5] != 1 or elf_type not in (2, 3) or elf_machine != 183:
+              raise SystemExit("Packaged codex-app-server is not little-endian AArch64 ELF64")
+          if metadata.get("tag") != "rust-v0.144.5":
+              raise SystemExit(f"Unexpected Codex tag: {metadata.get('tag')}")
+          expected_sha = "d2230513fcbe363e6230a4cb53917fafd68c2d2bad953035d99059eb18c07117"
+          if metadata.get("archiveSha256") != expected_sha:
+              raise SystemExit(f"Unexpected Codex archive SHA-256: {metadata.get('archiveSha256')}")
+          if "Apache License" not in license_text or "Version 2.0" not in license_text:
+              raise SystemExit("Packaged Codex Apache-2.0 license is invalid")
+          print(f"Verified complete extension toolchain in {apks[0]}")
+          PY
+
+      - name: Package Extension APK And Metadata
+        shell: bash
+        env:
+          EXTENSION_SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          mapfile -t apks < <(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk')
+          [[ ${#apks[@]} -eq 1 ]] || { echo "Expected one extension release APK, found ${#apks[@]}" >&2; exit 1; }
+          cp "${apks[0]}" "dist/${EXTENSION_APK_FILE}"
+          (cd dist && sha256sum "${EXTENSION_APK_FILE}" > "${EXTENSION_APK_FILE}.sha256")
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          payload = {
+              "artifactKey": "murong-terminal-extension",
+              "channel": "stable",
+              "versionName": os.environ["EXTENSION_VERSION_NAME"],
+              "versionCode": int(os.environ["EXTENSION_VERSION_CODE"]),
+              "fileName": os.environ["EXTENSION_APK_FILE"],
+              "changelog": "内置完整 Termux 工具链与已校验的 Codex app-server。",
+              "updateMessage": f"终端扩展 {os.environ['EXTENSION_VERSION_NAME']} 已可安装。",
+              "sourceCommit": os.environ["EXTENSION_SOURCE_COMMIT"],
+          }
+          Path("dist/terminal-extension.json").write_text(
+              json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Upload Terminal Extension Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: murong-terminal-extension
+          path: terminal-extension/dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  desktop:
+    name: ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            runner: windows-2025
+            goos: windows
+            goarch: amd64
+            codex_platform: win32-x64
+            codex_sha256: E04AFBE9841BE306455D075AD414993A946C94A399E55D7F9EC223F734CD4101
+            build_tags: embedded_codex
+          - label: Windows ARM64
+            runner: windows-11-arm
+            goos: windows
+            goarch: arm64
+            codex_platform: win32-arm64
+            codex_sha256: 92774896D0D293DB1C1808E77085B5A068E5AA70825D0D656E29BD4CA276E651
+            build_tags: embedded_codex
+          - label: macOS Intel
+            runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+            codex_platform: darwin-x64
+            codex_sha256: 6F1CDAB2DD23BEB5BFDB82A7D4FF5BB8C33F29AF5D1019778B18584EA7C53165
+            build_tags: embedded_codex
+          - label: macOS Apple Silicon
+            runner: macos-15
+            goos: darwin
+            goarch: arm64
+            codex_platform: darwin-arm64
+            codex_sha256: 671D58A58CD2058345B9D9E4A969BB69937E50C7C1CD57C6061ED674DC92F94B
+            build_tags: embedded_codex
+          - label: Linux x64
+            runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+            codex_platform: linux-x64
+            codex_sha256: B6752EB2E8C10E6FCC96AC5C1C8AD8342CDB9A74504FB84686ADDF081A7D2868
+            build_tags: embedded_codex webkit2_41
+          - label: Linux ARM64
+            runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            codex_platform: linux-arm64
+            codex_sha256: 19F0B01B33F273DF94191670B2E0E5D0F624B0354E765BFDEA5763920B713800
+            build_tags: embedded_codex webkit2_41
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: desktop-agent
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set Up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: |
+            desktop-agent/go.sum
+            desktop-bridge/go.sum
+
+      - name: Install Linux WebView Dependencies
+        if: matrix.goos == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Install Wails CLI
+        shell: pwsh
+        run: go install "github.com/wailsapp/wails/v2/cmd/wails@v${env:WAILS_VERSION}"
+
+      - name: Test Desktop Modules
+        shell: pwsh
+        run: |
+          $testTags = if ("${{ matrix.goos }}" -eq "linux") { "webkit2_41" } else { "" }
+          if ($testTags) {
+            go test -count=1 -tags $testTags ./...
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            go vet -tags $testTags ./...
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            go test -count=1 ./...
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            go vet ./...
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          Push-Location ../desktop-bridge
+          try {
+            go test -count=1 ./...
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            go vet ./...
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Stage Verified Codex Runtime
+        shell: pwsh
+        run: |
+          $asset = "codex-npm-${{ matrix.codex_platform }}-${env:CODEX_VERSION}.tgz"
+          $url = "https://github.com/openai/codex/releases/download/rust-v${env:CODEX_VERSION}/$asset"
+          New-Item -ItemType Directory -Force runtime | Out-Null
+          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile runtime/codex-runtime.tgz
+          $actual = (Get-FileHash -Algorithm SHA256 runtime/codex-runtime.tgz).Hash
+          if ($actual -ne "${{ matrix.codex_sha256 }}") {
+            throw "Codex runtime SHA-256 mismatch: expected ${{ matrix.codex_sha256 }}, got $actual"
+          }
+
+      - name: Verify Embedded Codex Runtime
+        shell: pwsh
+        run: go test -count=1 -tags "${{ matrix.build_tags }}" -run TestEmbeddedCodexReleaseArchive .
+
+      - name: Build Native Desktop Package
+        shell: pwsh
+        run: |
+          $name = "murong-desktop-agent-${{ matrix.goos }}-${{ matrix.goarch }}"
+          $outputName = if ("${{ matrix.goos }}" -eq "windows") { "$name.exe" } else { $name }
+          wails build -clean -m -s -skipbindings -skipembedcreate -platform "${{ matrix.goos }}/${{ matrix.goarch }}" -tags "${{ matrix.build_tags }}" -trimpath -o $outputName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package Windows EXE
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $name = "murong-desktop-agent-${{ matrix.goos }}-${{ matrix.goarch }}"
+          $builtPath = (Resolve-Path "build/bin/$name.exe").Path
+          $env:MURONG_BUILT_EXE = $builtPath
+          go test -count=1 -run TestBuiltWindowsApplicationResources .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item -LiteralPath $builtPath -Destination "dist/$name.exe" -Force
+
+      - name: Package macOS App
+        if: matrix.goos == 'darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="murong-desktop-agent-${{ matrix.goos }}-${{ matrix.goarch }}"
+          app_path="build/bin/Murong Desktop Agent.app"
+          test -d "$app_path"
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" "dist/${name}.app.zip"
+
+      - name: Package Linux Binary
+        if: matrix.goos == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="murong-desktop-agent-${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir -p dist
+          tar -C build/bin -czf "dist/${name}.tar.gz" "$name"
+
+      - name: Write SHA-256
+        shell: pwsh
+        run: |
+          $artifact = Get-ChildItem -LiteralPath dist -File | Where-Object { $_.Name -notlike '*.sha256' } | Select-Object -First 1
+          if (-not $artifact) { throw "Desktop artifact was not created" }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifact.FullName).Hash.ToLowerInvariant()
+          "$hash  $($artifact.Name)" | Set-Content -Encoding utf8NoBOM -NoNewline -LiteralPath "dist/$($artifact.Name).sha256"
+
+      - name: Upload Desktop Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: murong-desktop-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: desktop-agent/dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  relay:
+    name: Cloud Relay ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x64
+            runner: ubuntu-24.04
+            goarch: amd64
+          - label: Linux ARM64
+            runner: ubuntu-24.04-arm
+            goarch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: desktop-bridge
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set Up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: desktop-bridge/go.sum
+
+      - name: Test Relay And Bridge
+        run: |
+          go test -count=1 ./...
+          go vet ./...
+
+      - name: Build Static Relay
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          name="murong-cloud-relay-linux-${GOARCH}"
+          mkdir -p dist/package
+          go build -trimpath -ldflags="-s -w" -o "dist/package/${name}" ./cmd/murong-cloud-relay
+          "dist/package/${name}" -h >/dev/null
+          tar -C dist/package -czf "dist/${name}.tar.gz" "${name}"
+          (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+
+      - name: Upload Relay Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: murong-cloud-relay-linux-${{ matrix.goarch }}
+          path: |
+            desktop-bridge/dist/*.tar.gz
+            desktop-bridge/dist/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  verify:
+    name: Verify Complete Release Set
+    needs: [android_app, terminal_extension, desktop, relay]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download Main APK Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: murong-android-app
+          path: dist/android-app
+
+      - name: Download Terminal Extension Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: murong-terminal-extension
+          path: dist/terminal-extension
+
+      - name: Download All Desktop Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: murong-desktop-*
+          path: dist/desktop
+          merge-multiple: true
+
+      - name: Download All Relay Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: murong-cloud-relay-*
+          path: dist/relay
+          merge-multiple: true
+
+      - name: Verify All Ten Packages
+        shell: bash
+        env:
+          MAIN_APK_FILE: ${{ needs.android_app.outputs.apk_file }}
+          EXTENSION_APK_FILE: ${{ needs.terminal_extension.outputs.apk_file }}
+          MAIN_VERSION_NAME: ${{ needs.android_app.outputs.version_name }}
+          MAIN_VERSION_CODE: ${{ needs.android_app.outputs.version_code }}
+          EXTENSION_VERSION_NAME: ${{ needs.terminal_extension.outputs.version_name }}
+          EXTENSION_VERSION_CODE: ${{ needs.terminal_extension.outputs.version_code }}
+          EXTENSION_SOURCE_COMMIT: ${{ needs.terminal_extension.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          mobile_expected=(
+            "android-app/${MAIN_APK_FILE}"
+            "terminal-extension/${EXTENSION_APK_FILE}"
+          )
+          desktop_expected=(
+            murong-desktop-agent-windows-amd64.exe
+            murong-desktop-agent-windows-arm64.exe
+            murong-desktop-agent-darwin-amd64.app.zip
+            murong-desktop-agent-darwin-arm64.app.zip
+            murong-desktop-agent-linux-amd64.tar.gz
+            murong-desktop-agent-linux-arm64.tar.gz
+          )
+          relay_expected=(
+            murong-cloud-relay-linux-amd64.tar.gz
+            murong-cloud-relay-linux-arm64.tar.gz
+          )
+
+          for relative in "${mobile_expected[@]}"; do
+            test -f "dist/$relative" || { echo "Missing mobile package: $relative" >&2; exit 1; }
+            test -f "dist/$relative.sha256" || { echo "Missing mobile checksum: $relative.sha256" >&2; exit 1; }
+          done
+          for package in "${desktop_expected[@]}"; do
+            test -f "dist/desktop/$package" || { echo "Missing desktop package: $package" >&2; exit 1; }
+            test -f "dist/desktop/$package.sha256" || { echo "Missing desktop checksum: $package.sha256" >&2; exit 1; }
+          done
+          for package in "${relay_expected[@]}"; do
+            test -f "dist/relay/$package" || { echo "Missing relay package: $package" >&2; exit 1; }
+            test -f "dist/relay/$package.sha256" || { echo "Missing relay checksum: $package.sha256" >&2; exit 1; }
+          done
+
+          mapfile -t mobile_actual < <(find dist/android-app dist/terminal-extension -maxdepth 1 -type f \( -name '*.apk' \) -printf '%f\n' | sort)
+          mapfile -t mobile_wanted < <(printf '%s\n' "${MAIN_APK_FILE}" "${EXTENSION_APK_FILE}" | sort)
+          if [[ "${mobile_actual[*]}" != "${mobile_wanted[*]}" ]]; then
+            echo "Unexpected mobile release set" >&2
+            printf 'Expected: %s\n' "${mobile_wanted[*]}" >&2
+            printf 'Actual:   %s\n' "${mobile_actual[*]}" >&2
+            exit 1
+          fi
+          mapfile -t desktop_actual < <(find dist/desktop -maxdepth 1 -type f ! -name '*.sha256' -printf '%f\n' | sort)
+          mapfile -t desktop_wanted < <(printf '%s\n' "${desktop_expected[@]}" | sort)
+          if [[ "${desktop_actual[*]}" != "${desktop_wanted[*]}" ]]; then
+            echo "Unexpected desktop release set" >&2
+            printf 'Expected: %s\n' "${desktop_wanted[*]}" >&2
+            printf 'Actual:   %s\n' "${desktop_actual[*]}" >&2
+            exit 1
+          fi
+          mapfile -t relay_actual < <(find dist/relay -maxdepth 1 -type f ! -name '*.sha256' -printf '%f\n' | sort)
+          mapfile -t relay_wanted < <(printf '%s\n' "${relay_expected[@]}" | sort)
+          if [[ "${relay_actual[*]}" != "${relay_wanted[*]}" ]]; then
+            echo "Unexpected relay release set" >&2
+            printf 'Expected: %s\n' "${relay_wanted[*]}" >&2
+            printf 'Actual:   %s\n' "${relay_actual[*]}" >&2
+            exit 1
+          fi
+
+          mkdir -p dist/release
+          : > dist/release/SHA256SUMS.txt
+          for relative in "${mobile_expected[@]}"; do
+            directory="dist/${relative%/*}"
+            package="${relative##*/}"
+            (cd "$directory" && sha256sum --check "$package.sha256")
+            cp "$directory/$package" dist/release/
+          done
+          for package in "${desktop_expected[@]}"; do
+            (cd dist/desktop && sha256sum --check "$package.sha256")
+            cp "dist/desktop/$package" dist/release/
+          done
+          for package in "${relay_expected[@]}"; do
+            (cd dist/relay && sha256sum --check "$package.sha256")
+            cp "dist/relay/$package" dist/release/
+          done
+
+          (cd dist/release && sha256sum \
+            "${MAIN_APK_FILE}" \
+            "${EXTENSION_APK_FILE}" \
+            "${desktop_expected[@]}" \
+            "${relay_expected[@]}" > SHA256SUMS.txt)
+
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          release = Path("dist/release")
+          packages = sorted(path for path in release.iterdir() if path.is_file() and path.name not in {"SHA256SUMS.txt", "release-manifest.json"})
+          if len(packages) != 10:
+              raise SystemExit(f"Expected exactly 10 packages, found {len(packages)}")
+          manifest = {
+              "schemaVersion": 1,
+              "runId": os.environ["GITHUB_RUN_ID"],
+              "mainSourceCommit": os.environ["GITHUB_SHA"],
+              "extensionSourceCommit": os.environ["EXTENSION_SOURCE_COMMIT"],
+              "versions": {
+                  "androidApp": {"name": os.environ["MAIN_VERSION_NAME"], "code": int(os.environ["MAIN_VERSION_CODE"])},
+                  "terminalExtension": {"name": os.environ["EXTENSION_VERSION_NAME"], "code": int(os.environ["EXTENSION_VERSION_CODE"])},
+              },
+              "packages": [
+                  {
+                      "fileName": path.name,
+                      "size": path.stat().st_size,
+                      "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                  }
+                  for path in packages
+              ],
+          }
+          (release / "release-manifest.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Upload Release Manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: murong-complete-release-manifest
+          path: |
+            dist/release/SHA256SUMS.txt
+            dist/release/release-manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish Complete GitHub Release
+    needs: verify
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download Main APK Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: murong-android-app
+          path: release
+
+      - name: Download Terminal Extension Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: murong-terminal-extension
+          path: release
+
+      - name: Download All Desktop Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: murong-desktop-*
+          path: release
+          merge-multiple: true
+
+      - name: Download All Relay Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: murong-cloud-relay-*
+          path: release
+          merge-multiple: true
+
+      - name: Download Complete Release Manifest
+        uses: actions/download-artifact@v8
+        with:
+          name: murong-complete-release-manifest
+          path: release
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          find release -maxdepth 1 -type f \( -name '*.sha256' -o -name 'android-app.json' -o -name 'terminal-extension.json' \) -delete
+          mapfile -t packages < <(find release -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' ! -name 'release-manifest.json' -printf '%p\n' | sort)
+          [[ ${#packages[@]} -eq 10 ]] || { echo "Expected 10 release packages, found ${#packages[@]}" >&2; exit 1; }
+          tag="${INPUT_RELEASE_TAG:-murong-suite-v${GITHUB_RUN_NUMBER}}"
+          assets=("${packages[@]}" release/SHA256SUMS.txt release/release-manifest.json)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" --clobber
+            gh release edit "$tag" --title "Murong Complete Suite ${tag}" --latest
+          else
+            gh release create "$tag" "${assets[@]}" --generate-notes --latest --title "Murong Complete Suite ${tag}"
+          fi
+
+  sync_mobile:
+    name: Sync Mobile Packages To Murong Backend
+    needs: [android_app, terminal_extension, verify]
+    if: github.event_name == 'workflow_dispatch' && inputs.sync_mobile_to_server
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download Main APK Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: murong-android-app
+          path: mobile/android-app
+
+      - name: Download Terminal Extension Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: murong-terminal-extension
+          path: mobile/terminal-extension
+
+      - name: Upload APKs And Publish Metadata
+        shell: bash
+        env:
+          RELEASES_API_URL: https://murongagent.rl1.cc/api/releases.php
+          RELEASES_ADMIN_TOKEN: ${{ secrets.MURONG_AGENT_RELEASES_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ -n "${RELEASES_ADMIN_TOKEN:-}" ]] || { echo "Missing MURONG_AGENT_RELEASES_ADMIN_TOKEN" >&2; exit 1; }
+          for metadata_file in mobile/android-app/android-app.json mobile/terminal-extension/terminal-extension.json; do
+            directory="$(dirname "$metadata_file")"
+            artifact="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["artifactKey"])' "$metadata_file")"
+            file_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["fileName"])' "$metadata_file")"
+            version_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["versionName"])' "$metadata_file")"
+            version_code="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["versionCode"])' "$metadata_file")"
+            response_file="$(mktemp)"
+            status="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}' \
+              -X POST \
+              -H "Authorization: Bearer ${RELEASES_ADMIN_TOKEN}" \
+              -H 'Accept: application/json' \
+              -F "token=${RELEASES_ADMIN_TOKEN}" \
+              -F "artifact=${artifact}" \
+              -F "apk_file=@${directory}/${file_name};type=application/vnd.android.package-archive" \
+              -F "target_name=${file_name}" \
+              -F "version=${version_name}" \
+              -F "version_code=${version_code}" \
+              "${RELEASES_API_URL}?action=upload")"
+            [[ "$status" == 200 || "$status" == 201 ]] || { cat "$response_file" >&2; exit 1; }
+
+            METADATA_FILE="$metadata_file" UPLOAD_RESPONSE="$(cat "$response_file")" RELEASES_ADMIN_TOKEN="$RELEASES_ADMIN_TOKEN" python3 - <<'PY' > payload.json
+          import json, os
+          metadata = json.load(open(os.environ["METADATA_FILE"], encoding="utf-8"))
+          response = json.loads(os.environ["UPLOAD_RESPONSE"])
+          if not response.get("success"):
+              raise SystemExit(response.get("message", "upload failed"))
+          data = response.get("data") or {}
+          download_url = str(data.get("downloadUrl", "")).strip()
+          if not download_url:
+              raise SystemExit("upload response missing downloadUrl")
+          metadata.update({
+              "token": os.environ["RELEASES_ADMIN_TOKEN"],
+              "downloadUrl": download_url,
+              "fileName": data.get("fileName") or metadata["fileName"],
+              "checksumSha256": data.get("checksumSha256"),
+              "fileSize": int(data["fileSize"]) if data.get("fileSize") is not None else None,
+              "status": "active",
+          })
+          print(json.dumps(metadata, ensure_ascii=False))
+          PY
+            rm -f "$response_file"
+            status="$(curl --silent --show-error --output response.json --write-out '%{http_code}' \
+              -X POST \
+              -H "Authorization: Bearer ${RELEASES_ADMIN_TOKEN}" \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json' \
+              --data @payload.json \
+              "${RELEASES_API_URL}?action=create")"
+            [[ "$status" == 200 || "$status" == 201 ]] || { cat response.json >&2; exit 1; }
+          done

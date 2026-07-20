@@ -604,3 +604,10 @@ Murong Desktop Agent（Windows / macOS / Linux）
 - 路径断言修复以提交 `1f91344` 推送后，GitHub 原生矩阵 `29734914002` 全部成功：Windows x64/ARM64、macOS Intel/Apple Silicon、Linux x64/ARM64 均完成严格测试、Codex 运行时哈希校验、Wails 原生构建、目标打包与上传；Linux x64/ARM64 Relay 同样测试和打包成功；最终 `Verify Complete Release Set` 精确下载并验证六个桌面包、两个 Relay 包及逐包哈希，无缺项或多余包。发布开关未启用，因此本轮只保留 7 天 Actions 候选产物，没有擅自创建正式 GitHub Release。
 - 统一清单 `SHA256SUMS.txt`：Windows x64 `321a6edcc128e8918aa7df13bcd67e374499f9fd6d3357c9b085ceaf8190aa72`，Windows ARM64 `3910b30172ed8208030bc6d9b677053e576187ff9ef1d3ad3bbe8a4e7d482e57`，macOS Intel `56a3d746ecfe9c3ac567dc759c3268be8c4ab5bac4c1b0db015da120df90dd4e`，macOS Apple Silicon `de4a679332c084d131bfdc0e954988e151795753bb9f3f153c072de969544efc`，Linux x64 `6637e284e1760070378e2d6313bbaca2f4aae1cb055d55efe8a0f076edcbc70a`，Linux ARM64 `bb4b901a98bde1901f8ffa71ff8fd8674730509d389e5f550419de6ae74662d5`，Relay x64 `7349815716b32b63ad8df1bb39618f0b384d7d81d6db33495411bbf1589c7b52`，Relay ARM64 `70bff097cdc5cfb98b30ecc7ae5deb3e6b33728b4e8ab54b9b725e283eb49674`。
 - 当前真正未闭环的线上事实仍是 `murongagent.rl1.cc` 的 Relay 404 与服务器 SSH 服务未恢复。桌面/Android 累积源码、单应用内置远程节点和六目标构建工作流进入正式提交后，下一步是在服务器恢复 SSH 入口后重跑已验证的原子部署工作流，再以公网 `/relay/healthz` 和 phone↔desktop WSS 加密往返作为完成证据。
+
+### 2026-07-20 P5b.16（单入口构建全部正式产物）
+
+- 原 `build-apk.yml` 与 `build-desktop.yml` 已合并为唯一的 `build-all.yml` 构建入口。每次主分支推送或手动运行都会构建 Android 主程序、独立终端扩展、Windows x64/ARM64、macOS Intel/Apple Silicon、Linux x64/ARM64，以及 Cloud Relay Linux x64/ARM64；清理历史和生产部署仍是独立运维工作流，不会在普通源码构建时擅自修改线上服务器。
+- 终端扩展的 1.10 完整工具链与 Codex app-server 打包修复已以提交 `61cc319` 推送到 `murong-terminal-extension/main`。中央工作流从该公开仓库检出指定 ref，执行 Python 同步器回归、完整工具链构建，并严格核对必需命令、相对链接、目标存在性、AArch64 ELF、固定 Codex 标签/归档哈希和 Apache-2.0 License；不再从旧分支构建 1.9。
+- 最终门禁要求恰好 10 个包，逐包复算 SHA-256 后生成统一 `SHA256SUMS.txt` 与带两个源码提交、移动端版本、大小和哈希的 `release-manifest.json`。任何平台缺包、多包或校验失败都会阻止发布。手动开关可把这 10 个包发布到同一个 GitHub Release，也可在完整门禁通过后把两个移动 APK 同步到 Murong 下载后端。
+- `build-all.yml` 已通过固定 `actionlint v1.7.12` 与 `git diff --check`。删除旧入口后还需提交并推送，再以 GitHub 原生矩阵和最终 `Verify Complete Release Set` 作为远端完成证据。
