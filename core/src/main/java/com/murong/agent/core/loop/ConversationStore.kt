@@ -344,7 +344,14 @@ data class PersistedSessionHistoryReferenceClue(
 data class PersistedFileMention(
     val path: String,
     val displayPath: String,
-    val inlineContent: String? = null
+    val inlineContent: String? = null,
+    val kindName: String = "",
+    val byteSize: Long? = null,
+    val modifiedAtMillis: Long? = null,
+    val accessStateName: String = "",
+    val inclusionModeName: String = "",
+    val sourceName: String = "",
+    val stableId: String = ""
 )
 
 @Serializable
@@ -1129,7 +1136,14 @@ class ConversationStore internal constructor(
                     PersistedFileMention(
                         path = mention.path,
                         displayPath = mention.displayPath,
-                        inlineContent = mention.inlineContent
+                        inlineContent = mention.inlineContent,
+                        kindName = mention.kind.name,
+                        byteSize = mention.byteSize,
+                        modifiedAtMillis = mention.modifiedAtMillis,
+                        accessStateName = mention.accessState.name,
+                        inclusionModeName = mention.inclusionMode.name,
+                        sourceName = mention.source.name,
+                        stableId = mention.stableId
                     )
                 },
                 stepSignOffs = it.stepSignOffs.map { signOff ->
@@ -1172,7 +1186,19 @@ class ConversationStore internal constructor(
                     FileMentionUi(
                         path = mention.path,
                         displayPath = mention.displayPath,
-                        inlineContent = mention.inlineContent
+                        inlineContent = mention.inlineContent,
+                        kind = restoreFileMentionKind(mention.kindName, mention.path),
+                        byteSize = mention.byteSize,
+                        modifiedAtMillis = mention.modifiedAtMillis,
+                        accessState = restoreFileMentionAccessState(mention.accessStateName),
+                        inclusionMode = restoreFileMentionInclusionMode(
+                            mention.inclusionModeName,
+                            restoreFileMentionKind(mention.kindName, mention.path)
+                        ),
+                        source = restoreFileMentionSource(mention.sourceName),
+                        stableId = mention.stableId.ifBlank {
+                            stableFileMentionId(mention.path, mention.modifiedAtMillis)
+                        }
                     )
                 },
                 stepSignOffs = it.stepSignOffs.map { signOff ->
@@ -1211,7 +1237,14 @@ class ConversationStore internal constructor(
                     PersistedFileMention(
                         path = mention.path,
                         displayPath = mention.displayPath,
-                        inlineContent = mention.inlineContent
+                        inlineContent = mention.inlineContent,
+                        kindName = mention.kind.name,
+                        byteSize = mention.byteSize,
+                        modifiedAtMillis = mention.modifiedAtMillis,
+                        accessStateName = mention.accessState.name,
+                        inclusionModeName = mention.inclusionMode.name,
+                        sourceName = mention.source.name,
+                        stableId = mention.stableId
                     )
                 },
                 previousAnswers = it.previousAnswers.map { answer ->
@@ -1244,7 +1277,19 @@ class ConversationStore internal constructor(
                     FileMentionUi(
                         path = mention.path,
                         displayPath = mention.displayPath,
-                        inlineContent = mention.inlineContent
+                        inlineContent = mention.inlineContent,
+                        kind = restoreFileMentionKind(mention.kindName, mention.path),
+                        byteSize = mention.byteSize,
+                        modifiedAtMillis = mention.modifiedAtMillis,
+                        accessState = restoreFileMentionAccessState(mention.accessStateName),
+                        inclusionMode = restoreFileMentionInclusionMode(
+                            mention.inclusionModeName,
+                            restoreFileMentionKind(mention.kindName, mention.path)
+                        ),
+                        source = restoreFileMentionSource(mention.sourceName),
+                        stableId = mention.stableId.ifBlank {
+                            stableFileMentionId(mention.path, mention.modifiedAtMillis)
+                        }
                     )
                 },
                 previousAnswers = it.previousAnswers.map { answer ->

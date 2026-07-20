@@ -2,6 +2,7 @@ package com.murong.agent.common.toolchain
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
 import android.os.Build
 import android.util.Log
 import kotlinx.serialization.Serializable
@@ -149,7 +150,7 @@ object ToolchainManager {
             }
             val requiredFiles = manifest.files.mapNotNull { entry ->
                 val relativePath = entry.path.ifBlank { entry.asset.removePrefix("bin/") }
-                if (isMutablePackageManagerScaffoldPath(relativePath)) {
+                if (isMutablePackageManagerStatePath(relativePath)) {
                     null
                 } else {
                     File(rootDir, relativePath)
@@ -180,11 +181,23 @@ object ToolchainManager {
                     requiredFiles.any { !it.exists() }
 
             if (needsInstall) {
+                // APT owns files throughout bin/, lib/ and share/.  Deleting the root whenever
+                // the extension manifest changes silently removes packages such as Python while
+                // leaving stale links behind. Overlay base files onto a known prior install and
+                // retain APT/dpkg state; only an initial or incomplete install is rebuilt.
+                val preserveUserPackages = rootDir.isDirectory && versionFile.isFile
                 try {
-                    rootDir.deleteRecursively()
+                    if (!preserveUserPackages) rootDir.deleteRecursively()
                     check(rootDir.mkdirs() || rootDir.isDirectory) { "Cannot create toolchain directory" }
                     manifest.files.forEach { entry ->
-                        val target = File(rootDir, entry.path.ifBlank { entry.asset })
+                        val relativePath = entry.path.ifBlank { entry.asset }
+                        val target = File(rootDir, relativePath)
+                        if (preserveUserPackages &&
+                            isMutablePackageManagerStatePath(relativePath) &&
+                            target.exists()
+                        ) {
+                            return@forEach
+                        }
                         check(target.parentFile?.mkdirs() != false || target.parentFile?.isDirectory == true) {
                             "Cannot create toolchain file directory"
                         }
@@ -208,7 +221,7 @@ object ToolchainManager {
                     versionFile.writeText(installFingerprint)
                 } catch (error: Exception) {
                     Log.w(TAG, "Failed to install toolchain", error)
-                    rootDir.deleteRecursively()
+                    if (!preserveUserPackages) rootDir.deleteRecursively()
                     cachedToolchain = null
                     return InstalledToolchain.unavailable(
                         abi = abi,
@@ -351,6 +364,8 @@ object ToolchainManager {
                 rootDir = installed.rootDir,
                 homeDir = File(safeContext.filesDir, "terminal-home").apply { mkdirs() },
                 cacheDir = safeContext.cacheDir
+            ) + packageCompatibilityResolverBindArguments(
+                resolverFile = ensurePackageCompatibleResolver(safeContext, installed.rootDir)
             ) + packageCompatibilityGuestLauncher(guestCommand)
     }
 
@@ -372,6 +387,7 @@ object ToolchainManager {
         environment["TERMUX_APP__DATA_DIR"] = TERMUX_APP_DATA_COMPAT
         environment["TERMUX_APP_PACKAGE_MANAGER"] = "apt"
         environment["PATH"] = buildPackageCompatiblePath()
+        applyCurrentNetworkProxy(environment, safeContext)
         installed.commandPaths["proot-loader"]
             ?.takeIf { File(it).exists() }
             ?.let { environment["PROOT_LOADER"] = it }
@@ -633,6 +649,17 @@ object ToolchainManager {
         return path.replace('\\', '/').substringAfterLast('/') == ".murong-keep"
     }
 
+    /** State maintained by APT/dpkg must survive a terminal-extension base update. */
+    internal fun isMutablePackageManagerStatePath(path: String): Boolean {
+        val normalized = path.replace('\\', '/').trimStart('/')
+        return isMutablePackageManagerScaffoldPath(normalized) ||
+            normalized.startsWith("var/lib/dpkg/") ||
+            normalized.startsWith("var/lib/apt/") ||
+            normalized.startsWith("var/cache/apt/") ||
+            normalized.startsWith("var/log/apt/") ||
+            normalized.startsWith("etc/apt/")
+    }
+
     internal fun isSafeToolchainCommandName(name: String): Boolean {
         return name == "[" || name.matches(Regex("[A-Za-z0-9._+-]+"))
     }
@@ -662,6 +689,58 @@ object ToolchainManager {
             "-b", "${homeDir.absolutePath}:$TERMUX_HOME_PLACEHOLDER",
             "-b", "${cacheDir.absolutePath}:$TERMUX_CACHE_PLACEHOLDER"
         )
+    }
+
+    /**
+     * PRoot does not expose Android's netd resolver.  Generate a normal resolv.conf from the
+     * active Android network and bind it into the guest so apt, pkg and curl can resolve hosts.
+     */
+    private fun ensurePackageCompatibleResolver(context: Context, rootDir: File): File? {
+        val dnsServers = runCatching {
+            context.getSystemService(ConnectivityManager::class.java)
+                ?.activeNetwork
+                ?.let { network ->
+                    context.getSystemService(ConnectivityManager::class.java)
+                        ?.getLinkProperties(network)
+                        ?.dnsServers
+                }
+                .orEmpty()
+                .mapNotNull { server -> server.hostAddress?.trim()?.takeIf { it.isNotBlank() } }
+                .distinct()
+        }.getOrDefault(emptyList())
+        if (dnsServers.isEmpty()) return null
+        return runCatching {
+            File(rootDir, "etc/resolv.conf").apply {
+                parentFile?.mkdirs()
+                writeText(dnsServers.joinToString(separator = "\n", postfix = "\n") { "nameserver $it" })
+            }
+        }.getOrNull()
+    }
+
+    private fun packageCompatibilityResolverBindArguments(resolverFile: File?): List<String> {
+        return resolverFile
+            ?.takeIf(File::isFile)
+            ?.let { listOf("-b", "${it.absolutePath}:/etc/resolv.conf") }
+            .orEmpty()
+    }
+
+    /** Carry the user-selected Android VPN/HTTP proxy into command-line package clients. */
+    private fun applyCurrentNetworkProxy(environment: MutableMap<String, String>, context: Context) {
+        val proxyUrl = runCatching {
+            val connectivity = context.getSystemService(ConnectivityManager::class.java) ?: return@runCatching null
+            val proxy = connectivity.activeNetwork
+                ?.let(connectivity::getLinkProperties)
+                ?.httpProxy
+                ?: return@runCatching null
+            val host = proxy.host?.trim().orEmpty()
+            val port = proxy.port
+            if (host.isBlank() || port !in 1..65535) null else "http://$host:$port"
+        }.getOrNull() ?: return
+        environment["http_proxy"] = proxyUrl
+        environment["https_proxy"] = proxyUrl
+        environment["HTTP_PROXY"] = proxyUrl
+        environment["HTTPS_PROXY"] = proxyUrl
+        environment["ALL_PROXY"] = proxyUrl
     }
 
     internal fun translatePackageCompatibleCommand(

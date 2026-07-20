@@ -883,7 +883,7 @@ class AgentLoop(
     }
 
     private companion object {
-        const val MAX_TOOL_ITERATIONS_PER_TURN = 64
+        const val MAX_TOOL_ITERATIONS_PER_TURN = 999
         const val MAX_PROVIDER_RETRIES = 3
         const val MAX_TOOL_RESULT_CONTEXT_CHARS = 32 * 1024
         const val TOOL_RESULT_CONTEXT_HEAD_CHARS = 12 * 1024

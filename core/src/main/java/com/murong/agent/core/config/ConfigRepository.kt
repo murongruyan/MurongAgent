@@ -18,6 +18,13 @@ import kotlinx.serialization.encodeToString
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "murong_settings")
 
+/** Sensitive credentials and account identity are deliberately absent from this portable state. */
+@Serializable
+data class ConfigBackupSnapshot(
+    val providerConfig: ProviderConfig = ProviderConfig(),
+    val inputHistory: List<String> = emptyList()
+)
+
 /**
  * 配置持久化——通过 DataStore 存储 ProviderConfig
  */
@@ -70,6 +77,51 @@ class ConfigRepository(private val context: Context) {
             prefs[CONFIG_KEY] = json.encodeToString(sanitizedConfig)
             prefs[CONFIG_REVISION_KEY] = System.currentTimeMillis()
         }
+    }
+
+    /** Removes only relay secrets created by a failed cross-device credential import. */
+    fun clearRelayApiKeysForCredentialRollback(entries: Map<String, Set<String>>) {
+        entries.forEach { (providerId, relayIds) ->
+            if (providerId !in setOf("deepseek", "openai-compatible", "claude")) return@forEach
+            relayIds.forEach { relayId ->
+                if (relayId.isNotBlank() && relayId.length <= 100 && relayId.none(Char::isISOControl)) {
+                    secureSecretStore.write(relaySecretKey(providerId, relayId), "")
+                }
+            }
+        }
+    }
+
+    suspend fun exportBackupSnapshot(): ConfigBackupSnapshot {
+        return ConfigBackupSnapshot(
+            providerConfig = getConfig().withBackupSensitiveDataCleared(),
+            inputHistory = getInputHistory()
+        )
+    }
+
+    fun validateBackupSnapshot(snapshot: ConfigBackupSnapshot) {
+        require(!snapshot.providerConfig.hasPlaintextSensitiveSecrets()) {
+            "备份设置包含不允许导入的敏感凭据"
+        }
+        require(snapshot.inputHistory.size <= 50) { "输入历史条目超过上限" }
+        require(snapshot.inputHistory.all { it.length <= 100_000 }) { "输入历史单条内容过大" }
+    }
+
+    /** Restores portable settings while retaining credentials already present on this device. */
+    suspend fun restoreBackupSnapshot(snapshot: ConfigBackupSnapshot) {
+        validateBackupSnapshot(snapshot)
+        val current = getConfig()
+        val restored = snapshot.providerConfig
+            .withBackupSensitiveDataCleared()
+            .withLegacyRelayConfigurations()
+            .withCurrentAgentBehaviorDefaults()
+            .withSensitiveSecrets(readSensitiveSecrets())
+            .copy(
+                githubViewerLogin = current.githubViewerLogin,
+                githubViewerName = current.githubViewerName,
+                githubViewerAvatarUrl = current.githubViewerAvatarUrl
+            )
+        saveConfig(restored)
+        saveInputHistory(snapshot.inputHistory)
     }
 
     suspend fun updateApiKey(providerId: String, apiKey: String) {
@@ -307,6 +359,14 @@ class ConfigRepository(private val context: Context) {
             githubClientSecret = "",
             githubBackendSessionToken = "",
             webSearchBingApiKey = ""
+        )
+    }
+
+    private fun ProviderConfig.withBackupSensitiveDataCleared(): ProviderConfig {
+        return withSensitiveSecretsCleared().copy(
+            githubViewerLogin = "",
+            githubViewerName = "",
+            githubViewerAvatarUrl = ""
         )
     }
 

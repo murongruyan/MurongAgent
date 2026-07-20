@@ -24,7 +24,7 @@ internal fun buildWorkflowPlanHostSurfacePresentation(
         )
     }
     return WorkflowPlanHostSurfacePresentation(
-        kind = WorkflowPlanHostSurfaceKind.CHAT_INLINE,
+        kind = if (isChatScreenVisible) WorkflowPlanHostSurfaceKind.CHAT_INLINE else WorkflowPlanHostSurfaceKind.DIALOG,
         workflowPlanPresentation = workflowPlanPresentation,
         interactionState = interactionState
     )
@@ -54,7 +54,7 @@ internal fun buildClarificationHostSurfacePresentation(
         )
     }
     return ClarificationHostSurfacePresentation(
-        kind = ClarificationHostSurfaceKind.CHAT_INLINE,
+        kind = if (isChatScreenVisible) ClarificationHostSurfaceKind.CHAT_INLINE else ClarificationHostSurfaceKind.DIALOG,
         clarificationPresentation = clarificationPresentation,
         interactionState = interactionState
     )

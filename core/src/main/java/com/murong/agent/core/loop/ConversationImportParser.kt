@@ -8,7 +8,18 @@ import kotlinx.serialization.json.jsonPrimitive
 
 data class ImportedConversation(
     val messages: List<ChatMessageUi>,
-    val titleHint: String? = null
+    val titleHint: String? = null,
+    val sessionGoal: String? = null,
+    val usageSummary: UsageSummarySnapshot = UsageSummarySnapshot(),
+    val compression: ImportedConversationCompression? = null
+)
+
+data class ImportedConversationCompression(
+    val version: Int,
+    val summary: String,
+    val sourceMessageCount: Int,
+    val createdAt: Long,
+    val active: Boolean
 )
 
 object ConversationImportParser {
@@ -18,26 +29,34 @@ object ConversationImportParser {
         val trimmed = rawText.trim()
         require(trimmed.isNotBlank()) { "导入内容为空" }
 
-        val messages = when {
-            trimmed.startsWith("[") || trimmed.startsWith("{") -> {
-                parseJsonMessages(trimmed)
+        val imported = when {
+            trimmed.startsWith("{") && PortableConversationCodec.looksLikePortableDocument(trimmed) -> {
+                PortableConversationCodec.decodeImportedConversation(trimmed)
             }
 
-            else -> parseTaggedTextMessages(trimmed)
+            trimmed.startsWith("[") || trimmed.startsWith("{") -> {
+                ImportedConversation(messages = parseJsonMessages(trimmed))
+            }
+
+            else -> ImportedConversation(messages = parseTaggedTextMessages(trimmed))
         }
 
-        require(messages.isNotEmpty()) { "未识别到可导入的对话消息" }
+        require(imported.messages.isNotEmpty() || !imported.sessionGoal.isNullOrBlank()) {
+            "未识别到可导入的对话消息"
+        }
 
-        val normalizedMessages = messages.mapIndexed { index, message ->
+        val now = System.currentTimeMillis()
+        val normalizedMessages = imported.messages.mapIndexed { index, message ->
             message.copy(
                 id = (index + 1).toLong(),
-                timestamp = System.currentTimeMillis() + index
+                timestamp = message.timestamp.takeIf { it > 0 } ?: now + index
             )
         }
 
-        return ImportedConversation(
+        return imported.copy(
             messages = normalizedMessages,
-            titleHint = sourceName?.substringBeforeLast(".")?.ifBlank { null }
+            titleHint = imported.titleHint
+                ?: sourceName?.substringBeforeLast(".")?.ifBlank { null }
         )
     }
 

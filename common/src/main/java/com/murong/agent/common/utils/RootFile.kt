@@ -34,6 +34,23 @@ object RootFile {
         val truncated: Boolean = false
     )
 
+    /** A bounded, read-only archive catalogue.  It never extracts archive contents. */
+    data class ArchiveListResult(
+        val entries: List<String>,
+        val truncated: Boolean = false,
+        val available: Boolean = false
+    )
+
+    /** A read-only file-system probe for presenting file context safely to the agent. */
+    data class Metadata(
+        val isFile: Boolean,
+        val isDirectory: Boolean,
+        val byteSize: Long? = null,
+        val modifiedAtMillis: Long? = null,
+        /** A link is reported but not followed by directory-manifest callers. */
+        val isSymbolicLink: Boolean = false
+    )
+
     fun fileExists(path: String): Boolean {
         val result = KeepShellPublic.doCmdSync("[ -f \"$path\" ] && echo 1 || echo 0")
         return result.trim() == "1"
@@ -47,6 +64,53 @@ object RootFile {
     fun exists(path: String): Boolean {
         val result = KeepShellPublic.doCmdSync("[ -e \"$path\" ] && echo 1 || echo 0")
         return result.trim() == "1"
+    }
+
+    /**
+     * Inspects a path without reading its content or changing it.  New callers should prefer this
+     * over treating every selected path as a text file: archives and images need only metadata.
+     */
+    fun inspect(path: String): Metadata? {
+        val quotedPath = quoteShellArgument(path)
+        val marker = "__MURONG_FILE_META__"
+        val raw = KeepShellPublic.doCmdSync(
+            """
+            __murong_link=0
+            [ -L $quotedPath ] && __murong_link=1
+            if [ -f $quotedPath ]; then
+                __murong_size=$(stat -c%s $quotedPath 2>/dev/null || wc -c < $quotedPath 2>/dev/null)
+                __murong_mtime=$(stat -c%Y $quotedPath 2>/dev/null || printf '')
+                printf '%sfile|%s|%s|%s' '$marker' "${'$'}__murong_size" "${'$'}__murong_mtime" "${'$'}__murong_link"
+            elif [ -d $quotedPath ]; then
+                __murong_mtime=$(stat -c%Y $quotedPath 2>/dev/null || printf '')
+                printf '%sdir||%s|%s' '$marker' "${'$'}__murong_mtime" "${'$'}__murong_link"
+            else
+                printf '%smissing|||' '$marker'
+            fi
+            """.trimIndent()
+        )
+        val index = raw.lastIndexOf(marker)
+        if (index < 0) return null
+        val fields = raw.substring(index + marker.length).trim().split('|')
+        if (fields.size != 4) return null
+        val modifiedAtMillis = fields[2].trim().toLongOrNull()?.times(1_000L)
+        val isSymbolicLink = fields[3].trim() == "1"
+        return when (fields[0].trim()) {
+            "file" -> Metadata(
+                isFile = true,
+                isDirectory = false,
+                byteSize = fields[1].trim().toLongOrNull(),
+                modifiedAtMillis = modifiedAtMillis,
+                isSymbolicLink = isSymbolicLink
+            )
+            "dir" -> Metadata(
+                isFile = false,
+                isDirectory = true,
+                modifiedAtMillis = modifiedAtMillis,
+                isSymbolicLink = isSymbolicLink
+            )
+            else -> null
+        }
     }
 
     fun readFile(path: String, maxBytes: Int = 100_000): String {
@@ -188,8 +252,44 @@ object RootFile {
         return ListResult(entries = entries, truncated = truncated)
     }
 
+    /**
+     * Uses `unzip -Z1` only when the current shell provides it.  ZIP/APK/JAR central-directory
+     * listing is metadata inspection, not extraction or script execution.  Other archive formats
+     * remain safely metadata-only instead of being guessed as text.
+     */
+    fun listArchiveEntries(path: String, limit: Int = DEFAULT_ARCHIVE_ENTRY_LIMIT): ArchiveListResult {
+        val safeLimit = limit.coerceIn(1, MAX_ARCHIVE_ENTRY_LIMIT)
+        val quotedPath = quoteShellArgument(path)
+        val unavailableMarker = "__MURONG_ARCHIVE_LIST_UNAVAILABLE__"
+        val truncationMarker = "__MURONG_ARCHIVE_LIST_TRUNCATED__"
+        val raw = KeepShellPublic.doCmdSync(
+            """
+            if command -v unzip >/dev/null 2>&1; then
+                unzip -Z1 $quotedPath 2>/dev/null | sed -n '1,${safeLimit}p;${safeLimit + 1}{s/.*/$truncationMarker/;p;q;}'
+            else
+                printf '%s' '$unavailableMarker'
+            fi
+            """.trimIndent()
+        )
+        if (raw.contains(unavailableMarker) || raw.startsWith("error:")) {
+            return ArchiveListResult(entries = emptyList(), available = false)
+        }
+        val lines = raw.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.toList()
+        val truncated = lines.lastOrNull() == truncationMarker
+        val entries = if (truncated) lines.dropLast(1) else lines
+        return ArchiveListResult(
+            entries = entries,
+            truncated = truncated,
+            available = true
+        )
+    }
+
     private fun escapeForSingleQuotedShell(content: String): String {
         return content.replace("'", "'\"'\"'")
+    }
+
+    private fun quoteShellArgument(value: String): String {
+        return "'${escapeForSingleQuotedShell(value)}'"
     }
 
     private fun parentPath(path: String): String? {
@@ -224,4 +324,6 @@ object RootFile {
     private const val MAX_READ_LINE_LIMIT = 2000
     private const val DEFAULT_LIST_LIMIT = 200
     private const val MAX_LIST_LIMIT = 1000
+    private const val DEFAULT_ARCHIVE_ENTRY_LIMIT = 24
+    private const val MAX_ARCHIVE_ENTRY_LIMIT = 80
 }

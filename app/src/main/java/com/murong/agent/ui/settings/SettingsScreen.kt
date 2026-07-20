@@ -50,6 +50,9 @@ import com.murong.agent.core.mcp.McpConfigSource
 import com.murong.agent.core.mcp.McpServerStatus
 import com.murong.agent.core.provider.ModelProvider
 import com.murong.agent.core.provider.ProviderRegistry
+import com.murong.agent.core.voice.VoiceSettings
+import com.murong.agent.backup.MurongBackupSettingsSnapshot
+import com.murong.agent.voice.OfflineVoiceModelUiState
 import com.murong.agent.ui.MemoryDraftImportCard
 import com.murong.agent.ui.McpDraftImportCard
 import com.murong.agent.ui.MurongDialog
@@ -65,6 +68,8 @@ import com.murong.agent.ui.normalizeSkillAllowedTools
 import com.murong.agent.ui.sanitizeSkillAllowedTools
 import com.murong.agent.ui.SkillAllowedToolsBudgetView
 import com.murong.agent.ui.SkillDraftImportCard
+import com.murong.agent.ui.voice.OfflineVoiceModelSetting
+import com.murong.agent.ui.voice.VoiceRecognitionProviderSetting
 import java.util.UUID
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -105,6 +110,17 @@ fun SettingsScreen(
     onRemoveMcpServer: (String) -> Unit = {},
     onConnectMcpServers: () -> Unit = {},
     onRefreshMcpStatus: () -> Unit = {},
+    voiceSettings: VoiceSettings = VoiceSettings(),
+    onUpdateVoiceSettings: ((VoiceSettings) -> VoiceSettings) -> Unit = {},
+    offlineVoiceModelState: OfflineVoiceModelUiState = OfflineVoiceModelUiState(),
+    onInstallOfflineVoiceModel: () -> Unit = {},
+    onDeleteOfflineVoiceModel: () -> Unit = {},
+    backupRestoreState: BackupRestoreUiState = BackupRestoreUiState(),
+    suggestedBackupFileName: String = "murong_backup.zip",
+    onRefreshBackupStatus: () -> Unit = {},
+    onUpdateBackupSettings: (MurongBackupSettingsSnapshot) -> Unit = {},
+    onExportManualBackup: (android.net.Uri) -> Unit = {},
+    onRestoreBackup: (android.net.Uri) -> Unit = {},
     onRefreshGitHubAuthStatus: () -> Unit = {},
     onRefreshDurableGlobalMemories: () -> Unit = {},
     onUpdateDurableGlobalMemory: (GlobalMemory) -> Unit = {},
@@ -141,10 +157,16 @@ fun SettingsScreen(
     var lastOpenedCodexAuthAttempt by rememberSaveable { mutableStateOf<String?>(null) }
     var providerSectionExpanded by rememberSaveable { mutableStateOf(false) }
     var chatAndSearchExpanded by rememberSaveable { mutableStateOf(false) }
+    var voiceSettingsExpanded by rememberSaveable { mutableStateOf(false) }
     var systemPromptExpanded by rememberSaveable { mutableStateOf(false) }
     var rulesExpanded by rememberSaveable { mutableStateOf(false) }
     var memoriesExpanded by rememberSaveable { mutableStateOf(false) }
     var skillsExpanded by rememberSaveable { mutableStateOf(false) }
+    var backupRestoreExpanded by rememberSaveable { mutableStateOf(false) }
+    var remoteWebExpanded by rememberSaveable { mutableStateOf(false) }
+    var gitHubExpanded by rememberSaveable { mutableStateOf(false) }
+    var runtimeBackendExpanded by rememberSaveable { mutableStateOf(false) }
+    var mcpExpanded by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(gitHubAuthState.authorizationUrl) {
         val uri = gitHubAuthState.authorizationUrl?.trim().orEmpty()
@@ -320,23 +342,32 @@ fun SettingsScreen(
                 }
             }
 
-            Text(
-                text = "GitHub 联动",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onBackground
+            BackupRestoreSettingsSection(
+                state = backupRestoreState,
+                suggestedFileName = suggestedBackupFileName,
+                onRefresh = onRefreshBackupStatus,
+                onSettingsChanged = onUpdateBackupSettings,
+                onExport = onExportManualBackup,
+                onRestore = onRestoreBackup,
+                expanded = backupRestoreExpanded,
+                onExpandedChange = { backupRestoreExpanded = it }
             )
 
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface,
-            modifier = Modifier.fillMaxWidth()
+            LanWebClientSettingsSection(
+                expanded = remoteWebExpanded,
+                onExpandedChange = { remoteWebExpanded = it }
+            )
+
+        SettingsExpandableSectionCard(
+            title = "GitHub 联动",
+            subtitle = when {
+                gitHubAuthState.isLoading -> "GitHub 登录处理中…"
+                config.isGitHubSignedIn() -> gitHubAuthState.viewerLogin?.let { "已连接 @$it" } ?: "已连接 GitHub"
+                else -> "未连接；需要仓库或工作流联动时再展开"
+            },
+            expanded = gitHubExpanded,
+            onExpandedChange = { gitHubExpanded = it }
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
                 Text(
                     text = "这里的 GitHub 登录会给项目页的 push / pull、workflow 列表和手动触发使用。现在不再需要手动填写 OAuth 参数，直接点按钮就会跳浏览器登录。",
                     style = MaterialTheme.typography.bodySmall,
@@ -446,7 +477,6 @@ fun SettingsScreen(
                     )
                 }
             }
-        }
 
         val activeSessions = sessions.filter { it.providerId == config.activeProviderId }
         val totalPromptTokens = activeSessions.sumOf { it.usageSummary.promptTokens }
@@ -526,8 +556,29 @@ fun SettingsScreen(
             onRefreshStatus = onRefreshCodexChatGptStatus,
             onStartLogin = onStartCodexChatGptLogin,
             onCancelLogin = onCancelCodexChatGptLogin,
-            onLogout = onLogoutCodexChatGpt
+            onLogout = onLogoutCodexChatGpt,
+            expanded = runtimeBackendExpanded,
+            onExpandedChange = { runtimeBackendExpanded = it }
         )
+
+        SettingsExpandableSectionCard(
+            title = "语音",
+            subtitle = if (voiceSettings.inputEnabled) {
+                "语音输入已启用 · ${if (voiceSettings.autoReadFinalAnswers) "自动朗读已启用" else "仅手动朗读"}"
+            } else {
+                "语音输入已关闭；仍可随时开启"
+            },
+            expanded = voiceSettingsExpanded,
+            onExpandedChange = { voiceSettingsExpanded = it }
+        ) {
+            VoiceSettingsSection(
+                settings = voiceSettings,
+                onUpdateSettings = onUpdateVoiceSettings,
+                offlineModelState = offlineVoiceModelState,
+                onInstallOfflineModel = onInstallOfflineVoiceModel,
+                onDeleteOfflineModel = onDeleteOfflineVoiceModel,
+            )
+        }
 
             SettingsExpandableSectionCard(
                 title = "AI 连接配置",
@@ -661,6 +712,19 @@ fun SettingsScreen(
             )
         }
 
+        McpSettingsSection(
+            mcpServers = mcpServers,
+            mcpStatuses = mcpStatuses,
+            mcpConnectError = mcpConnectError,
+            onAddMcpServer = onAddMcpServer,
+            onImportMcpDrafts = onImportMcpDrafts,
+            onRemoveMcpServer = onRemoveMcpServer,
+            onConnectMcpServers = onConnectMcpServers,
+            onRefreshMcpStatus = onRefreshMcpStatus,
+            expanded = mcpExpanded,
+            onExpandedChange = { mcpExpanded = it }
+        )
+
         // 温度和最大 Token
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -698,52 +762,114 @@ fun SettingsScreen(
             )
         }
 
-        // ═══════════════════════════════════════
-        // 关于
-        // ═══════════════════════════════════════
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+        Spacer(modifier = Modifier.height(32.dp))
+        }
+    }
+}
 
+@Composable
+private fun VoiceSettingsSection(
+    settings: VoiceSettings,
+    onUpdateSettings: ((VoiceSettings) -> VoiceSettings) -> Unit,
+    offlineModelState: OfflineVoiceModelUiState,
+    onInstallOfflineModel: () -> Unit,
+    onDeleteOfflineModel: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
-            text = "关于",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onBackground
+            "按住聊天输入框旁的麦克风即可转写；转写只回填文本，不会自动发送。可使用系统服务，也可主动下载离线模型；不保存原始音频。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface,
-            modifier = Modifier.fillMaxWidth()
+        SettingsVoiceToggleRow(
+            title = "启用语音输入",
+            subtitle = "需要系统麦克风权限",
+            checked = settings.inputEnabled,
+            onCheckedChange = { enabled -> onUpdateSettings { it.copy(inputEnabled = enabled) } }
+        )
+        SettingsVoiceToggleRow(
+            title = "自动朗读最终回复",
+            subtitle = "只朗读完成后的助手自然语言；代码块、工具与思考内容会被过滤",
+            checked = settings.autoReadFinalAnswers,
+            onCheckedChange = { enabled -> onUpdateSettings { it.copy(autoReadFinalAnswers = enabled) } }
+        )
+        VoiceRecognitionProviderSetting(
+            settings = settings,
+            onUpdateSettings = onUpdateSettings,
+        )
+        OfflineVoiceModelSetting(
+            state = offlineModelState,
+            onInstall = onInstallOfflineModel,
+            onDelete = onDeleteOfflineModel,
+        )
+        Text("语言", style = MaterialTheme.typography.labelLarge)
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                InfoRow("版本", "0.9.0-preview")
-                Spacer(modifier = Modifier.height(4.dp))
-                InfoRow("引擎", "Murong Agent Core")
-                Spacer(modifier = Modifier.height(4.dp))
-                InfoRow("支持的 Provider", "${providers.size} 个")
-                Spacer(modifier = Modifier.height(4.dp))
-                InfoRow("借鉴", "详见 README 中的借鉴项目说明")
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "💡 中转站用法：选「OpenAI Compatible」→ 填 Base URL → API Key → 模型名",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp,
-                    lineHeight = 18.sp
+            listOf(null to "跟随系统", "zh-CN" to "中文", "en-US" to "English").forEach { (tag, label) ->
+                FilterChip(
+                    selected = settings.languageTag == tag,
+                    onClick = { onUpdateSettings { it.copy(languageTag = tag) } },
+                    label = { Text(label) }
                 )
             }
         }
-
-        McpSettingsSection(
-            mcpServers = mcpServers,
-            mcpStatuses = mcpStatuses,
-            mcpConnectError = mcpConnectError,
-            onAddMcpServer = onAddMcpServer,
-            onImportMcpDrafts = onImportMcpDrafts,
-            onRemoveMcpServer = onRemoveMcpServer,
-            onConnectMcpServers = onConnectMcpServers,
-            onRefreshMcpStatus = onRefreshMcpStatus
+        SettingsVoiceFloatOptions(
+            title = "朗读速度",
+            value = settings.speechRate,
+            values = listOf(0.8f, 1f, 1.2f, 1.4f),
+            onSelect = { rate -> onUpdateSettings { it.copy(speechRate = rate) } }
         )
+        SettingsVoiceFloatOptions(
+            title = "朗读音调",
+            value = settings.pitch,
+            values = listOf(0.8f, 1f, 1.2f),
+            onSelect = { pitch -> onUpdateSettings { it.copy(pitch = pitch) } }
+        )
+    }
+}
 
-        Spacer(modifier = Modifier.height(32.dp))
+@Composable
+private fun SettingsVoiceToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
+private fun SettingsVoiceFloatOptions(
+    title: String,
+    value: Float,
+    values: List<Float>,
+    onSelect: (Float) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(title, style = MaterialTheme.typography.labelLarge)
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            values.forEach { option ->
+                FilterChip(
+                    selected = value == option,
+                    onClick = { onSelect(option) },
+                    label = { Text(if (option == 1f) "默认" else "${option}×") }
+                )
+            }
         }
     }
 }
@@ -756,22 +882,26 @@ private fun CodexChatGptBackendCard(
     onRefreshStatus: () -> Unit,
     onStartLogin: () -> Unit,
     onCancelLogin: () -> Unit,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     var showCancelConfirmation by rememberSaveable { mutableStateOf(false) }
     var copiedLoginId by remember { mutableStateOf<String?>(null) }
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface,
-        modifier = Modifier.fillMaxWidth()
+    SettingsExpandableSectionCard(
+        title = "运行后端",
+        subtitle = when {
+            config.activeAgentBackend == AgentBackendKind.CODEX_CHATGPT && state.isLoggedIn -> {
+                "ChatGPT / Codex · 已登录${state.accountEmail?.let { " @$it" }.orEmpty()}"
+            }
+            config.activeAgentBackend == AgentBackendKind.CODEX_CHATGPT -> "ChatGPT / Codex · 未登录"
+            else -> "API Key / 中转"
+        },
+        expanded = expanded,
+        onExpandedChange = onExpandedChange
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Text("运行后端", style = MaterialTheme.typography.titleMedium)
             Text(
                 "ChatGPT / Codex 使用官方设备码登录和 Plus / Pro 的 Codex 权益；不会读取或使用 API Key。",
                 style = MaterialTheme.typography.bodySmall,
@@ -895,7 +1025,6 @@ private fun CodexChatGptBackendCard(
             state.error?.takeIf { it.isNotBlank() }?.let { error ->
                 Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
-        }
     }
     if (showCancelConfirmation) {
         AlertDialog(
@@ -922,7 +1051,7 @@ private fun CodexChatGptBackendCard(
 }
 
 @Composable
-private fun SettingsExpandableSectionCard(
+internal fun SettingsExpandableSectionCard(
     title: String,
     subtitle: String,
     expanded: Boolean,
@@ -1085,7 +1214,9 @@ private fun McpSettingsSection(
     onImportMcpDrafts: (List<McpServerConfig>) -> Unit,
     onRemoveMcpServer: (String) -> Unit,
     onConnectMcpServers: () -> Unit,
-    onRefreshMcpStatus: () -> Unit
+    onRefreshMcpStatus: () -> Unit,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit
 ) {
     var showAddMcp by remember { mutableStateOf(false) }
     var editingMcp by remember { mutableStateOf<McpServerConfig?>(null) }
@@ -1093,9 +1224,15 @@ private fun McpSettingsSection(
         (mcpServers.map { it.name } + mcpStatuses.map { it.name }).distinct().sorted()
     }
 
-    MurongSectionCard(
+    SettingsExpandableSectionCard(
         title = "MCP 集成",
-        modifier = Modifier.fillMaxWidth()
+        subtitle = when {
+            mcpConnectError != null -> "连接异常 · 已保存 ${mcpServers.size} 个配置"
+            allMcpNames.isEmpty() -> "暂无服务器；需要外部工具时再展开"
+            else -> "已保存 ${mcpServers.size} 个 · 当前发现 ${mcpStatuses.size} 个"
+        },
+        expanded = expanded,
+        onExpandedChange = onExpandedChange
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -3614,7 +3751,7 @@ private fun AddMcpServerForm(
                 OutlinedTextField(
                     value = headersText,
                     onValueChange = { headersText = it },
-                    label = { Text("请求头（每行 KEY=value，可选）") },
+                    label = { Text("请求头（每行 KEY=value，敏感值加密保存）") },
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = 88.dp),
@@ -3624,6 +3761,11 @@ private fun AddMcpServerForm(
                     placeholder = {
                         Text("Authorization=Bearer xxx\nX-Client=murong-agent", fontSize = 12.sp)
                     }
+                )
+                Text(
+                    "Authorization、Token、API-Key 等请求头在保存时会转入设备 Keystore；状态诊断只显示引用数量，不显示值。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
@@ -3762,23 +3904,4 @@ internal fun buildMcpStatusSummary(
     }
     val failureSummary = status?.failureRecord?.let { " · 最近 ${it.stage.name.lowercase()} 失败，但配置已保留" }.orEmpty()
     return "$toolCount 个工具 · $connectionLabel$failureSummary"
-}
-
-@Composable
-private fun InfoRow(label: String, value: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(
-            text = label,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 13.sp
-        )
-        Text(
-            text = value,
-            color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 13.sp
-        )
-    }
 }

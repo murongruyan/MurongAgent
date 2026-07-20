@@ -10,6 +10,8 @@ navigation-compose = "2.7.7"
 lifecycle = "2.6.2"
 coroutines = "1.7.3"
 okhttp = "4.12.0"
+nanohttpd = "2.3.1"
+commons-compress = "1.28.0"
 jsoup = "1.18.3"
 serialization-json = "1.7.3"
 datastore = "1.1.3"
@@ -49,6 +51,8 @@ kotlin-metadata-jvm = { group = "org.jetbrains.kotlin", name = "kotlin-metadata-
 # Networking
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 okhttp-sse = { group = "com.squareup.okhttp3", name = "okhttp-sse", version.ref = "okhttp" }
+nanohttpd = { group = "org.nanohttpd", name = "nanohttpd", version.ref = "nanohttpd" }
+commons-compress = { group = "org.apache.commons", name = "commons-compress", version.ref = "commons-compress" }
 jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
 
 # DI

@@ -47,7 +47,7 @@ fun ToolApprovalMode.toApprovalModePresentation(): ApprovalModePresentation = wh
     ToolApprovalMode.ALL_AUTO -> ApprovalModePresentation(
         posture = ApprovalPosture.YOLO,
         label = "Yolo（全自动）",
-        description = "当前姿态相当于 yolo，大多数操作默认直接通过；关键配置和交互工具仍需 fresh approval。"
+        description = "当前姿态相当于 yolo，所有已启用工具直接执行，不再弹出人工审批。"
     )
 }
 

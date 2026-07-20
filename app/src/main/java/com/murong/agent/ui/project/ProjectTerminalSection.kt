@@ -117,15 +117,22 @@ private data class ProjectTerminalTemplateUi(
 
 private data class ProjectTerminalLogEntryUi(
     val id: String = UUID.randomUUID().toString(),
+    val commandId: String = id,
     val sessionId: String = "",
     val command: String,
     val workingDirectory: String,
     val output: String,
     val exitCode: Int?,
-    val timestampMillis: Long
+    val timestampMillis: Long,
+    val startedAtMillis: Long = timestampMillis,
+    val finishedAtMillis: Long? = timestampMillis,
+    val commandStatus: ProjectTerminalCommandStatus = ProjectTerminalCommandStatus.COMPLETED,
+    val environmentModeName: String? = null,
+    val transcriptReference: String? = null
 ) {
     val statusLabel: String
         get() = when (exitCode) {
+            null if commandStatus == ProjectTerminalCommandStatus.INTERRUPTED -> "已中断"
             null -> "执行完成"
             0 -> "退出码 0"
             else -> "退出码 $exitCode"
@@ -215,12 +222,18 @@ private data class PersistedProjectTerminalSessionTab(
 @Serializable
 private data class PersistedProjectTerminalLogEntry(
     val id: String,
+    val commandId: String = "",
     val sessionId: String = "",
     val command: String,
     val workingDirectory: String,
     val output: String,
     val exitCode: Int?,
-    val timestampMillis: Long
+    val timestampMillis: Long,
+    val startedAtMillis: Long? = null,
+    val finishedAtMillis: Long? = null,
+    val commandStatusName: String = "",
+    val environmentModeName: String? = null,
+    val transcriptReference: String? = null
 )
 
 @Serializable
@@ -411,6 +424,12 @@ internal fun ProjectTerminalSection(
         sessionControllers[tab.id] = controller
     }
     val terminalController = sessionControllers.getValue(activeSessionTab.id)
+    var environmentDiagnostic by remember(activeSessionId, activeSessionTab.sessionKey) {
+        mutableStateOf<ProjectTerminalEnvironmentDiagnostic?>(null)
+    }
+    var environmentDiagnosticRunning by remember(activeSessionId, activeSessionTab.sessionKey) {
+        mutableStateOf(false)
+    }
     LaunchedEffect(
         selectedTerminalThemeName,
         terminalFontSize,
@@ -557,12 +576,20 @@ internal fun ProjectTerminalSection(
                 persistedTerminalStore.logs.take(PROJECT_TERMINAL_LOG_LIMIT_TOTAL).map {
                     ProjectTerminalLogEntryUi(
                         id = it.id,
+                        commandId = it.commandId.ifBlank { it.id },
                         sessionId = it.sessionId.ifBlank { restoredOwnerSessionId },
                         command = it.command,
                         workingDirectory = it.workingDirectory,
                         output = it.output,
                         exitCode = it.exitCode,
-                        timestampMillis = it.timestampMillis
+                        timestampMillis = it.timestampMillis,
+                        startedAtMillis = it.startedAtMillis ?: it.timestampMillis,
+                        finishedAtMillis = it.finishedAtMillis ?: it.timestampMillis,
+                        commandStatus = ProjectTerminalCommandStatus.entries.firstOrNull {
+                            status -> status.name == it.commandStatusName
+                        } ?: ProjectTerminalCommandStatus.COMPLETED,
+                        environmentModeName = it.environmentModeName,
+                        transcriptReference = it.transcriptReference
                     )
                 }
             )
@@ -785,6 +812,30 @@ internal fun ProjectTerminalSection(
         )
         updateActiveSession { tab -> tab.copy(sessionKey = tab.sessionKey + 1) }
     }
+    fun replaceActiveSessionEnvironment(next: ProjectTerminalEnvironmentMode) {
+        val currentTab = activeSessionTab
+        ProjectTerminalSessionRegistry.release(
+            ownerKey = terminalStateKey,
+            sessionId = currentTab.id,
+            sessionGeneration = currentTab.sessionKey
+        )
+        updateActiveSession { tab ->
+            tab.copy(
+                environmentModeName = next.name,
+                sessionKey = tab.sessionKey + 1
+            )
+        }
+    }
+    fun enterRootSession() {
+        if (activeEnvironmentMode == ProjectTerminalEnvironmentMode.ROOT) return
+        replaceActiveSessionEnvironment(ProjectTerminalEnvironmentMode.ROOT)
+        terminalStatusMessage = "正在以 Root 启动扩展包 bash；输入 exit 将返回普通扩展包环境"
+    }
+    fun leaveRootSession(message: String = "已退出 Root shell，已返回扩展包环境") {
+        if (activeEnvironmentMode != ProjectTerminalEnvironmentMode.ROOT) return
+        replaceActiveSessionEnvironment(ProjectTerminalEnvironmentMode.TOOLCHAIN)
+        terminalStatusMessage = message
+    }
     fun restartAllSessions() {
         val currentTabs = sessionTabs.toList()
         currentTabs.forEach { tab ->
@@ -803,26 +854,33 @@ internal fun ProjectTerminalSection(
     val currentEnvironmentLabel = ToolchainManager.describeActiveEnvironment(
         context = context,
         preferSystem = activeEnvironmentMode == ProjectTerminalEnvironmentMode.SYSTEM
-    )
-    val currentShellLabel = if (activeEnvironmentMode == ProjectTerminalEnvironmentMode.SYSTEM) {
-        if (isSystemBashEnabled(context)) {
+    ).let { label ->
+        if (activeEnvironmentMode == ProjectTerminalEnvironmentMode.ROOT) "Root $label" else label
+    }
+    val currentShellLabel = when (activeEnvironmentMode) {
+        ProjectTerminalEnvironmentMode.TOOLCHAIN,
+        ProjectTerminalEnvironmentMode.ROOT -> "bash"
+        ProjectTerminalEnvironmentMode.SYSTEM -> if (isSystemBashEnabled(context)) {
             "/system/bin/bash"
         } else {
             "/system/bin/sh（系统 bash 已回退）"
         }
-    } else {
-        "bash"
     }
     val currentEnvironmentSummary = when {
         hasToolchainEnvironment -> "$currentEnvironmentLabel · $currentShellLabel"
         else -> "$currentEnvironmentLabel · $currentShellLabel（未检测到扩展包）"
     }
     val environmentSwitchLabel = when {
+        activeEnvironmentMode == ProjectTerminalEnvironmentMode.ROOT -> "退出 Root shell"
         !hasToolchainEnvironment -> "切换环境"
         activeEnvironmentMode == ProjectTerminalEnvironmentMode.SYSTEM -> "切到$preferredEnvironmentLabel"
         else -> "切到系统环境"
     }
     fun toggleTerminalEnvironment() {
+        if (activeEnvironmentMode == ProjectTerminalEnvironmentMode.ROOT) {
+            leaveRootSession()
+            return
+        }
         if (!hasToolchainEnvironment) {
             terminalStatusMessage = "当前还没检测到扩展包环境，所以只能用系统环境。先安装终端扩展包后，这里就能切换。"
             return
@@ -830,6 +888,7 @@ internal fun ProjectTerminalSection(
         val nextEnvironmentModeName = when (activeEnvironmentMode) {
             ProjectTerminalEnvironmentMode.TOOLCHAIN -> ProjectTerminalEnvironmentMode.SYSTEM.name
             ProjectTerminalEnvironmentMode.SYSTEM -> ProjectTerminalEnvironmentMode.TOOLCHAIN.name
+            ProjectTerminalEnvironmentMode.ROOT -> ProjectTerminalEnvironmentMode.TOOLCHAIN.name
         }
         defaultTerminalEnvironmentModeName = nextEnvironmentModeName
         updateActiveSession { tab ->
@@ -899,6 +958,35 @@ internal fun ProjectTerminalSection(
             ClipData.newPlainText("MurongTerminalLogs", buildProjectTerminalLogsText(filteredLogs))
         )
         terminalStatusMessage = "已复制当前会话日志"
+    }
+    fun runEnvironmentDiagnostic() {
+        if (environmentDiagnosticRunning) return
+        environmentDiagnosticRunning = true
+        terminalStatusMessage = "正在只读检查当前终端环境…"
+        scope.launch {
+            val diagnostic = runCatching {
+                terminalController.runEnvironmentDiagnostic()
+            }.getOrElse {
+                projectTerminalEnvironmentDiagnosticUnavailable(
+                    environmentMode = activeEnvironmentMode,
+                    message = it.message ?: "检查命令无法执行"
+                )
+            }
+            environmentDiagnostic = diagnostic
+            environmentDiagnosticRunning = false
+            terminalStatusMessage = diagnostic.headline
+        }
+    }
+    fun copyEnvironmentDiagnosticToClipboard() {
+        val diagnostic = environmentDiagnostic ?: return
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+        clipboard.setPrimaryClip(
+            ClipData.newPlainText(
+                "MurongTerminalEnvironmentDiagnostic",
+                diagnostic.toClipboardText()
+            )
+        )
+        terminalStatusMessage = "已复制终端环境诊断"
     }
     fun copySingleLog(entry: ProjectTerminalLogEntryUi) {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
@@ -1016,17 +1104,48 @@ internal fun ProjectTerminalSection(
             }
         }
         terminalController.onSessionExit = { exitCode ->
-            val restartMessage = when {
-                exitCode < 0 -> "终端进程被中断，已自动重建（signal ${-exitCode}）"
-                exitCode > 0 -> "终端进程异常退出，已自动重建（code $exitCode）"
-                else -> "终端会话已退出，已自动重建"
+            if (activeEnvironmentMode == ProjectTerminalEnvironmentMode.ROOT) {
+                leaveRootSession(
+                    message = if (exitCode == 0) {
+                        "已退出 Root shell，已返回扩展包环境"
+                    } else {
+                        "Root shell 已结束（code $exitCode），已返回扩展包环境"
+                    }
+                )
+            } else {
+                val restartMessage = when {
+                    exitCode < 0 -> "终端进程被中断，已自动重建（signal ${-exitCode}）"
+                    exitCode > 0 -> "终端进程异常退出，已自动重建（code $exitCode）"
+                    else -> "终端会话已退出，已自动重建"
+                }
+                restartActiveSession()
+                terminalStatusMessage = restartMessage
             }
-            restartActiveSession()
-            terminalStatusMessage = restartMessage
+        }
+        terminalController.onRootRequested = { enterRootSession() }
+        terminalController.onCommandCompleted = { record, outputPreview ->
+            addRecentCommand(record.command)
+            addSessionLog(
+                ProjectTerminalLogEntryUi(
+                    commandId = record.commandId,
+                    command = record.command,
+                    workingDirectory = record.workingDirectory,
+                    output = outputPreview.ifBlank { "（未捕获可显示输出；可导出完整 transcript 查看。）" },
+                    exitCode = record.exitCode,
+                    timestampMillis = record.timestampMillis,
+                    startedAtMillis = record.startedAtMillis,
+                    finishedAtMillis = record.finishedAtMillis,
+                    commandStatus = record.status,
+                    environmentModeName = record.environmentMode?.name,
+                    transcriptReference = record.transcriptReference
+                )
+            )
         }
         onDispose {
             terminalController.onFontSizeChanged = null
             terminalController.onSessionExit = null
+            terminalController.onRootRequested = null
+            terminalController.onCommandCompleted = null
         }
     }
 
@@ -1081,6 +1200,10 @@ internal fun ProjectTerminalSection(
             environmentSwitchLabel = environmentSwitchLabel,
             canSwitchEnvironment = true,
             onToggleEnvironment = { toggleTerminalEnvironment() },
+            environmentDiagnostic = environmentDiagnostic,
+            environmentDiagnosticRunning = environmentDiagnosticRunning,
+            onRunEnvironmentDiagnostic = { runEnvironmentDiagnostic() },
+            onCopyEnvironmentDiagnostic = { copyEnvironmentDiagnosticToClipboard() },
             controller = terminalController,
             terminalBodyHeight = terminalHeight,
             showAccessoryKeys = !imeVisible,
@@ -1133,12 +1256,18 @@ internal fun ProjectTerminalSection(
                 logs = logsSnapshot.take(PROJECT_TERMINAL_LOG_LIMIT_TOTAL).map {
                     PersistedProjectTerminalLogEntry(
                         id = it.id,
+                        commandId = it.commandId,
                         sessionId = it.sessionId,
                         command = it.command,
                         workingDirectory = it.workingDirectory,
                         output = it.output,
                         exitCode = it.exitCode,
-                        timestampMillis = it.timestampMillis
+                        timestampMillis = it.timestampMillis,
+                        startedAtMillis = it.startedAtMillis,
+                        finishedAtMillis = it.finishedAtMillis,
+                        commandStatusName = it.commandStatus.name,
+                        environmentModeName = it.environmentModeName,
+                        transcriptReference = it.transcriptReference
                     )
                 }
             )
@@ -1160,6 +1289,10 @@ private fun ProjectTerminalPanel(
     environmentSwitchLabel: String,
     canSwitchEnvironment: Boolean,
     onToggleEnvironment: () -> Unit,
+    environmentDiagnostic: ProjectTerminalEnvironmentDiagnostic?,
+    environmentDiagnosticRunning: Boolean,
+    onRunEnvironmentDiagnostic: () -> Unit,
+    onCopyEnvironmentDiagnostic: () -> Unit,
     controller: ProjectTerminalSessionController,
     terminalBodyHeight: Dp?,
     showAccessoryKeys: Boolean,
@@ -1243,10 +1376,22 @@ private fun ProjectTerminalPanel(
                         overflow = TextOverflow.Ellipsis
                     )
                     TerminalToolbarButton(
+                        label = if (environmentDiagnosticRunning) "自检中" else "自检",
+                        onClick = onRunEnvironmentDiagnostic,
+                        enabled = !environmentDiagnosticRunning,
+                        highlighted = environmentDiagnostic != null
+                    )
+                    TerminalToolbarButton(
                         label = environmentSwitchLabel,
                         onClick = onToggleEnvironment,
                         enabled = canSwitchEnvironment,
                         highlighted = canSwitchEnvironment
+                    )
+                }
+                environmentDiagnostic?.let { diagnostic ->
+                    TerminalEnvironmentDiagnosticCard(
+                        diagnostic = diagnostic,
+                        onCopy = onCopyEnvironmentDiagnostic
                     )
                 }
             }
@@ -1434,7 +1579,16 @@ private fun ProjectTerminalLogCard(
                     fontWeight = FontWeight.Medium
                 )
                 Text(
-                    text = "${entry.workingDirectory} · ${formatProjectTerminalTimestamp(entry.timestampMillis)}",
+                    text = buildString {
+                        append(entry.workingDirectory)
+                        append(" · ")
+                        append(formatProjectTerminalTimestamp(entry.startedAtMillis))
+                        entry.finishedAtMillis?.let { finished ->
+                            append(" → ")
+                            append(formatProjectTerminalTimestamp(finished))
+                        }
+                        entry.environmentModeName?.let { append(" · ").append(it) }
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -1443,7 +1597,8 @@ private fun ProjectTerminalLogCard(
             }
             TerminalStatusTag(
                 text = entry.statusLabel,
-                success = entry.exitCode == null || entry.exitCode == 0
+                success = entry.commandStatus == ProjectTerminalCommandStatus.COMPLETED &&
+                    (entry.exitCode == null || entry.exitCode == 0)
             )
         }
         Row(
@@ -1644,6 +1799,106 @@ private fun TerminalStatusTag(
         )
     }
 }
+
+@Composable
+private fun TerminalEnvironmentDiagnosticCard(
+    diagnostic: ProjectTerminalEnvironmentDiagnostic,
+    onCopy: () -> Unit
+) {
+    val surfaceColor = rememberMurongSurfaceColor()
+    val concern = diagnostic.checks.firstOrNull {
+        it.level != ProjectTerminalDiagnosticLevel.PASS
+    }
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 10.dp, end = 10.dp, bottom = 10.dp),
+        shape = RoundedCornerShape(14.dp),
+        color = surfaceColor.copy(alpha = 0.16f),
+        border = BorderStroke(1.dp, surfaceColor.copy(alpha = 0.74f))
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = diagnostic.headline,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = when {
+                        diagnostic.failureMessage != null || diagnostic.errorCount > 0 ->
+                            MaterialTheme.colorScheme.error
+                        diagnostic.warningCount > 0 -> MaterialTheme.colorScheme.tertiary
+                        else -> MaterialTheme.colorScheme.primary
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                TextButton(onClick = onCopy) {
+                    Text("复制诊断")
+                }
+            }
+            if (diagnostic.checks.isEmpty()) {
+                Text(
+                    text = "检查只读，不会安装、升级或修改软件包。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = rememberMurongMutedTextColor()
+                )
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    diagnostic.checks.forEach { check ->
+                        TerminalDiagnosticTag(check = check)
+                    }
+                }
+                Text(
+                    text = concern?.let { it.label + "：" + it.detail }
+                        ?: "命令、软件包依赖与共享存储均已通过检查。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = rememberMurongMutedTextColor(),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TerminalDiagnosticTag(check: ProjectTerminalEnvironmentCheck) {
+    val color = when (check.level) {
+        ProjectTerminalDiagnosticLevel.PASS -> MaterialTheme.colorScheme.primary
+        ProjectTerminalDiagnosticLevel.WARNING -> MaterialTheme.colorScheme.tertiary
+        ProjectTerminalDiagnosticLevel.ERROR -> MaterialTheme.colorScheme.error
+    }
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = color.copy(alpha = 0.14f),
+        contentColor = color
+    ) {
+        Text(
+            text = check.label + " " + check.level.tagLabel,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1
+        )
+    }
+}
+
+private val ProjectTerminalDiagnosticLevel.tagLabel: String
+    get() = when (this) {
+        ProjectTerminalDiagnosticLevel.PASS -> "✓"
+        ProjectTerminalDiagnosticLevel.WARNING -> "!"
+        ProjectTerminalDiagnosticLevel.ERROR -> "×"
+    }
 
 @Composable
 private fun TerminalToolbarButton(
@@ -1875,15 +2130,31 @@ private fun buildProjectTerminalLogText(entry: ProjectTerminalLogEntryUi): Strin
         append("命令: ")
         append(entry.command)
         append('\n')
+        append("记录 ID: ")
+        append(entry.commandId)
+        append('\n')
         append("目录: ")
         append(entry.workingDirectory)
         append('\n')
-        append("时间: ")
-        append(formatProjectTerminalTimestamp(entry.timestampMillis))
+        append("开始: ")
+        append(formatProjectTerminalTimestamp(entry.startedAtMillis))
         append('\n')
+        append("结束: ")
+        append(entry.finishedAtMillis?.let(::formatProjectTerminalTimestamp) ?: "未完成")
+        append('\n')
+        entry.environmentModeName?.let { environment ->
+            append("环境: ")
+            append(environment)
+            append('\n')
+        }
         append("状态: ")
         append(entry.statusLabel)
         append('\n')
+        entry.transcriptReference?.let { reference ->
+            append("完整转录引用: ")
+            append(reference)
+            append('\n')
+        }
         append('\n')
         append(entry.output.ifBlank { "(无输出)" })
     }

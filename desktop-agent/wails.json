@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "Murong Desktop Agent",
+  "outputfilename": "murong-desktop-agent",
+  "frontend:dir": "frontend",
+  "frontend:install": "",
+  "frontend:build": "",
+  "wailsjsdir": "frontend/wailsjs",
+  "info": {
+    "companyName": "Murong Agent",
+    "productName": "Murong",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright © Murong Agent",
+    "comments": "Murong cross-platform desktop coding agent"
+  },
+  "author": {
+    "name": "Murong Agent"
+  }
+}

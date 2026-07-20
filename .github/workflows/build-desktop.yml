@@ -1,0 +1,370 @@
+name: 构建全平台桌面端
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches: ["main", "master"]
+    paths:
+      - "desktop-agent/**"
+      - "desktop-bridge/**"
+      - ".github/workflows/build-desktop.yml"
+  pull_request:
+    branches: ["main", "master"]
+    paths:
+      - "desktop-agent/**"
+      - "desktop-bridge/**"
+      - ".github/workflows/build-desktop.yml"
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "构建完成后是否发布 GitHub Release"
+        type: boolean
+        required: false
+        default: false
+      release_tag:
+        description: "Release 标签；为空时使用 desktop-v<run number>"
+        required: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  GO_VERSION: "1.25.0"
+  WAILS_VERSION: "2.13.0"
+  CODEX_VERSION: "0.144.6"
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            runner: windows-2025
+            goos: windows
+            goarch: amd64
+            codex_platform: win32-x64
+            codex_sha256: E04AFBE9841BE306455D075AD414993A946C94A399E55D7F9EC223F734CD4101
+            build_tags: embedded_codex
+          - label: Windows ARM64
+            runner: windows-11-arm
+            goos: windows
+            goarch: arm64
+            codex_platform: win32-arm64
+            codex_sha256: 92774896D0D293DB1C1808E77085B5A068E5AA70825D0D656E29BD4CA276E651
+            build_tags: embedded_codex
+          - label: macOS Intel
+            runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+            codex_platform: darwin-x64
+            codex_sha256: 6F1CDAB2DD23BEB5BFDB82A7D4FF5BB8C33F29AF5D1019778B18584EA7C53165
+            build_tags: embedded_codex
+          - label: macOS Apple Silicon
+            runner: macos-15
+            goos: darwin
+            goarch: arm64
+            codex_platform: darwin-arm64
+            codex_sha256: 671D58A58CD2058345B9D9E4A969BB69937E50C7C1CD57C6061ED674DC92F94B
+            build_tags: embedded_codex
+          - label: Linux x64
+            runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+            codex_platform: linux-x64
+            codex_sha256: B6752EB2E8C10E6FCC96AC5C1C8AD8342CDB9A74504FB84686ADDF081A7D2868
+            build_tags: embedded_codex webkit2_41
+          - label: Linux ARM64
+            runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            codex_platform: linux-arm64
+            codex_sha256: 19F0B01B33F273DF94191670B2E0E5D0F624B0354E765BFDEA5763920B713800
+            build_tags: embedded_codex webkit2_41
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: desktop-agent
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set Up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: |
+            desktop-agent/go.sum
+            desktop-bridge/go.sum
+
+      - name: Install Linux WebView Dependencies
+        if: matrix.goos == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Install Wails CLI
+        shell: pwsh
+        run: go install "github.com/wailsapp/wails/v2/cmd/wails@v${env:WAILS_VERSION}"
+
+      - name: Test Desktop Modules
+        shell: pwsh
+        run: |
+          $testTags = if ("${{ matrix.goos }}" -eq "linux") { "webkit2_41" } else { "" }
+          if ($testTags) {
+            go test -count=1 -tags $testTags ./...
+            go vet -tags $testTags ./...
+          } else {
+            go test -count=1 ./...
+            go vet ./...
+          }
+          Push-Location ../desktop-bridge
+          try {
+            go test -count=1 ./...
+            go vet ./...
+          } finally {
+            Pop-Location
+          }
+
+      - name: Stage Verified Codex Runtime
+        shell: pwsh
+        run: |
+          $asset = "codex-npm-${{ matrix.codex_platform }}-${env:CODEX_VERSION}.tgz"
+          $url = "https://github.com/openai/codex/releases/download/rust-v${env:CODEX_VERSION}/$asset"
+          New-Item -ItemType Directory -Force runtime | Out-Null
+          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile runtime/codex-runtime.tgz
+          $actual = (Get-FileHash -Algorithm SHA256 runtime/codex-runtime.tgz).Hash
+          if ($actual -ne "${{ matrix.codex_sha256 }}") {
+            throw "Codex runtime SHA-256 mismatch: expected ${{ matrix.codex_sha256 }}, got $actual"
+          }
+
+      - name: Verify Embedded Codex Runtime
+        shell: pwsh
+        run: go test -count=1 -tags "${{ matrix.build_tags }}" -run TestEmbeddedCodexReleaseArchive .
+
+      - name: Build Native Desktop Package
+        shell: pwsh
+        run: |
+          $name = "murong-desktop-agent-${{ matrix.goos }}-${{ matrix.goarch }}"
+          $outputName = if ("${{ matrix.goos }}" -eq "windows") { "$name.exe" } else { $name }
+          wails build -clean -m -s -skipbindings -skipembedcreate -platform "${{ matrix.goos }}/${{ matrix.goarch }}" -tags "${{ matrix.build_tags }}" -trimpath -o $outputName
+
+      - name: Package Windows EXE
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $name = "murong-desktop-agent-${{ matrix.goos }}-${{ matrix.goarch }}"
+          $builtPath = (Resolve-Path "build/bin/$name.exe").Path
+          $env:MURONG_BUILT_EXE = $builtPath
+          go test -count=1 -run TestBuiltWindowsApplicationResources .
+          Copy-Item -LiteralPath $builtPath -Destination "dist/$name.exe" -Force
+
+      - name: Package macOS App
+        if: matrix.goos == 'darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="murong-desktop-agent-${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "build/bin/${name}.app" "dist/${name}.app.zip"
+
+      - name: Package Linux Binary
+        if: matrix.goos == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="murong-desktop-agent-${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir -p dist
+          tar -C build/bin -czf "dist/${name}.tar.gz" "$name"
+
+      - name: Write SHA-256
+        shell: pwsh
+        run: |
+          $artifact = Get-ChildItem -LiteralPath dist -File | Where-Object { $_.Name -notlike '*.sha256' } | Select-Object -First 1
+          if (-not $artifact) { throw "Desktop artifact was not created" }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifact.FullName).Hash.ToLowerInvariant()
+          "$hash  $($artifact.Name)" | Set-Content -Encoding utf8NoBOM -NoNewline -LiteralPath "dist/$($artifact.Name).sha256"
+
+      - name: Upload Desktop Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: murong-desktop-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: desktop-agent/dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  relay:
+    name: Cloud Relay ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x64
+            runner: ubuntu-24.04
+            goarch: amd64
+          - label: Linux ARM64
+            runner: ubuntu-24.04-arm
+            goarch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: desktop-bridge
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set Up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: desktop-bridge/go.sum
+
+      - name: Test Relay And Bridge
+        run: |
+          go test -count=1 ./...
+          go vet ./...
+
+      - name: Build Static Relay
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          name="murong-cloud-relay-linux-${GOARCH}"
+          mkdir -p dist/package
+          go build -trimpath -ldflags="-s -w" -o "dist/package/${name}" ./cmd/murong-cloud-relay
+          "dist/package/${name}" -h >/dev/null
+          tar -C dist/package -czf "dist/${name}.tar.gz" "${name}"
+          (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+
+      - name: Upload Relay Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: murong-cloud-relay-linux-${{ matrix.goarch }}
+          path: |
+            desktop-bridge/dist/*.tar.gz
+            desktop-bridge/dist/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  verify:
+    name: Verify Complete Release Set
+    needs: [build, relay]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download All Desktop Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: murong-desktop-*
+          path: dist/desktop
+          merge-multiple: true
+
+      - name: Download All Relay Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: murong-cloud-relay-*
+          path: dist/relay
+          merge-multiple: true
+
+      - name: Verify Six Desktop And Two Relay Packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          desktop_expected=(
+            murong-desktop-agent-windows-amd64.exe
+            murong-desktop-agent-windows-arm64.exe
+            murong-desktop-agent-darwin-amd64.app.zip
+            murong-desktop-agent-darwin-arm64.app.zip
+            murong-desktop-agent-linux-amd64.tar.gz
+            murong-desktop-agent-linux-arm64.tar.gz
+          )
+          relay_expected=(
+            murong-cloud-relay-linux-amd64.tar.gz
+            murong-cloud-relay-linux-arm64.tar.gz
+          )
+
+          for package in "${desktop_expected[@]}"; do
+            test -f "dist/desktop/$package" || { echo "Missing desktop package: $package" >&2; exit 1; }
+            test -f "dist/desktop/$package.sha256" || { echo "Missing desktop checksum: $package.sha256" >&2; exit 1; }
+          done
+          for package in "${relay_expected[@]}"; do
+            test -f "dist/relay/$package" || { echo "Missing relay package: $package" >&2; exit 1; }
+            test -f "dist/relay/$package.sha256" || { echo "Missing relay checksum: $package.sha256" >&2; exit 1; }
+          done
+
+          mapfile -t desktop_actual < <(find dist/desktop -maxdepth 1 -type f ! -name '*.sha256' -printf '%f\n' | sort)
+          mapfile -t desktop_wanted < <(printf '%s\n' "${desktop_expected[@]}" | sort)
+          if [[ "${desktop_actual[*]}" != "${desktop_wanted[*]}" ]]; then
+            echo "Unexpected desktop release set" >&2
+            printf 'Expected: %s\n' "${desktop_wanted[*]}" >&2
+            printf 'Actual:   %s\n' "${desktop_actual[*]}" >&2
+            exit 1
+          fi
+          mapfile -t relay_actual < <(find dist/relay -maxdepth 1 -type f ! -name '*.sha256' -printf '%f\n' | sort)
+          mapfile -t relay_wanted < <(printf '%s\n' "${relay_expected[@]}" | sort)
+          if [[ "${relay_actual[*]}" != "${relay_wanted[*]}" ]]; then
+            echo "Unexpected relay release set" >&2
+            printf 'Expected: %s\n' "${relay_wanted[*]}" >&2
+            printf 'Actual:   %s\n' "${relay_actual[*]}" >&2
+            exit 1
+          fi
+
+          : > dist/SHA256SUMS.txt
+          for package in "${desktop_expected[@]}"; do
+            (cd dist/desktop && sha256sum --check "$package.sha256")
+            cat "dist/desktop/$package.sha256" >> dist/SHA256SUMS.txt
+            printf '\n' >> dist/SHA256SUMS.txt
+          done
+          for package in "${relay_expected[@]}"; do
+            (cd dist/relay && sha256sum --check "$package.sha256")
+            cat "dist/relay/$package.sha256" >> dist/SHA256SUMS.txt
+            printf '\n' >> dist/SHA256SUMS.txt
+          done
+
+      - name: Upload Release Manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: murong-desktop-release-manifest
+          path: dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish Desktop Release
+    needs: verify
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download All Desktop Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: murong-desktop-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download All Relay Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: murong-cloud-relay-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_RELEASE_TAG:-desktop-v${GITHUB_RUN_NUMBER}}"
+          gh release create "$tag" dist/* --generate-notes --title "Murong Desktop ${tag}"

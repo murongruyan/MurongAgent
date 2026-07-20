@@ -48,10 +48,13 @@ import com.termux.view.TerminalViewClient
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.Properties
+import java.util.UUID
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 private const val PROJECT_TERMINAL_SYSTEM_BASH = "/system/bin/bash"
 private const val PROJECT_TERMINAL_SYSTEM_SH = "/system/bin/sh"
+private const val PROJECT_TERMINAL_ROOT_REQUEST_TITLE = "__MURONG_ENTER_ROOT_SHELL__"
 
 internal fun isSystemBashEnabled(context: Context): Boolean {
     return File(PROJECT_TERMINAL_SYSTEM_BASH).exists()
@@ -148,7 +151,9 @@ internal enum class ProjectTerminalThemePreset(
 
 internal enum class ProjectTerminalEnvironmentMode {
     TOOLCHAIN,
-    SYSTEM
+    SYSTEM,
+    /** A short-lived privileged system shell entered from an existing terminal tab. */
+    ROOT
 }
 
 @Composable
@@ -296,15 +301,20 @@ internal class ProjectTerminalSessionController(
         private set
     var onFontSizeChanged: ((Int) -> Unit)? = null
     var onSessionExit: ((Int) -> Unit)? = null
-    private val activeEnvironmentLabel =
-        ToolchainManager.describeActiveEnvironment(
-            context = context,
-            preferSystem = environmentMode == ProjectTerminalEnvironmentMode.SYSTEM
-        )
+    /** Requests that the host replace this PRoot terminal with the root PTY session. */
+    var onRootRequested: (() -> Unit)? = null
+    /** Receives records written by the interactive shell after a user command completes. */
+    var onCommandCompleted: ((ProjectTerminalCommandRecord, String) -> Unit)? = null
+    private val activeEnvironmentLabel = ToolchainManager.describeActiveEnvironment(
+        context = context,
+        preferSystem = environmentMode == ProjectTerminalEnvironmentMode.SYSTEM
+    ).let { label ->
+        if (environmentMode == ProjectTerminalEnvironmentMode.ROOT) "Root $label" else label
+    }
     val isRootSession: Boolean
-        get() = rootAvailable
+        get() = environmentMode == ProjectTerminalEnvironmentMode.ROOT
     var title by mutableStateOf("终端会话")
-    var subtitle by mutableStateOf(buildInitialSubtitle(rootAvailable, activeEnvironmentLabel))
+    var subtitle by mutableStateOf(buildInitialSubtitle(isRootSession, activeEnvironmentLabel))
     var isFinished by mutableStateOf(false)
         private set
     var lastExitCode by mutableStateOf<Int?>(null)
@@ -339,16 +349,30 @@ internal class ProjectTerminalSessionController(
     private val sessionClient = object : TerminalSessionClient {
         override fun onTextChanged(changedSession: TerminalSession) {
             terminalView?.post {
+                dispatchNewCommandRecords()
                 terminalView?.onScreenUpdated()
                 onInvalidate?.invoke()
             }
         }
 
         override fun onTitleChanged(changedSession: TerminalSession) {
-            title = changedSession.title ?: "终端会话"
+            val changedTitle = changedSession.title ?: "终端会话"
+            if (
+                changedTitle == PROJECT_TERMINAL_ROOT_REQUEST_TITLE &&
+                environmentMode == ProjectTerminalEnvironmentMode.TOOLCHAIN &&
+                !rootRequestDispatched
+            ) {
+                rootRequestDispatched = true
+                title = "正在进入 Root shell…"
+                terminalView?.post { onRootRequested?.invoke() }
+            } else {
+                title = changedTitle
+            }
         }
 
         override fun onSessionFinished(finishedSession: TerminalSession) {
+            dispatchNewCommandRecords()
+            completePendingCommandsAsInterrupted()
             isFinished = true
             lastExitCode = finishedSession.exitStatus
             subtitle = "会话已结束，退出码 ${finishedSession.exitStatus}"
@@ -419,6 +443,17 @@ internal class ProjectTerminalSessionController(
     private var terminalView: TerminalView? = null
     private var shellPid: Int? = null
     private var suppressSessionExitCallback = false
+    private var rootRequestDispatched = false
+    private val commandRecordFile = File(
+        context.filesDir,
+        "terminal_command_record_${UUID.randomUUID()}.log"
+    ).apply {
+        parentFile?.mkdirs()
+        if (!exists()) createNewFile()
+    }
+    private var commandRecordReadCharacters = 0
+    private val pendingCommandRecordStarts = linkedMapOf<String, ProjectTerminalCommandRecordEvent>()
+    private var transcriptCommandSearchOffset = 0
     private var pinchScaleRemainder = 1f
     private var pinchInProgress = false
     private var pinchStartFontSize = fontSize
@@ -569,6 +604,58 @@ internal class ProjectTerminalSessionController(
         return session.emulator?.screen?.transcriptText?.takeIf { it.isNotBlank() }
     }
 
+    suspend fun runEnvironmentDiagnostic(
+        timeoutMillis: Long = 9_000L,
+        pollIntervalMillis: Long = 80L
+    ): ProjectTerminalEnvironmentDiagnostic {
+        if (isFinished) {
+            return projectTerminalEnvironmentDiagnosticUnavailable(
+                environmentMode = environmentMode,
+                message = "当前终端会话已结束"
+            )
+        }
+        val runId = UUID.randomUUID().toString()
+        sendCommand(
+            buildProjectTerminalEnvironmentDiagnosticCommand(
+                runId = runId,
+                environmentMode = environmentMode,
+                environmentVersion = resolveDiagnosticEnvironmentVersion()
+            )
+        )
+        val deadlineMillis = System.currentTimeMillis() + timeoutMillis.coerceAtLeast(1L)
+        while (System.currentTimeMillis() < deadlineMillis) {
+            parseProjectTerminalEnvironmentDiagnosticTranscript(
+                transcript = getTranscriptText().orEmpty(),
+                runId = runId
+            )?.let { return it }
+            if (isFinished) {
+                return projectTerminalEnvironmentDiagnosticUnavailable(
+                    environmentMode = environmentMode,
+                    message = "终端会话在检查期间退出"
+                )
+            }
+            delay(pollIntervalMillis.coerceAtLeast(20L))
+        }
+        return projectTerminalEnvironmentDiagnosticUnavailable(
+            environmentMode = environmentMode,
+            message = "9 秒内没有收到完整结果"
+        )
+    }
+
+    private fun resolveDiagnosticEnvironmentVersion(): String {
+        if (environmentMode != ProjectTerminalEnvironmentMode.TOOLCHAIN) {
+            return "Android " + Build.VERSION.RELEASE + " / API " + Build.VERSION.SDK_INT
+        }
+        val abi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
+        val fingerprint = File(context.filesDir, "toolchain/$abi/.version")
+            .takeIf(File::isFile)
+            ?.readText()
+            ?.trim()
+            .orEmpty()
+        val version = fingerprint.split(':').getOrNull(1)?.trim().orEmpty()
+        return version.takeIf { it.isNotBlank() } ?: "未读取到扩展包版本"
+    }
+
     fun toggleCtrlLock() {
         ctrlLocked = !ctrlLocked
         notifyModifierStateChanged()
@@ -663,10 +750,18 @@ internal class ProjectTerminalSessionController(
         terminalView = null
         suppressSessionExitCallback = true
         session.finishIfRunning()
+        commandRecordFile.delete()
     }
 
     private fun createSession(): TerminalSession {
-        val installedToolchain = ToolchainManager.ensureInstalled(context)
+        // Root preserves the extension environment and only changes the UID of the external
+        // PTY launcher. System mode is the sole mode that bypasses the toolchain.
+        val usesToolchainEnvironment = environmentMode != ProjectTerminalEnvironmentMode.SYSTEM
+        val installedToolchain = if (usesToolchainEnvironment) {
+            ToolchainManager.ensureInstalled(context)
+        } else {
+            null
+        }
         val home = File("/storage/emulated/0").takeIf { it.exists() }?.absolutePath
             ?: context.filesDir.absolutePath
         val preferSystemEnvironment = environmentMode == ProjectTerminalEnvironmentMode.SYSTEM
@@ -697,7 +792,7 @@ internal class ProjectTerminalSessionController(
         } else {
             ToolchainManager.buildPreferredLibraryPath(context)
         }
-        val prefix = if (preferSystemEnvironment || !installedToolchain.available) {
+        val prefix = if (preferSystemEnvironment || installedToolchain?.available != true) {
             ""
         } else if (packageCompatibilityAvailable) {
             ToolchainManager.buildPackageCompatiblePrefix()
@@ -733,6 +828,7 @@ internal class ProjectTerminalSessionController(
             if (libraryPath.isNotBlank()) environment["LD_LIBRARY_PATH"] = libraryPath
         }
         environment["TERM"] = "xterm-256color"
+        environment["MURONG_COMMAND_RECORD_FILE"] = commandRecordFile.absolutePath
         if (!packageCompatibilityAvailable) environment["HOME"] = home
         environment["SHELL"] = shell
         if (!usingRcFileShell && !shellRcPath.isNullOrBlank()) {
@@ -740,28 +836,45 @@ internal class ProjectTerminalSessionController(
         }
         val env = environment.map { (name, value) -> "$name=$value" }.toTypedArray()
         val cwd = File(workingDirectory).takeIf { it.exists() }?.absolutePath ?: home
-        if (preferSystemEnvironment && shell == PROJECT_TERMINAL_SYSTEM_BASH) {
-            val helperHome = home
+        if (
+            environmentMode == ProjectTerminalEnvironmentMode.ROOT ||
+            (preferSystemEnvironment && shell == PROJECT_TERMINAL_SYSTEM_BASH)
+        ) {
             val helperCwd = cwd
             val helperSession = SystemBashHelperBridge.open(
                 context = context,
+                executable = launchCommand.first(),
                 cwd = helperCwd,
-                path = sessionPath,
-                libraryPath = libraryPath,
-                home = helperHome,
-                rcFilePath = shellRcPath.orEmpty(),
-                tmpDir = context.cacheDir.absolutePath
+                arguments = launchCommand,
+                environment = env.toList(),
+                runAsRoot = environmentMode == ProjectTerminalEnvironmentMode.ROOT
             )
             if (helperSession != null) {
                 return TerminalSession(
-                    shell,
+                    launchCommand.first(),
                     helperCwd,
-                    shellArgs,
+                    launchCommand.toTypedArray(),
                     env,
                     5000,
                     helperSession.terminalFd,
                     helperSession.shellPid,
                     helperSession.processMonitor,
+                    sessionClient
+                )
+            }
+            // A Root tab must never silently fall back to the app UID: that would make a
+            // successful `su` request look privileged when it is not.
+            if (environmentMode == ProjectTerminalEnvironmentMode.ROOT) {
+                return TerminalSession(
+                    PROJECT_TERMINAL_SYSTEM_SH,
+                    helperCwd,
+                    arrayOf(
+                        PROJECT_TERMINAL_SYSTEM_SH,
+                        "-c",
+                        "printf '%s\\n' '无法以 Root 启动扩展包 bash：请确认 KernelSU/Magisk 已授权 MurongAgent。' >&2; exit 126"
+                    ),
+                    env,
+                    0,
                     sessionClient
                 )
             }
@@ -787,6 +900,87 @@ internal class ProjectTerminalSessionController(
 
     private fun sendBytes(data: ByteArray) {
         session.write(data, 0, data.size)
+    }
+
+    /**
+     * Reads only records appended by the current shell session. The shell writes a record while
+     * preparing its next prompt, so this observes completed interactive commands without
+     * replacing the terminal's normal input, paste, Ctrl+C or output paths.
+     */
+    private fun dispatchNewCommandRecords() {
+        val content = runCatching { commandRecordFile.readText() }.getOrNull() ?: return
+        if (commandRecordReadCharacters > content.length) {
+            commandRecordReadCharacters = 0
+        }
+        if (commandRecordReadCharacters >= content.length) return
+        val appended = content.substring(commandRecordReadCharacters)
+        commandRecordReadCharacters = content.length
+        val transcript = getTranscriptText().orEmpty()
+        appended.lineSequence()
+            .mapNotNull(::parseProjectTerminalCommandRecordEvent)
+            .forEach { event ->
+                when (event.kind) {
+                    ProjectTerminalCommandRecordEventKind.STARTED -> {
+                        pendingCommandRecordStarts[event.commandId] = event
+                    }
+                    ProjectTerminalCommandRecordEventKind.FINISHED -> {
+                        val started = pendingCommandRecordStarts.remove(event.commandId)
+                        val record = when {
+                            started != null -> projectTerminalCommandRecordFromEvents(
+                                started = started,
+                                finished = event,
+                                transcriptReference = "interactive:${commandRecordFile.name}#${event.commandId}"
+                            )
+                            !event.command.isNullOrBlank() && !event.workingDirectory.isNullOrBlank() ->
+                                ProjectTerminalCommandRecord(
+                                    commandId = event.commandId,
+                                    command = event.command,
+                                    workingDirectory = event.workingDirectory,
+                                    exitCode = event.exitCode,
+                                    startedAtMillis = event.timestampMillis,
+                                    finishedAtMillis = event.timestampMillis,
+                                    status = if (event.exitCode == 130) ProjectTerminalCommandStatus.INTERRUPTED else ProjectTerminalCommandStatus.COMPLETED,
+                                    transcriptReference = "interactive:${commandRecordFile.name}#${event.commandId}"
+                                )
+                            else -> null
+                        }?.copy(environmentMode = environmentMode) ?: return@forEach
+                        val preview = projectTerminalOutputPreviewAfterOffset(
+                            transcript = transcript,
+                            command = record.command,
+                            searchOffset = transcriptCommandSearchOffset
+                        )
+                        transcriptCommandSearchOffset = preview.nextSearchOffset
+                        onCommandCompleted?.invoke(record, preview.content)
+                    }
+                }
+            }
+    }
+
+    private fun completePendingCommandsAsInterrupted() {
+        if (pendingCommandRecordStarts.isEmpty()) return
+        val finishedAt = System.currentTimeMillis()
+        val transcript = getTranscriptText().orEmpty()
+        pendingCommandRecordStarts.values.forEach { started ->
+            val record = ProjectTerminalCommandRecord(
+                commandId = started.commandId,
+                command = started.command.orEmpty(),
+                workingDirectory = started.workingDirectory.orEmpty(),
+                exitCode = null,
+                startedAtMillis = started.timestampMillis,
+                finishedAtMillis = finishedAt,
+                status = ProjectTerminalCommandStatus.INTERRUPTED,
+                environmentMode = environmentMode,
+                transcriptReference = "interactive:${commandRecordFile.name}#${started.commandId}"
+            )
+            val preview = projectTerminalOutputPreviewAfterOffset(
+                transcript = transcript,
+                command = record.command,
+                searchOffset = transcriptCommandSearchOffset
+            )
+            transcriptCommandSearchOffset = preview.nextSearchOffset
+            onCommandCompleted?.invoke(record, preview.content)
+        }
+        pendingCommandRecordStarts.clear()
     }
 
     private fun updateFontSize(newSize: Int) {
@@ -920,6 +1114,96 @@ internal class ProjectTerminalSessionController(
         } else {
             ""
         }
+        val shellSupportsBashHooks = sessionShell.substringAfterLast('/').equals("bash", ignoreCase = true)
+        val historyFilePath = when {
+            !shellSupportsBashHooks -> ""
+            prefix == ToolchainManager.buildPackageCompatiblePrefix() -> {
+                File(context.filesDir, "terminal-home/.bash_history").apply {
+                    parentFile?.mkdirs()
+                    if (!exists()) createNewFile()
+                }
+                "${ToolchainManager.buildPackageCompatibleHome()}/.bash_history"
+            }
+            environmentMode == ProjectTerminalEnvironmentMode.SYSTEM -> {
+                File(context.filesDir, "terminal-history/system.bash_history").apply {
+                    parentFile?.mkdirs()
+                    if (!exists()) createNewFile()
+                }.absolutePath
+            }
+            else -> {
+                File(context.filesDir, "terminal-history/extension.bash_history").apply {
+                    parentFile?.mkdirs()
+                    if (!exists()) createNewFile()
+                }.absolutePath
+            }
+        }
+        val persistentHistorySetup = if (shellSupportsBashHooks) """
+            export HISTFILE=${shellQuoteForRc(historyFilePath)}
+            export HISTSIZE=5000
+            export HISTFILESIZE=10000
+            export HISTCONTROL=ignoredups:ignorespace
+            shopt -s histappend
+            builtin history -c
+            builtin history -r "${'$'}HISTFILE" 2>/dev/null || true
+            __murong_last_started_history_number=${'$'}(
+              HISTTIMEFORMAT= builtin history 1 2>/dev/null |
+                sed -n 's/^[[:space:]]*\([0-9][0-9]*\)[[:space:]].*/\1/p'
+            )
+            murong_persist_history() {
+              __murong_history_status=${'$'}?
+              builtin history -a "${'$'}HISTFILE" 2>/dev/null || true
+              builtin history -n "${'$'}HISTFILE" 2>/dev/null || true
+              return "${'$'}__murong_history_status"
+            }
+        """.trimIndent() else ""
+        val interactiveCommandRecorder = if (shellSupportsBashHooks) """
+            murong_record_command_start() {
+              [ "${'$'}{__murong_record_busy:-0}" = "1" ] && return 0
+              [ -n "${'$'}{MURONG_COMMAND_RECORD_FILE:-}" ] || return 0
+              __murong_record_busy=1
+              __murong_history_line=${'$'}(HISTTIMEFORMAT= history 1 2>/dev/null)
+              __murong_history_number=${'$'}(printf '%s\n' "${'$'}__murong_history_line" | sed -n 's/^[[:space:]]*\([0-9][0-9]*\)[[:space:]].*/\1/p')
+              case "${'$'}__murong_history_number" in
+                ''|"${'$'}{__murong_last_started_history_number:-}") __murong_record_busy=0; return 0 ;;
+              esac
+              __murong_record_command=${'$'}(printf '%s\n' "${'$'}__murong_history_line" | sed 's/^[[:space:]]*[0-9][0-9]*[[:space:]]*//')
+              __murong_record_command=${'$'}(printf '%s' "${'$'}__murong_record_command" | tr '\r\n\037' '   ')
+              [ -n "${'$'}__murong_record_command" ] || { __murong_record_busy=0; return 0; }
+              __murong_last_started_history_number="${'$'}__murong_history_number"
+              __murong_active_command_id="${'$'}${'$'}-${'$'}__murong_history_number-${'$'}(date +%s 2>/dev/null || printf '0')"
+              __murong_active_command="${'$'}__murong_record_command"
+              __murong_active_command_pwd=${'$'}(pwd -P 2>/dev/null | tr '\r\n\037' '   ')
+              __murong_active_command_started_at=${'$'}(date +%s 2>/dev/null || printf '0')
+              printf 'S\037%s\037%s\037%s\037%s\n' \
+                "${'$'}__murong_active_command_id" \
+                "${'$'}__murong_active_command" \
+                "${'$'}__murong_active_command_pwd" \
+                "${'$'}__murong_active_command_started_at" >> "${'$'}MURONG_COMMAND_RECORD_FILE" 2>/dev/null
+              __murong_record_busy=0
+              return 0
+            }
+            murong_record_command() {
+              __murong_record_exit=${'$'}?
+              [ -n "${'$'}{MURONG_COMMAND_RECORD_FILE:-}" ] || return "${'$'}__murong_record_exit"
+              [ -n "${'$'}{BASH_VERSION:-}" ] || return "${'$'}__murong_record_exit"
+              [ -n "${'$'}{__murong_active_command_id:-}" ] || return "${'$'}__murong_record_exit"
+              __murong_record_pwd=${'$'}(pwd -P 2>/dev/null | tr '\r\n\037' '   ')
+              __murong_record_time=${'$'}(date +%s 2>/dev/null || printf '0')
+              printf 'E\037%s\037%s\037%s\037%s\n' \
+                "${'$'}__murong_active_command_id" \
+                "${'$'}__murong_record_exit" \
+                "${'$'}__murong_record_pwd" \
+                "${'$'}__murong_record_time" >> "${'$'}MURONG_COMMAND_RECORD_FILE" 2>/dev/null
+              unset __murong_active_command_id __murong_active_command __murong_active_command_pwd __murong_active_command_started_at
+              return "${'$'}__murong_record_exit"
+            }
+            trap 'murong_record_command_start "${'$'}BASH_COMMAND"' DEBUG
+        """.trimIndent() else ""
+        val promptCommandAssignment = if (shellSupportsBashHooks) {
+            "PROMPT_COMMAND='murong_record_command; murong_persist_history'"
+        } else {
+            "PROMPT_COMMAND="
+        }
         val desired = if (environmentMode == ProjectTerminalEnvironmentMode.SYSTEM) {
             """
                 __murong_session_path=${shellQuoteForRc(sessionPath)}
@@ -951,6 +1235,8 @@ internal class ProjectTerminalSessionController(
                     "${'$'}__murong_system_su" "${'$'}@"
                   fi
                 }
+                $persistentHistorySetup
+                $interactiveCommandRecorder
                 murong_prompt() {
                   murong_refresh_runtime_env
                   __murong_home="${'$'}__murong_home_path"
@@ -990,7 +1276,7 @@ internal class ProjectTerminalSessionController(
                     printf '%s' "${'$'}__murong_symbol ${'$'}__murong_path > "
                   fi
                 }
-                PROMPT_COMMAND=
+                $promptCommandAssignment
                 PS1='$(murong_prompt)'
             """.trimIndent() + "\n"
         } else {
@@ -1023,30 +1309,20 @@ internal class ProjectTerminalSessionController(
                   fi
                 }
                 su() {
-                  if [ "${'$'}#" -eq 0 ] && [ -n "${'$'}__murong_session_shell" ]; then
-                    __murong_su_cmd="export HOME=${'$'}__murong_home_path; export TMPDIR=${'$'}__murong_tmpdir; export PATH=${'$'}__murong_session_path; export SHELL=${'$'}__murong_session_shell; "
-                    if [ -n "${'$'}__murong_prefix" ]; then
-                      __murong_su_cmd="${'$'}__murong_su_cmd export PREFIX=${'$'}__murong_prefix; "
-                    else
-                      __murong_su_cmd="${'$'}__murong_su_cmd unset PREFIX; "
-                    fi
-                    if [ -n "${'$'}__murong_session_ld_library_path" ]; then
-                      __murong_su_cmd="${'$'}__murong_su_cmd export LD_LIBRARY_PATH=${'$'}__murong_session_ld_library_path; "
-                    else
-                      __murong_su_cmd="${'$'}__murong_su_cmd unset LD_LIBRARY_PATH; "
-                    fi
-                    if [ "${'$'}__murong_session_shell_uses_rcfile" = "1" ]; then
-                      __murong_su_cmd="${'$'}__murong_su_cmd exec ${'$'}__murong_session_shell --rcfile ${'$'}__murong_rc_path -i"
-                    else
-                      __murong_su_cmd="${'$'}__murong_su_cmd ENV=${'$'}__murong_rc_path exec ${'$'}__murong_session_shell -i"
-                    fi
-                    "${'$'}__murong_system_su" -c "${'$'}__murong_su_cmd"
+                  # Android's su cannot be exec'd from inside the PRoot/termux-exec process: its
+                  # dynamic linker request is intercepted before su can run.  Ask the app to
+                  # replace this tab with a root-owned PTY, which is created outside that layer.
+                  if [ "${'$'}#" -eq 0 ]; then
+                    printf '\033]0;$PROJECT_TERMINAL_ROOT_REQUEST_TITLE\007'
                   else
-                    "${'$'}__murong_system_su" "${'$'}@"
+                    printf '%s\n' '请先运行 su 进入 Root shell，再执行该命令。' >&2
+                    return 2
                   fi
                 }
                 ${aliasCommands}
                 $packageLinkFallback
+                $persistentHistorySetup
+                $interactiveCommandRecorder
                 murong_prompt() {
                   murong_refresh_runtime_env
                   __murong_home="/storage/emulated/0"
@@ -1080,7 +1356,7 @@ internal class ProjectTerminalSessionController(
                   fi
                   printf '%s' "${'$'}{__murong_np_start}${'$'}{__murong_symbol_color}${'$'}{__murong_np_end}${'$'}__murong_symbol${'$'}{__murong_np_start}${'$'}{__murong_reset}${'$'}{__murong_np_end} ${'$'}{__murong_np_start}${'$'}{__murong_path_color}${'$'}{__murong_np_end}${'$'}__murong_path >${'$'}{__murong_np_start}${'$'}{__murong_reset}${'$'}{__murong_np_end} "
                 }
-                PROMPT_COMMAND=
+                $promptCommandAssignment
                 PS1='$(murong_prompt)'
             """.trimIndent() + "\n"
         }
@@ -1145,7 +1421,7 @@ internal class ProjectTerminalSessionController(
                 append(it)
                 append(" · ")
             }
-            append(if (rootAvailable) "Root shell" else "普通 shell")
+            append(if (isRootSession) "Root shell" else "普通 shell")
             append(" · 环境 ")
             append(activeEnvironmentLabel)
             append(" · 字号 ")
@@ -1215,8 +1491,8 @@ internal class ProjectTerminalSessionController(
     }
 
     companion object {
-        private fun buildInitialSubtitle(rootAvailable: Boolean, environmentLabel: String): String {
-            return if (rootAvailable) {
+        private fun buildInitialSubtitle(rootSession: Boolean, environmentLabel: String): String {
+            return if (rootSession) {
                 "准备启动 Root 终端... · 环境 $environmentLabel"
             } else {
                 "准备启动普通 shell... · 环境 $environmentLabel"

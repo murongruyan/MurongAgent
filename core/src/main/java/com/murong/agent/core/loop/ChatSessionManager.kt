@@ -70,6 +70,9 @@ import com.murong.agent.core.tool.ToolFileChange
 import com.murong.agent.core.tool.ToolApprovalRequest
 import com.murong.agent.core.tool.*
 import com.murong.agent.core.tool.buildDiffPreview
+import com.murong.agent.core.workspace.WorkspaceChangeTracker
+import com.murong.agent.core.workspace.ComputerWorkspaceGateway
+import com.murong.agent.core.workspace.UnavailableComputerWorkspaceGateway
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CompletableDeferred
@@ -260,7 +263,14 @@ enum class ConversationCheckpointSource {
 data class FileMentionUi(
     val path: String,
     val displayPath: String,
-    val inlineContent: String? = null
+    val inlineContent: String? = null,
+    val kind: FileMentionKind = detectFileMentionKind(path),
+    val byteSize: Long? = null,
+    val modifiedAtMillis: Long? = null,
+    val accessState: FileMentionAccessState = FileMentionAccessState.READABLE,
+    val inclusionMode: FileMentionInclusionMode = defaultFileMentionInclusionMode(kind),
+    val source: FileMentionSource = FileMentionSource.MANUAL,
+    val stableId: String = stableFileMentionId(path, modifiedAtMillis)
 )
 
 data class ProjectKnowledgeSnapshotUi(
@@ -1138,6 +1148,7 @@ enum class ConversationExportFormat(
 ) {
     MARKDOWN("md", "text/markdown", "Markdown"),
     JSON("json", "application/json", "JSON"),
+    PORTABLE_JSON("json", "application/json", "跨端 JSON"),
     DOCTOR("md", "text/markdown", "Doctor Report")
 }
 
@@ -2059,7 +2070,8 @@ class ChatSessionManager(
     private val configRepository: ConfigRepository,
     private val mcpRegistry: McpRegistry? = null,
     private val hookBus: HookBusRunner = HookBusRunner(),
-    private val codexAppServer: CodexAppServerClient? = null
+    private val codexAppServer: CodexAppServerClient? = null,
+    private val computerWorkspaceGateway: ComputerWorkspaceGateway = UnavailableComputerWorkspaceGateway
 ) {
     private companion object {
         val SUBAGENT_TERMINAL_STATUSES = setOf("completed", "failed", "cancelled", "rejected")
@@ -2125,6 +2137,7 @@ class ChatSessionManager(
     val sessionLifecycleNotices: SharedFlow<String> = _sessionLifecycleNotices.asSharedFlow()
 
     private val conversationStore = ConversationStore(context)
+    private val workspaceChangeTracker = WorkspaceChangeTracker()
     private var messageCounter = 0L
     private var agentLoop: AgentLoop? = null
     private var activeCodexTurn: ActiveCodexTurn? = null
@@ -2338,6 +2351,12 @@ class ChatSessionManager(
             projectPath = projectPath,
             hookBus = hookBus
         )
+        if (phase == SessionTransitionPhase.STARTED && sessionId == currentSessionId) {
+            workspaceChangeTracker.bind(
+                sessionId = currentSessionId,
+                projectPath = _state.value.projectPath
+            )
+        }
     }
 
     private fun appendSystemMessage(
@@ -3275,6 +3294,10 @@ class ChatSessionManager(
             .distinct()
             .forEach(::refreshSubagentBatchState)
         syncApprovedApprovalScopesState()
+        workspaceChangeTracker.bind(
+            sessionId = currentSessionId,
+            projectPath = _state.value.projectPath
+        )
         if (previousSessionId != session.id) {
             emitSessionTransition(
                 sessionId = previousSessionId,
@@ -3421,6 +3444,10 @@ class ChatSessionManager(
                 )
             }
         ).copyWithRestoredProjectConfig(restoredProjectConfig)
+        workspaceChangeTracker.bind(
+            sessionId = currentSessionId,
+            projectPath = _state.value.projectPath
+        )
         saveCurrentSession()
         syncApprovedApprovalScopesState()
     }
@@ -4042,6 +4069,26 @@ class ChatSessionManager(
         val normalizedQuery = query.trim().replace('\\', '/')
         val results = linkedMapOf<String, FileMentionUi>()
 
+        if (isDirectMentionPath(normalizedQuery)) {
+            val directMention = resolveMentionFromQuery(projectPath, normalizedQuery)
+                ?: return emptyList()
+            if (directMention.kind != FileMentionKind.DIRECTORY) {
+                return listOf(directMention)
+            }
+            val directChildren = mutableListOf<FileMentionUi>()
+            collectProjectFiles(
+                rootPath = directMention.path,
+                currentDir = directMention.path,
+                depth = 0,
+                out = directChildren,
+                maxFiles = minOf(160, limit.coerceAtLeast(1) * 8),
+                budget = MentionDirectoryScanBudget()
+            )
+            return (listOf(directMention) + directChildren)
+                .distinctBy { it.path }
+                .take(limit)
+        }
+
         resolveMentionFromQuery(projectPath, normalizedQuery)?.let { mention ->
             results[mention.path] = mention
         }
@@ -4052,7 +4099,8 @@ class ChatSessionManager(
             currentDir = projectPath,
             depth = 0,
             out = discovered,
-            maxFiles = 160
+            maxFiles = 160,
+            budget = MentionDirectoryScanBudget()
         )
 
         discovered
@@ -4109,6 +4157,8 @@ class ChatSessionManager(
                 ConversationExportFormat.MARKDOWN -> buildMarkdownExport(session)
                 ConversationExportFormat.JSON ->
                     SensitiveDataSanitizer.sanitizeText(conversationStore.encodeSession(session))
+                ConversationExportFormat.PORTABLE_JSON ->
+                    SensitiveDataSanitizer.sanitizeText(PortableConversationCodec.encode(session))
                 ConversationExportFormat.DOCTOR -> buildDoctorReport(
                     session = session,
                     config = resolvedConfig,
@@ -4270,7 +4320,8 @@ class ChatSessionManager(
         text: String,
         mentionedFiles: List<FileMentionUi> = emptyList(),
         pendingImages: List<PendingImageAttachmentUi> = emptyList(),
-        selectedSkills: List<GlobalSkill> = emptyList()
+        selectedSkills: List<GlobalSkill> = emptyList(),
+        onUserMessageAccepted: ((ChatMessageUi) -> Unit)? = null
     ): String? {
         val normalizedText = text.trim()
         if ((normalizedText.isBlank() && pendingImages.isEmpty()) || _state.value.isProcessing) return null
@@ -4325,7 +4376,8 @@ class ChatSessionManager(
                 } else {
                     null
                 }
-            ).joinToString("\n\n").takeIf { it.isNotBlank() }
+            ).joinToString("\n\n").takeIf { it.isNotBlank() },
+            onUserMessageAccepted = onUserMessageAccepted
         )
         return mergeToastMessages(autoCompressionToast, executionToast)
     }
@@ -4497,6 +4549,11 @@ class ChatSessionManager(
         val history = buildHistory()
         val compressionContext = buildCompressionContext()
         val recentSessionHistoryClue = stateBeforePlanning.recentSessionHistoryClue
+        val workspaceChangeBatch = workspaceChangeTracker.prepareAttachment(
+            sessionId = currentSessionId,
+            projectPath = stateBeforePlanning.projectPath
+        )
+        val computerWorkspaceChangeBatch = computerWorkspaceGateway.prepareExternalChanges()
         _state.value = applyWorkflowPlanGenerationStartTransition(_state.value)
         try {
             val response = callProviderWithConfiguredStreaming(
@@ -4507,7 +4564,11 @@ class ChatSessionManager(
                         goal = normalizedGoal,
                         history = history,
                         compressionContext = compressionContext,
-                        mentionedFiles = mentionedFiles
+                        mentionedFiles = mentionedFiles,
+                        extraContext = listOfNotNull(
+                            workspaceChangeBatch?.attachment,
+                            computerWorkspaceChangeBatch?.attachment
+                        ).joinToString("\n\n").takeIf { it.isNotBlank() }
                     ),
                     model = plannerConfig.getActiveModel(),
                     temperature = 0.2,
@@ -4518,6 +4579,8 @@ class ChatSessionManager(
                     tools = null
                 )
             )
+            workspaceChangeBatch?.let(workspaceChangeTracker::acknowledge)
+            computerWorkspaceChangeBatch?.let(computerWorkspaceGateway::acknowledgeExternalChanges)
             val rawPlan = response.content?.trim().orEmpty()
             val parsedPlan = parseWorkflowPlan(
                 goal = normalizedGoal,
@@ -4916,7 +4979,8 @@ class ChatSessionManager(
         configOverride: ProviderConfig? = null,
         extraUserContext: String? = null,
         forceWritableTools: Boolean = false,
-        planApprovalAutoApproveWindow: PlanApprovalAutoApproveWindow? = null
+        planApprovalAutoApproveWindow: PlanApprovalAutoApproveWindow? = null,
+        onUserMessageAccepted: ((ChatMessageUi) -> Unit)? = null
     ) {
         val stateBeforeSend = _state.value
         if ((modelInput.isBlank() && pendingImages.isEmpty()) || stateBeforeSend.isProcessing) return
@@ -4937,16 +5001,21 @@ class ChatSessionManager(
             sendCodexMessageInternal(
                 userVisibleText = userVisibleText,
                 modelInput = modelInput,
+                mentionedFiles = mentionedFiles,
                 pendingImages = pendingImages,
                 extraUserContext = extraUserContext,
                 config = config,
-                stateBeforeSend = stateBeforeSend
+                stateBeforeSend = stateBeforeSend,
+                onUserMessageAccepted = onUserMessageAccepted
             )
             return
         }
         val responsesContinuation = resolveActiveResponsesContinuation(config)
         val continuationSessionId = currentSessionId
-        lastSessionConfig = config
+        // Older profiles stored MCP tools as `mcp_<tool>`. Keep that preference only when
+        // exactly one connected server exports the raw tool name; ambiguous legacy entries stay
+        // disabled rather than accidentally granting a second server the same permission.
+        lastSessionConfig = resolveLegacyMcpToolAllowList(config)
         val apiKey = config.getActiveApiKey()
         if (apiKey.isBlank()) {
             appendSystemMessage(
@@ -4972,7 +5041,7 @@ class ChatSessionManager(
         if (orchestratorDecision.allowWriteTools) {
             mcpRegistry?.let { mcp ->
             mcp.getMcpTools()
-                .filter { config.isMcpToolEnabled(it.name) }
+                .filter { lastSessionConfig.isMcpToolEnabled(it.name) }
                 .forEach { toolRegistry.register(it) }
             }
         }
@@ -4984,7 +5053,12 @@ class ChatSessionManager(
         val sessionGoalContext = buildSessionGoalContext()
         val projectSkillsContext = buildProjectSkillsContext()
         val mcpToolsContext = buildEnabledMcpToolsContext()
-        val fileMentionContext = buildMentionedFilesContext(mentionedFiles)
+        val contextSelection = buildContextSelectionSnapshot(
+            state = stateBeforeSend,
+            mentionedFiles = mentionedFiles,
+            query = userVisibleText
+        )
+        val fileMentionContext = buildMentionedFilesContext(contextSelection.toFileMentions())
         val executionInterruptContext = buildExecutionInterruptionContext(existingClarificationAnswers)
         if (pendingImages.isNotEmpty() && !config.isMultimodalEnabled()) {
             appendSystemMessage(
@@ -5009,6 +5083,16 @@ class ChatSessionManager(
         } else {
             null
         }
+        val workspaceChangeBatch = workspaceChangeTracker.prepareAttachment(
+            sessionId = currentSessionId,
+            projectPath = stateBeforeSend.projectPath
+        )
+        val computerWorkspaceChangeBatch = computerWorkspaceGateway.prepareExternalChanges()
+        val resolvedExtraUserContext = listOfNotNull(
+            extraUserContext?.trim()?.takeIf { it.isNotBlank() },
+            workspaceChangeBatch?.attachment,
+            computerWorkspaceChangeBatch?.attachment
+        ).joinToString("\n\n").takeIf { it.isNotBlank() }
         val stableSystemContext = listOfNotNull(
             compressionContext,
             projectContext,
@@ -5046,7 +5130,7 @@ class ChatSessionManager(
             recentSessionHistoryReferenceContext = recentSessionHistoryReferenceContext,
             recentSkillUsageContext = recentSkillUsageContext,
             recentMemoryUpdateSuggestionContext = recentMemoryUpdateSuggestionContext,
-            extraUserContext = extraUserContext
+            extraUserContext = resolvedExtraUserContext
         )
         val resolvedBaseModelInput = modelInput.ifBlank {
             if (importedImages.isNotEmpty()) {
@@ -5071,6 +5155,7 @@ class ChatSessionManager(
             isStreaming = true
         )
         appendMessages(userMsg, assistantMsg)
+        onUserMessageAccepted?.invoke(userMsg)
         currentStreamingId = assistantMsg.id
         _state.value = _state.value.copy(
             isProcessing = true,
@@ -5096,6 +5181,8 @@ class ChatSessionManager(
                 state = stateBeforeSend,
                 executionGoal = executionGoal
             ) != null
+            workspaceChangeBatch?.let(workspaceChangeTracker::acknowledge)
+            computerWorkspaceChangeBatch?.let(computerWorkspaceGateway::acknowledgeExternalChanges)
             agentLoop?.processMessage(
                 userMessage = userModelMessage,
                 history = history,
@@ -5287,10 +5374,12 @@ class ChatSessionManager(
     private suspend fun sendCodexMessageInternal(
         userVisibleText: String,
         modelInput: String,
+        mentionedFiles: List<FileMentionUi>,
         pendingImages: List<PendingImageAttachmentUi>,
         extraUserContext: String?,
         config: ProviderConfig,
-        stateBeforeSend: SessionState
+        stateBeforeSend: SessionState,
+        onUserMessageAccepted: ((ChatMessageUi) -> Unit)? = null
     ) {
         val appServer = codexAppServer
         if (appServer == null) {
@@ -5341,6 +5430,11 @@ class ChatSessionManager(
             val threadId = thread.id?.takeIf { it.isNotBlank() }
                 ?: throw IllegalStateException("Codex app-server did not return a thread id")
             _state.value = _state.value.copy(codexThreadId = threadId)
+            val workspaceChangeBatch = workspaceChangeTracker.prepareAttachment(
+                sessionId = currentSessionId,
+                projectPath = stateBeforeSend.projectPath
+            )
+            val computerWorkspaceChangeBatch = computerWorkspaceGateway.prepareExternalChanges()
 
             val userMsg = ChatMessageUi(
                 id = nextId(),
@@ -5353,6 +5447,7 @@ class ChatSessionManager(
             // those later deltas to a pre-inserted placeholder made the final
             // answer appear above its own commands in the transcript.
             appendMessage(userMsg)
+            onUserMessageAccepted?.invoke(userMsg)
             currentStreamingId = null
             _state.value = _state.value.copy(
                 isProcessing = true,
@@ -5426,9 +5521,38 @@ class ChatSessionManager(
                     kind = CodexAdditionalContextKind.APPLICATION
                 )
             }
+            val contextSelection = buildContextSelectionSnapshot(
+                state = stateBeforeSend,
+                mentionedFiles = mentionedFiles,
+                query = userVisibleText
+            )
+            buildMentionedFilesContext(contextSelection.toFileMentions())?.let { fileContext ->
+                additionalContext["murong.user_selected_files"] = CodexAdditionalContext(
+                    value = fileContext.take(12_000),
+                    kind = CodexAdditionalContextKind.UNTRUSTED
+                )
+            }
+            if (contextSelection.items.isNotEmpty()) {
+                additionalContext["murong.context_selection"] = CodexAdditionalContext(
+                    value = contextSelection.toAuditText(),
+                    kind = CodexAdditionalContextKind.APPLICATION
+                )
+            }
             extraUserContext?.trim()?.takeIf { it.isNotBlank() }?.let { userContext ->
                 additionalContext["murong.user_selected_context"] = CodexAdditionalContext(
                     value = userContext.take(12_000),
+                    kind = CodexAdditionalContextKind.UNTRUSTED
+                )
+            }
+            workspaceChangeBatch?.attachment?.let { attachment ->
+                additionalContext["murong.external_workspace_changes"] = CodexAdditionalContext(
+                    value = attachment,
+                    kind = CodexAdditionalContextKind.UNTRUSTED
+                )
+            }
+            computerWorkspaceChangeBatch?.attachment?.let { attachment ->
+                additionalContext["murong.computer_workspace_external_changes"] = CodexAdditionalContext(
+                    value = attachment,
                     kind = CodexAdditionalContextKind.UNTRUSTED
                 )
             }
@@ -5444,6 +5568,8 @@ class ChatSessionManager(
                     additionalContext = additionalContext
                 )
             )
+            workspaceChangeBatch?.let(workspaceChangeTracker::acknowledge)
+            computerWorkspaceChangeBatch?.let(computerWorkspaceGateway::acknowledgeExternalChanges)
             val turnId = turn.id?.takeIf { it.isNotBlank() }
                 ?: throw IllegalStateException("Codex app-server did not return a turn id")
             activeCodexTurn = ActiveCodexTurn(threadId = threadId, turnId = turnId)
@@ -5570,6 +5696,20 @@ class ChatSessionManager(
     private fun appendCodexToolCompletion(item: com.murong.agent.core.codex.CodexThreadItem) {
         val type = item.type.orEmpty().lowercase()
         if (!listOf("command", "file", "mcp", "web").any { marker -> marker in type }) return
+        val codexFileChangeFailed = item.status
+            ?.lowercase()
+            ?.let { status -> status in setOf("failed", "error", "cancelled") }
+            ?: false
+        if ("file" in type && !codexFileChangeFailed) {
+            val codexFileChanges = extractCodexFileChangePaths(item).map { path ->
+                ToolFileChange(path = path, operation = "codex_file_change")
+            }
+            workspaceChangeTracker.suppressInternalChanges(
+                sessionId = currentSessionId,
+                projectPath = _state.value.projectPath,
+                fileChanges = codexFileChanges
+            )
+        }
         appendMessage(
             ChatMessageUi(
                 id = nextId(),
@@ -5583,6 +5723,19 @@ class ChatSessionManager(
             )
         )
     }
+
+    private fun extractCodexFileChangePaths(
+        item: com.murong.agent.core.codex.CodexThreadItem
+    ): List<String> = buildList {
+        item.raw.codexText("path")?.let(::add)
+        listOf("changes", "files").forEach { field ->
+            (item.raw[field] as? JsonArray)?.forEach { element ->
+                val change = element as? JsonObject ?: return@forEach
+                change.codexText("path")?.let(::add)
+                change.codexText("filePath")?.let(::add)
+            }
+        }
+    }.map(String::trim).filter(String::isNotBlank).distinct()
 
     /**
      * app-server emits a tagged ThreadItem for each tool call.  The command and
@@ -6083,6 +6236,11 @@ class ChatSessionManager(
             require(result.success) {
                 "回滚 ${record.path} 失败: ${result.error ?: result.output}"
             }
+            workspaceChangeTracker.suppressInternalChanges(
+                sessionId = currentSessionId,
+                projectPath = _state.value.projectPath,
+                fileChanges = listOf(ToolFileChange(path = record.path, operation = "rollback"))
+            )
             currentContent
         }
     }
@@ -6143,10 +6301,103 @@ class ChatSessionManager(
         _state.value = SessionState(
             messages = imported.messages,
             sessionId = sessionId,
-            sessionTitle = title.ifBlank { "导入对话" }
+            sessionTitle = title.ifBlank { "导入对话" },
+            sessionGoal = imported.sessionGoal?.take(20_000),
+            usageSummary = imported.usageSummary,
+            compressionSnapshot = imported.compression
+                ?.takeIf { it.sourceMessageCount in 1..imported.messages.size }
+                ?.let { compression ->
+                    ContextCompressionUi(
+                        id = UUID.randomUUID().toString(),
+                        version = compression.version,
+                        summary = compression.summary,
+                        sourceMessageCount = compression.sourceMessageCount,
+                        sourceEndMessageId = imported.messages[compression.sourceMessageCount - 1].id,
+                        sourceEndMessageIndex = compression.sourceMessageCount - 1,
+                        createdAt = compression.createdAt,
+                        active = compression.active
+                    )
+                }
         )
+        workspaceChangeTracker.bind(sessionId = currentSessionId, projectPath = null)
         saveCurrentSession()
         return imported.messages.size
+    }
+
+    data class PortableHandoffImportResult(
+        val sessionId: String,
+        val messageCount: Int
+    )
+
+    /** Imports a desktop handoff and durably commits it before the caller acknowledges takeover. */
+    fun importPortableHandoff(rawText: String, sourceName: String? = null): PortableHandoffImportResult {
+        requirePortableHandoffIdle(_state.value, "接管电脑任务")
+        val messageCount = importConversation(rawText, sourceName)
+        val importedSessionId = currentSessionId
+        latestPersistJob?.cancel()
+        latestPersistJob = null
+        val generation = ++persistenceGeneration
+        val persistedSession = buildPersistedSession(
+            state = _state.value,
+            sessionId = importedSessionId,
+            approvedScopes = approvedApprovalScopes.toList(),
+            cachedSession = null
+        )
+        require(conversationStore.saveSession(persistedSession)) { "无法持久化手机接管任务" }
+        if (generation == persistenceGeneration && currentSessionId == importedSessionId) {
+            cachedCurrentPersistedSession = persistedSession
+        }
+        return PortableHandoffImportResult(importedSessionId, messageCount)
+    }
+
+    /** Produces a durable Android-authored portable document for safe return to the desktop owner. */
+    fun exportPortableHandoff(sessionId: String): Result<String> = runCatching {
+        val normalizedSessionId = sessionId.trim()
+        require(normalizedSessionId.isNotBlank()) { "手机接管任务 ID 为空" }
+        val persistedSession = if (normalizedSessionId == currentSessionId) {
+            val current = _state.value
+            requirePortableHandoffIdle(current, "归还电脑任务")
+            latestPersistJob?.cancel()
+            latestPersistJob = null
+            val generation = ++persistenceGeneration
+            val persisted = buildPersistedSession(
+                state = current,
+                sessionId = normalizedSessionId,
+                approvedScopes = approvedApprovalScopes.toList(),
+                cachedSession = cachedCurrentPersistedSession?.takeIf { it.id == normalizedSessionId }
+            )
+            require(conversationStore.saveSession(persisted)) { "无法保存待归还的手机任务" }
+            if (generation == persistenceGeneration && currentSessionId == normalizedSessionId) {
+                cachedCurrentPersistedSession = persisted
+            }
+            persisted
+        } else {
+            conversationStore.loadSession(normalizedSessionId)
+                ?: error("手机接管任务不存在")
+        }
+        requirePortableHandoffPersistedIdle(persistedSession)
+        PortableConversationCodec.encode(persistedSession)
+    }
+
+    fun discardPortableHandoffSession(sessionId: String): Boolean = deleteSession(sessionId)
+
+    private fun requirePortableHandoffIdle(state: SessionState, action: String) {
+        require(!state.isProcessing) { "当前手机任务仍在运行，结束后才能$action" }
+        require(state.pendingApproval == null && state.pendingAskRequest == null && state.pendingClarificationRequest == null) {
+            "当前手机任务仍有待处理交互，处理后才能$action"
+        }
+        require(state.backgroundJobs.none { it.status in ACTIVE_BACKGROUND_JOB_STATUSES }) {
+            "当前手机任务仍有后台任务，结束后才能$action"
+        }
+    }
+
+    private fun requirePortableHandoffPersistedIdle(session: PersistedSession) {
+        require(session.pendingApproval == null && session.pendingAskRequest == null && session.pendingClarificationRequest == null) {
+            "手机接管任务仍有待处理交互，处理后才能归还"
+        }
+        require(session.backgroundJobs.none { it.status in ACTIVE_BACKGROUND_JOB_STATUSES }) {
+            "手机接管任务仍有后台任务，结束后才能归还"
+        }
     }
 
     fun saveCurrentSession(config: ProviderConfig? = null) {
@@ -7342,6 +7593,22 @@ class ChatSessionManager(
         if (config.isBuiltinToolEnabled("web_fetch")) {
             registry.register(WebFetchTool())
         }
+        registry.register(
+            ComputerWorkspaceTool(
+                gateway = computerWorkspaceGateway,
+                allowWrite = allowWriteTools
+            ),
+            isEnabled = { computerWorkspaceGateway.activeWorkspace()?.readable == true },
+            isPromptExposed = { computerWorkspaceGateway.activeWorkspace()?.readable == true }
+        )
+        registry.register(
+            ComputerTerminalTool(
+                gateway = computerWorkspaceGateway,
+                allowExecute = allowWriteTools
+            ),
+            isEnabled = { computerWorkspaceGateway.activeWorkspace()?.terminal == true },
+            isPromptExposed = { computerWorkspaceGateway.activeWorkspace()?.terminal == true }
+        )
         if (subagentTool != null) {
             registry.register(subagentTool, isEnabled = { allowWriteTools })
             createSubagentPresetTools(subagentTool)
@@ -9485,6 +9752,35 @@ class ChatSessionManager(
         }.trim()
     }
 
+    private fun resolveLegacyMcpToolAllowList(config: ProviderConfig): ProviderConfig {
+        if (config.allowAllMcpTools || config.allowedMcpTools.isEmpty()) return config
+        val availableTools = mcpRegistry?.getMcpTools().orEmpty()
+        if (availableTools.isEmpty()) return config
+        val canonicalNames = availableTools.map { it.name }.toSet()
+        val migrated = config.allowedMcpTools.mapNotNull { allowedName ->
+            val normalized = allowedName.trim().lowercase(Locale.ROOT)
+            when {
+                normalized in canonicalNames -> normalized
+                !normalized.startsWith("mcp_") || normalized.startsWith("mcp__") -> null
+                else -> {
+                    val rawToolName = normalized.removePrefix("mcp_")
+                    availableTools
+                        .filter { tool ->
+                            tool.name.substringAfterLast("__").lowercase(Locale.ROOT) == rawToolName
+                        }
+                        .singleOrNull()
+                        ?.name
+                }
+            }
+        }
+        return if (migrated.isEmpty()) config else config.copy(
+            allowedMcpTools = (config.allowedMcpTools.filterNot { legacy ->
+                val normalized = legacy.trim().lowercase(Locale.ROOT)
+                normalized.startsWith("mcp_") && !normalized.startsWith("mcp__")
+            } + migrated).distinct()
+        )
+    }
+
     private fun isGitHubMcpTool(tool: Tool): Boolean {
         val normalizedName = tool.name.lowercase(Locale.ROOT)
         val normalizedDescription = tool.description.lowercase(Locale.ROOT)
@@ -9493,7 +9789,7 @@ class ChatSessionManager(
 
     private fun mcpToolCapabilityHint(tool: Tool): String? {
         if (!isGitHubMcpTool(tool)) return null
-        val normalizedName = tool.name.removePrefix("mcp_").lowercase(Locale.ROOT)
+        val normalizedName = tool.name.substringAfterLast("__").lowercase(Locale.ROOT)
         return if (isGitHubWriteToolName(normalizedName)) {
             "GitHub 写操作，需审批"
         } else {
@@ -9565,7 +9861,8 @@ class ChatSessionManager(
         goal: String,
         history: List<ChatMessage>,
         compressionContext: String?,
-        mentionedFiles: List<FileMentionUi>
+        mentionedFiles: List<FileMentionUi>,
+        extraContext: String? = null
     ): List<ChatMessage> {
         val planInstruction = """
             You are preparing an execution plan for a coding assistant.
@@ -9590,7 +9887,10 @@ class ChatSessionManager(
                 ChatMessage(
                     role = "user",
                     content = buildString {
-                        buildTurnScopedAuxiliaryUserContext(mentionedFiles)?.let {
+                        buildTurnScopedAuxiliaryUserContext(
+                            mentionedFiles = mentionedFiles,
+                            extraContext = extraContext
+                        )?.let {
                             appendLine(it)
                             appendLine()
                         }
@@ -10300,9 +10600,28 @@ class ChatSessionManager(
             .distinctBy { it.path }
             .take(MAX_MENTIONED_FILES_PER_REQUEST)
             .forEach { mention ->
-                val content = mention.inlineContent ?: readCurrentFileContent(mention.path)
+                val content = mention.inlineContent ?: when (mention.inclusionMode) {
+                    FileMentionInclusionMode.TEXT_EXCERPT -> when (mention.kind) {
+                        FileMentionKind.TEXT,
+                        FileMentionKind.SCRIPT -> readCurrentFileContent(mention.path)
+                        else -> null
+                    }
+                    FileMentionInclusionMode.METADATA -> when (mention.kind) {
+                        FileMentionKind.ARCHIVE -> buildArchiveMentionPreview(mention.path)
+                        else -> null
+                    }
+                    FileMentionInclusionMode.DIRECTORY_MANIFEST -> when (mention.kind) {
+                        FileMentionKind.DIRECTORY -> buildDirectoryMentionPreview(mention.path)
+                        else -> null
+                    }
+                    else -> null
+                }
                 val snippet = when {
-                    content == null -> "(文件不存在或读取失败)"
+                    mention.accessState != FileMentionAccessState.READABLE ->
+                        "当前访问状态：${mention.accessState.label}。未读取文件内容。"
+                    mention.inclusionMode == FileMentionInclusionMode.NAME_ONLY ->
+                        "仅向模型提供文件名称和路径，未读取内容。"
+                    content == null -> fileMentionContextPolicy(mention.kind)
                     content.length > MAX_MENTION_FILE_CHARS ->
                         content.take(MAX_MENTION_FILE_CHARS) + "\n...(已截断)"
                     else -> content
@@ -10316,6 +10635,13 @@ class ChatSessionManager(
                 totalChars += limitedSnippet.length
                 sections += buildString {
                     appendLine("文件: ${mention.displayPath}")
+                    appendLine("类型: " + mention.kind.label)
+                    appendLine("来源: " + mention.source.label)
+                    appendLine("纳入方式: " + mention.inclusionMode.label)
+                    appendLine("访问状态: " + mention.accessState.label)
+                    mention.byteSize?.let { size ->
+                        appendLine("大小: " + formatMentionByteSize(size))
+                    }
                     appendLine(limitedSnippet)
                 }.trim()
             }
@@ -10328,32 +10654,110 @@ class ChatSessionManager(
         }.trim()
     }
 
+    private fun buildArchiveMentionPreview(path: String): String? {
+        val result = RootFile.listArchiveEntries(path)
+        if (!result.available) {
+            return "归档文件：仅提供文件元数据；当前环境没有可用的 ZIP 条目读取器，未解压也未读取二进制内容。"
+        }
+        return buildString {
+            append("归档条目清单（只读，未解压）：")
+            result.entries.forEach { entry -> append("\n- ").append(entry) }
+            if (result.truncated) append("\n- ...(条目已截断)")
+        }
+    }
+
+    /**
+     * Gives the model enough structure to discuss a selected folder without turning a directory
+     * mention into an implicit storage crawl.  This is intentionally one level only, bounded, and
+     * does not follow symbolic links or open any child file.
+     */
+    private fun buildDirectoryMentionPreview(path: String): String? {
+        val listing = RootFile.lsPaged(path, limit = MAX_MENTION_DIRECTORY_MANIFEST_ENTRIES)
+        if (listing.entries.isEmpty()) {
+            return "目录第一层清单（只读，不递归）：目录为空、不可读取，或当前没有可显示的条目。"
+        }
+        var ignoredCount = 0
+        val visibleEntries = listing.entries
+            .filter { name ->
+                val ignored = name in IGNORED_MENTION_DIRECTORY_NAMES
+                if (ignored) ignoredCount += 1
+                !ignored
+            }
+            .take(MAX_MENTION_DIRECTORY_MANIFEST_ENTRIES)
+        return buildString {
+            appendLine("目录第一层清单（只读，不递归；不会读取、执行或上传子文件）：")
+            visibleEntries.forEach { name ->
+                val childPath = joinPath(path, name)
+                val metadata = RootFile.inspect(childPath)
+                append("- ").append(name)
+                when {
+                    metadata == null -> append(" · 状态未知")
+                    metadata.isSymbolicLink -> append(" · 符号链接（未展开）")
+                    metadata.isDirectory -> append(" · 目录（未递归）")
+                    metadata.isFile -> {
+                        append(" · ").append(detectFileMentionKind(name).label)
+                        metadata.byteSize?.let { append(" · ").append(formatMentionByteSize(it)) }
+                    }
+                    else -> append(" · 状态未知")
+                }
+                appendLine()
+            }
+            if (ignoredCount > 0) appendLine("- ...(已忽略 $ignoredCount 个缓存/构建目录)")
+            if (listing.truncated) appendLine("- ...(第一层条目已截断)")
+            append("边界：只列出第一层名称和元数据；不会自动进入子目录、展开符号链接或读取二进制内容。")
+        }.trim()
+    }
+
     private fun collectProjectFiles(
         rootPath: String,
         currentDir: String,
         depth: Int,
         out: MutableList<FileMentionUi>,
-        maxFiles: Int
+        maxFiles: Int,
+        budget: MentionDirectoryScanBudget
     ) {
-        if (depth > MAX_MENTION_FILE_SCAN_DEPTH || out.size >= maxFiles || !RootFile.dirExists(currentDir)) return
+        val normalizedRoot = rootPath.trim().trimEnd('/', '\\')
+        if (
+            depth > MAX_MENTION_FILE_SCAN_DEPTH ||
+            out.size >= maxFiles ||
+            budget.totalBytes >= MAX_MENTION_DIRECTORY_TOTAL_BYTES ||
+            !isPathWithinMentionRoot(normalizedRoot, currentDir) ||
+            !RootFile.dirExists(currentDir) ||
+            (currentDir.trimEnd('/', '\\') != normalizedRoot &&
+                File(currentDir).name in IGNORED_MENTION_DIRECTORY_NAMES)
+        ) {
+            return
+        }
         RootFile.ls(currentDir)
             .sorted()
             .take(MAX_MENTION_DIRECTORY_ENTRIES)
             .forEach { childName ->
                 if (out.size >= maxFiles) return
                 val fullPath = joinPath(currentDir, childName)
+                if (!isPathWithinMentionRoot(normalizedRoot, fullPath)) return@forEach
+                val metadata = RootFile.inspect(fullPath)
+                if (metadata?.isSymbolicLink == true) return@forEach
                 when {
-                    RootFile.dirExists(fullPath) -> collectProjectFiles(
+                    metadata?.isDirectory == true || RootFile.dirExists(fullPath) -> collectProjectFiles(
                         rootPath = rootPath,
                         currentDir = fullPath,
                         depth = depth + 1,
                         out = out,
-                        maxFiles = maxFiles
+                        maxFiles = maxFiles,
+                        budget = budget
                     )
-                    RootFile.fileExists(fullPath) -> out += FileMentionUi(
-                        path = fullPath,
-                        displayPath = toRelativePath(rootPath, fullPath)
-                    )
+                    metadata?.isFile == true || RootFile.fileExists(fullPath) -> {
+                        val byteSize = metadata?.byteSize ?: 0L
+                        if (budget.totalBytes + byteSize > MAX_MENTION_DIRECTORY_TOTAL_BYTES) return@forEach
+                        budget.totalBytes += byteSize
+                        out += FileMentionUi(
+                            path = fullPath,
+                            displayPath = toRelativePath(rootPath, fullPath),
+                            byteSize = metadata?.byteSize,
+                            modifiedAtMillis = metadata?.modifiedAtMillis,
+                            source = FileMentionSource.SEARCH_RESULT
+                        )
+                    }
                 }
             }
     }
@@ -10361,24 +10765,107 @@ class ChatSessionManager(
     private fun resolveMentionFromQuery(rootPath: String, query: String): FileMentionUi? {
         if (query.isBlank()) return null
         val normalizedRoot = rootPath.trim().trimEnd('/', '\\')
-        val rawPath = if (query.startsWith("/") || query.contains(":\\")) {
-            query.replace('/', '\\')
+        val rawPath = if (isDirectMentionPath(query)) {
+            normalizeDirectMentionPath(query)
         } else {
             joinPath(normalizedRoot, query)
         }
-        return if (RootFile.fileExists(rawPath)) {
-            FileMentionUi(
+        val metadata = RootFile.inspect(rawPath)
+        return when {
+            metadata?.isFile == true || RootFile.fileExists(rawPath) -> FileMentionUi(
                 path = rawPath,
-                displayPath = toRelativePath(normalizedRoot, rawPath)
+                displayPath = toRelativePath(normalizedRoot, rawPath),
+                byteSize = metadata?.byteSize,
+                modifiedAtMillis = metadata?.modifiedAtMillis,
+                source = FileMentionSource.SEARCH_RESULT
             )
-        } else {
-            null
+            metadata?.isDirectory == true || RootFile.dirExists(rawPath) -> FileMentionUi(
+                path = rawPath,
+                displayPath = toRelativePath(normalizedRoot, rawPath),
+                kind = FileMentionKind.DIRECTORY,
+                modifiedAtMillis = metadata?.modifiedAtMillis,
+                source = FileMentionSource.SEARCH_RESULT
+            )
+            else -> null
         }
     }
 
     private fun joinPath(base: String, child: String): String {
         val separator = if (base.contains("\\")) "\\" else "/"
         return base.trimEnd('/', '\\') + separator + child.trimStart('/', '\\')
+    }
+
+    /**
+     * Context providers receive an immutable, bounded descriptor list.  Discovery is intentionally
+     * limited to a few conventional project documents; it never recursively scans the selected
+     * directory or adds files that the caller did not make explicit.
+     */
+    private fun buildContextSelectionSnapshot(
+        state: SessionState,
+        mentionedFiles: List<FileMentionUi>,
+        query: String? = null
+    ): ContextSelectionSnapshot {
+        return DefaultContextSourceRegistry.snapshot(
+            ContextSourceRequest(
+                projectPath = state.projectPath,
+                query = query,
+                selectedFiles = mentionedFiles,
+                projectDocumentation = discoverProjectDocumentation(state)
+            )
+        )
+    }
+
+    private fun discoverProjectDocumentation(state: SessionState): List<FileMentionUi> {
+        val root = state.projectPath?.trim()?.trimEnd('/', '\\').orEmpty()
+        val candidates = buildList {
+            if (root.isNotBlank()) {
+                addAll(PROJECT_DOCUMENTATION_CANDIDATES.map { relativePath -> joinPath(root, relativePath) })
+            }
+            // These paths are explicitly mounted by the user in the project knowledge UI (or by
+            // applying one of its snapshots), so they may participate without a storage crawl.
+            state.projectKnowledgePaths.forEach { configuredPath ->
+                val normalized = configuredPath.trim()
+                if (normalized.isNotBlank()) {
+                    add(if (isDirectMentionPath(normalized) || root.isBlank()) normalized else joinPath(root, normalized))
+                }
+            }
+        }
+        return candidates.asSequence()
+            .distinct()
+            .mapNotNull { path ->
+                val metadata = RootFile.inspect(path) ?: return@mapNotNull null
+                if (!metadata.isFile) return@mapNotNull null
+                val kind = detectFileMentionKind(path)
+                if (kind !in setOf(FileMentionKind.TEXT, FileMentionKind.SCRIPT)) return@mapNotNull null
+                FileMentionUi(
+                    path = path,
+                    displayPath = if (root.isBlank()) path.substringAfterLast('/').substringAfterLast('\\') else {
+                        toRelativePath(root, path)
+                    },
+                    byteSize = metadata.byteSize,
+                    modifiedAtMillis = metadata.modifiedAtMillis,
+                    kind = kind,
+                    source = FileMentionSource.PROJECT_KNOWLEDGE
+                )
+            }
+            .take(MAX_PROJECT_DOCUMENTATION_CONTEXT_ITEMS)
+            .toList()
+    }
+
+    private fun formatMentionByteSize(byteSize: Long): String {
+        return when {
+            byteSize >= 1024L * 1024L -> String.format(Locale.US, "%.1f MB", byteSize / 1024f / 1024f)
+            byteSize >= 1024L -> String.format(Locale.US, "%.1f KB", byteSize / 1024f)
+            else -> "$byteSize B"
+        }
+    }
+
+    /** Canonical containment prevents a child path or symlink target from escaping the chosen root. */
+    private fun isPathWithinMentionRoot(rootPath: String, candidatePath: String): Boolean {
+        val root = runCatching { File(rootPath).canonicalFile }.getOrNull() ?: return false
+        val candidate = runCatching { File(candidatePath).canonicalFile }.getOrNull() ?: return false
+        val rootPathWithSeparator = root.path.trimEnd(File.separatorChar) + File.separator
+        return candidate.path == root.path || candidate.path.startsWith(rootPathWithSeparator)
     }
 
     private fun toRelativePath(rootPath: String, fullPath: String): String {
@@ -10543,6 +11030,13 @@ class ChatSessionManager(
         fileChanges: List<ToolFileChange>
     ): List<FileChangeRecordUi> {
         if (fileChanges.isEmpty()) return emptyList()
+        if (!toolName.startsWith("task_repo_")) {
+            workspaceChangeTracker.suppressInternalChanges(
+                sessionId = currentSessionId,
+                projectPath = _state.value.projectPath,
+                fileChanges = fileChanges
+            )
+        }
         val currentState = _state.value
         val captureUpdate = captureTurnCheckpointFileChanges(
             captureState = currentTurnCheckpointCaptureState,
@@ -11773,6 +12267,25 @@ private const val MAX_MENTION_FILE_CHARS = 2500
 private const val MAX_MENTION_TOTAL_CHARS = 7000
 private const val MAX_MENTION_FILE_SCAN_DEPTH = 3
 private const val MAX_MENTION_DIRECTORY_ENTRIES = 80
+private const val MAX_MENTION_DIRECTORY_MANIFEST_ENTRIES = 40
+private const val MAX_MENTION_DIRECTORY_TOTAL_BYTES = 256L * 1024L * 1024L
+private data class MentionDirectoryScanBudget(var totalBytes: Long = 0L)
+private const val MAX_PROJECT_DOCUMENTATION_CONTEXT_ITEMS = 3
+private val PROJECT_DOCUMENTATION_CANDIDATES = listOf(
+    "README.md",
+    "README",
+    "ARCHITECTURE.md",
+    "docs/ARCHITECTURE.md",
+    "docs/architecture.md"
+)
+private val IGNORED_MENTION_DIRECTORY_NAMES = setOf(
+    ".git",
+    ".gradle",
+    "build",
+    "node_modules",
+    ".cache",
+    "__pycache__"
+)
 internal const val MAX_CLARIFICATION_TURNS = 3
 private const val MAX_TOOL_RESULTS_IN_HISTORY = 4
 private const val TOOL_RESULT_RECENT_MESSAGE_WINDOW = 10

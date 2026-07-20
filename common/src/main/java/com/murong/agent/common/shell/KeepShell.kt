@@ -31,15 +31,9 @@ class KeepShell(
      */
     fun checkRoot(): Boolean {
         return try {
-            val result = doCmdSync(
-                """
-                id -u || echo 'no_id'
-                whoami
-                set | grep -E '^USER_ID=0' || true
-                echo 'success'
-                """.trimIndent()
-            )
-            result.contains("success")
+            doCmdSync("id -u")
+                .lineSequence()
+                .any { it.trim() == "0" }
         } catch (e: Exception) {
             false
         }

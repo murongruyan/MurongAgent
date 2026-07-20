@@ -208,7 +208,9 @@ data class ProviderConfig(
     val maxTokens: Int = 8192
 ) {
     data class ApprovalDecisionExplanation(
-        val requiresApproval: Boolean, val explanationLabel: String, val explanationDetail: String
+        val requiresApproval: Boolean,
+        val explanationLabel: String,
+        val explanationDetail: String
     )
 
     fun getRelayConfigs(providerId: String): List<RelayConfig> = when (providerId) {
@@ -519,7 +521,7 @@ data class ProviderConfig(
     }
     fun getNormalizedWebSearchBackendUrl(): String? = normalizeBaseUrl(webSearchSearxngBaseUrl)
     fun getTrimmedWebSearchApiKey(): String = webSearchBingApiKey.trim()
-    fun isGitHubSignedIn(): Boolean = githubBackendSessionToken.isNotBlank() && githubToken.isNotBlank()
+    fun isGitHubSignedIn(): Boolean = githubToken.isNotBlank()
     private fun normalizeBaseUrl(raw: String?): String? {
         val trimmed = raw
             ?.trim()
@@ -730,7 +732,13 @@ Global configuration management:
         val trustedReadOnlyMcp = isTrustedReadOnlyMcpTool(normalizedToolName, approvalScopeTokens)
         return when (approvalMode) {
             ToolApprovalMode.READ_ONLY -> {
-                if (normalizedToolName in setOf("file", "web_fetch", "web_search", "subagent_launch") || trustedReadOnlyMcp) {
+                val readOnlyRequest = normalizedToolName in setOf(
+                    "code_search",
+                    "web_fetch",
+                    "web_search",
+                    "subagent_launch"
+                ) || (normalizedToolName == "file" && riskLevel == ApprovalRiskLevel.LOW) || trustedReadOnlyMcp
+                if (readOnlyRequest) {
                     ApprovalDecisionExplanation(requiresApproval = false,
                         explanationLabel = "只读模式放行",
                         explanationDetail = if (trustedReadOnlyMcp) {
@@ -805,12 +813,9 @@ Global configuration management:
                 }
             }
             ToolApprovalMode.ALL_AUTO -> {
-                if (requiresFreshApproval(normalizedToolName)) ApprovalDecisionExplanation(
-                    requiresApproval = true, explanationLabel = "关键工具始终审批",
-                    explanationDetail = "工具 `$normalizedToolName` 属于关键配置或交互操作，即使在自动模式下也需要重新人工确认。"
-                ) else ApprovalDecisionExplanation(
+                ApprovalDecisionExplanation(
                     requiresApproval = false, explanationLabel = "全部自动通过",
-                    explanationDetail = "当前模式为全部自动通过，默认不再弹出人工审批。"
+                    explanationDetail = "当前模式为全自动，工具调用不再弹出人工审批。"
                 )
             }
         }

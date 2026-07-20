@@ -25,12 +25,12 @@ class ApprovalPosturePolicyTest {
     }
 
     @Test
-    fun toApprovalModePresentation_mapsAllAutoToYoloPostureWithFreshApprovalNote() {
+    fun toApprovalModePresentation_mapsAllAutoToYoloPostureWithoutApprovalPrompt() {
         val presentation = ToolApprovalMode.ALL_AUTO.toApprovalModePresentation()
 
         assertEquals(ApprovalPosture.YOLO, presentation.posture)
         assertTrue(presentation.label.contains("Yolo"))
-        assertTrue(presentation.description.contains("fresh approval"))
+        assertTrue(presentation.description.contains("不再弹出人工审批"))
     }
 
     @Test
@@ -58,6 +58,6 @@ class ApprovalPosturePolicyTest {
         assertEquals(ApprovalModeSource.PROJECT_OVERRIDE, presentation.source)
         assertEquals("Yolo（全自动）（项目覆盖）", presentation.labelWithSource)
         assertEquals("审批: Yolo（全自动）", presentation.shortcutLabel)
-        assertTrue(presentation.runtimeMessage.contains("大多数操作默认直接通过"))
+        assertTrue(presentation.runtimeMessage.contains("所有已启用工具直接执行"))
     }
 }

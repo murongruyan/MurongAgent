@@ -58,6 +58,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.lifecycleScope
 import dagger.hilt.android.AndroidEntryPoint
 import com.murong.agent.core.config.WorkflowExecutionMode
 import com.murong.agent.core.config.resolveEffectiveProviderConfig
@@ -71,6 +72,7 @@ import com.murong.agent.core.loop.PendingApprovalUi
 import com.murong.agent.core.loop.UsageSummarySnapshot
 import com.murong.agent.core.loop.resolveApprovalRuntimeTelemetry
 import com.murong.agent.core.loop.resolveRuntimeStatusSnapshot
+import com.murong.agent.core.mcp.canonicalMcpToolName
 import com.murong.agent.core.tool.ApprovalRiskLevel
 import com.murong.agent.ui.chat.ChatViewModel
 import com.murong.agent.ui.chat.AskHostSurfaceKind
@@ -79,9 +81,11 @@ import com.murong.agent.ui.chat.AskUserDialog
 import com.murong.agent.ui.chat.ClarificationDialog
 import com.murong.agent.ui.chat.ClarificationHostSurfaceKind
 import com.murong.agent.ui.chat.ChatScreen
+import com.murong.agent.ui.chat.ExternalShareDraft
 import com.murong.agent.ui.chat.buildChatRuntimeHostPresentation
 import com.murong.agent.ui.chat.buildPendingPromptRuntimePresentation
 import com.murong.agent.ui.chat.buildSupplementalRuntimeStatusPresentations
+import com.murong.agent.ui.chat.shouldDispatchExternalShare
 import com.murong.agent.ui.chat.PendingPromptHostPresentation
 import com.murong.agent.ui.chat.WorkflowPlanDialog
 import com.murong.agent.ui.chat.WorkflowPlanHostSurfaceKind
@@ -106,6 +110,8 @@ import com.murong.agent.ui.project.ProjectSecondaryHostBridgeState
 import com.murong.agent.ui.project.ProjectScreen
 import com.murong.agent.ui.settings.AppUpdateUiState
 import com.murong.agent.ui.settings.AboutPage
+import com.murong.agent.ui.settings.DesktopAgentTasksDialog
+import com.murong.agent.ui.settings.LanWebSettingsViewModel
 import com.murong.agent.ui.settings.MURONG_EXTENSION_PACKAGE_NAME
 import com.murong.agent.ui.settings.SettingsScreen
 import com.murong.agent.ui.settings.ThemeSettingsPage
@@ -119,7 +125,11 @@ import com.murong.agent.ui.tools.buildApprovalToolsPresentation
 import com.murong.agent.ui.tools.buildCheckpointRollbackSuccessMessage
 import com.murong.agent.ui.tools.buildCheckpointToolsPresentation
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import java.text.SimpleDateFormat
@@ -132,6 +142,13 @@ import kotlin.math.floor
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     companion object {
+        const val EXTRA_OPEN_SAVED_WORKFLOWS =
+            "com.murong.agent.extra.OPEN_SAVED_WORKFLOWS"
+        private const val EXTRA_EXTERNAL_SHARE_DISPATCHED =
+            "com.murong.agent.extra.EXTERNAL_SHARE_DISPATCHED"
+        private const val STATE_EXTERNAL_SHARE_DISPATCHED =
+            "com.murong.agent.state.EXTERNAL_SHARE_DISPATCHED"
+
         val gitHubOAuthCallbackFlow = MutableSharedFlow<String>(
             replay = 1,
             extraBufferCapacity = 1,
@@ -139,27 +156,77 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private val externalShareChannel = Channel<ExternalShareDraft>(Channel.BUFFERED)
+    private val externalShareRequests = externalShareChannel.receiveAsFlow()
+    private val savedWorkflowOpenChannel = Channel<Unit>(Channel.BUFFERED)
+    private val savedWorkflowOpenRequests = savedWorkflowOpenChannel.receiveAsFlow()
+    private var externalShareDispatchedForActivityState = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        externalShareDispatchedForActivityState =
+            savedInstanceState?.getBoolean(STATE_EXTERNAL_SHARE_DISPATCHED, false) == true
         dispatchGitHubOAuthCallback(intent)
         enableEdgeToEdge()
         setContent {
             MurongTheme {
-                MainScreen()
+                MainScreen(
+                    externalShareRequests = externalShareRequests,
+                    savedWorkflowOpenRequests = savedWorkflowOpenRequests
+                )
             }
         }
+        dispatchExternalShare(intent, deliveredViaOnNewIntent = false)
+        dispatchSavedWorkflowOpen(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         dispatchGitHubOAuthCallback(intent)
+        dispatchExternalShare(intent, deliveredViaOnNewIntent = true)
+        dispatchSavedWorkflowOpen(intent)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean(
+            STATE_EXTERNAL_SHARE_DISPATCHED,
+            externalShareDispatchedForActivityState
+        )
+        super.onSaveInstanceState(outState)
     }
 
     private fun dispatchGitHubOAuthCallback(intent: Intent?) {
         val callbackUri = intent?.data?.toString().orEmpty()
         if (!GitHubAuthFlow.isGitHubOAuthCallback(callbackUri)) return
         gitHubOAuthCallbackFlow.tryEmit(callbackUri)
+    }
+
+    private fun dispatchExternalShare(intent: Intent?, deliveredViaOnNewIntent: Boolean) {
+        if (!ExternalShareIntentHandler.isShareIntent(intent)) return
+        val shareIntent = intent ?: return
+        if (
+            !shouldDispatchExternalShare(
+                intentAlreadyMarked = shareIntent.getBooleanExtra(
+                    EXTRA_EXTERNAL_SHARE_DISPATCHED,
+                    false
+                ),
+                activityStateAlreadyDispatched = externalShareDispatchedForActivityState,
+                deliveredViaOnNewIntent = deliveredViaOnNewIntent
+            )
+        ) return
+        externalShareDispatchedForActivityState = true
+        shareIntent.putExtra(EXTRA_EXTERNAL_SHARE_DISPATCHED, true)
+        lifecycleScope.launch {
+            ExternalShareIntentHandler.prepare(this@MainActivity, shareIntent)
+                ?.let { externalShareChannel.send(it) }
+        }
+    }
+
+    private fun dispatchSavedWorkflowOpen(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_OPEN_SAVED_WORKFLOWS, false) != true) return
+        intent.removeExtra(EXTRA_OPEN_SAVED_WORKFLOWS)
+        savedWorkflowOpenChannel.trySend(Unit)
     }
 }
 
@@ -186,7 +253,10 @@ internal data class ProjectSecondaryChromeState(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen() {
+internal fun MainScreen(
+    externalShareRequests: Flow<ExternalShareDraft> = emptyFlow(),
+    savedWorkflowOpenRequests: Flow<Unit> = emptyFlow()
+) {
     val shellScreens = remember {
         listOf(Screen.Chat, Screen.Projects, Screen.Tools, Screen.Settings)
     }
@@ -201,6 +271,7 @@ fun MainScreen() {
     val settingsSubpage = settingsState.subpage
     val settingsBackProgress = settingsState.backProgress
     val scope = rememberCoroutineScope()
+    val pendingExternalShares = remember { mutableStateListOf<ExternalShareDraft>() }
     val pagerState = rememberPagerState(
         initialPage = selectedTopLevelPage,
         pageCount = { shellScreens.size }
@@ -209,12 +280,20 @@ fun MainScreen() {
     val authVm: AuthViewModel = hiltViewModel()
     val chatVm: ChatViewModel = hiltViewModel()
     val settingsVm: SettingsViewModel = hiltViewModel()
+    val lanWebVm: LanWebSettingsViewModel = hiltViewModel()
     val authState by authVm.uiState.collectAsState()
     val chatState by chatVm.state.collectAsState()
     val chatConfig by chatVm.config.collectAsState()
     val codexUsage by chatVm.codexUsage.collectAsState()
     val codexModelCatalog by chatVm.codexModelCatalog.collectAsState()
+    val voiceInputState by chatVm.voiceInputState.collectAsState()
+    val voiceSettings by chatVm.voiceSettings.collectAsState()
+    val offlineVoiceModelState by chatVm.offlineVoiceModelState.collectAsState()
+    val voicePlaybackState by chatVm.voicePlaybackState.collectAsState()
+    val activeVoicePlaybackMessageId by chatVm.activeVoicePlaybackMessageId.collectAsState()
+    val continuableVoicePlaybackMessageIds by chatVm.continuableVoicePlaybackMessageIds.collectAsState()
     val chatSessions by chatVm.sessions.collectAsState()
+    val desktopAgentState by lanWebVm.desktopAgentState.collectAsState()
     val archivedMemoryCandidates by chatVm.archivedMemoryCandidates.collectAsState()
     val settingsConfig by settingsVm.config.collectAsState()
     val appUpdateState by settingsVm.appUpdateState.collectAsState()
@@ -240,6 +319,9 @@ fun MainScreen() {
     val mcpServers by settingsVm.mcpServers.collectAsState()
     val mcpStatuses by settingsVm.mcpStatuses.collectAsState()
     val mcpConnectError by settingsVm.mcpConnectError.collectAsState()
+    val savedWorkflows by settingsVm.savedWorkflows.collectAsState()
+    val externalWorkflowAutomationState by settingsVm.externalWorkflowAutomationState.collectAsState()
+    val backupRestoreState by settingsVm.backupRestoreState.collectAsState()
     val gitHubAuthState by settingsVm.gitHubAuthState.collectAsState()
     val codexChatGptState by settingsVm.codexChatGptState.collectAsState()
     val effectiveChatConfig = remember(settingsConfig, chatState.projectToolPreferences) {
@@ -331,6 +413,7 @@ fun MainScreen() {
     var isChatSessionPanelVisible by rememberSaveable { mutableStateOf(false) }
     var chatSessionPanelBackProgress by remember { mutableFloatStateOf(0f) }
     var dialogState by remember { mutableStateOf(MainScreenDialogState()) }
+    var showDesktopAgentTasks by rememberSaveable { mutableStateOf(false) }
     var hasAutoCheckedUpdates by rememberSaveable { mutableStateOf(false) }
     var dismissedUpdateDialogKey by rememberSaveable { mutableStateOf<String?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -721,6 +804,33 @@ fun MainScreen() {
         MainActivity.gitHubOAuthCallbackFlow.collect { callbackUri ->
             authVm.handleGitHubCallback(callbackUri)
             settingsVm.handleGitHubOAuthCallback(callbackUri)
+        }
+    }
+
+    LaunchedEffect(savedWorkflowOpenRequests) {
+        savedWorkflowOpenRequests.collect {
+            navigateToTopLevel(Screen.Tools)
+        }
+    }
+
+    LaunchedEffect(externalShareRequests) {
+        externalShareRequests.collect { draft ->
+            if (pendingExternalShares.none { it.requestId == draft.requestId }) {
+                pendingExternalShares += draft
+            }
+            navigateToTopLevel(Screen.Chat)
+            val acceptedSummary = when {
+                draft.files.isNotEmpty() && draft.text.isNotBlank() ->
+                    "已把分享文字和 ${draft.files.size} 个文件加入聊天草稿"
+                draft.files.isNotEmpty() ->
+                    "已把 ${draft.files.size} 个分享文件加入聊天草稿"
+                draft.text.isNotBlank() -> "已把分享文字加入聊天草稿"
+                else -> "没有可加入聊天的分享内容"
+            }
+            val notice = draft.notices.firstOrNull()
+            snackbarHostState.showSnackbar(
+                listOfNotNull(acceptedSummary, notice).joinToString("；")
+            )
         }
     }
 
@@ -1231,6 +1341,28 @@ fun MainScreen() {
                                 codexModelCatalog = codexModelCatalog,
                                 globalApprovalMode = settingsConfig.approvalMode,
                                 projectKnowledgePaths = chatState.projectKnowledgePaths,
+                                externalShareDraft = pendingExternalShares.firstOrNull(),
+                                onExternalShareConsumed = { requestId ->
+                                    pendingExternalShares.removeAll { it.requestId == requestId }
+                                },
+                                voiceInputState = voiceInputState,
+                                voiceSettings = voiceSettings,
+                                offlineVoiceModelState = offlineVoiceModelState,
+                                voicePlaybackState = voicePlaybackState,
+                                activeVoicePlaybackMessageId = activeVoicePlaybackMessageId,
+                                continuableVoicePlaybackMessageIds = continuableVoicePlaybackMessageIds,
+                                onStartVoiceInput = chatVm::startVoiceInput,
+                                onStopVoiceInput = chatVm::stopVoiceInput,
+                                onCancelVoiceInput = chatVm::cancelVoiceInput,
+                                onConsumeVoiceFinalText = chatVm::consumeVoiceFinalText,
+                                onVoiceInputError = chatVm::reportVoiceInputError,
+                                onOpenVoiceRecognitionSettings = chatVm::openVoiceRecognitionSettings,
+                                onUpdateVoiceSettings = chatVm::updateVoiceSettings,
+                                onInstallOfflineVoiceModel = chatVm::installOfflineVoiceModel,
+                                onDeleteOfflineVoiceModel = chatVm::deleteOfflineVoiceModel,
+                                onSpeakAssistantMessage = chatVm::speakAssistantMessage,
+                                onPauseVoicePlayback = chatVm::pauseVoicePlayback,
+                                onResumeVoicePlayback = chatVm::resumeVoicePlayback,
                                 onSend = { text, mentions, images, skills ->
                                     chatVm.sendMessage(text, mentions, images, skills)
                                 },
@@ -1464,6 +1596,8 @@ fun MainScreen() {
                                     SessionDrawerContent(
                                         currentSessionId = chatState.sessionId,
                                         sessions = chatSessions,
+                                        desktopSessions = desktopAgentState.snapshot?.sessions.orEmpty(),
+                                        desktopConnected = desktopAgentState.connected,
                                         onNewSession = {
                                             dispatchChatAction(
                                                 MainScreenChatAction.StartNewSession(closeDrawer = true)
@@ -1478,6 +1612,11 @@ fun MainScreen() {
                                             dispatchChatAction(
                                                 MainScreenChatAction.LoadSession(sessionId = sessionId)
                                             )
+                                        },
+                                        onLoadDesktopSession = { sessionId ->
+                                            lanWebVm.openDesktopSession(sessionId)
+                                            showDesktopAgentTasks = true
+                                            dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
                                         },
                                         onRenameSession = { sessionId ->
                                             val sessionTitle = chatSessions
@@ -1523,7 +1662,7 @@ fun MainScreen() {
                         repoScopedConfigs = chatState.repoScopedConfigs,
                         selectedViewerTaskRepository = selectedProjectTaskRepository,
                         mcpToolNames = mcpStatuses.flatMap { status ->
-                            status.toolNames.map { "mcp_$it" }
+                            status.toolNames.map { canonicalMcpToolName(status.name, it) }
                         }.distinct().sorted(),
                         sessions = chatSessions,
                         onNewTask = {
@@ -1647,6 +1786,18 @@ fun MainScreen() {
                         mcpConnectError = mcpConnectError,
                         onConnectMcpServers = { settingsVm.connectMcpServers() },
                         onRefreshMcpStatus = { settingsVm.refreshMcpStatus() },
+                        savedWorkflows = savedWorkflows,
+                        externalWorkflowAutomationState = externalWorkflowAutomationState,
+                        onSaveSavedWorkflow = { settingsVm.saveSavedWorkflow(it) },
+                        onDeleteSavedWorkflow = { settingsVm.deleteSavedWorkflow(it) },
+                        onRunSavedWorkflowNow = { id, foregroundConfirmed ->
+                            settingsVm.runSavedWorkflowNow(id, foregroundConfirmed)
+                        },
+                        onRefreshSavedWorkflows = { settingsVm.refreshSavedWorkflows() },
+                        onEnableExternalWorkflowAutomation = { settingsVm.enableExternalWorkflowAutomation() },
+                        onDisableExternalWorkflowAutomation = { settingsVm.disableExternalWorkflowAutomation() },
+                        onRotateExternalWorkflowToken = { settingsVm.rotateExternalWorkflowToken() },
+                        onClearOneTimeExternalWorkflowToken = { settingsVm.clearOneTimeExternalWorkflowToken() },
                         onUpdateConfig = { settingsVm.updateConfig(it) }
                     )
                 }
@@ -1688,6 +1839,17 @@ fun MainScreen() {
                             onRemoveMcpServer = { settingsVm.removeMcpServer(it) },
                             onConnectMcpServers = { settingsVm.connectMcpServers() },
                             onRefreshMcpStatus = { settingsVm.refreshMcpStatus() },
+                            voiceSettings = voiceSettings,
+                            onUpdateVoiceSettings = chatVm::updateVoiceSettings,
+                            offlineVoiceModelState = offlineVoiceModelState,
+                            onInstallOfflineVoiceModel = chatVm::installOfflineVoiceModel,
+                            onDeleteOfflineVoiceModel = chatVm::deleteOfflineVoiceModel,
+                            backupRestoreState = backupRestoreState,
+                            suggestedBackupFileName = settingsVm.suggestedBackupFileName(),
+                            onRefreshBackupStatus = { settingsVm.refreshBackupStatus() },
+                            onUpdateBackupSettings = { settingsVm.updateBackupSettings(it) },
+                            onExportManualBackup = { settingsVm.exportManualBackup(it) },
+                            onRestoreBackup = { settingsVm.restoreBackup(it) },
                             onRefreshGitHubAuthStatus = { settingsVm.refreshGitHubAuthStatus() },
                             onRefreshDurableGlobalMemories = { settingsVm.refreshDurableGlobalMemories() },
                             onUpdateDurableGlobalMemory = { settingsVm.updateDurableGlobalMemory(it) },
@@ -2339,6 +2501,29 @@ fun MainScreen() {
                         .padding(horizontal = 12.dp, vertical = 6.dp)
                 )
             }
+
+            VoicePlaybackFloatingWindow(
+                playbackState = voicePlaybackState,
+                activeMessageId = activeVoicePlaybackMessageId,
+                onPause = chatVm::pauseVoicePlayback,
+                onResume = chatVm::resumeVoicePlayback,
+                onStop = chatVm::stopVoicePlayback,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .imePadding()
+                    .padding(
+                        start = 16.dp,
+                        end = 16.dp,
+                        bottom = if (showBottomBar) 112.dp else 20.dp,
+                    ),
+            )
+        }
+
+        if (showDesktopAgentTasks) {
+            DesktopAgentTasksDialog(
+                viewModel = lanWebVm,
+                onDismiss = { showDesktopAgentTasks = false }
+            )
         }
 
         if (showTaskDialog) {
@@ -3137,7 +3322,7 @@ private fun ExportConversationDialog(
         }
     ) {
         Text(
-            text = "选择导出格式，当前支持 Markdown、JSON 和脱敏后的 Doctor Report。",
+            text = "选择导出格式：完整 JSON 保留本机状态，跨端 JSON 可在 Windows 与 Android 间继续会话，Doctor Report 用于脱敏诊断。",
             style = MaterialTheme.typography.bodySmall
         )
         ConversationExportFormat.entries.forEach { format ->

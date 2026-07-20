@@ -11,6 +11,9 @@ import com.murong.agent.core.config.ProviderBalanceService
 import com.murong.agent.core.codex.CodexAppServerClient
 import com.murong.agent.core.loop.ChatSessionManager
 import com.murong.agent.core.mcp.McpRegistry
+import com.murong.agent.backup.MurongBackupManager
+import com.murong.agent.lan.LanWebComputerWorkspaceBridge
+import com.murong.agent.lan.LanWebCredentialSyncBridge
 import javax.inject.Singleton
 
 @Module
@@ -35,6 +38,15 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideMurongBackupManager(
+        @ApplicationContext context: Context,
+        configRepository: ConfigRepository,
+        mcpRegistry: McpRegistry,
+        credentialSyncBridge: LanWebCredentialSyncBridge
+    ): MurongBackupManager = MurongBackupManager(context, configRepository, mcpRegistry, credentialSyncBridge)
+
+    @Provides
+    @Singleton
     fun provideCodexAppServerClient(
         @ApplicationContext context: Context
     ): CodexAppServerClient = CodexAppServerClient(context)
@@ -45,11 +57,13 @@ object AppModule {
         @ApplicationContext context: Context,
         configRepository: ConfigRepository,
         mcpRegistry: McpRegistry,
-        codexAppServerClient: CodexAppServerClient
+        codexAppServerClient: CodexAppServerClient,
+        computerWorkspaceBridge: LanWebComputerWorkspaceBridge
     ): ChatSessionManager = ChatSessionManager(
         context = context,
         configRepository = configRepository,
         mcpRegistry = mcpRegistry,
-        codexAppServer = codexAppServerClient
+        codexAppServer = codexAppServerClient,
+        computerWorkspaceGateway = computerWorkspaceBridge
     )
 }

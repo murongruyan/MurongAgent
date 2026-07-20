@@ -29,7 +29,7 @@ class ProjectApprovalModePresentationTest {
         ).message
 
         assertTrue(summary.contains("Yolo（全自动）（项目覆盖）"))
-        assertTrue(summary.contains("大多数操作默认直接通过"))
+        assertTrue(summary.contains("所有已启用工具直接执行"))
     }
 
     @Test

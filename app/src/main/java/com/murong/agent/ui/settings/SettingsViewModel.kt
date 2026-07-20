@@ -1,9 +1,19 @@
 package com.murong.agent.ui.settings
 
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import com.murong.agent.automation.SavedWorkflowScheduler
+import com.murong.agent.automation.ForegroundSavedWorkflowExecutor
+import com.murong.agent.automation.ExternalWorkflowAccessStatus
+import com.murong.agent.automation.ExternalWorkflowAccessStore
+import com.murong.agent.backup.MurongBackupManager
+import com.murong.agent.backup.MurongBackupSettingsSnapshot
+import com.murong.agent.backup.MurongBackupStatus
+import com.murong.agent.core.automation.SavedWorkflowDefinition
 import com.murong.agent.common.shell.KeepShellPublic
 import com.murong.agent.core.config.ConfigRepository
 import com.murong.agent.core.config.AgentBackendKind
@@ -110,19 +120,40 @@ data class AppUpdateUiState(
             ?: downloadUrl?.takeIf { it.isNotBlank() }
 }
 
+data class BackupRestoreUiState(
+    val status: MurongBackupStatus = MurongBackupStatus(),
+    val isBusy: Boolean = false,
+    val message: String? = null,
+    val error: String? = null,
+    val restartRequired: Boolean = false
+)
+
+data class ExternalWorkflowAutomationUiState(
+    val status: ExternalWorkflowAccessStatus = ExternalWorkflowAccessStatus(),
+    /** Plaintext is intentionally held in memory only until this one-time dialog is dismissed. */
+    val oneTimeToken: String? = null,
+    val message: String? = null,
+    val error: String? = null
+)
+
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
+    @ApplicationContext context: Context,
     val configRepository: ConfigRepository,
     private val providerBalanceService: ProviderBalanceService,
     private val mcpRegistry: McpRegistry,
     private val chatSessionManager: ChatSessionManager,
-    private val codexAppServer: CodexAppServerClient
+    private val codexAppServer: CodexAppServerClient,
+    private val backupManager: MurongBackupManager
 ) : ViewModel() {
     private companion object {
         const val AUTO_BALANCE_SYNC_INTERVAL_MS = 10 * 60 * 1000L
     }
 
     private val githubJson = Json { ignoreUnknownKeys = true; isLenient = true }
+    private val savedWorkflowScheduler = SavedWorkflowScheduler(context)
+    private val externalWorkflowAccessStore = ExternalWorkflowAccessStore(context)
+    private val foregroundSavedWorkflowExecutor = ForegroundSavedWorkflowExecutor(context, chatSessionManager)
     private val githubClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -148,6 +179,18 @@ class SettingsViewModel @Inject constructor(
 
     private val _mcpConnectError = MutableStateFlow<String?>(null)
     val mcpConnectError: StateFlow<String?> = _mcpConnectError.asStateFlow()
+
+    private val _savedWorkflows = MutableStateFlow<List<SavedWorkflowDefinition>>(emptyList())
+    val savedWorkflows: StateFlow<List<SavedWorkflowDefinition>> = _savedWorkflows.asStateFlow()
+
+    private val _externalWorkflowAutomationState = MutableStateFlow(
+        ExternalWorkflowAutomationUiState(status = externalWorkflowAccessStore.status())
+    )
+    val externalWorkflowAutomationState: StateFlow<ExternalWorkflowAutomationUiState> =
+        _externalWorkflowAutomationState.asStateFlow()
+
+    private val _backupRestoreState = MutableStateFlow(BackupRestoreUiState(status = backupManager.status()))
+    val backupRestoreState: StateFlow<BackupRestoreUiState> = _backupRestoreState.asStateFlow()
 
     // ─── 会话列表 ───────────────────────────────
     private val _sessions = MutableStateFlow<List<SessionSummary>>(emptyList())
@@ -179,6 +222,7 @@ class SettingsViewModel @Inject constructor(
 
     init {
         _mcpServers.value = mcpRegistry.loadConfigs()
+        _savedWorkflows.value = savedWorkflowScheduler.list()
         _sessions.value = chatSessionManager.listSessions()
         checkRoot()
         refreshDurableGlobalMemories()
@@ -561,6 +605,164 @@ class SettingsViewModel @Inject constructor(
 
     fun refreshMcpStatus() {
         _mcpStatuses.value = mcpRegistry.getServerStatuses()
+    }
+
+    fun saveSavedWorkflow(workflow: SavedWorkflowDefinition) {
+        viewModelScope.launch(Dispatchers.IO) {
+            savedWorkflowScheduler.save(workflow)
+            _savedWorkflows.value = savedWorkflowScheduler.list()
+        }
+    }
+
+    fun deleteSavedWorkflow(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            savedWorkflowScheduler.delete(id)
+            _savedWorkflows.value = savedWorkflowScheduler.list()
+        }
+    }
+
+    fun runSavedWorkflowNow(id: String, foregroundConfirmed: Boolean = false) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (foregroundConfirmed) {
+                val workflow = savedWorkflowScheduler.beginForegroundRun(id)
+                if (workflow != null) {
+                    val startedAt = workflow.lastRun?.startedAt ?: System.currentTimeMillis()
+                    val result = foregroundSavedWorkflowExecutor.execute(
+                        workflow = workflow,
+                        config = configRepository.getConfig()
+                    )
+                    savedWorkflowScheduler.finishForegroundRun(workflow.id, startedAt, result)
+                }
+            } else {
+                savedWorkflowScheduler.runNow(id)
+            }
+            _savedWorkflows.value = savedWorkflowScheduler.list()
+        }
+    }
+
+    fun refreshSavedWorkflows() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _savedWorkflows.value = savedWorkflowScheduler.list()
+            _externalWorkflowAutomationState.value = _externalWorkflowAutomationState.value.copy(
+                status = externalWorkflowAccessStore.status()
+            )
+        }
+    }
+
+    fun enableExternalWorkflowAutomation() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { externalWorkflowAccessStore.enableWithNewToken() }
+                .onSuccess { generated ->
+                    _externalWorkflowAutomationState.value = ExternalWorkflowAutomationUiState(
+                        status = generated.status,
+                        oneTimeToken = generated.token,
+                        message = "外部自动化已启用；请立即保存令牌。"
+                    )
+                }
+                .onFailure { error ->
+                    _externalWorkflowAutomationState.value = _externalWorkflowAutomationState.value.copy(
+                        error = error.message ?: "无法启用外部自动化"
+                    )
+                }
+        }
+    }
+
+    fun disableExternalWorkflowAutomation() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val status = externalWorkflowAccessStore.disable()
+            _externalWorkflowAutomationState.value = ExternalWorkflowAutomationUiState(
+                status = status,
+                message = "外部自动化已关闭，旧令牌已作废。"
+            )
+        }
+    }
+
+    fun rotateExternalWorkflowToken() = enableExternalWorkflowAutomation()
+
+    fun clearOneTimeExternalWorkflowToken() {
+        _externalWorkflowAutomationState.value = _externalWorkflowAutomationState.value.copy(oneTimeToken = null)
+    }
+
+    fun refreshBackupStatus() {
+        _backupRestoreState.value = _backupRestoreState.value.copy(status = backupManager.status())
+    }
+
+    fun suggestedBackupFileName(): String = backupManager.suggestedManualFileName()
+
+    fun updateBackupSettings(settings: MurongBackupSettingsSnapshot) {
+        if (_backupRestoreState.value.isBusy) return
+        viewModelScope.launch {
+            _backupRestoreState.value = _backupRestoreState.value.copy(isBusy = true, message = null, error = null)
+            runCatching { backupManager.updateSettings(settings) }
+                .onSuccess { status ->
+                    _backupRestoreState.value = BackupRestoreUiState(
+                        status = status,
+                        message = if (status.settings.dailyBackupEnabled) "每日完整备份已启用" else "每日完整备份已关闭"
+                    )
+                }
+                .onFailure { error ->
+                    _backupRestoreState.value = _backupRestoreState.value.copy(
+                        isBusy = false,
+                        error = error.message ?: "无法更新备份设置"
+                    )
+                }
+        }
+    }
+
+    fun exportManualBackup(uri: Uri) {
+        if (_backupRestoreState.value.isBusy) return
+        viewModelScope.launch {
+            _backupRestoreState.value = _backupRestoreState.value.copy(
+                isBusy = true,
+                message = "正在创建完整备份…",
+                error = null,
+                restartRequired = false
+            )
+            runCatching { backupManager.exportManualBackup(uri) }
+                .onSuccess { result ->
+                    _backupRestoreState.value = BackupRestoreUiState(
+                        status = backupManager.status(),
+                        message = result.message
+                    )
+                }
+                .onFailure { error ->
+                    _backupRestoreState.value = BackupRestoreUiState(
+                        status = backupManager.status(),
+                        error = error.message ?: "完整备份失败"
+                    )
+                }
+        }
+    }
+
+    fun restoreBackup(uri: Uri) {
+        if (_backupRestoreState.value.isBusy) return
+        viewModelScope.launch {
+            _backupRestoreState.value = _backupRestoreState.value.copy(
+                isBusy = true,
+                message = "正在校验备份并创建恢复前快照…",
+                error = null,
+                restartRequired = false
+            )
+            runCatching { backupManager.restoreFromUri(uri) }
+                .onSuccess { result ->
+                    _backupRestoreState.value = BackupRestoreUiState(
+                        status = backupManager.status(),
+                        message = buildString {
+                            append(result.message)
+                            result.preRestoreSnapshotName?.let { append("\n恢复前快照：$it") }
+                        },
+                        restartRequired = result.restartRequired
+                    )
+                    _mcpServers.value = mcpRegistry.loadConfigs()
+                    _savedWorkflows.value = savedWorkflowScheduler.list()
+                }
+                .onFailure { error ->
+                    _backupRestoreState.value = BackupRestoreUiState(
+                        status = backupManager.status(),
+                        error = error.message ?: "恢复失败，当前数据未被替换"
+                    )
+                }
+        }
     }
 
     // ─── 会话管理 ─────────────────────────────

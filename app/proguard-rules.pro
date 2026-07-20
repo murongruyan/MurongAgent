@@ -27,6 +27,10 @@
 -dontwarn okio.**
 -keep class okhttp3.** { *; }
 
+# sherpa-onnx reaches its native recognizer through JNI method names. Keep the upstream API
+# intact in minified releases so the optional offline voice provider is not stripped or renamed.
+-keep class com.k2fsa.sherpa.onnx.** { *; }
+
 # JGit pulls in some desktop/JVM-only integrations that Android does not provide.
 # Suppress those optional references so release minification can complete.
 -dontwarn java.lang.ProcessHandle

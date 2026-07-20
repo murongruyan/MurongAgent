@@ -704,6 +704,12 @@ class SubagentTool(
             val matchedTool = candidates
                 .mapNotNull(indexedByName::get)
                 .firstOrNull { tool -> baseConfig.isMcpToolEnabled(tool.name) }
+                ?: availableTools
+                    .filter { tool ->
+                        tool.name.substringAfterLast("__").lowercase() == normalized.removePrefix("mcp_") &&
+                            baseConfig.isMcpToolEnabled(tool.name)
+                    }
+                    .singleOrNull()
             if (matchedTool != null) {
                 resolved.putIfAbsent(matchedTool.name, matchedTool)
             }

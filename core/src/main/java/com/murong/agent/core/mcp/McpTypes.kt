@@ -56,6 +56,8 @@ data class McpServerConfig(
     val url: String = "",
     /** remote: request headers */
     val headers: Map<String, String> = emptyMap(),
+    /** Header name -> encrypted local secret reference. Values never enter exported diagnostics. */
+    val authHeaderSecretReferences: Map<String, String> = emptyMap(),
     /** per-request timeout in ms */
     val requestTimeoutMs: Long? = null,
     /** config source type */
@@ -89,6 +91,26 @@ data class McpToolDef(
     val serverName: String
 )
 
+/**
+ * The agent-visible tool id includes its owner, while the raw MCP name remains available for the
+ * JSON-RPC request. This prevents two servers exporting `search` from overwriting each other.
+ */
+fun McpToolDef.canonicalToolName(): String = canonicalMcpToolName(serverName, name)
+
+fun canonicalMcpToolName(serverName: String, rawToolName: String): String {
+    val supplied = rawToolName.trim().lowercase()
+    if (supplied.startsWith("mcp__") && supplied.count { it == '_' } >= 4) return supplied
+    val rawName = supplied.removePrefix("mcp_")
+    return "mcp__${canonicalMcpIdentifierPart(serverName)}__${canonicalMcpIdentifierPart(rawName)}"
+}
+
+fun canonicalMcpIdentifierPart(value: String): String {
+    return value.trim().lowercase()
+        .replace(Regex("[^a-z0-9]+"), "_")
+        .trim('_')
+        .ifBlank { "unnamed" }
+}
+
 /** MCP 服务器状态 */
 data class McpServerStatus(
     val name: String,
@@ -96,7 +118,10 @@ data class McpServerStatus(
     val toolCount: Int,
     val error: String? = null,
     val toolNames: List<String> = emptyList(),
-    val failureRecord: McpFailureRecord? = null
+    val failureRecord: McpFailureRecord? = null,
+    val lastConnectedAt: Long? = null,
+    val toolCacheUpdatedAt: Long? = null,
+    val configurationGeneration: Long = 0L
 )
 
 @Serializable

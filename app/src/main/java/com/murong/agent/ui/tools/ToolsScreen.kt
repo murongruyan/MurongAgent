@@ -2,6 +2,9 @@
 
 package com.murong.agent.ui.tools
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -29,6 +32,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -44,6 +48,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import com.murong.agent.ui.sanitizeForUiDisplay
 import androidx.compose.ui.text.font.FontWeight
@@ -58,6 +63,13 @@ import com.murong.agent.core.config.WorkflowFailureType
 import com.murong.agent.core.config.WorkflowExecutionMode
 import com.murong.agent.core.config.approvalModeLabel
 import com.murong.agent.core.config.toApprovalModePresentation
+import com.murong.agent.core.automation.SavedWorkflowDefinition
+import com.murong.agent.core.automation.SavedWorkflowTemplate
+import com.murong.agent.core.automation.backgroundEligibility
+import com.murong.agent.core.automation.SavedWorkflowBackgroundEligibility
+import com.murong.agent.core.automation.defaultNodes
+import com.murong.agent.core.automation.validate
+import com.murong.agent.core.doctor.SensitiveDataSanitizer
 import com.murong.agent.core.loop.ConversationCheckpointScope
 import com.murong.agent.core.loop.CheckpointRecoveryRecordUi
 import com.murong.agent.core.loop.FinalReadinessAuditOverview
@@ -70,6 +82,9 @@ import com.murong.agent.core.mcp.McpConfigSource
 import com.murong.agent.core.mcp.McpServerConfig
 import com.murong.agent.core.mcp.McpServerStatus
 import com.murong.agent.core.mcp.McpTransportType
+import com.murong.agent.core.mcp.canonicalMcpToolName
+import com.murong.agent.automation.ExternalWorkflowContract
+import com.murong.agent.ui.settings.ExternalWorkflowAutomationUiState
 import com.murong.agent.ui.PendingApprovalSummaryCard
 import com.murong.agent.ui.MurongDialog
 import com.murong.agent.ui.MurongGlassSurface
@@ -128,6 +143,16 @@ internal fun ToolsScreen(
     mcpConnectError: String?,
     onConnectMcpServers: () -> Unit,
     onRefreshMcpStatus: () -> Unit,
+    savedWorkflows: List<SavedWorkflowDefinition>,
+    externalWorkflowAutomationState: ExternalWorkflowAutomationUiState,
+    onSaveSavedWorkflow: (SavedWorkflowDefinition) -> Unit,
+    onDeleteSavedWorkflow: (String) -> Unit,
+    onRunSavedWorkflowNow: (String, Boolean) -> Unit,
+    onRefreshSavedWorkflows: () -> Unit,
+    onEnableExternalWorkflowAutomation: () -> Unit,
+    onDisableExternalWorkflowAutomation: () -> Unit,
+    onRotateExternalWorkflowToken: () -> Unit,
+    onClearOneTimeExternalWorkflowToken: () -> Unit,
     onUpdateConfig: (ProviderConfig) -> Unit
 ) {
     val bottomBarScrollPadding = rememberMurongBottomBarScrollPadding()
@@ -145,8 +170,13 @@ internal fun ToolsScreen(
     var selectedToolCall by remember { mutableStateOf<ToolCallRecordUi?>(null) }
     var selectedError by remember { mutableStateOf<ErrorRecordUi?>(null) }
     var selectedMcpServerName by remember { mutableStateOf<String?>(null) }
+    var editingSavedWorkflow by remember { mutableStateOf<SavedWorkflowDefinition?>(null) }
+    var showSavedWorkflowEditor by remember { mutableStateOf(false) }
+    var pendingForegroundWorkflow by remember { mutableStateOf<SavedWorkflowDefinition?>(null) }
     val subagentPresetNames = remember { listOf("explore", "research", "review", "security_review") }
     val mcpConfigsByName = remember(mcpServers) { mcpServers.associateBy { it.name } }
+
+    LaunchedEffect(Unit) { onRefreshSavedWorkflows() }
 
     fun updateBuiltinToolEnabled(toolName: String, enabled: Boolean) {
         val updated = config.enabledBuiltinTools.toMutableSet()
@@ -183,7 +213,9 @@ internal fun ToolsScreen(
     }
 
     val mcpToolNames = remember(mcpStatuses) {
-        mcpStatuses.flatMap { status -> status.toolNames.map { "mcp_$it" } }.distinct().sorted()
+        mcpStatuses.flatMap { status ->
+            status.toolNames.map { canonicalMcpToolName(status.name, it) }
+        }.distinct().sorted()
     }
     val builtInTools = remember(config, pendingApprovalPresentation, checkpointPresentation.fileChanges) {
         listOf(
@@ -344,6 +376,31 @@ internal fun ToolsScreen(
                 )
             }
             item {
+                SavedWorkflowCard(
+                    workflows = savedWorkflows,
+                    externalAutomationState = externalWorkflowAutomationState,
+                    onCreate = {
+                        editingSavedWorkflow = null
+                        showSavedWorkflowEditor = true
+                    },
+                    onEdit = {
+                        editingSavedWorkflow = it
+                        showSavedWorkflowEditor = true
+                    },
+                    onRunNow = { workflow ->
+                        if (workflow.backgroundEligibility() == SavedWorkflowBackgroundEligibility.ALLOWED_READ_ONLY) {
+                            onRunSavedWorkflowNow(workflow.id, false)
+                        } else {
+                            pendingForegroundWorkflow = workflow
+                        }
+                    },
+                    onDelete = onDeleteSavedWorkflow,
+                    onEnableExternalAutomation = onEnableExternalWorkflowAutomation,
+                    onDisableExternalAutomation = onDisableExternalWorkflowAutomation,
+                    onRotateExternalToken = onRotateExternalWorkflowToken
+                )
+            }
+            item {
                 ApprovalPostureCard(
                     overview = approvalPresentation.postureOverview,
                 )
@@ -407,11 +464,11 @@ internal fun ToolsScreen(
 
     if (showApprovalPolicyEditor) {
         ApprovalPolicyEditorDialog(
-            currentMode = config.approvalMode,
+            config = config,
             onDismiss = { showApprovalPolicyEditor = false },
-            onSave = { mode ->
+            onSave = { updatedConfig ->
                 showApprovalPolicyEditor = false
-                onUpdateConfig(config.copy(approvalMode = mode))
+                onUpdateConfig(updatedConfig)
             }
         )
     }
@@ -480,6 +537,39 @@ internal fun ToolsScreen(
                 showRecoveryTimeline = false
                 selectedRecoveryId = recoveryId
             }
+        )
+    }
+    if (showSavedWorkflowEditor) {
+        SavedWorkflowEditorDialog(
+            initial = editingSavedWorkflow,
+            currentProjectPath = currentProjectPath,
+            onDismiss = {
+                editingSavedWorkflow = null
+                showSavedWorkflowEditor = false
+            },
+            onSave = { workflow ->
+                onSaveSavedWorkflow(workflow)
+                editingSavedWorkflow = null
+                showSavedWorkflowEditor = false
+            }
+        )
+    }
+    pendingForegroundWorkflow?.let { workflow ->
+        ForegroundSavedWorkflowConfirmationDialog(
+            workflow = workflow,
+            onDismiss = {
+                pendingForegroundWorkflow = null
+            },
+            onConfirm = {
+                pendingForegroundWorkflow = null
+                onRunSavedWorkflowNow(workflow.id, true)
+            }
+        )
+    }
+    externalWorkflowAutomationState.oneTimeToken?.let { token ->
+        ExternalWorkflowTokenDialog(
+            token = token,
+            onDismiss = onClearOneTimeExternalWorkflowToken
         )
     }
     selectedToolCall?.let { record ->
@@ -569,6 +659,429 @@ private fun WorkflowCard(
             }
         }
     }
+}
+
+@Composable
+private fun SavedWorkflowCard(
+    workflows: List<SavedWorkflowDefinition>,
+    externalAutomationState: ExternalWorkflowAutomationUiState,
+    onCreate: () -> Unit,
+    onEdit: (SavedWorkflowDefinition) -> Unit,
+    onRunNow: (SavedWorkflowDefinition) -> Unit,
+    onDelete: (String) -> Unit,
+    onEnableExternalAutomation: () -> Unit,
+    onDisableExternalAutomation: () -> Unit,
+    onRotateExternalToken: () -> Unit
+) {
+    val context = LocalContext.current
+    ToolsPanelCard {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("保存的自动化", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "后台只运行固定的项目只读或 GitHub Actions GET 查询；导出和任何写入必须回到前台确认。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                FilledTonalButton(onClick = onCreate) { Text("新建") }
+            }
+            Surface(
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    Text("Tasker / 外部 Intent", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        if (externalAutomationState.status.enabled) {
+                            "已启用 · 令牌 ${externalAutomationState.status.tokenHint ?: "已生成"}。仅能运行保存且重新校验后的固定只读模板。"
+                        } else {
+                            "默认关闭。启用后生成一次性显示的令牌；关闭会立即作废旧令牌。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    externalAutomationState.status.lastRequestStatus?.let { status ->
+                        Text(
+                            "最近外部请求：$status${externalAutomationState.status.lastRequestMessage?.let { " · $it" }.orEmpty()}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (externalAutomationState.status.enabled) {
+                            TextButton(onClick = onRotateExternalToken) { Text("轮换令牌") }
+                            TextButton(onClick = onDisableExternalAutomation) { Text("停用并作废") }
+                        } else {
+                            FilledTonalButton(onClick = onEnableExternalAutomation) { Text("启用并生成令牌") }
+                        }
+                        TextButton(
+                            onClick = {
+                                copyPlainText(
+                                    context,
+                                    "Murong 外部工作流 Intent 模板",
+                                    externalWorkflowIntentTemplate()
+                                )
+                            }
+                        ) { Text("复制调用模板") }
+                    }
+                    Text(
+                        "task_text 仅作审计备注，不会变成 Agent 指令；project_path 只能收窄保存时的目录范围。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "ColorOS 等系统可能延迟冻结应用的广播；若要稳定后台触发，请在系统电池设置中允许 Murong 后台运行。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            if (workflows.isEmpty()) {
+                Text(
+                    "还没有保存的工作流。可创建项目诊断或目录摘要，并设定最短 15 分钟的周期。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                workflows.forEach { workflow ->
+                    Surface(
+                        shape = MaterialTheme.shapes.medium,
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Text(workflow.name, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "${workflow.template.label} · ${if (workflow.enabled) "启用" else "停用"} · 每 ${workflow.intervalMinutes} 分钟",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                workflowBackgroundLabel(workflow),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (workflow.backgroundEligibility() == SavedWorkflowBackgroundEligibility.ALLOWED_READ_ONLY) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.error
+                                }
+                            )
+                            workflow.lastRun?.let { record ->
+                                Text(
+                                    "最近：${workflowRunStatusLabel(record.status)}${record.summary.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                record.failureReason?.takeIf { it.isNotBlank() }?.let { reason ->
+                                    Text(
+                                        "原因：$reason",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                TextButton(onClick = { onEdit(workflow) }) { Text("编辑") }
+                                TextButton(onClick = { onRunNow(workflow) }) { Text("立即运行") }
+                                TextButton(
+                                    onClick = { copyPlainText(context, "Murong 工作流 ID", workflow.id) }
+                                ) { Text("复制 ID") }
+                                workflow.lastRun?.let { record ->
+                                    TextButton(
+                                        onClick = {
+                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                                                as? ClipboardManager
+                                            clipboard?.setPrimaryClip(
+                                                ClipData.newPlainText(
+                                                    "Murong 去敏工作流记录",
+                                                    savedWorkflowRunCopyText(workflow, record)
+                                                )
+                                            )
+                                        }
+                                    ) { Text("复制去敏记录") }
+                                }
+                                TextButton(onClick = { onDelete(workflow.id) }) { Text("删除") }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExternalWorkflowTokenDialog(
+    token: String,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    ToolsPopupDialog(
+        title = "外部自动化令牌",
+        subtitle = "令牌只显示这一次；Murong 只保存哈希。丢失后请轮换，不要把它放进聊天或日志。",
+        onDismissRequest = onDismiss,
+        actions = {
+            TextButton(onClick = onDismiss) { Text("完成") }
+        }
+    ) {
+        SelectionContainer {
+            Text(
+                token,
+                style = MaterialTheme.typography.bodyMedium,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+        FilledTonalButton(
+            onClick = {
+                copyPlainText(context, "Murong 外部自动化令牌", token)
+            }
+        ) { Text("复制令牌") }
+        Text(
+            "Tasker 使用“发送 Intent”，目标包 com.murong.agent，目标类 .automation.ExternalSavedWorkflowReceiver，动作 ${ExternalWorkflowContract.RUN_ACTION}。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+private fun copyPlainText(context: Context, label: String, value: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+    clipboard?.setPrimaryClip(ClipData.newPlainText(label, value))
+}
+
+private fun externalWorkflowIntentTemplate(): String =
+    "adb shell am broadcast --receiver-foreground " +
+        "-a ${ExternalWorkflowContract.RUN_ACTION} " +
+        "-n com.murong.agent/.automation.ExternalSavedWorkflowReceiver " +
+        "--es ${ExternalWorkflowContract.EXTRA_WORKFLOW_ID} <WORKFLOW_ID> " +
+        "--es ${ExternalWorkflowContract.EXTRA_ACCESS_TOKEN} <TOKEN> " +
+        "--es ${ExternalWorkflowContract.EXTRA_REQUEST_ID} <UNIQUE_REQUEST_ID> " +
+        "--es ${ExternalWorkflowContract.EXTRA_TASK_TEXT} <AUDIT_NOTE>"
+
+private fun savedWorkflowRunCopyText(
+    workflow: SavedWorkflowDefinition,
+    record: com.murong.agent.core.automation.SavedWorkflowRunRecord
+): String = SensitiveDataSanitizer.sanitizeText(
+    buildString {
+        appendLine("工作流：${workflow.name}")
+        appendLine("模板：${workflow.template.label}")
+        appendLine("状态：${workflowRunStatusLabel(record.status)}")
+        record.startedAt?.let { appendLine("开始：${formatTime(it)}") }
+        record.finishedAt?.let { appendLine("结束：${formatTime(it)}") }
+        record.summary.takeIf { it.isNotBlank() }?.let { appendLine("摘要：$it") }
+        record.failureReason?.takeIf { it.isNotBlank() }?.let { appendLine("原因：$it") }
+    },
+    redactPaths = true
+)
+
+@Composable
+private fun SavedWorkflowEditorDialog(
+    initial: SavedWorkflowDefinition?,
+    currentProjectPath: String?,
+    onDismiss: () -> Unit,
+    onSave: (SavedWorkflowDefinition) -> Unit
+) {
+    var name by remember(initial) {
+        mutableStateOf(initial?.name ?: "项目只读诊断")
+    }
+    var projectPath by remember(initial, currentProjectPath) {
+        mutableStateOf(initial?.projectPath ?: currentProjectPath.orEmpty())
+    }
+    var template by remember(initial) {
+        mutableStateOf(initial?.template ?: SavedWorkflowTemplate.PROJECT_READ_DIAGNOSTIC)
+    }
+    var githubRepository by remember(initial) { mutableStateOf(initial?.githubRepository.orEmpty()) }
+    var enabled by remember(initial) { mutableStateOf(initial?.enabled ?: false) }
+    var intervalMinutes by remember(initial) {
+        mutableStateOf((initial?.intervalMinutes ?: 60L).toString())
+    }
+    val workflowId = remember(initial?.id) { initial?.id ?: java.util.UUID.randomUUID().toString() }
+    val createdAt = remember(initial?.id) { initial?.createdAt ?: System.currentTimeMillis() }
+    val resolvedInterval = intervalMinutes.toLongOrNull() ?: 0L
+    val candidate = SavedWorkflowDefinition(
+        id = workflowId,
+        name = name,
+        template = template,
+        projectPath = projectPath.trim().takeIf { it.isNotBlank() },
+        githubRepository = githubRepository.trim().takeIf { it.isNotBlank() },
+        nodes = initial?.takeIf { it.template == template }?.nodes ?: template.defaultNodes(),
+        intervalMinutes = resolvedInterval,
+        enabled = enabled,
+        createdAt = createdAt,
+        lastRun = initial?.lastRun
+    )
+    val validation = candidate.validate()
+    ToolsLargeDialog(
+        title = if (initial == null) "新建保存的自动化" else "编辑保存的自动化",
+        onDismissRequest = onDismiss,
+        actions = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+            FilledTonalButton(onClick = { onSave(candidate) }, enabled = validation.isValid) { Text("保存") }
+        }
+    ) {
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            item("workflow-name") {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("名称") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+            }
+            item("workflow-project") {
+                OutlinedTextField(
+                    value = projectPath,
+                    onValueChange = { projectPath = it },
+                    label = { Text("项目范围（只读模板必填）") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+            }
+            item("workflow-template-title") { Text("模板", style = MaterialTheme.typography.labelLarge) }
+            SavedWorkflowTemplate.entries.forEach { option ->
+                item("workflow-template-${option.name}") {
+                    SelectableRow(
+                        title = option.label,
+                        subtitle = workflowTemplateDescription(option),
+                        selected = template == option,
+                        onClick = { template = option }
+                    )
+                }
+            }
+            if (template == SavedWorkflowTemplate.GITHUB_ACTIONS_STATUS) {
+                item("workflow-github-repository") {
+                    OutlinedTextField(
+                        value = githubRepository,
+                        onValueChange = { githubRepository = it },
+                        label = { Text("GitHub 仓库（owner/repository）") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
+            }
+            item("workflow-interval") {
+                OutlinedTextField(
+                    value = intervalMinutes,
+                    onValueChange = { intervalMinutes = it.filter(Char::isDigit) },
+                    label = { Text("周期（分钟，最短 15）") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+            }
+            item("workflow-enabled") {
+                ToggleRow(
+                    title = "启用周期调度",
+                    subtitle = "启用后仅符合后台只读限制的模板会真正被安排。",
+                    checked = enabled,
+                    onCheckedChange = { enabled = it }
+                )
+            }
+            item("workflow-safety") {
+                Text(
+                    workflowBackgroundLabel(candidate),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (candidate.backgroundEligibility() == SavedWorkflowBackgroundEligibility.ALLOWED_READ_ONLY) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    }
+                )
+            }
+            if (!validation.isValid) {
+                item("workflow-validation") {
+                    Text(
+                        validation.errors.joinToString("\n"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun workflowTemplateDescription(template: SavedWorkflowTemplate): String = when (template) {
+    SavedWorkflowTemplate.PROJECT_READ_DIAGNOSTIC -> "读取目录、可访问性和受限规模摘要，不读取文件正文。"
+    SavedWorkflowTemplate.DIRECTORY_CHANGE_SUMMARY -> "收集受限目录快照，便于后续人工比较。"
+    SavedWorkflowTemplate.GITHUB_ACTIONS_STATUS -> "固定 GET 请求读取最近 5 条 Actions 状态，可安全后台运行。"
+    SavedWorkflowTemplate.SESSION_SUMMARY_EXPORT -> "需要写入导出文件；后台不会绕过前台确认。"
+}
+
+@Composable
+private fun ForegroundSavedWorkflowConfirmationDialog(
+    workflow: SavedWorkflowDefinition,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    ToolsLargeDialog(
+        title = "确认前台执行",
+        onDismissRequest = onDismiss,
+        actions = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+            FilledTonalButton(onClick = onConfirm) { Text("确认执行一次") }
+        }
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(workflow.name, style = MaterialTheme.typography.titleSmall)
+            Text(
+                text = workflowForegroundConfirmationText(workflow),
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = "此确认只对本次运行有效；后台调度不会取得这项权限，且“禁止”权限规则仍会拦截执行。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+private fun workflowForegroundConfirmationText(workflow: SavedWorkflowDefinition): String = when (workflow.template) {
+    SavedWorkflowTemplate.GITHUB_ACTIONS_STATUS ->
+        "将通过当前 GitHub 登录读取 ${workflow.githubRepository?.trim().orEmpty()} 最近 5 条 Actions 运行状态，不会写入仓库。"
+    SavedWorkflowTemplate.SESSION_SUMMARY_EXPORT ->
+        "将把当前聊天会话导出为 Markdown 到应用文档目录。内容会写入文件，但不会上传到网络。"
+    SavedWorkflowTemplate.PROJECT_READ_DIAGNOSTIC,
+    SavedWorkflowTemplate.DIRECTORY_CHANGE_SUMMARY ->
+        "此模板是只读模板，不需要前台确认。"
+}
+
+private fun workflowBackgroundLabel(workflow: SavedWorkflowDefinition): String = when (workflow.backgroundEligibility()) {
+    SavedWorkflowBackgroundEligibility.ALLOWED_READ_ONLY -> "后台权限：允许（固定只读执行器）"
+    SavedWorkflowBackgroundEligibility.NEEDS_FOREGROUND_CONFIRMATION -> "后台权限：需要在前台确认"
+    SavedWorkflowBackgroundEligibility.INVALID -> "后台权限：定义无效，不能调度"
+}
+
+private fun workflowRunStatusLabel(status: com.murong.agent.core.automation.SavedWorkflowRunStatus): String = when (status) {
+    com.murong.agent.core.automation.SavedWorkflowRunStatus.NEVER -> "从未运行"
+    com.murong.agent.core.automation.SavedWorkflowRunStatus.QUEUED -> "已排队"
+    com.murong.agent.core.automation.SavedWorkflowRunStatus.RUNNING -> "运行中"
+    com.murong.agent.core.automation.SavedWorkflowRunStatus.SUCCEEDED -> "成功"
+    com.murong.agent.core.automation.SavedWorkflowRunStatus.FAILED -> "失败"
+    com.murong.agent.core.automation.SavedWorkflowRunStatus.BLOCKED -> "已拦截"
+    com.murong.agent.core.automation.SavedWorkflowRunStatus.CANCELLED -> "已取消"
 }
 
 @Composable
@@ -1165,26 +1678,41 @@ private fun ToolsLargeDialog(
 
 @Composable
 private fun ApprovalPolicyEditorDialog(
-    currentMode: ToolApprovalMode,
+    config: ProviderConfig,
     onDismiss: () -> Unit,
-    onSave: (ToolApprovalMode) -> Unit
+    onSave: (ProviderConfig) -> Unit
 ) {
-    var selectedMode by remember(currentMode) { mutableStateOf(currentMode) }
-    ToolsPopupDialog(
+    var selectedMode by remember(config.approvalMode) { mutableStateOf(config.approvalMode) }
+    ToolsLargeDialog(
         title = "审批模式",
         onDismissRequest = onDismiss,
         actions = {
             TextButton(onClick = onDismiss) { Text("取消") }
-            FilledTonalButton(onClick = { onSave(selectedMode) }) { Text("保存") }
+            FilledTonalButton(
+                onClick = {
+                    onSave(
+                        config.copy(
+                            approvalMode = selectedMode
+                        )
+                    )
+                }
+            ) { Text("保存") }
         }
     ) {
-        buildApprovalModeOptionPresentations().forEach { optionPresentation ->
-            SelectableRow(
-                title = optionPresentation.title,
-                subtitle = optionPresentation.subtitle,
-                selected = selectedMode == optionPresentation.mode,
-                onClick = { selectedMode = optionPresentation.mode ?: currentMode }
-            )
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            item("approval-mode-title") {
+                Text("会话审批模式", style = MaterialTheme.typography.labelLarge)
+            }
+            buildApprovalModeOptionPresentations().forEach { optionPresentation ->
+                item("approval-mode-${optionPresentation.mode}") {
+                    SelectableRow(
+                        title = optionPresentation.title,
+                        subtitle = optionPresentation.subtitle,
+                        selected = selectedMode == optionPresentation.mode,
+                        onClick = { selectedMode = optionPresentation.mode ?: config.approvalMode }
+                    )
+                }
+            }
         }
     }
 }
@@ -1554,7 +2082,9 @@ private fun McpStatusDetailSheet(
             }
             if (status?.toolNames?.isNotEmpty() == true) {
                 Text("工具列表", style = MaterialTheme.typography.labelLarge)
-                status.toolNames.forEach { Text("• $it") }
+                status.toolNames.forEach { toolName ->
+                    Text("• ${canonicalMcpToolName(serverName, toolName)}")
+                }
             }
         }
     }
@@ -1599,6 +2129,9 @@ internal fun buildMcpDetailFacts(
             if (config.sourcePath.isNotBlank()) add("来源路径: ${config.sourcePath}")
             add("自动连接: ${if (config.autoStart) "是" else "否"}")
             add("可信只读: ${config.trustedReadOnlyTools.size} 个")
+            if (config.authHeaderSecretReferences.isNotEmpty()) {
+                add("安全凭据引用: ${config.authHeaderSecretReferences.size} 个")
+            }
             add("传输类型: ${formatMcpTransportLabel(config.transport)}")
         } else {
             add("配置来源: 未保存")
@@ -1609,6 +2142,8 @@ internal fun buildMcpDetailFacts(
             add("可重试: ${if (failure.retryable) "是" else "否"}")
             add("失败信息: ${failure.message}")
         } ?: status?.error?.takeIf { it.isNotBlank() }?.let { add("最近错误: $it") }
+        status?.toolCacheUpdatedAt?.let { add("工具缓存更新时间: $it") }
+        status?.configurationGeneration?.takeIf { it > 0 }?.let { add("配置版本: $it") }
     }
 }
 
@@ -2011,7 +2546,7 @@ private fun formatTime(timestamp: Long): String {
 
 internal fun errorRecordTypeLabel(record: ErrorRecordUi): String {
     return when (record.kind) {
-        ErrorRecordKind.FINAL_READINESS -> "收尾提醒"
+        ErrorRecordKind.FINAL_READINESS -> "最终收口阻塞"
         ErrorRecordKind.GENERAL -> "错误"
     }
 }
@@ -2019,7 +2554,7 @@ internal fun errorRecordTypeLabel(record: ErrorRecordUi): String {
 internal fun buildFinalReadinessAuditOverviewHeadline(
     overview: FinalReadinessAuditOverview
 ): String {
-    return "待继续 ${overview.blockedCount} · 已恢复 ${overview.recoveredCount} · 已完成 ${overview.allowedCount}"
+    return "阻塞 ${overview.blockedCount} · 恢复 ${overview.recoveredCount} · 允许 ${overview.allowedCount}"
 }
 
 internal fun buildFinalReadinessAuditOverviewBreakdown(
@@ -2027,10 +2562,10 @@ internal fun buildFinalReadinessAuditOverviewBreakdown(
 ): String? {
     val parts = buildList {
         if (overview.writeSignOffBlockCount > 0) {
-            add("代码改动后待补充确认 ${overview.writeSignOffBlockCount}")
+            add("写后待签收 ${overview.writeSignOffBlockCount}")
         }
         if (overview.canonicalWorkflowBlockCount > 0) {
-            add("计划仍有剩余步骤 ${overview.canonicalWorkflowBlockCount}")
+            add("计划未收口 ${overview.canonicalWorkflowBlockCount}")
         }
     }
     return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")

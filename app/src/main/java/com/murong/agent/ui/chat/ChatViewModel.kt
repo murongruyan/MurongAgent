@@ -1,14 +1,21 @@
 package com.murong.agent.ui.chat
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import com.murong.agent.voice.VoiceChatController
+import com.murong.agent.voice.VoiceInputUiState
+import com.murong.agent.voice.OfflineVoiceModelUiState
 import com.murong.agent.core.config.ConfigRepository
 import com.murong.agent.core.config.GlobalSkill
 import com.murong.agent.core.config.ProviderConfig
 import com.murong.agent.core.config.GlobalMemory
 import com.murong.agent.core.config.GlobalRule
 import com.murong.agent.core.config.ProjectToolPreferences
+import com.murong.agent.core.voice.VoicePlaybackState
+import com.murong.agent.core.voice.VoiceSettings
 import com.murong.agent.core.codex.CodexAppServerClient
 import com.murong.agent.core.doctor.SensitiveDataSanitizer
 import com.murong.agent.core.loop.*
@@ -25,16 +32,25 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
+    @ApplicationContext context: Context,
     private val sessionManager: ChatSessionManager,
     private val configRepository: ConfigRepository,
     private val codexAppServer: CodexAppServerClient,
 ) : ViewModel() {
+    private data class SessionListRefreshKey(
+        val sessionId: String,
+        val sessionTitle: String,
+        val messageCount: Int,
+        val isProcessing: Boolean
+    )
+
     private companion object {
         private const val REMOTE_MENTION_LIMIT = 8
         private const val REMOTE_MENTION_CONTENT_LIMIT = 6
@@ -66,9 +82,31 @@ class ChatViewModel @Inject constructor(
     val toastMessages = _toastMessages.asSharedFlow()
     private var currentRemoteTaskRepository: ProjectGitHubRepoRef? = null
     private val replayTriggerGate = ReplayTriggerGate()
+    private val voiceController = VoiceChatController(context)
+    val voiceInputState: StateFlow<VoiceInputUiState> = voiceController.inputState
+    val voiceSettings: StateFlow<VoiceSettings> = voiceController.settings
+    val offlineVoiceModelState: StateFlow<OfflineVoiceModelUiState> = voiceController.offlineModelState
+    val voicePlaybackState: StateFlow<VoicePlaybackState> = voiceController.playbackState
+    val activeVoicePlaybackMessageId: StateFlow<Long?> = voiceController.activePlaybackMessageId
+    val continuableVoicePlaybackMessageIds: StateFlow<Set<Long>> =
+        voiceController.continuablePlaybackMessageIds
 
     init {
         refreshSessions()
+        viewModelScope.launch {
+            state.map { current ->
+                SessionListRefreshKey(
+                    sessionId = current.sessionId,
+                    sessionTitle = current.sessionTitle,
+                    messageCount = current.messages.size,
+                    isProcessing = current.isProcessing
+                )
+            }.distinctUntilChanged().collect {
+                // The LAN/Desktop bridge mutates the same ChatSessionManager as the
+                // phone UI, so its accepted messages must also refresh the drawer.
+                refreshSessions()
+            }
+        }
         viewModelScope.launch {
             codexAppServer.state.collect { runtime ->
                 runtime.rateLimits?.let { snapshot ->
@@ -332,6 +370,32 @@ class ChatViewModel @Inject constructor(
             currentRemoteTaskRepository = it
         }
     }
+
+    fun startVoiceInput() = voiceController.startInput()
+
+    fun stopVoiceInput() = voiceController.stopInput()
+
+    fun cancelVoiceInput() = voiceController.cancelInput()
+
+    fun consumeVoiceFinalText() = voiceController.consumeFinalText()
+
+    fun reportVoiceInputError(message: String) = voiceController.reportInputError(message)
+
+    fun openVoiceRecognitionSettings() = voiceController.openRecognitionSettings()
+
+    fun updateVoiceSettings(transform: (VoiceSettings) -> VoiceSettings) = voiceController.updateSettings(transform)
+
+    fun installOfflineVoiceModel() = voiceController.installOfflineVoiceModel()
+
+    fun deleteOfflineVoiceModel() = voiceController.deleteOfflineVoiceModel()
+
+    fun speakAssistantMessage(messageId: Long, content: String) = voiceController.speak(messageId, content)
+
+    fun pauseVoicePlayback() = voiceController.pauseSpeaking()
+
+    fun resumeVoicePlayback() = voiceController.resumeSpeaking()
+
+    fun stopVoicePlayback() = voiceController.stopSpeaking()
 
     fun clear() {
         sessionManager.clear()
@@ -703,6 +767,11 @@ class ChatViewModel @Inject constructor(
     fun refreshSessions() {
         _sessions.value = sessionManager.listSessions()
         _archivedMemoryCandidates.value = sessionManager.listArchivedMemoryCandidates()
+    }
+
+    override fun onCleared() {
+        voiceController.close()
+        super.onCleared()
     }
 
     private fun launchSendingOperation(block: suspend () -> Unit) {

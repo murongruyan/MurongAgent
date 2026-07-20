@@ -272,6 +272,17 @@ class CodexAppServerClient internal constructor(
         send(CodexAppServerProtocol.approvalResponse(requestId, decision))
     }
 
+    /** Stops the child process without permanently closing this reusable client. */
+    suspend fun stop() {
+        checkOpen()
+        desiredRunning.set(false)
+        cancelScheduledRestart()
+        lifecycleMutex.withLock {
+            stopActiveLocked()
+            resetConnectionState(CodexConnectionPhase.NEW)
+        }
+    }
+
     /** Final shutdown. Create a new client instance to connect again afterwards. */
     suspend fun close() {
         if (closed) return

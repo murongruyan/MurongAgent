@@ -3,6 +3,21 @@
 build/
 */build/
 !gradle/wrapper/gradle-wrapper.jar
+!desktop-agent/build/
+desktop-agent/build/*
+!desktop-agent/build/appicon.png
+!desktop-agent/build/windows/
+desktop-agent/build/windows/*
+!desktop-agent/build/windows/info.json
+!desktop-agent/build/darwin/
+desktop-agent/build/darwin/*
+!desktop-agent/build/darwin/Info.plist
+!desktop-agent/build/darwin/Info.dev.plist
+desktop-agent/dist/
+desktop-agent/desktop-agent.exe
+desktop-agent/.qa-data/
+desktop-agent/.qa-workspace/
+/voice-*.png
 
 # IDE
 .idea/

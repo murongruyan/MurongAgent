@@ -3,6 +3,8 @@ package com.murong.agent
 import android.app.Application
 import com.murong.agent.analytics.UsageAnalyticsTracker
 import com.murong.agent.common.toolchain.ToolchainManager
+import com.murong.agent.backup.MurongBackupPreferences
+import com.murong.agent.backup.MurongBackupScheduler
 import com.murong.agent.core.doctor.installPendingCrashHandler
 import dagger.hilt.android.HiltAndroidApp
 
@@ -15,6 +17,10 @@ class MurongApp : Application() {
         installPendingCrashHandler(this)
         ToolchainManager.initialize(this)
         ToolchainManager.warmUpAsync()
+        MurongBackupScheduler.applySettings(
+            context = this,
+            enabled = MurongBackupPreferences(this).settings().dailyBackupEnabled
+        )
         usageAnalyticsTracker = UsageAnalyticsTracker(this).also {
             registerActivityLifecycleCallbacks(it)
         }

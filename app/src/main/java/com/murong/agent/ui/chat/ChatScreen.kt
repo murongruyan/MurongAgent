@@ -2,7 +2,9 @@
 
 package com.murong.agent.ui.chat
 
+import android.Manifest
 import android.content.ClipData
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -20,6 +22,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.lazy.LazyColumn
@@ -37,6 +41,7 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material3.Icon
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -53,6 +58,8 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
@@ -78,6 +85,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import androidx.core.content.ContextCompat
 import com.murong.agent.common.project.resolveProjectKnowledgeFiles
 import com.murong.agent.core.mcp.McpServerConfig
 import androidx.compose.foundation.rememberScrollState
@@ -92,7 +100,9 @@ import com.murong.agent.core.loop.ArchivedMemoryCandidateScope
 import com.murong.agent.core.loop.ConversationCheckpointScope
 import com.murong.agent.core.loop.ConversationCheckpointUi
 import com.murong.agent.core.loop.FileChangeRecordUi
+import com.murong.agent.core.loop.FileMentionInclusionMode
 import com.murong.agent.core.loop.FileMentionUi
+import com.murong.agent.core.loop.FileMentionSource
 import com.murong.agent.core.loop.FinalReadinessReceipt
 import com.murong.agent.core.loop.ContextCompressionUi
 import com.murong.agent.core.loop.ContextCompressionPreviewUi
@@ -108,6 +118,7 @@ import com.murong.agent.core.loop.SubagentBatchUi
 import com.murong.agent.core.loop.SubagentRunUi
 import com.murong.agent.core.loop.UsageSummarySnapshot
 import com.murong.agent.core.loop.WorkspaceMode
+import com.murong.agent.lan.LanWebDesktopAgentTaskSummary
 import com.murong.agent.core.loop.formatCurrencyAmount
 import com.murong.agent.core.loop.estimateContextCompressionPreview
 import com.murong.agent.core.loop.resolveWorkspaceMode
@@ -124,6 +135,12 @@ import com.murong.agent.core.config.WorkflowExecutionMode
 import com.murong.agent.core.config.approvalModeDescription
 import com.murong.agent.core.config.approvalModeLabel
 import com.murong.agent.core.codex.CodexRateLimitWindow
+import com.murong.agent.core.voice.VoicePlaybackState
+import com.murong.agent.core.voice.VoiceRecognitionProvider
+import com.murong.agent.core.voice.VoiceRecognitionState
+import com.murong.agent.core.voice.VoiceSettings
+import com.murong.agent.voice.OfflineVoiceModelUiState
+import com.murong.agent.voice.VoiceInputUiState
 import com.murong.agent.core.provider.ProviderRegistry
 import com.murong.agent.ui.MurongDialog
 import com.murong.agent.ui.MurongChoiceDialogItem
@@ -149,6 +166,8 @@ import com.murong.agent.ui.rememberMurongMutedTextColor
 import com.murong.agent.ui.rememberMurongSurfaceColor
 import com.murong.agent.ui.toSessionReadinessPresentation
 import com.murong.agent.ui.settings.ProviderModelCatalogUiState
+import com.murong.agent.ui.voice.OfflineVoiceModelSetting
+import com.murong.agent.ui.voice.VoiceRecognitionProviderSetting
 import com.murong.agent.ui.settings.mergeProviderModelCandidates
 import com.murong.agent.ui.settings.withProviderModelSelection
 import kotlinx.coroutines.delay
@@ -241,6 +260,26 @@ internal fun ChatScreen(
     codexModelCatalog: CodexModelCatalogUiState = CodexModelCatalogUiState(),
     globalApprovalMode: ToolApprovalMode = executionProfileConfig.approvalMode,
     projectKnowledgePaths: List<String> = emptyList(),
+    externalShareDraft: ExternalShareDraft? = null,
+    onExternalShareConsumed: (String) -> Unit = {},
+    voiceInputState: VoiceInputUiState = VoiceInputUiState(),
+    voiceSettings: VoiceSettings = VoiceSettings(),
+    offlineVoiceModelState: OfflineVoiceModelUiState = OfflineVoiceModelUiState(),
+    voicePlaybackState: VoicePlaybackState = VoicePlaybackState.IDLE,
+    activeVoicePlaybackMessageId: Long? = null,
+    continuableVoicePlaybackMessageIds: Set<Long> = emptySet(),
+    onStartVoiceInput: () -> Unit = {},
+    onStopVoiceInput: () -> Unit = {},
+    onCancelVoiceInput: () -> Unit = {},
+    onConsumeVoiceFinalText: () -> Unit = {},
+    onVoiceInputError: (String) -> Unit = {},
+    onOpenVoiceRecognitionSettings: () -> Unit = {},
+    onUpdateVoiceSettings: ((VoiceSettings) -> VoiceSettings) -> Unit = {},
+    onInstallOfflineVoiceModel: () -> Unit = {},
+    onDeleteOfflineVoiceModel: () -> Unit = {},
+    onSpeakAssistantMessage: (Long, String) -> Unit = { _, _ -> },
+    onPauseVoicePlayback: () -> Unit = {},
+    onResumeVoicePlayback: () -> Unit = {},
     onSend: (String, List<FileMentionUi>, List<PendingImageAttachmentUi>, List<GlobalSkill>) -> Unit,
     onSetSessionGoal: (String) -> Unit = {},
     onClearSessionGoal: () -> Unit = {},
@@ -291,6 +330,7 @@ internal fun ChatScreen(
     onSaveInputHistory: (List<String>) -> Unit = {}
 ) {
     var inputText by remember { mutableStateOf("") }
+    var voiceDraftBaseText by remember(state.sessionId) { mutableStateOf<String?>(null) }
     val inputHistory = remember(state.sessionId) { mutableStateListOf<String>() }
     var inputHistoryIndex by remember(state.sessionId) { mutableIntStateOf(-1) }
     var inputDraftBeforeHistory by remember(state.sessionId) { mutableStateOf("") }
@@ -334,6 +374,7 @@ internal fun ChatScreen(
     var showApprovalPostureHint by remember(state.sessionId) { mutableStateOf(true) }
     var showApprovalModeDialog by remember(state.sessionId) { mutableStateOf(false) }
     var showSkillPicker by remember(state.sessionId) { mutableStateOf(false) }
+    var showVoiceSettings by remember(state.sessionId) { mutableStateOf(false) }
     var showQuestionJumpDialog by remember(state.sessionId) { mutableStateOf(false) }
     var showQuickNavigationDialog by remember(state.sessionId) { mutableStateOf(false) }
     var pendingJumpRoundId by remember(state.sessionId) { mutableStateOf<Long?>(null) }
@@ -788,12 +829,85 @@ internal fun ChatScreen(
             }
         }
     }
+    LaunchedEffect(externalShareDraft?.requestId, state.sessionId, multimodalEnabled) {
+        val sharedDraft = externalShareDraft ?: return@LaunchedEffect
+        inputText = mergeExternalShareDraftText(
+            currentText = inputText,
+            sharedText = sharedDraft.text,
+            fileCount = sharedDraft.files.size
+        )
+        inputDraftBeforeHistory = inputText
+        inputHistoryIndex = -1
+        sharedDraft.files.forEach { sharedFile ->
+            if (sharedFile.isImage() && multimodalEnabled) {
+                val image = sharedFile.toPendingImage()
+                if (selectedImages.none { it.uri == image.uri }) selectedImages += image
+            } else {
+                val mention = sharedFile.toFileMention()
+                if (selectedMentions.none { it.path == mention.path }) selectedMentions += mention
+            }
+        }
+        onExternalShareConsumed(sharedDraft.requestId)
+    }
     val cameraPreviewLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicturePreview()
     ) { bitmap ->
         val attachment = bitmap?.let { saveCapturedBitmapAsAttachment(context, it) }
         if (attachment != null && selectedImages.none { it.uri == attachment.uri }) {
             selectedImages.add(attachment)
+        }
+    }
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) onStartVoiceInput()
+        else onVoiceInputError("需要麦克风权限才能语音输入")
+    }
+    LaunchedEffect(
+        voiceInputState.recognitionState,
+        voiceInputState.partialText,
+        voiceInputState.finalText,
+    ) {
+        val finalText = voiceInputState.finalText?.takeIf { it.isNotBlank() }
+        val recognitionActive = voiceInputState.recognitionState in setOf(
+            VoiceRecognitionState.PREPARING,
+            VoiceRecognitionState.LISTENING,
+            VoiceRecognitionState.FINALIZING,
+        )
+        when {
+            finalText != null -> {
+                val base = voiceDraftBaseText ?: inputText
+                inputText = listOf(base, finalText)
+                    .filter { it.isNotBlank() }
+                    .joinToString("\n")
+                voiceDraftBaseText = null
+                onConsumeVoiceFinalText()
+            }
+            recognitionActive -> {
+                val base = voiceDraftBaseText ?: inputText.also { voiceDraftBaseText = it }
+                voiceInputState.partialText.takeIf { it.isNotBlank() }?.let { partial ->
+                    inputText = listOf(base, partial)
+                        .filter { it.isNotBlank() }
+                        .joinToString("\n")
+                }
+            }
+            voiceDraftBaseText != null -> {
+                // Cancellation or failure discards the provisional transcript and restores the
+                // exact draft that existed before the microphone was pressed.
+                inputText = voiceDraftBaseText.orEmpty()
+                voiceDraftBaseText = null
+            }
+        }
+        if (voiceInputState.finalText != null && finalText == null) onConsumeVoiceFinalText()
+    }
+    DisposableEffect(state.sessionId) {
+        onDispose {
+            onCancelVoiceInput()
+        }
+    }
+    LaunchedEffect(isScreenActive) {
+        if (!isScreenActive) {
+            onCancelVoiceInput()
         }
     }
     fun dismissTransientOverlays() {
@@ -881,6 +995,33 @@ internal fun ChatScreen(
     val lastMessageContentLength = lastMessage?.content?.length ?: 0
     val lastMessageReasoningLength = lastMessage?.reasoning?.length ?: 0
     val lastMessageStreaming = lastMessage?.isStreaming == true
+    val latestCompletedAssistantMessage = messages.lastOrNull {
+        it.role == "assistant" && !it.isStreaming && it.content.isNotBlank()
+    }
+    var autoReadArmed by remember(state.sessionId) { mutableStateOf(false) }
+    var lastAutoReadAssistantMessageId by remember(state.sessionId) { mutableStateOf<Long?>(null) }
+    LaunchedEffect(state.isProcessing) {
+        if (state.isProcessing) autoReadArmed = true
+    }
+    LaunchedEffect(latestCompletedAssistantMessage?.id, state.isProcessing) {
+        val message = latestCompletedAssistantMessage
+        if (!state.isProcessing && autoReadArmed && message != null) {
+            autoReadArmed = false
+            if (
+                voiceSettings.autoReadFinalAnswers &&
+                isScreenActive &&
+                voicePlaybackState !in setOf(
+                    VoicePlaybackState.PREPARING,
+                    VoicePlaybackState.SPEAKING,
+                    VoicePlaybackState.PAUSED,
+                ) &&
+                message.id != lastAutoReadAssistantMessageId
+            ) {
+                lastAutoReadAssistantMessageId = message.id
+                onSpeakAssistantMessage(message.id, message.content)
+            }
+        }
+    }
     suspend fun scrollMessagesToBottom(settleAfterLayout: Boolean = false) {
         if (itemCount > 0) {
             listState.scrollToItem(itemCount - 1)
@@ -1243,6 +1384,17 @@ internal fun ChatScreen(
                                         nextMessage = nextMessage,
                                         subagentRun = subagentRun,
                                         subagentBatch = subagentBatch,
+                                        isVoicePlaybackActive = msg.id == activeVoicePlaybackMessageId &&
+                                            voicePlaybackState in setOf(
+                                                VoicePlaybackState.PREPARING,
+                                                VoicePlaybackState.SPEAKING
+                                            ),
+                                        isVoicePlaybackPaused = msg.id == activeVoicePlaybackMessageId &&
+                                            voicePlaybackState == VoicePlaybackState.PAUSED,
+                                        isVoicePlaybackContinuable = msg.id in continuableVoicePlaybackMessageIds,
+                                        onSpeakAssistantMessage = onSpeakAssistantMessage,
+                                        onPauseVoicePlayback = onPauseVoicePlayback,
+                                        onResumeVoicePlayback = onResumeVoicePlayback,
                                         onLongPress = { messageActionTarget = msg },
                                         onApplyPrompt = { prompt ->
                                             inputText = listOf(inputText, prompt)
@@ -1636,6 +1788,20 @@ internal fun ChatScreen(
                 hasRemoteTaskRepository = hasRemoteTaskRepository,
                 hasLocalProject = hasLocalProject,
                 onUpdateWorkspaceMode = onUpdateWorkspaceMode,
+                voiceInputState = voiceInputState,
+                voiceInputEnabled = voiceSettings.inputEnabled,
+                onVoicePressStart = {
+                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        onStartVoiceInput()
+                    } else {
+                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                },
+                onVoicePressEnd = onStopVoiceInput,
+                onCancelVoiceInput = onCancelVoiceInput,
+                onOpenVoiceSettings = { showVoiceSettings = true },
+                onOpenVoiceRecognitionSettings = onOpenVoiceRecognitionSettings,
+                onInstallOfflineVoiceModel = onInstallOfflineVoiceModel,
                 currentReasoningEffort = if (isReasoningAutoSelectionEnabled) {
                     "自动 · $currentReasoningEffort"
                 } else {
@@ -1701,6 +1867,17 @@ internal fun ChatScreen(
                         }
                     },
                     onClear = { selectedSkills.clear() }
+                )
+            }
+
+            if (showVoiceSettings) {
+                VoiceSettingsDialog(
+                    settings = voiceSettings,
+                    offlineModelState = offlineVoiceModelState,
+                    onDismiss = { showVoiceSettings = false },
+                    onUpdateSettings = onUpdateVoiceSettings,
+                    onInstallOfflineModel = onInstallOfflineVoiceModel,
+                    onDeleteOfflineModel = onDeleteOfflineVoiceModel,
                 )
             }
 
@@ -2083,6 +2260,156 @@ internal fun ChatScreen(
                 onDismiss = { selectedRecoveryId = null }
             )
         }
+}
+
+@Composable
+private fun VoiceSettingsDialog(
+    settings: VoiceSettings,
+    offlineModelState: OfflineVoiceModelUiState,
+    onDismiss: () -> Unit,
+    onUpdateSettings: ((VoiceSettings) -> VoiceSettings) -> Unit,
+    onInstallOfflineModel: () -> Unit,
+    onDeleteOfflineModel: () -> Unit,
+) {
+    MurongDialog(onDismissRequest = onDismiss) {
+        MurongPopupSurface(
+            shape = RoundedCornerShape(24.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("语音", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "可使用系统识别服务，或主动安装自带的离线中英模型；原始音频不会上传或保存。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    MurongOutlinedActionButton(text = "关闭", onClick = onDismiss)
+                }
+
+                VoiceSettingSwitchRow(
+                    title = "启用语音输入",
+                    subtitle = "长按输入框旁的麦克风开始说话",
+                    checked = settings.inputEnabled,
+                    onCheckedChange = { enabled ->
+                        onUpdateSettings { it.copy(inputEnabled = enabled) }
+                    }
+                )
+                VoiceSettingSwitchRow(
+                    title = "自动朗读最终回复",
+                    subtitle = "仅朗读完成后的助手自然语言回复；工具、终端和思考内容不会朗读",
+                    checked = settings.autoReadFinalAnswers,
+                    onCheckedChange = { enabled ->
+                        onUpdateSettings { it.copy(autoReadFinalAnswers = enabled) }
+                    }
+                )
+
+                VoiceRecognitionProviderSetting(
+                    settings = settings,
+                    onUpdateSettings = onUpdateSettings,
+                )
+                OfflineVoiceModelSetting(
+                    state = offlineModelState,
+                    onInstall = onInstallOfflineModel,
+                    onDelete = onDeleteOfflineModel,
+                )
+
+                Text("识别与朗读语言", style = MaterialTheme.typography.labelLarge)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    voiceLanguageOptions().forEach { option ->
+                        FilterChip(
+                            selected = settings.languageTag == option.tag,
+                            onClick = { onUpdateSettings { it.copy(languageTag = option.tag) } },
+                            label = { Text(option.label) }
+                        )
+                    }
+                }
+
+                VoiceFloatSetting(
+                    title = "朗读速度",
+                    currentValue = settings.speechRate,
+                    options = listOf(0.8f, 1f, 1.2f, 1.4f),
+                    onSelect = { rate -> onUpdateSettings { it.copy(speechRate = rate) } }
+                )
+                VoiceFloatSetting(
+                    title = "朗读音调",
+                    currentValue = settings.pitch,
+                    options = listOf(0.8f, 1f, 1.2f),
+                    onSelect = { pitch -> onUpdateSettings { it.copy(pitch = pitch) } }
+                )
+            }
+        }
+    }
+}
+
+private data class VoiceLanguageOption(val tag: String?, val label: String)
+
+private fun voiceLanguageOptions(): List<VoiceLanguageOption> = listOf(
+    VoiceLanguageOption(null, "跟随系统"),
+    VoiceLanguageOption("zh-CN", "中文"),
+    VoiceLanguageOption("en-US", "English")
+)
+
+@Composable
+private fun VoiceSettingSwitchRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
+private fun VoiceFloatSetting(
+    title: String,
+    currentValue: Float,
+    options: List<Float>,
+    onSelect: (Float) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(title, style = MaterialTheme.typography.labelLarge)
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            options.forEach { option ->
+                FilterChip(
+                    selected = currentValue == option,
+                    onClick = { onSelect(option) },
+                    label = { Text(if (option == 1f) "默认" else "${option}×") }
+                )
+            }
+        }
+    }
 }
 
 
@@ -3268,6 +3595,13 @@ private fun MentionedFilesBar(
     onRemove: (FileMentionUi) -> Unit
 ) {
     val accent = rememberMurongAccentColor()
+    val contextBudgetLabel = remember(mentions) {
+        val estimatedChars = mentions.sumOf { mention ->
+            mention.inlineContent?.length
+                ?: if (mention.inclusionMode == FileMentionInclusionMode.TEXT_EXCERPT) 2_500 else 180
+        }
+        "${mentions.size}/4 项 · 约 ${estimatedChars.coerceAtMost(7_000)} 字符"
+    }
     MurongGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
@@ -3277,7 +3611,7 @@ private fun MentionedFilesBar(
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
-                text = "已引用文件",
+                text = "本轮上下文 · $contextBudgetLabel",
                 style = MaterialTheme.typography.labelMedium,
                 color = accent
             )
@@ -3301,6 +3635,11 @@ private fun MentionedFilesBar(
                                 snapshotNames.take(1).forEach { snapshotName ->
                                     MentionSnapshotBadge(label = snapshotName, compact = true)
                                 }
+                                Text(
+                                    text = "${fileMentionMetadataLabel(mention)} · ${mention.inclusionMode.label}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = accent
+                                )
                                 Text(
                                     text = mention.displayPath,
                                     maxLines = 1,
@@ -3628,7 +3967,7 @@ private fun MentionFilePickerDialog(
                         },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
-                        placeholder = { Text("输入文件名或相对路径") }
+                        placeholder = { Text("文件名、相对路径或 /storage/emulated/0/... 路径") }
                     )
                     if (recentMentions.isNotEmpty() && localQuery.isBlank()) {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -3676,7 +4015,7 @@ private fun MentionFilePickerDialog(
                     }
                     if (results.isEmpty()) {
                         Text(
-                            text = "当前没有匹配文件；本地项目会搜工作区，远端任务仓库会按文件名搜索 GitHub 文件。",
+                            text = "当前没有匹配文件；可直接输入 /storage/emulated/0/...，目录会受限扫描并显示 ZIP、IMG、SH 等文件。",
                             style = MaterialTheme.typography.bodySmall,
                             color = mutedTextColor
                         )
@@ -3957,6 +4296,13 @@ private fun MentionCandidateRow(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            Text(
+                text = fileMentionMetadataLabel(mention),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
             knowledgeOutline?.let { outline ->
                 Text(
                     text = outline.summary,
@@ -4118,6 +4464,13 @@ private fun MessageBubble(
     nextMessage: ChatMessageUi? = null,
     subagentRun: SubagentRunUi? = null,
     subagentBatch: SubagentBatchUi? = null,
+    voicePlaybackEnabled: Boolean = true,
+    isVoicePlaybackActive: Boolean = false,
+    isVoicePlaybackPaused: Boolean = false,
+    isVoicePlaybackContinuable: Boolean = false,
+    onSpeakAssistantMessage: (Long, String) -> Unit = { _, _ -> },
+    onPauseVoicePlayback: () -> Unit = {},
+    onResumeVoicePlayback: () -> Unit = {},
     onLongPress: () -> Unit = {},
     onApplyPrompt: (String) -> Unit = {},
     onOpenImagePreview: (List<ImagePreviewItemUi>, Int) -> Unit = { _, _ -> },
@@ -4430,6 +4783,34 @@ private fun MessageBubble(
                                 color = mutedTextColor,
                                 fontSize = 14.sp
                             )
+                        }
+                        if (voicePlaybackEnabled && !msg.isStreaming && msg.content.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            TextButton(
+                                onClick = {
+                                    when {
+                                        isVoicePlaybackActive -> onPauseVoicePlayback()
+                                        isVoicePlaybackPaused -> onResumeVoicePlayback()
+                                        else -> onSpeakAssistantMessage(msg.id, msg.content)
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Mic,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    when {
+                                        isVoicePlaybackActive -> "暂停朗读"
+                                        isVoicePlaybackPaused -> "继续朗读"
+                                        isVoicePlaybackContinuable -> "继续朗读"
+                                        else -> "朗读"
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -5486,6 +5867,14 @@ private fun InputBar(
     hasRemoteTaskRepository: Boolean,
     hasLocalProject: Boolean,
     onUpdateWorkspaceMode: (WorkspaceMode) -> Unit,
+    voiceInputState: VoiceInputUiState = VoiceInputUiState(),
+    voiceInputEnabled: Boolean = true,
+    onVoicePressStart: () -> Unit = {},
+    onVoicePressEnd: () -> Unit = {},
+    onCancelVoiceInput: () -> Unit = {},
+    onOpenVoiceSettings: () -> Unit = {},
+    onOpenVoiceRecognitionSettings: () -> Unit = {},
+    onInstallOfflineVoiceModel: () -> Unit = {},
     currentReasoningEffort: String? = null,
     reasoningEffortItems: List<MurongChoiceDialogItem> = emptyList(),
     reasoningChoiceSubtitle: String = "切换后会写回当前默认配置",
@@ -5512,6 +5901,7 @@ private fun InputBar(
     var showCodexUsagePopup by remember { mutableStateOf(false) }
     var codexUsagePopupOffset by remember { mutableStateOf(IntOffset.Zero) }
     var textFieldFocused by remember { mutableStateOf(false) }
+    var voiceGestureWantsCancel by remember { mutableStateOf(false) }
     val actionsEnabled = enabled && !isSending
     val moreActions = remember(
         currentApprovalModeLabel,
@@ -5703,6 +6093,69 @@ private fun InputBar(
                     .fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                // Keep transient recognition feedback above the input row. The composer is
+                // bottom-anchored, so inserting this row below the microphone would move the
+                // pressed control upward in the middle of the gesture.
+                if (
+                    voiceInputState.recognitionState != VoiceRecognitionState.IDLE ||
+                    voiceInputState.partialText.isNotBlank() ||
+                    !voiceInputState.errorMessage.isNullOrBlank()
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val voiceStatus = when (voiceInputState.recognitionState) {
+                            VoiceRecognitionState.PREPARING -> if (voiceGestureWantsCancel) {
+                                "松开取消"
+                            } else {
+                                "正在打开麦克风…"
+                            }
+                            VoiceRecognitionState.LISTENING -> if (voiceGestureWantsCancel) {
+                                "松开取消"
+                            } else {
+                                "按住说话，上滑取消"
+                            }
+                            VoiceRecognitionState.FINALIZING -> "正在确认最后几个字…"
+                            VoiceRecognitionState.ERROR -> voiceInputState.errorMessage ?: "语音识别暂时不可用"
+                            VoiceRecognitionState.IDLE -> voiceInputState.errorMessage ?: voiceInputState.partialText
+                        }
+                        Text(
+                            text = if (voiceGestureWantsCancel) {
+                                voiceStatus
+                            } else {
+                                voiceInputState.partialText.takeIf { it.isNotBlank() } ?: voiceStatus
+                            },
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (voiceGestureWantsCancel || voiceInputState.errorMessage != null) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                mutedTextColor
+                            },
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (voiceInputState.offlineModelUnavailable) {
+                            TextButton(onClick = onInstallOfflineVoiceModel) {
+                                Text("安装离线模型")
+                            }
+                        }
+                        if (voiceInputState.recognitionServiceUnavailable) {
+                            TextButton(onClick = onOpenVoiceRecognitionSettings) {
+                                Text("打开语音输入设置")
+                            }
+                        }
+                        if (
+                            !voiceInputState.offlineModelUnavailable &&
+                            !voiceInputState.recognitionServiceUnavailable &&
+                            voiceInputState.recognitionState != VoiceRecognitionState.IDLE
+                        ) {
+                            TextButton(onClick = onCancelVoiceInput) { Text("取消") }
+                        }
+                    }
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -5742,6 +6195,85 @@ private fun InputBar(
                         textStyle = MaterialTheme.typography.bodyMedium,
                         enabled = enabled
                     )
+                    if (voiceInputEnabled) {
+                        // Own and consume the complete pointer stream before the surrounding
+                        // horizontal pager can claim a small drag. Moving only changes the
+                        // release action; recording ends strictly when the held pointer lifts.
+                        Surface(
+                            modifier = Modifier
+                                .width(56.dp)
+                                .height(48.dp)
+                                // Do not key this gesture on recognitionState: pressing the mic
+                                // immediately changes IDLE -> PREPARING, which otherwise recreates
+                                // this pointer coroutine and stops the very utterance just started.
+                                .pointerInput(actionsEnabled) {
+                                    awaitEachGesture {
+                                        val down = awaitFirstDown(
+                                            requireUnconsumed = false,
+                                            pass = PointerEventPass.Initial,
+                                        )
+                                        if (!actionsEnabled) return@awaitEachGesture
+                                        down.consume()
+                                        voiceGestureWantsCancel = false
+                                        var recordingGestureActive = true
+                                        try {
+                                            onVoicePressStart()
+                                            while (recordingGestureActive) {
+                                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                val heldPointer = event.changes.firstOrNull { it.id == down.id }
+                                                // The microphone owns every movement until the
+                                                // original finger lifts, including movement that
+                                                // leaves the button bounds.
+                                                event.changes.forEach { it.consume() }
+                                                if (heldPointer == null) {
+                                                    onCancelVoiceInput()
+                                                    recordingGestureActive = false
+                                                    continue
+                                                }
+                                                voiceGestureWantsCancel =
+                                                    heldPointer.position.y - down.position.y <= -size.height * 0.75f
+                                                if (!heldPointer.pressed) {
+                                                    if (voiceGestureWantsCancel) {
+                                                        onCancelVoiceInput()
+                                                    } else {
+                                                        onVoicePressEnd()
+                                                    }
+                                                    recordingGestureActive = false
+                                                }
+                                            }
+                                        } finally {
+                                            // Disposal or a system-level pointer cancellation must
+                                            // never leave AudioRecord running in the background.
+                                            if (recordingGestureActive) onCancelVoiceInput()
+                                            voiceGestureWantsCancel = false
+                                        }
+                                    }
+                                },
+                            shape = MaterialTheme.shapes.large,
+                            color = if (voiceGestureWantsCancel) {
+                                MaterialTheme.colorScheme.errorContainer
+                            } else if (actionsEnabled) {
+                                MaterialTheme.colorScheme.secondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+                            },
+                            contentColor = if (voiceGestureWantsCancel) {
+                                MaterialTheme.colorScheme.onErrorContainer
+                            } else if (actionsEnabled) {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                            },
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Mic,
+                                    contentDescription = "按住说话",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
                     Button(
                         onClick = {
                             if (isSending) {
@@ -5814,6 +6346,7 @@ private fun InputBar(
                             )
                         }
                     )
+                    MurongTagButton(text = "语音", onClick = onOpenVoiceSettings)
                     MurongTagButton(
                         onClick = {
                             if (actionsEnabled && canRecallPrevious) {
@@ -6540,7 +7073,8 @@ private fun buildProjectKnowledgeMentions(
         }.getOrNull() ?: safeFile.name
         FileMentionUi(
             path = safeFile.absolutePath,
-            displayPath = displayPath
+            displayPath = displayPath,
+            source = FileMentionSource.PROJECT_KNOWLEDGE
         )
     }.distinctBy { it.path }
 }
@@ -6595,6 +7129,13 @@ private fun mentionSecondaryPath(displayPath: String): String? {
     val separatorIndex = normalized.lastIndexOf('/')
     if (separatorIndex <= 0) return null
     return normalized.substring(0, separatorIndex)
+}
+
+private fun fileMentionMetadataLabel(mention: FileMentionUi): String {
+    val typeAndSize = mention.byteSize
+        ?.let { size -> "${mention.kind.label} · ${formatAttachmentSize(size)}" }
+        ?: mention.kind.label
+    return "$typeAndSize · ${mention.source.label}"
 }
 
 private fun mentionMatchReasonLabel(
@@ -6759,6 +7300,7 @@ private fun ChatProcessGroupCard(
                             nextMessage = messages.getOrNull(entry.messageIndex + 1),
                             subagentRun = subagentRun,
                             subagentBatch = subagentBatch,
+                            voicePlaybackEnabled = false,
                             onLongPress = { onLongPress(sourceMessage) },
                             onApplyPrompt = onApplyPrompt,
                             onOpenImagePreview = onOpenImagePreview,
@@ -8204,9 +8746,12 @@ private fun formatDurationMillis(durationMs: Long): String {
 fun SessionDrawerContent(
     currentSessionId: String,
     sessions: List<SessionSummary>,
+    desktopSessions: List<LanWebDesktopAgentTaskSummary> = emptyList(),
+    desktopConnected: Boolean = false,
     onNewSession: () -> Unit,
     onNewTask: () -> Unit,
     onLoadSession: (String) -> Unit,
+    onLoadDesktopSession: (String) -> Unit = {},
     onRenameSession: (String) -> Unit,
     onDeleteSession: (String) -> Unit,
     modifier: Modifier = Modifier
@@ -8269,7 +8814,7 @@ fun SessionDrawerContent(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        if (sessions.isEmpty()) {
+        if (sessions.isEmpty() && desktopSessions.isEmpty()) {
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = surfaceColor.copy(alpha = 0.58f),
@@ -8294,6 +8839,39 @@ fun SessionDrawerContent(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
+                if (desktopSessions.isNotEmpty()) {
+                    item(key = "desktop-session-header") {
+                        Column(modifier = Modifier.padding(horizontal = 2.dp, vertical = 2.dp)) {
+                            Text(
+                                text = "电脑任务",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (desktopConnected) "Windows 实时同步" else "Windows 离线副本",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (desktopConnected) MaterialTheme.colorScheme.primary else mutedTextColor
+                            )
+                        }
+                    }
+                    items(desktopSessions, key = { "desktop:${it.id}" }) { session ->
+                        DesktopSessionDrawerItem(
+                            session = session,
+                            connected = desktopConnected,
+                            onClick = { onLoadDesktopSession(session.id) }
+                        )
+                    }
+                    if (sessions.isNotEmpty()) {
+                        item(key = "local-session-header") {
+                            Text(
+                                text = "本机会话",
+                                modifier = Modifier.padding(start = 2.dp, top = 8.dp, bottom = 2.dp),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
                 items(sessions, key = { it.id }) { session ->
                     SessionDrawerItem(
                         session = session,
@@ -8304,6 +8882,54 @@ fun SessionDrawerContent(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun DesktopSessionDrawerItem(
+    session: LanWebDesktopAgentTaskSummary,
+    connected: Boolean,
+    onClick: () -> Unit
+) {
+    val surfaceColor = rememberMurongSurfaceColor()
+    val mutedTextColor = rememberMurongMutedTextColor()
+    val accent = rememberMurongAccentColor()
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = if (session.running || session.pendingApproval) {
+            accent.copy(alpha = 0.12f)
+        } else {
+            surfaceColor.copy(alpha = 0.54f)
+        },
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)
+        ) {
+            Text(
+                text = session.title.ifBlank { "未命名电脑任务" },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = buildString {
+                    append(session.messageCount)
+                    append(" 条消息 · ")
+                    append(if (connected) "电脑实时" else "电脑离线")
+                    when {
+                        session.pendingApproval -> append(" · 待审批")
+                        session.running -> append(" · 运行中")
+                    }
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (session.pendingApproval) MaterialTheme.colorScheme.error else mutedTextColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Murong 局域网</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/workspace-core.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main id="pair-view" class="center-shell hidden">
+    <section class="panel pair-panel">
+      <p class="eyebrow">MURONG LAN</p>
+      <h1>连接手机上的 Murong</h1>
+      <p class="muted">先在手机设置中启动“局域网 Web 客户端”并生成一次性配对码。</p>
+      <label>客户端名称
+        <input id="client-name" maxlength="40" autocomplete="off" value="电脑浏览器">
+      </label>
+      <label>一次性配对码
+        <input id="pair-code" maxlength="19" inputmode="text" autocomplete="one-time-code" placeholder="ABCD-EFGH-JKLM-NPQR">
+      </label>
+      <button id="pair-button" class="primary">配对</button>
+      <p id="pair-error" class="error" role="alert"></p>
+      <p class="security-note">连接使用局域网 HTTP，请只在可信 Wi-Fi 使用。浏览器凭据保存在 HttpOnly 同源 Cookie 中，页面脚本无法读取；手机仅保存令牌哈希。</p>
+    </section>
+  </main>
+
+  <main id="app-view" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="brand-row">
+        <div>
+          <p class="eyebrow">MURONG LAN</p>
+          <h1>会话</h1>
+        </div>
+        <button id="refresh-sessions" class="icon-button" title="刷新会话">↻</button>
+      </div>
+      <div id="connection-status" class="status-pill">正在连接…</div>
+      <section class="workspace-card" aria-labelledby="workspace-title">
+        <div class="workspace-head">
+          <div>
+            <p class="eyebrow">COMPUTER WORKSPACE</p>
+            <h2 id="workspace-title">电脑目录</h2>
+          </div>
+          <span id="workspace-state" class="workspace-badge">未授权</span>
+        </div>
+        <p id="workspace-label" class="workspace-label muted">选择后，手机 Agent 才能按审批规则读写这个目录。</p>
+        <div class="workspace-actions">
+          <button id="workspace-connect" class="primary">选择目录</button>
+          <button id="workspace-disconnect" class="hidden">断开</button>
+        </div>
+        <p id="workspace-error" class="error workspace-error" role="alert"></p>
+      </section>
+      <nav id="session-list" aria-label="会话列表"></nav>
+      <div class="sidebar-footer">
+        <p class="muted small">电脑目录只由 Chrome 持有；没有授权目录之外的文件 API，也不提供电脑终端。</p>
+        <button id="logout-button" class="danger subtle">撤销此浏览器</button>
+      </div>
+    </aside>
+
+    <section class="chat-pane">
+      <header class="chat-header">
+        <div>
+          <h2 id="chat-title">选择会话</h2>
+          <p id="chat-meta" class="muted"></p>
+        </div>
+      </header>
+
+      <section id="approval-card" class="approval-card hidden" aria-live="polite">
+        <div class="approval-head">
+          <div>
+            <p class="eyebrow">等待审批</p>
+            <h3 id="approval-summary"></h3>
+          </div>
+          <span id="approval-risk" class="risk-badge"></span>
+        </div>
+        <p id="approval-detail" class="approval-detail"></p>
+        <details>
+          <summary>查看工具与参数</summary>
+          <pre id="approval-args"></pre>
+        </details>
+        <div class="approval-actions">
+          <button id="reject-button" class="danger">拒绝</button>
+          <button id="approve-button" class="primary">批准一次</button>
+        </div>
+      </section>
+
+      <section id="messages" class="messages" aria-live="polite">
+        <div class="empty-state">从左侧选择一个会话。</div>
+      </section>
+
+      <footer class="composer">
+        <textarea id="message-input" rows="2" maxlength="20000" placeholder="给当前 Murong 会话发送消息…" disabled></textarea>
+        <button id="send-button" class="primary" disabled>发送</button>
+      </footer>
+      <p id="app-error" class="error app-error" role="alert"></p>
+    </section>
+  </main>
+
+  <dialog id="workspace-write-dialog" class="write-dialog">
+    <form method="dialog">
+      <p class="eyebrow">电脑端最终确认</p>
+      <h2>确认写入文件</h2>
+      <p id="workspace-write-path" class="write-path"></p>
+      <p class="muted small">手机端审批已经通过。请再次核对下面的 Diff；拒绝、关闭或超时都不会写入。</p>
+      <pre id="workspace-write-diff" class="write-diff"></pre>
+      <div class="approval-actions">
+        <button id="workspace-write-reject" value="cancel" class="danger">拒绝写入</button>
+        <button id="workspace-write-approve" value="default" class="primary">确认并原子写回</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

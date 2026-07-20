@@ -40,7 +40,7 @@ object CodexAppServerCommandResolver {
         }
 
         throw CodexAppServerUnavailableException(
-            "The terminal extension does not provide codex-app-server or codex",
+            "终端扩展包缺少 codex-app-server 或 codex。请安装含 Codex 的终端扩展包（1.10 或更高版本）后重启应用。",
         )
     }
 }

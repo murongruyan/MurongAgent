@@ -9,7 +9,7 @@ import kotlin.test.assertTrue
 class ProviderConfigApprovalPolicyTest {
 
     @Test
-    fun evaluateApprovalRequirement_allAuto_requiresFreshApprovalForCriticalTool() {
+    fun evaluateApprovalRequirement_allAuto_autoApprovesCriticalTool() {
         val config = ProviderConfig(approvalMode = ToolApprovalMode.ALL_AUTO)
 
         val decision = config.evaluateApprovalRequirement(
@@ -17,8 +17,8 @@ class ProviderConfigApprovalPolicyTest {
             toolName = "ask_user"
         )
 
-        assertTrue(decision.requiresApproval)
-        assertTrue(decision.explanationDetail.contains("重新人工确认"))
+        assertFalse(decision.requiresApproval)
+        assertTrue(decision.explanationLabel.contains("全部自动"))
     }
 
     @Test
@@ -93,7 +93,7 @@ class ProviderConfigApprovalPolicyTest {
     }
 
     @Test
-    fun evaluateApprovalRequirement_allAuto_requiresFreshApprovalForLegacyMigrationTool() {
+    fun evaluateApprovalRequirement_allAuto_autoApprovesLegacyMigrationTool() {
         val config = ProviderConfig(approvalMode = ToolApprovalMode.ALL_AUTO)
 
         val decision = config.evaluateApprovalRequirement(
@@ -101,8 +101,22 @@ class ProviderConfigApprovalPolicyTest {
             toolName = "migrate_legacy_memories"
         )
 
+        assertFalse(decision.requiresApproval)
+        assertTrue(decision.explanationLabel.contains("全部自动"))
+    }
+
+    @Test
+    fun evaluateApprovalRequirement_readOnly_requiresApprovalForCodeEdit() {
+        val config = ProviderConfig(approvalMode = ToolApprovalMode.READ_ONLY)
+
+        val decision = config.evaluateApprovalRequirement(
+            riskLevel = ApprovalRiskLevel.HIGH,
+            toolName = "code_edit",
+            pathBoundaryValue = "/sdcard/project/Main.kt"
+        )
+
         assertTrue(decision.requiresApproval)
-        assertTrue(decision.explanationDetail.contains("重新人工确认"))
+        assertTrue(decision.explanationLabel.contains("只读模式拦截"))
     }
 
     @Test

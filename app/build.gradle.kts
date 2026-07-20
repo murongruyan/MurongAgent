@@ -1,5 +1,7 @@
 import java.io.File
+import java.net.URI
 import java.util.Base64
+import java.security.MessageDigest
 import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
@@ -20,10 +22,10 @@ val localProperties = Properties().apply {
 
 val appVersionName = (findProperty("APP_VERSION_NAME") as String?)
     ?.takeIf { it.isNotBlank() }
-    ?: "1.27"
+    ?: "1.30"
 val appVersionCode = (findProperty("APP_VERSION_CODE") as String?)
     ?.toIntOrNull()
-    ?: 26071704
+    ?: 26071902
 val defaultNdkVersion = "30.0.14904198"
 val localNdkPath = localProperties.getProperty("murong.ndk.dir")?.replace('\\', '/')
 val resolvedNdkVersion = run {
@@ -53,6 +55,63 @@ val generatedToolchainAssetsDir = layout.buildDirectory.dir("generated/assets/to
 val generatedToolchainAssetsDirFile = generatedToolchainAssetsDir.get().asFile
 val generatedToolchainJniLibsDir = layout.buildDirectory.dir("generated/jnilibs/toolchain")
 val generatedToolchainJniLibsDirFile = generatedToolchainJniLibsDir.get().asFile
+// Kept outside source control: this is the Apache-2.0 upstream Android runtime used by the
+// opt-in offline speech provider.  The model itself is never bundled in the APK.
+val sherpaOnnxVersion = "1.13.2"
+val sherpaOnnxAarUrl =
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$sherpaOnnxVersion/sherpa-onnx-$sherpaOnnxVersion.aar"
+val sherpaOnnxAarSha256 = "aa5505c0ec4f8bdaee5f214a64ba3012be64f2aecc022e82a64f33392b8dd245"
+val sherpaOnnxAar = layout.buildDirectory.file("generated/offline-stt/sherpa-onnx-$sherpaOnnxVersion.aar")
+
+fun sha256(file: File): String = MessageDigest.getInstance("SHA-256").also { digest ->
+    file.inputStream().use { input ->
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = input.read(buffer)
+            if (count <= 0) break
+            digest.update(buffer, 0, count)
+        }
+    }
+}.digest().joinToString(separator = "") { byte -> "%02x".format(byte) }
+
+fun downloadPinnedArtifact(url: String, output: File, expectedSha256: String) {
+    if (output.isFile && sha256(output).equals(expectedSha256, ignoreCase = true)) return
+    output.delete()
+    val partial = File(output.parentFile, "${output.name}.part")
+    partial.parentFile?.mkdirs()
+    partial.delete()
+    try {
+        val connection = URI(url).toURL().openConnection().apply {
+            connectTimeout = 30_000
+            readTimeout = 30_000
+        }
+        connection.getInputStream().use { input ->
+            partial.outputStream().use { outputStream -> input.copyTo(outputStream) }
+        }
+        check(sha256(partial).equals(expectedSha256, ignoreCase = true)) {
+            "SHA-256 verification failed for ${output.name}"
+        }
+        check(partial.renameTo(output)) { "Could not atomically activate ${output.name}" }
+    } catch (error: Throwable) {
+        partial.delete()
+        throw error
+    }
+}
+
+val prepareSherpaOnnxRuntime = tasks.register("prepareSherpaOnnxRuntime") {
+    val output = sherpaOnnxAar.get().asFile
+    notCompatibleWithConfigurationCache("Downloads and verifies the pinned offline STT runtime.")
+    inputs.property("url", sherpaOnnxAarUrl)
+    inputs.property("sha256", sherpaOnnxAarSha256)
+    outputs.file(output)
+    doLast {
+        downloadPinnedArtifact(
+            url = sherpaOnnxAarUrl,
+            output = output,
+            expectedSha256 = sherpaOnnxAarSha256,
+        )
+    }
+}
 
 fun computeBundledCommandInstallName(commandName: String): String {
     val encoded = Base64.getUrlEncoder()
@@ -192,6 +251,7 @@ android {
         targetSdk = 37
         versionCode = appVersionCode
         versionName = appVersionName
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -296,6 +356,7 @@ android {
         }
     }
 
+
     if (bundledToolchainEnabled) {
         sourceSets.getByName("main").assets.directories.add(generatedToolchainAssetsDirFile.absolutePath)
         sourceSets.getByName("main").jniLibs.directories.add(generatedToolchainJniLibsDirFile.absolutePath)
@@ -324,6 +385,12 @@ if (bundledToolchainEnabled) {
     }
 }
 
+// Local file dependencies are resolved before the Android merge tasks, so make every build
+// explicitly materialize the verified runtime first. This also works in GitHub Actions.
+tasks.named("preBuild").configure {
+    dependsOn(prepareSherpaOnnxRuntime)
+}
+
 kotlin {
     compilerOptions {
         jvmTarget.set(JvmTarget.fromTarget("25"))
@@ -342,6 +409,7 @@ dependencies {
     implementation(libs.compose.ui.tooling.preview)
     implementation(libs.compose.material3)
     implementation(libs.compose.material.icons)
+    implementation("androidx.compose.material:material-icons-extended")
     implementation(libs.compose.foundation)
     debugImplementation(libs.compose.ui.tooling)
 
@@ -359,6 +427,9 @@ dependencies {
     implementation(libs.coroutines.android)
     implementation(libs.serialization.json)
     implementation(libs.okhttp)
+    implementation(libs.nanohttpd)
+    implementation(libs.commons.compress)
+    implementation(files(sherpaOnnxAar))
 
     // DI
     implementation(libs.hilt.android)
@@ -377,4 +448,6 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation(kotlin("test-junit"))
+    androidTestImplementation("androidx.test:runner:1.5.2")
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
 }

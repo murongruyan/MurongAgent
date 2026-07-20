@@ -25,4 +25,14 @@ class ChatSessionExportPolicyTest {
             )
         )
     }
+
+    @Test
+    fun canExportSession_allowsPortableJsonWhenGoalExists() {
+        assertTrue(
+            canExportSession(
+                state = SessionState(sessionGoal = "继续跨端任务"),
+                format = ConversationExportFormat.PORTABLE_JSON
+            )
+        )
+    }
 }

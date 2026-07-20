@@ -9,6 +9,8 @@ import com.murong.agent.common.shell.RootShellStrategy
 import com.murong.agent.common.toolchain.ToolchainManager
 import com.termux.terminal.TerminalSessionProcessMonitor
 import java.io.File
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
 import java.io.FileDescriptor
 import java.io.IOException
 import java.io.InputStream
@@ -20,7 +22,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
 private const val SYSTEM_BASH_HELPER_CLASS = "com.termux.terminal.SystemBashPtyHelper"
-private const val SYSTEM_BASH_HELPER_ACCEPT_TIMEOUT_SECONDS = 2L
+private const val SYSTEM_BASH_HELPER_ACCEPT_TIMEOUT_SECONDS = 5L
 private const val SYSTEM_BASH_HELPER_LOG_TAG = "MurongSystemBashHelper"
 
 internal data class SystemBashHelperSession(
@@ -33,12 +35,11 @@ internal object SystemBashHelperBridge {
 
     fun open(
         context: Context,
+        executable: String,
         cwd: String,
-        path: String,
-        libraryPath: String,
-        home: String,
-        rcFilePath: String,
-        tmpDir: String,
+        arguments: List<String>,
+        environment: List<String>,
+        runAsRoot: Boolean = false,
         rows: Int = 24,
         columns: Int = 80,
         cellWidth: Int = 1,
@@ -52,12 +53,11 @@ internal object SystemBashHelperBridge {
             launchHelper(
                 context = context,
                 socketName = socketName,
+                executable = executable,
                 cwd = cwd,
-                path = path,
-                libraryPath = libraryPath,
-                home = home,
-                rcFilePath = rcFilePath,
-                tmpDir = tmpDir,
+                arguments = arguments,
+                environment = environment,
+                runAsRoot = runAsRoot,
                 rows = rows,
                 columns = columns,
                 cellWidth = cellWidth,
@@ -89,12 +89,11 @@ internal object SystemBashHelperBridge {
     private fun launchHelper(
         context: Context,
         socketName: String,
+        executable: String,
         cwd: String,
-        path: String,
-        libraryPath: String,
-        home: String,
-        rcFilePath: String,
-        tmpDir: String,
+        arguments: List<String>,
+        environment: List<String>,
+        runAsRoot: Boolean,
         rows: Int,
         columns: Int,
         cellWidth: Int,
@@ -104,18 +103,21 @@ internal object SystemBashHelperBridge {
         val helperArgs = listOf(
             socketName,
             encodeArg(cwd),
-            encodeArg(path),
-            encodeArg(libraryPath),
-            encodeArg(home),
-            encodeArg(rcFilePath),
-            encodeArg(tmpDir),
+            encodeArg(executable),
+            encodeList(arguments),
+            encodeList(environment),
             rows.toString(),
             columns.toString(),
             cellWidth.toString(),
             cellHeight.toString()
         )
         val helperCommand = buildString {
-            append("CLASSPATH=${context.applicationInfo.sourceDir} ")
+            // nsenter(1) executes the first argument after `--` directly. An inline
+            // `CLASSPATH=...` prefix would therefore be treated as an executable name
+            // instead of a shell assignment, so use env(1) explicitly.
+            append("/system/bin/env CLASSPATH=")
+            append(shellQuote(context.applicationInfo.sourceDir))
+            append(' ')
             append("/system/bin/app_process ")
             append("-Dmurong.termux.libpath=${shellQuote(termuxLibraryPath)} ")
             append("/ ")
@@ -127,25 +129,54 @@ internal object SystemBashHelperBridge {
         }
         val suPath = ToolchainManager.resolveSystemCommandPath("su")
         val appPid = android.os.Process.myPid()
-        val supplementaryGroups = currentProcessSupplementaryGroups()
-        val groupArgs = supplementaryGroups.joinToString(separator = "") { " -G $it" }
         val command = buildString {
             append("nsenter -t ")
             append(appPid)
             append(" -m -- ")
-            append(suPath)
-            append(" -g ")
-            append(context.applicationInfo.uid)
-            append(groupArgs)
-            append(' ')
-            append(context.applicationInfo.uid)
-            append(" -c ")
-            append(shellQuote(helperCommand))
-            append(" >/dev/null 2>&1 &")
+            if (runAsRoot) {
+                // Do not pass the helper through termux-exec or a nested `su`: this process is
+                // already root and is deliberately launched in the app mount namespace so it can
+                // hand its PTY back to the app's local socket.
+                append(helperCommand)
+            } else {
+                val supplementaryGroups = currentProcessSupplementaryGroups()
+                val groupArgs = supplementaryGroups.joinToString(separator = "") { " -G $it" }
+                append(suPath)
+                append(" -g ")
+                append(context.applicationInfo.uid)
+                append(groupArgs)
+                append(' ')
+                append(context.applicationInfo.uid)
+                append(" -c ")
+                append(shellQuote(helperCommand))
+            }
         }
-        ProcessBuilder(RootShellStrategy.buildRootCommand() + listOf("-c", command))
+        val launcher = ProcessBuilder(RootShellStrategy.buildRootCommand() + listOf("-c", command))
             .redirectErrorStream(true)
             .start()
+        observeLauncher(launcher)
+    }
+
+    private fun observeLauncher(process: Process) {
+        Thread(
+            {
+                val output = runCatching {
+                    process.inputStream.bufferedReader().use { it.readText() }.trim()
+                }.getOrDefault("")
+                val exitCode = runCatching { process.waitFor() }.getOrDefault(-1)
+                if (exitCode != 0 || output.isNotBlank()) {
+                    Log.w(
+                        SYSTEM_BASH_HELPER_LOG_TAG,
+                        "Helper launcher exited with code $exitCode" +
+                            output.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()
+                    )
+                }
+            },
+            "murong-system-bash-launcher"
+        ).apply {
+            isDaemon = true
+            start()
+        }
     }
 
     private fun currentProcessSupplementaryGroups(): List<Int> {
@@ -166,6 +197,20 @@ internal object SystemBashHelperBridge {
             value.toByteArray(StandardCharsets.UTF_8),
             Base64.NO_WRAP
         )
+    }
+
+    private fun encodeList(values: List<String>): String {
+        if (values.isEmpty()) return "-"
+        val payload = ByteArrayOutputStream()
+        DataOutputStream(payload).use { output ->
+            output.writeInt(values.size)
+            values.forEach { value ->
+                val bytes = value.toByteArray(StandardCharsets.UTF_8)
+                output.writeInt(bytes.size)
+                output.write(bytes)
+            }
+        }
+        return Base64.encodeToString(payload.toByteArray(), Base64.NO_WRAP)
     }
 
     private fun shellQuote(value: String): String {

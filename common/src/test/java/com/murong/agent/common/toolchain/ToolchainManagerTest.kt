@@ -28,6 +28,15 @@ class ToolchainManagerTest {
     }
 
     @Test
+    fun mutablePackageManagerState_survivesExtensionBaseUpdates() {
+        assertTrue(ToolchainManager.isMutablePackageManagerStatePath("var/lib/dpkg/status"))
+        assertTrue(ToolchainManager.isMutablePackageManagerStatePath("var/lib/dpkg/info/python.list"))
+        assertTrue(ToolchainManager.isMutablePackageManagerStatePath("var/cache/apt/archives/python.deb"))
+        assertTrue(ToolchainManager.isMutablePackageManagerStatePath("etc/apt/sources.list"))
+        assertFalse(ToolchainManager.isMutablePackageManagerStatePath("bin/python3.14"))
+    }
+
+    @Test
     fun isRuntimeToolchainLinkTarget_acceptsRelativeTarget() {
         assertTrue(ToolchainManager.isRuntimeToolchainLinkTarget("../../share/termux-keyring/key.gpg"))
     }
