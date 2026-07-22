@@ -32,13 +32,14 @@ func TestDesktopPackagingAssets(t *testing.T) {
 		Name           string `json:"name"`
 		OutputFilename string `json:"outputfilename"`
 		Info           struct {
-			ProductName string `json:"productName"`
+			ProductName    string `json:"productName"`
+			ProductVersion string `json:"productVersion"`
 		} `json:"info"`
 	}
 	if err := json.Unmarshal(data, &configurationFile); err != nil {
 		t.Fatal(err)
 	}
-	if configurationFile.Name != "Murong Desktop Agent" || configurationFile.OutputFilename != "murong-desktop-agent" || configurationFile.Info.ProductName != "Murong" {
+	if configurationFile.Name != "Murong Desktop Agent" || configurationFile.OutputFilename != "murong-desktop-agent" || configurationFile.Info.ProductName != "Murong" || configurationFile.Info.ProductVersion != desktopAgentVersion {
 		t.Fatalf("unexpected Wails package identity: %#v", configurationFile)
 	}
 }

@@ -796,3 +796,10 @@ Murong Desktop Agent（Windows / macOS / Linux）
 - 临时验证码真实 SCRAM 已通过：验证码由真机界面生成，电脑完成 PBKDF2-HMAC-SHA256/SCRAM 双向 proof、临时 P-256 ECDH、AES-256-GCM bootstrap、访问令牌鉴权和主动撤销，成功后验证码按设计轮换。安全密码也已通过真实手机界面设置并完成同样的电脑端链路验收；测试前手机没有安全密码文件，结束后已删除测试 verifier、强制重启服务并确认恢复为“未设置”。持久化文件只出现 302 字节的 salt/StoredKey/ServerKey 等 verifier 数据，未保存明文密码。
 - 同 GitHub 账号真实测试暂未通过生产环境，不是客户端回归：手机和电脑都具备登录状态，但正式站点的 `github_auth.php?action=token_login` 与 `device_trust.php?action=issue` 仍返回 404，因此电脑安全降级为普通接收端确认，没有静默授权。公网 `/relay/v2/device` 也仍待正式部署。后端 amd64 部署包已从脏工作区明确标记为 `e59d068cb577b10ea7f3835921f9f42e173a0fc8-dirty`，路径 `murongagent-backend/dist/murongagent-backend-deploy-amd64.tar.gz`，SHA-256 `e5a757e9ce5ff3ab289b4b2e44a336ec7f76adac3f0b1d58c582be0439aacd10`，21 个清单文件已复算通过；不会把脏包伪装成旧提交。
 - 当前宝塔浏览器登录已失效，DeployHook 原始 Token 也不在本机安全存储中，所以尚未部署生产 Relay v2/GitHub 设备信任。继续遵守“先测试、用户确认后再提交推送”：用户重新登录服务器后先部署并验证两个 API、`/relay/healthz` 与 `/relay/v2/device`，再跑同账号免码和真实异网本机 ID 链路；本阶段仍未提交、未推送。
+
+### 2026-07-23：1.31 版本切换与发布说明
+
+- 通过 GitHub Release 和 Git 标签确认最近一次正式发布为 `murong-suite-v1.30`，源代码提交 `9e9a861d742e7f814e437c3e153ab6ceed856e41`；使用 `murong-suite-v1.30..HEAD` 的真实提交、文件状态和目录差异重写 `release-notes/latest.md`，不再把 1.30 的旧说明继续当作当前更新内容。
+- 新版本确定为 `1.31 / 26072301`：版本名延续 1.30 后的顺序递增，版本码继续使用 `YYMMDDNN`，表示 2026-07-23 的第 1 个正式版本号。主 `CHANGELOG.md` 与发布说明使用相同标题。
+- Android Gradle 默认版本、Desktop Wails 安装包版本、Codex 初始化客户端版本和 MCP 客户端版本已统一为 1.31；Desktop 只保留一个 `desktopAgentVersion` 常量，并新增打包测试防止 Wails 元数据再次脱节。
+- Desktop 定向测试与 `go vet ./...` 通过；Android `processReleaseManifestForPackage` 成功，最终打包清单明确写入 `versionName="1.31"` 和 `versionCode="26072301"`；`git diff --check` 通过。GitNexus 检测 9 个文件、20 个符号、0 条受影响流程，风险为 LOW。

@@ -486,7 +486,7 @@ func (server *codexAppServer) ensureStarted(ctx context.Context, preferred strin
 
 func codexClientInitializeParams() map[string]any {
 	return map[string]any{
-		"clientInfo":   map[string]any{"name": "murong-desktop-agent", "title": "Murong Desktop Agent", "version": "1.30"},
+		"clientInfo":   map[string]any{"name": "murong-desktop-agent", "title": "Murong Desktop Agent", "version": desktopAgentVersion},
 		"capabilities": map[string]any{"experimentalApi": true},
 	}
 }

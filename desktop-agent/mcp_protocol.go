@@ -67,7 +67,7 @@ func initializeMCP(ctx context.Context, transport mcpRPCTransport) ([]mcpRemoteT
 		"protocolVersion": mcpProtocolVersion,
 		"capabilities":    map[string]any{},
 		"clientInfo": map[string]any{
-			"name": "Murong Desktop Agent", "version": "1.0.0",
+			"name": "Murong Desktop Agent", "version": desktopAgentVersion,
 		},
 	}, &initialized)
 	if err != nil {

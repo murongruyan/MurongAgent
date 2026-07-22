@@ -3,10 +3,11 @@ package main
 import desktopbridge "github.com/murong-agent/desktop-bridge"
 
 const (
-	approvalReadOnly  = "readonly"
-	approvalAskAll    = "ask"
-	approvalAllowlist = "allowlist"
-	approvalYolo      = "yolo"
+	desktopAgentVersion = "1.31"
+	approvalReadOnly    = "readonly"
+	approvalAskAll      = "ask"
+	approvalAllowlist   = "allowlist"
+	approvalYolo        = "yolo"
 )
 
 type desktopConfig struct {
