@@ -803,3 +803,4 @@ Murong Desktop Agent（Windows / macOS / Linux）
 - 新版本确定为 `1.31 / 26072301`：版本名延续 1.30 后的顺序递增，版本码继续使用 `YYMMDDNN`，表示 2026-07-23 的第 1 个正式版本号。主 `CHANGELOG.md` 与发布说明使用相同标题。
 - Android Gradle 默认版本、Desktop Wails 安装包版本、Codex 初始化客户端版本和 MCP 客户端版本已统一为 1.31；Desktop 只保留一个 `desktopAgentVersion` 常量，并新增打包测试防止 Wails 元数据再次脱节。
 - Desktop 定向测试与 `go vet ./...` 通过；Android `processReleaseManifestForPackage` 成功，最终打包清单明确写入 `versionName="1.31"` 和 `versionCode="26072301"`；`git diff --check` 通过。GitNexus 检测 9 个文件、20 个符号、0 条受影响流程，风险为 LOW。
+- 1.31 首次 GitHub 完整构建暴露两个只在干净跨平台 Runner 出现的测试夹具问题：会话同步测试写死不存在的 Windows 路径，导致 Linux/macOS 及干净 Windows 环境在生产路径校验前失败；模型选择回归测试写死 LF，导致 Windows ARM64 的 CRLF checkout 失败。夹具现使用真实 `t.TempDir()` 并按 JSON 字段检查隐私，前端断言先统一 CRLF；生产同步和前端逻辑均未改动。Desktop 全量 `go test -count=1 ./...` 与 `go vet ./...` 再次通过。

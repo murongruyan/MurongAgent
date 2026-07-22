@@ -120,6 +120,7 @@ func TestDeviceSessionSyncDoesNotRejectTotalHistoryOverTwentyFourMiB(t *testing.
 
 func TestDeviceSessionSyncExportsDesktopSessions(t *testing.T) {
 	t.Setenv("MURONG_DESKTOP_DATA_DIR", t.TempDir())
+	projectPath := t.TempDir()
 	store, err := newDesktopStore()
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +129,7 @@ func TestDeviceSessionSyncExportsDesktopSessions(t *testing.T) {
 	store.mu.Lock()
 	store.sessions["desktop-session-1"] = &ChatSession{
 		ID: "desktop-session-1", Title: "电脑任务", CreatedAt: now - 1, UpdatedAt: now,
-		ProjectPath: `C:\private\project`, CodexThreadID: "private-thread",
+		ProjectPath: projectPath, CodexThreadID: "private-thread",
 		Messages: []ChatMessage{{ID: "message-1", Role: "user", Content: "同步到手机", CreatedAt: now}},
 	}
 	err = store.saveSessionsLocked()
@@ -154,7 +155,7 @@ func TestDeviceSessionSyncExportsDesktopSessions(t *testing.T) {
 	if envelope.SourcePlatform != desktopSourcePlatform() || envelope.Session.Title != "电脑任务" || len(envelope.Session.Messages) != 1 {
 		t.Fatalf("unexpected portable session: %#v", envelope)
 	}
-	if strings.Contains(string(records[0].Document), `C:\\private\\project`) || strings.Contains(string(records[0].Document), "private-thread") {
+	if strings.Contains(string(records[0].Document), `"projectPath"`) || strings.Contains(string(records[0].Document), "private-thread") {
 		t.Fatal("desktop-only project or Codex state leaked into the sync document")
 	}
 }

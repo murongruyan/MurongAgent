@@ -11,7 +11,7 @@ func TestAsyncModelSelectorsCaptureTheEventTargetBeforeAwait(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	js := string(script)
+	js := strings.ReplaceAll(string(script), "\r\n", "\n")
 	for _, marker := range []string{
 		"async function activateComposerModel(event) {\n  const target = event.currentTarget;",
 		"async function setComposerReasoningEffort(event) {\n  const target = event.currentTarget;",
