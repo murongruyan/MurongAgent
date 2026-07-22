@@ -7,10 +7,13 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Base64
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.murong.agent.R
 import com.murong.agent.ui.MainActivity
@@ -39,6 +42,36 @@ class LanWebForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == LanWebContract.ACTION_ADB_PAIR_CHALLENGE) {
+            val challenge = runCatching {
+                Base64.decode(
+                    intent.getStringExtra(LanWebContract.EXTRA_ADB_CHALLENGE).orEmpty(),
+                    Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING,
+                )
+            }.getOrNull()
+            if (challenge?.size == 32) {
+                try {
+                    LanWebAdbPairingStore(this).putChallenge(challenge)
+                } finally {
+                    challenge.fill(0)
+                }
+            }
+        }
+        val connectionRequestId = intent?.getStringExtra(LanWebContract.EXTRA_CONNECTION_REQUEST_ID).orEmpty()
+        when (intent?.action) {
+            LanWebContract.ACTION_APPROVE_CONNECTION -> {
+                if (connectionRequestId.isNotBlank()) runtime.approveConnectionRequest(connectionRequestId)
+                LanWebConnectionRequestNotifier.cancel(this, connectionRequestId)
+            }
+            LanWebContract.ACTION_REJECT_CONNECTION -> {
+                if (connectionRequestId.isNotBlank()) runtime.rejectConnectionRequest(connectionRequestId, block = false)
+                LanWebConnectionRequestNotifier.cancel(this, connectionRequestId)
+            }
+            LanWebContract.ACTION_BLOCK_CONNECTION -> {
+                if (connectionRequestId.isNotBlank()) runtime.rejectConnectionRequest(connectionRequestId, block = true)
+                LanWebConnectionRequestNotifier.cancel(this, connectionRequestId)
+            }
+        }
         if (intent?.action == LanWebContract.ACTION_STOP) {
             serviceScope.launch {
                 runtime.stop()
@@ -48,7 +81,12 @@ class LanWebForegroundService : Service() {
             return START_NOT_STICKY
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification(runtime.state.value))
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID,
+            buildNotification(runtime.state.value),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+        )
         if (!acquireNetworkWakeLocks()) {
             runtime.reportServiceError("无法保持局域网服务唤醒，服务未启动")
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -69,7 +107,7 @@ class LanWebForegroundService : Service() {
             }
         }
         serviceScope.launch { runtime.start() }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     override fun onDestroy() {
@@ -96,11 +134,13 @@ class LanWebForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val text = when {
+            state.connectionRequests.isNotEmpty() ->
+                "${state.connectionRequests.size} 台设备等待连接确认"
             state.running && state.workspaceConnected ->
                 "${desktopPlatformLabel(state.workspacePlatform, state.workspaceArchitecture)} 已连接：${state.workspaceLabel ?: "电脑工作区"}"
-            state.running && state.cloudRelayEnabled -> state.cloudRelayStatus
+            state.running && state.deviceRelayRunning -> state.deviceRelayStatus
             state.running -> state.nodeUrl ?: "电脑节点服务正在运行"
-            state.starting -> "正在启动电脑节点与可选云中继…"
+            state.starting -> "正在启动电脑节点…"
             else -> state.error ?: "电脑节点服务已停止"
         }
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
@@ -124,7 +164,7 @@ class LanWebForegroundService : Service() {
                 "电脑节点服务",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "保持手机与 Murong Desktop 的局域网或端到端加密云中继连接并显示停止入口"
+                description = "保持手机与 Murong Desktop 的本地或端到端加密连接并显示停止入口"
                 setShowBadge(false)
             }
         )
@@ -133,7 +173,7 @@ class LanWebForegroundService : Service() {
     private fun acquireNetworkWakeLocks(): Boolean = runCatching {
         val existingWifiLock = wifiLock
         val existingCpuLock = cpuWakeLock
-        if (existingCpuLock?.isHeld == true && (runtime.state.value.cloudRelayEnabled || existingWifiLock?.isHeld == true)) {
+        if (existingCpuLock?.isHeld == true && (runtime.state.value.deviceRelayRunning || existingWifiLock?.isHeld == true)) {
             return@runCatching true
         }
         val wifiAcquired = runCatching {
@@ -148,9 +188,6 @@ class LanWebForegroundService : Service() {
             }
             true
         }.getOrDefault(false)
-        if (!runtime.state.value.cloudRelayEnabled && !wifiAcquired) {
-            error("无法保持局域网 Wi-Fi 连接")
-        }
         val powerManager = getSystemService(PowerManager::class.java)
             ?: error("系统电源服务不可用")
         cpuWakeLock = powerManager.newWakeLock(

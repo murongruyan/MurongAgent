@@ -10,6 +10,14 @@ import (
 	"time"
 )
 
+func TestCodexInitializeAdvertisesExperimentalAPIForDynamicTools(t *testing.T) {
+	params := codexClientInitializeParams()
+	capabilities, ok := params["capabilities"].(map[string]any)
+	if !ok || capabilities["experimentalApi"] != true {
+		t.Fatalf("Codex dynamic tools require experimentalApi capability: %#v", params)
+	}
+}
+
 func TestCodexApprovalSettingsPreserveFourModes(t *testing.T) {
 	tests := []struct {
 		mode, policy, sandbox string

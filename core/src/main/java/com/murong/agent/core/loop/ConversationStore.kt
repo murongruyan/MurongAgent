@@ -494,6 +494,8 @@ data class PersistedSession(
     val updatedAt: Long,
     val providerId: String,
     val modelName: String,
+    val syncOriginPlatform: String = "",
+    val syncOriginSessionId: String = "",
     val agentBackend: String = "provider_api",
     val codexThreadId: String? = null,
     val sessionGoal: String? = null,

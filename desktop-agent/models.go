@@ -479,6 +479,8 @@ type ChatSession struct {
 	Title                  string                  `json:"title"`
 	CreatedAt              int64                   `json:"createdAt"`
 	UpdatedAt              int64                   `json:"updatedAt"`
+	SyncOriginPlatform     string                  `json:"syncOriginPlatform,omitempty"`
+	SyncOriginSessionID    string                  `json:"syncOriginSessionId,omitempty"`
 	ProjectPath            string                  `json:"projectPath,omitempty"`
 	Goal                   string                  `json:"goal,omitempty"`
 	PlanModeEnabled        bool                    `json:"planModeEnabled,omitempty"`

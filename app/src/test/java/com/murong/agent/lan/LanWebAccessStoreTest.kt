@@ -143,5 +143,64 @@ class LanWebAccessStoreTest {
         }
     }
 
+    @Test
+    fun `trusted device metadata persists and blocking revokes credentials`() {
+        val file = tempStateFile()
+        val vault = MemorySyncKeyStore()
+        val store = LanWebAccessStore(file, syncKeyStore = vault)
+        val pairing = store.beginPairing(now = 1_000L)
+        val issued = store.pair(
+            rawCode = "",
+            rawCodeProof = LanWebPairingCrypto.codeProof(pairing.value),
+            rawClientName = "Desktop",
+            remoteAddress = "10.0.0.4",
+            secureSync = true,
+            deviceId = "DMB7-7YSE-X4BL-AFRU",
+            publicKeyFingerprint = "A".repeat(43),
+            trustSource = LanWebTrustSource.LAN_CONFIRMATION,
+            now = 2_000L,
+        ).getOrThrow()
+
+        assertEquals("DMB77YSEX4BLAFRU", issued.summary.deviceId)
+        assertEquals(LanWebTrustSource.LAN_CONFIRMATION, issued.summary.trustSource)
+        assertTrue(store.blockPeer(issued.summary.deviceId, issued.summary.name, issued.summary.publicKeyFingerprint, 3_000L))
+        assertNull(store.authenticate(issued.accessToken, now = 3_001L))
+        assertNull(store.syncKey(issued.summary.id))
+        assertTrue(store.isBlocked(issued.summary.deviceId, issued.summary.publicKeyFingerprint))
+        assertEquals(1, store.blockedPeers().size)
+        assertTrue(store.unblockPeer(issued.summary.deviceId))
+        assertFalse(store.isBlocked(issued.summary.deviceId, issued.summary.publicKeyFingerprint))
+    }
+
+    @Test
+    fun `do not disturb and block list survive revoke all`() {
+        val file = tempStateFile()
+        val store = LanWebAccessStore(file)
+        store.setDoNotDisturb(true)
+        store.blockPeer("DMB7-7YSE-X4BL-AFRU", "Blocked", "B".repeat(43), now = 1_000L)
+        store.revokeAll()
+
+        val reloaded = LanWebAccessStore(file)
+        assertTrue(reloaded.doNotDisturb())
+        assertEquals(1, reloaded.blockedPeers().size)
+        assertTrue(reloaded.clients().isEmpty())
+    }
+
+    @Test
+    fun `schema one access state migrates without losing legacy client`() {
+        val file = tempStateFile().apply {
+            parentFile?.mkdirs()
+            writeText(
+                """{"schemaVersion":1,"clients":[{"id":"legacy-client","name":"Legacy","tokenHash":"hash","createdAt":10,"lastSeenAt":null,"secureSync":false}],"recentRequests":[]}"""
+            )
+        }
+        val store = LanWebAccessStore(file)
+        val client = store.clients().single()
+        assertEquals(LanWebTrustSource.LEGACY_CODE, client.trustSource)
+        assertEquals("", client.deviceId)
+        store.setDoNotDisturb(true)
+        assertTrue(store.persistedTextForTest().orEmpty().contains("\"schemaVersion\": 2"))
+    }
+
     private fun tempStateFile(): File = createTempDirectory("lan-access-").resolve("access.json").toFile()
 }

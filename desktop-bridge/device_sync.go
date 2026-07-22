@@ -23,11 +23,15 @@ const (
 	deviceSyncPhoneToWindows   = "android_to_windows"
 	deviceSyncHandoffToPhone   = "desktop_handoff_to_android"
 	deviceSyncHandoffToDesktop = "desktop_handoff_to_desktop"
-	deviceSyncMaxPlainBytes    = 8 << 20
+	deviceSyncMaxPlainBytes    = 32 << 20
+	deviceSyncMaxEnvelopeBytes = 48 << 20
+	deviceSyncSessionPageBytes = 6 << 20
+	deviceSyncMaxPages         = 10_000
 	deviceSyncClockWindow      = 2 * time.Minute
 )
 
 type DeviceSyncOptions struct {
+	IncludeSessions            bool `json:"includeSessions"`
 	IncludeProviderCredentials bool `json:"includeProviderCredentials"`
 	IncludeCodexLogin          bool `json:"includeCodexLogin"`
 	IncludeGitHubCredentials   bool `json:"includeGitHubCredentials"`
@@ -36,6 +40,14 @@ type DeviceSyncOptions struct {
 	IncludeMCP                 bool `json:"includeMcp"`
 	IncludeMCPCredentials      bool `json:"includeMcpCredentials"`
 	IncludeSavedWorkflows      bool `json:"includeSavedWorkflows"`
+	SessionCursor              int  `json:"sessionCursor,omitempty"`
+}
+
+type SyncedSession struct {
+	SourceSessionID string          `json:"sourceSessionId"`
+	OriginPlatform  string          `json:"originPlatform,omitempty"`
+	OriginSessionID string          `json:"originSessionId,omitempty"`
+	Document        json.RawMessage `json:"document"`
 }
 
 type SyncedGitHubCredential struct {
@@ -151,9 +163,14 @@ type CredentialSyncBundle struct {
 	MCPServers             []SyncedMCPServer          `json:"mcpServers,omitempty"`
 	MCPCredentialsIncluded bool                       `json:"mcpCredentialsIncluded"`
 	SavedWorkflows         []SyncedSavedWorkflow      `json:"savedWorkflows,omitempty"`
+	Sessions               []SyncedSession            `json:"sessions,omitempty"`
+	SessionNextCursor      *int                       `json:"sessionNextCursor,omitempty"`
 }
 
 type CredentialSyncResult struct {
+	ImportedSessions    int     `json:"importedSessions"`
+	ConflictSessions    int     `json:"conflictSessions"`
+	SkippedSessions     int     `json:"skippedSessions"`
 	ImportedProviders   int     `json:"importedProviders"`
 	ImportedAPIKeys     int     `json:"importedApiKeys"`
 	ImportedCodexLogin  bool    `json:"importedCodexLogin"`
@@ -179,6 +196,22 @@ type deviceSyncEnvelope struct {
 }
 
 func (node *computerNode) pushCredentials(ctx context.Context, bundle CredentialSyncBundle) (CredentialSyncResult, error) {
+	pages, err := splitCredentialSyncBundle(bundle)
+	if err != nil {
+		return CredentialSyncResult{}, err
+	}
+	var combined CredentialSyncResult
+	for index := range pages {
+		result, pushErr := node.pushCredentialPage(ctx, pages[index])
+		if pushErr != nil {
+			return CredentialSyncResult{}, fmt.Errorf("发送聊天记录分片 %d/%d 失败：%w", index+1, len(pages), pushErr)
+		}
+		mergeCredentialSyncResult(&combined, result)
+	}
+	return combined, nil
+}
+
+func (node *computerNode) pushCredentialPage(ctx context.Context, bundle CredentialSyncBundle) (CredentialSyncResult, error) {
 	plain, err := json.Marshal(bundle)
 	if err != nil {
 		return CredentialSyncResult{}, err
@@ -197,6 +230,44 @@ func (node *computerNode) pushCredentials(ctx context.Context, bundle Credential
 }
 
 func (node *computerNode) pullCredentials(ctx context.Context, options DeviceSyncOptions) (CredentialSyncBundle, error) {
+	options.SessionCursor = 0
+	first, err := node.pullCredentialPage(ctx, options)
+	if err != nil {
+		return CredentialSyncBundle{}, err
+	}
+	cursor := first.SessionNextCursor
+	combined := first
+	combined.SessionNextCursor = nil
+	seen := make(map[string]struct{}, len(first.Sessions))
+	for _, session := range first.Sessions {
+		seen[session.SourceSessionID] = struct{}{}
+	}
+	for page := 1; cursor != nil; page++ {
+		if page >= deviceSyncMaxPages || *cursor <= options.SessionCursor {
+			return CredentialSyncBundle{}, errors.New("手机返回了无效的聊天记录分页游标")
+		}
+		options = DeviceSyncOptions{IncludeSessions: true, SessionCursor: *cursor}
+		next, pageErr := node.pullCredentialPage(ctx, options)
+		if pageErr != nil {
+			return CredentialSyncBundle{}, fmt.Errorf("接收聊天记录分片 %d 失败：%w", page+1, pageErr)
+		}
+		if next.SchemaVersion != combined.SchemaVersion || next.SourcePlatform != combined.SourcePlatform {
+			return CredentialSyncBundle{}, errors.New("手机聊天记录分页来源不一致")
+		}
+		for _, session := range next.Sessions {
+			if _, duplicate := seen[session.SourceSessionID]; duplicate {
+				return CredentialSyncBundle{}, errors.New("手机聊天记录分页包含重复会话")
+			}
+			seen[session.SourceSessionID] = struct{}{}
+			combined.Sessions = append(combined.Sessions, session)
+		}
+		options.SessionCursor = *cursor
+		cursor = next.SessionNextCursor
+	}
+	return combined, nil
+}
+
+func (node *computerNode) pullCredentialPage(ctx context.Context, options DeviceSyncOptions) (CredentialSyncBundle, error) {
 	plain, err := json.Marshal(options)
 	if err != nil {
 		return CredentialSyncBundle{}, err
@@ -212,6 +283,78 @@ func (node *computerNode) pullCredentials(ctx context.Context, options DeviceSyn
 		return CredentialSyncBundle{}, fmt.Errorf("手机凭据同步包无效：%w", err)
 	}
 	return bundle, nil
+}
+
+func splitCredentialSyncBundle(bundle CredentialSyncBundle) ([]CredentialSyncBundle, error) {
+	base := bundle
+	base.Sessions = nil
+	base.SessionNextCursor = nil
+	if len(bundle.Sessions) == 0 {
+		plain, err := json.Marshal(base)
+		if err != nil {
+			return nil, err
+		}
+		if len(plain) > deviceSyncMaxPlainBytes {
+			return nil, errors.New("设备同步设置分片超过安全传输上限")
+		}
+		return []CredentialSyncBundle{base}, nil
+	}
+
+	continuation := CredentialSyncBundle{
+		SchemaVersion:  bundle.SchemaVersion,
+		SourcePlatform: bundle.SourcePlatform,
+		GeneratedAt:    bundle.GeneratedAt,
+		Providers:      []SyncedProviderCredential{},
+	}
+	pages := make([]CredentialSyncBundle, 0, 1)
+	current := base
+	for _, session := range bundle.Sessions {
+		candidate := current
+		candidate.Sessions = append(append([]SyncedSession(nil), current.Sessions...), session)
+		plain, err := json.Marshal(candidate)
+		if err != nil {
+			return nil, err
+		}
+		if len(plain) > deviceSyncSessionPageBytes && len(current.Sessions) > 0 {
+			pages = append(pages, current)
+			current = continuation
+			candidate = current
+			candidate.Sessions = []SyncedSession{session}
+			plain, err = json.Marshal(candidate)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if len(plain) > deviceSyncMaxPlainBytes {
+			return nil, fmt.Errorf("聊天记录 %q 单条超过安全传输上限", session.SourceSessionID)
+		}
+		current = candidate
+	}
+	if len(current.Sessions) > 0 || len(pages) == 0 {
+		pages = append(pages, current)
+	}
+	return pages, nil
+}
+
+func mergeCredentialSyncResult(target *CredentialSyncResult, page CredentialSyncResult) {
+	target.ImportedSessions += page.ImportedSessions
+	target.ConflictSessions += page.ConflictSessions
+	target.SkippedSessions += page.SkippedSessions
+	target.ImportedProviders += page.ImportedProviders
+	target.ImportedAPIKeys += page.ImportedAPIKeys
+	target.ImportedCodexLogin = target.ImportedCodexLogin || page.ImportedCodexLogin
+	target.ImportedGitHubToken = target.ImportedGitHubToken || page.ImportedGitHubToken
+	if target.AccountEmail == nil && page.AccountEmail != nil {
+		target.AccountEmail = page.AccountEmail
+	}
+	target.ImportedSettings = target.ImportedSettings || page.ImportedSettings
+	target.ImportedRules += page.ImportedRules
+	target.ImportedMemories += page.ImportedMemories
+	target.ImportedSkills += page.ImportedSkills
+	target.ImportedMCPServers += page.ImportedMCPServers
+	target.ImportedWorkflows += page.ImportedWorkflows
+	target.DisabledMCPServers += page.DisabledMCPServers
+	target.SkippedWorkflows += page.SkippedWorkflows
 }
 
 func (node *computerNode) exchangeCredentials(ctx context.Context, path string, plain []byte) ([]byte, error) {
@@ -233,7 +376,14 @@ func (node *computerNode) exchangeCredentials(ctx context.Context, path string, 
 		return nil, err
 	}
 	var response deviceSyncEnvelope
-	if err := node.api.postJSONWithTimeout(ctx, path, envelope, &response, 120*time.Second); err != nil {
+	if err := node.api.postJSONWithTimeoutAndLimit(
+		ctx,
+		path,
+		envelope,
+		&response,
+		120*time.Second,
+		deviceSyncMaxEnvelopeBytes,
+	); err != nil {
 		return nil, err
 	}
 	if response.RequestID != requestID || response.Direction != deviceSyncPhoneToWindows {

@@ -41,6 +41,13 @@ function Assert-CodexArchive([string]$Path) {
 
 Push-Location $root
 try {
+    npm ci --prefix frontend --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) { throw "Desktop workbench dependencies failed" }
+    npm run build --prefix frontend
+    if ($LASTEXITCODE -ne 0) { throw "Desktop workbench build failed" }
+    node --check frontend/dist/app.js
+    if ($LASTEXITCODE -ne 0) { throw "Desktop frontend syntax check failed" }
+
     go test -count=1 ./...
     if ($LASTEXITCODE -ne 0) { throw "Desktop Agent tests failed" }
     go vet ./...
@@ -81,7 +88,15 @@ try {
     } finally {
         Remove-Item Env:MURONG_BUILT_EXE -ErrorAction SilentlyContinue
     }
-    Copy-Item -LiteralPath $builtPath -Destination $outputPath -Force
+    try {
+        Copy-Item -LiteralPath $builtPath -Destination $outputPath -Force
+    } catch {
+        $pendingName = "murong-desktop-agent-windows-$Architecture.next.exe"
+        $pendingPath = Join-Path $dist $pendingName
+        Copy-Item -LiteralPath $builtPath -Destination $pendingPath -Force
+        Write-Warning "The installed desktop executable is currently in use. The new verified build was staged as $pendingPath; exit Murong from the system tray before replacing the installed executable."
+        $outputPath = $pendingPath
+    }
 
     Get-FileHash -Algorithm SHA256 $outputPath
 } finally {

@@ -17,6 +17,7 @@ desktop-agent/dist/
 desktop-agent/desktop-agent.exe
 desktop-agent/.qa-data/
 desktop-agent/.qa-workspace/
+desktop-agent/frontend/node_modules/
 /voice-*.png
 
 # IDE

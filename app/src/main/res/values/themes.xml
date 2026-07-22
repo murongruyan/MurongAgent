@@ -8,4 +8,8 @@
     <style name="Theme.Murong.Splash" parent="Theme.Murong">
         <item name="android:windowBackground">@drawable/splash_background</item>
     </style>
+    <style name="Theme.Murong.AdbBootstrap" parent="Theme.Murong">
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
 </resources>

@@ -1,5 +1,6 @@
 package com.murong.agent.ui.settings
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -37,9 +38,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.murong.agent.lan.LanWebDesktopAgentMessage
 import com.murong.agent.lan.LanWebDesktopAgentAskAnswer
@@ -47,9 +47,10 @@ import com.murong.agent.lan.LanWebDesktopAgentWorkflowPlan
 import com.murong.agent.lan.desktopPlatformLabel
 
 @Composable
-internal fun DesktopAgentTasksDialog(
+internal fun DesktopAgentChatScreen(
     viewModel: LanWebSettingsViewModel,
-    onDismiss: () -> Unit
+    onExit: () -> Unit,
+    bottomReservedPadding: Dp = 0.dp,
 ) {
     val state by viewModel.desktopAgentState.collectAsStateWithLifecycle()
     val handoffState by viewModel.desktopHandoffState.collectAsStateWithLifecycle()
@@ -61,6 +62,8 @@ internal fun DesktopAgentTasksDialog(
     var askSelections by remember(active?.pendingAsk?.id) { mutableStateOf<Map<String, Set<String>>>(emptyMap()) }
     var askCustomAnswers by remember(active?.pendingAsk?.id) { mutableStateOf<Map<String, String>>(emptyMap()) }
     var confirmAbandonSessionId by remember { mutableStateOf<String?>(null) }
+
+    BackHandler(onBack = onExit)
 
     confirmAbandonSessionId?.let { sessionId ->
         AlertDialog(
@@ -79,13 +82,12 @@ internal fun DesktopAgentTasksDialog(
         )
     }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(modifier = Modifier.fillMaxSize()) {
+    Surface(modifier = Modifier.fillMaxSize()) {
             Column(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(bottom = bottomReservedPadding),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -102,7 +104,7 @@ internal fun DesktopAgentTasksDialog(
                         )
                     }
                     TextButton(onClick = viewModel::refreshDesktopAgent, enabled = state.connected) { Text("刷新") }
-                    TextButton(onClick = onDismiss) { Text("关闭") }
+                    TextButton(onClick = onExit) { Text("本地聊天") }
                 }
 
                 error?.let {
@@ -408,7 +410,6 @@ internal fun DesktopAgentTasksDialog(
                     }
                 }
             }
-        }
     }
 }
 

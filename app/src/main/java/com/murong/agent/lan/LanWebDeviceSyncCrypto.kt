@@ -28,7 +28,7 @@ internal object LanWebDeviceSyncCrypto {
         require(key.size == KEY_BYTES) { "设备同步密钥长度无效" }
         validateMetadata(requestId, issuedAt, direction)
         val plain = plaintext.toByteArray(StandardCharsets.UTF_8)
-        require(plain.size <= LanWebContract.MAX_DEVICE_SYNC_BODY_BYTES) { "设备同步内容过大" }
+        require(plain.size <= LanWebContract.MAX_DEVICE_SYNC_PLAIN_BYTES) { "设备同步内容过大" }
         val nonce = ByteArray(NONCE_BYTES).also(random::nextBytes)
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(GCM_TAG_BITS, nonce))
@@ -52,7 +52,7 @@ internal object LanWebDeviceSyncCrypto {
         val ciphertext = decode(
             envelope.ciphertext,
             16,
-            LanWebContract.MAX_DEVICE_SYNC_BODY_BYTES + 16,
+            LanWebContract.MAX_DEVICE_SYNC_PLAIN_BYTES + 16,
         )
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(GCM_TAG_BITS, nonce))

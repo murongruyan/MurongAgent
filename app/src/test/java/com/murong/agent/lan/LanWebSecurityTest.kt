@@ -19,6 +19,10 @@ class LanWebSecurityTest {
         assertTrue(LanWebSecurity.isAllowedHost("192.168.2.4:8765", "192.168.2.4", 8765))
         assertFalse(LanWebSecurity.isAllowedHost("evil.example:8765", "192.168.2.4", 8765))
         assertFalse(LanWebSecurity.isAllowedHost("192.168.2.4:9999", "192.168.2.4", 8765))
+        assertTrue(LanWebSecurity.isAllowedHost("127.0.0.1:49152", "127.0.0.1", 8766, allowLoopbackForwardPort = true))
+        assertTrue(LanWebSecurity.isAllowedHost("localhost:49152", "127.0.0.1", 8766, allowLoopbackForwardPort = true))
+        assertFalse(LanWebSecurity.isAllowedHost("192.168.2.4:49152", "127.0.0.1", 8766, allowLoopbackForwardPort = true))
+        assertFalse(LanWebSecurity.isAllowedHost("evil.example:49152", "127.0.0.1", 8766, allowLoopbackForwardPort = true))
         assertTrue(
             LanWebSecurity.isAllowedOrigin(
                 "http://192.168.2.4:8765",

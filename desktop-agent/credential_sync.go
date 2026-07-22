@@ -13,6 +13,7 @@ import (
 )
 
 type SyncCredentialsRequest struct {
+	IncludeSessions            bool `json:"includeSessions"`
 	IncludeProviderCredentials bool `json:"includeProviderCredentials"`
 	IncludeCodexLogin          bool `json:"includeCodexLogin"`
 	IncludeGitHubCredentials   bool `json:"includeGitHubCredentials"`
@@ -25,6 +26,9 @@ type SyncCredentialsRequest struct {
 
 type SyncCredentialsOperationResult struct {
 	Direction           string              `json:"direction"`
+	ImportedSessions    int                 `json:"importedSessions"`
+	ConflictSessions    int                 `json:"conflictSessions"`
+	SkippedSessions     int                 `json:"skippedSessions"`
 	ImportedProviders   int                 `json:"importedProviders"`
 	ImportedAPIKeys     int                 `json:"importedApiKeys"`
 	ImportedCodexLogin  bool                `json:"importedCodexLogin"`
@@ -51,15 +55,19 @@ func (app *DesktopAgentApp) PushCredentialsToPhone(request SyncCredentialsReques
 		return SyncCredentialsOperationResult{}, err
 	}
 	defer clearCredentialBundle(&bundle)
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
-	defer cancel()
+	// Each encrypted page has its own network timeout in desktop-bridge. Do not put
+	// one fixed deadline around the complete history or large archives would fail
+	// merely because they contain more pages.
+	ctx := context.Background()
 	result, err := app.remote.PushCredentials(ctx, bundle)
 	if err != nil {
 		return SyncCredentialsOperationResult{}, err
 	}
 	return SyncCredentialsOperationResult{
-		Direction: "to_phone", ImportedProviders: result.ImportedProviders,
-		ImportedAPIKeys: result.ImportedAPIKeys, ImportedCodexLogin: result.ImportedCodexLogin,
+		Direction: "to_phone", ImportedSessions: result.ImportedSessions,
+		ConflictSessions: result.ConflictSessions, SkippedSessions: result.SkippedSessions,
+		ImportedProviders: result.ImportedProviders,
+		ImportedAPIKeys:   result.ImportedAPIKeys, ImportedCodexLogin: result.ImportedCodexLogin,
 		ImportedGitHubToken: result.ImportedGitHubToken,
 		AccountEmail:        pointerString(result.AccountEmail), ImportedSettings: result.ImportedSettings,
 		ImportedRules: result.ImportedRules, ImportedMemories: result.ImportedMemories, ImportedSkills: result.ImportedSkills,
@@ -73,9 +81,9 @@ func (app *DesktopAgentApp) PullCredentialsFromPhone(request SyncCredentialsRequ
 	if err := app.validateCredentialSyncRequest(request); err != nil {
 		return SyncCredentialsOperationResult{}, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
-	defer cancel()
+	ctx := context.Background()
 	bundle, err := app.remote.PullCredentials(ctx, desktopbridge.DeviceSyncOptions{
+		IncludeSessions:            request.IncludeSessions,
 		IncludeProviderCredentials: request.IncludeProviderCredentials,
 		IncludeCodexLogin:          request.IncludeCodexLogin,
 		IncludeGitHubCredentials:   request.IncludeGitHubCredentials,
@@ -95,9 +103,14 @@ func (app *DesktopAgentApp) PullCredentialsFromPhone(request SyncCredentialsRequ
 	}
 	config := app.store.publicConfig()
 	app.emit("settings:changed", config)
+	if result.ImportedSessions > 0 {
+		app.emitSessionsChanged(nil)
+	}
 	return SyncCredentialsOperationResult{
-		Direction: "from_phone", ImportedProviders: result.ImportedProviders,
-		ImportedAPIKeys: result.ImportedAPIKeys, ImportedCodexLogin: result.ImportedCodexLogin,
+		Direction: "from_phone", ImportedSessions: result.ImportedSessions,
+		ConflictSessions: result.ConflictSessions, SkippedSessions: result.SkippedSessions,
+		ImportedProviders: result.ImportedProviders,
+		ImportedAPIKeys:   result.ImportedAPIKeys, ImportedCodexLogin: result.ImportedCodexLogin,
 		ImportedGitHubToken: result.ImportedGitHubToken,
 		AccountEmail:        pointerString(result.AccountEmail), ImportedSettings: result.ImportedSettings,
 		ImportedRules: result.ImportedRules, ImportedMemories: result.ImportedMemories, ImportedSkills: result.ImportedSkills,
@@ -108,7 +121,7 @@ func (app *DesktopAgentApp) PullCredentialsFromPhone(request SyncCredentialsRequ
 }
 
 func (app *DesktopAgentApp) validateCredentialSyncRequest(request SyncCredentialsRequest) error {
-	if !request.IncludeProviderCredentials && !request.IncludeCodexLogin && !request.IncludeGitHubCredentials && !request.IncludeAgentSettings &&
+	if !request.IncludeSessions && !request.IncludeProviderCredentials && !request.IncludeCodexLogin && !request.IncludeGitHubCredentials && !request.IncludeAgentSettings &&
 		!request.IncludeKnowledge && !request.IncludeMCP && !request.IncludeSavedWorkflows {
 		return errors.New("至少选择一种设备同步内容")
 	}
@@ -130,8 +143,15 @@ func (app *DesktopAgentApp) validateCredentialSyncRequest(request SyncCredential
 func (app *DesktopAgentApp) exportCredentialBundle(request SyncCredentialsRequest) (desktopbridge.CredentialSyncBundle, error) {
 	config := app.store.rawConfig()
 	bundle := desktopbridge.CredentialSyncBundle{
-		SchemaVersion: 4, SourcePlatform: desktopSourcePlatform(), GeneratedAt: time.Now().UnixMilli(),
+		SchemaVersion: 6, SourcePlatform: desktopSourcePlatform(), GeneratedAt: time.Now().UnixMilli(),
 		Providers: []desktopbridge.SyncedProviderCredential{},
+	}
+	if request.IncludeSessions {
+		var err error
+		bundle.Sessions, err = app.store.exportSyncedSessions()
+		if err != nil {
+			return bundle, err
+		}
 	}
 	active := findProviderProfile(config.ProviderProfiles, config.ActiveProviderProfileID)
 	if active != nil {
@@ -286,6 +306,15 @@ func (app *DesktopAgentApp) importCredentialBundle(
 		}
 		result.ImportedCodexLogin = true
 		result.AccountEmail = stringPointer(email)
+	}
+	if len(bundle.Sessions) > 0 {
+		merged, mergeErr := app.store.mergeSyncedSessions(bundle.SourcePlatform, bundle.Sessions)
+		if mergeErr != nil {
+			return result, app.rollbackDeviceSync(previousConfig, previousWorkflows, mergeErr)
+		}
+		result.ImportedSessions = merged.Imported
+		result.ConflictSessions = merged.Conflicts
+		result.SkippedSessions = merged.Skipped
 	}
 	if len(bundle.MCPServers) > 0 {
 		if runtimeConfigs, runtimeErr := app.store.mcpRuntimeConfigs(); runtimeErr == nil {
@@ -872,7 +901,7 @@ func (app *DesktopAgentApp) preferredCodexExecutable() string {
 }
 
 func validateCredentialBundle(bundle desktopbridge.CredentialSyncBundle) error {
-	if (bundle.SchemaVersion < 1 || bundle.SchemaVersion > 4) || (bundle.SourcePlatform != "android" && !isDesktopSourcePlatform(bundle.SourcePlatform)) {
+	if (bundle.SchemaVersion < 1 || bundle.SchemaVersion > 6) || (bundle.SourcePlatform != "android" && !isDesktopSourcePlatform(bundle.SourcePlatform)) {
 		return errors.New("设备同步格式或来源无效")
 	}
 	now := time.Now().UnixMilli()
@@ -896,8 +925,15 @@ func validateCredentialBundle(bundle desktopbridge.CredentialSyncBundle) error {
 		if profile.ContextWindowTokens != nil && (*profile.ContextWindowTokens < 4_096 || *profile.ContextWindowTokens > 2_000_000) {
 			return errors.New("凭据同步上下文窗口无效")
 		}
-		if err := validateBaseURL(profile.BaseURL); err != nil {
-			return err
+		// Android's built-in/official relay profiles intentionally encode an
+		// empty Base URL and resolve it from the provider default locally.
+		// Preserve that portable meaning instead of rejecting the whole
+		// encrypted sync bundle; custom non-empty addresses still receive the
+		// same strict HTTP(S) validation.
+		if baseURL := strings.TrimSpace(profile.BaseURL); baseURL != "" {
+			if err := validateBaseURL(strings.TrimRight(baseURL, "/")); err != nil {
+				return err
+			}
 		}
 	}
 	if github := bundle.GitHub; github != nil {
@@ -1004,6 +1040,9 @@ func validateCredentialBundle(bundle desktopbridge.CredentialSyncBundle) error {
 			return err
 		}
 	}
+	if err := validateSyncedSessions(bundle.SourcePlatform, bundle.Sessions); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1075,6 +1114,10 @@ func clearCredentialBundle(bundle *desktopbridge.CredentialSyncBundle) {
 			bundle.MCPServers[index].Headers[key] = ""
 			delete(bundle.MCPServers[index].Headers, key)
 		}
+	}
+	for index := range bundle.Sessions {
+		clear(bundle.Sessions[index].Document)
+		bundle.Sessions[index].Document = nil
 	}
 }
 

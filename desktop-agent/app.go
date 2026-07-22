@@ -14,26 +14,30 @@ import (
 )
 
 type DesktopAgentApp struct {
-	ctx                     context.Context
-	store                   *desktopStore
-	terminals               []TerminalBackend
-	remote                  *desktopbridge.RemoteNodeService
-	mcp                     *mcpManager
-	workflows               *savedWorkflowManager
-	backups                 *desktopBackupManager
-	workspace               *workspaceChangeTracker
-	audit                   *projectAuditStore
-	codex                   *codexAppServer
-	mu                      sync.Mutex
-	runs                    map[string]context.CancelFunc
-	activeSubagentJobs      map[string]activeSubagentJob
-	shuttingDown            bool
-	approvals               map[string]chan bool
-	pendingApprovals        map[string]ApprovalRequest
-	asks                    map[string]chan askResult
-	pendingAsks             map[string]AskRequest
-	remoteSelectedSessionID string
-	initialLaunchArgs       []string
+	ctx                        context.Context
+	store                      *desktopStore
+	terminals                  []TerminalBackend
+	remote                     *desktopbridge.RemoteNodeService
+	mcp                        *mcpManager
+	workflows                  *savedWorkflowManager
+	backups                    *desktopBackupManager
+	workspace                  *workspaceChangeTracker
+	workbenchTerminals         *workbenchTerminalManager
+	audit                      *projectAuditStore
+	codex                      *codexAppServer
+	mu                         sync.Mutex
+	runs                       map[string]context.CancelFunc
+	activeSubagentJobs         map[string]activeSubagentJob
+	shuttingDown               bool
+	approvals                  map[string]chan bool
+	pendingApprovals           map[string]ApprovalRequest
+	asks                       map[string]chan askResult
+	pendingAsks                map[string]AskRequest
+	remoteSelectedSessionID    string
+	remoteConnectionRequestIDs map[string]bool
+	initialLaunchArgs          []string
+	applicationTray            applicationTray
+	allowApplicationExit       bool
 }
 
 func newDesktopAgentApp() (*DesktopAgentApp, error) {
@@ -75,33 +79,68 @@ func newDesktopAgentApp() (*DesktopAgentApp, error) {
 		return nil, err
 	}
 	app := &DesktopAgentApp{
-		store:              store,
-		terminals:          terminals,
-		remote:             remote,
-		mcp:                newMCPManager(),
-		workflows:          workflowManager,
-		backups:            backupManager,
-		workspace:          newWorkspaceChangeTracker(),
-		audit:              auditStore,
-		runs:               map[string]context.CancelFunc{},
-		activeSubagentJobs: map[string]activeSubagentJob{},
-		approvals:          map[string]chan bool{},
-		pendingApprovals:   map[string]ApprovalRequest{},
-		asks:               map[string]chan askResult{},
-		pendingAsks:        map[string]AskRequest{},
+		store:                      store,
+		terminals:                  terminals,
+		remote:                     remote,
+		mcp:                        newMCPManager(),
+		workflows:                  workflowManager,
+		backups:                    backupManager,
+		workspace:                  newWorkspaceChangeTracker(),
+		audit:                      auditStore,
+		runs:                       map[string]context.CancelFunc{},
+		activeSubagentJobs:         map[string]activeSubagentJob{},
+		approvals:                  map[string]chan bool{},
+		pendingApprovals:           map[string]ApprovalRequest{},
+		asks:                       map[string]chan askResult{},
+		pendingAsks:                map[string]AskRequest{},
+		remoteConnectionRequestIDs: map[string]bool{},
 	}
+	app.workbenchTerminals = newWorkbenchTerminalManager(app.emit)
 	app.codex = newCodexAppServer(codexRuntimeRootFromStore(store))
 	return app, nil
 }
 
 func (app *DesktopAgentApp) startup(ctx context.Context) {
 	app.ctx = ctx
+	tray, trayErr := startApplicationTray(
+		func() {
+			runtime.WindowUnminimise(ctx)
+			runtime.WindowShow(ctx)
+		},
+		func() {
+			app.mu.Lock()
+			app.allowApplicationExit = true
+			app.mu.Unlock()
+			runtime.Quit(ctx)
+		},
+	)
+	if trayErr != nil {
+		runtime.LogErrorf(ctx, "无法创建系统托盘图标：%v", trayErr)
+	} else {
+		app.mu.Lock()
+		app.applicationTray = tray
+		app.mu.Unlock()
+	}
 	go app.store.cleanupOrphanedChatImages()
 	ensureApplicationWindowIcon(ctx)
+	_ = runtime.InitializeNotifications(ctx)
+	_, _ = runtime.RequestNotificationAuthorization(ctx)
+	_ = runtime.RegisterNotificationCategory(ctx, runtime.NotificationCategory{
+		ID: "remote_connection",
+		Actions: []runtime.NotificationAction{
+			{ID: "approve", Title: "同意连接"},
+			{ID: "reject", Title: "拒绝"},
+			{ID: "block", Title: "拉黑"},
+		},
+	})
+	runtime.OnNotificationResponse(ctx, app.handleNotificationResponse)
 	app.remote.SetListener(func(snapshot desktopbridge.RemoteNodeSnapshot) {
-		app.emit("remote-node:changed", snapshot)
+		app.handleRemoteNodeSnapshot(snapshot)
 	})
 	app.remote.SetDesktopAgentBridge(app.desktopAgentSnapshot, app.handleDesktopAgentCommand)
+	if github, err := app.workflows.store.runtimeGitHub(); err == nil {
+		app.remote.SetGitHubToken(github.Token)
+	}
 	app.mcp.SetListener(func() {
 		app.emit("mcp:changed", app.mcpState())
 	})
@@ -150,8 +189,13 @@ func (app *DesktopAgentApp) startup(ctx context.Context) {
 }
 
 func (app *DesktopAgentApp) shutdown(context.Context) {
+	if app.ctx != nil {
+		runtime.CleanupNotifications(app.ctx)
+	}
 	app.mu.Lock()
 	app.shuttingDown = true
+	tray := app.applicationTray
+	app.applicationTray = nil
 	for _, cancel := range app.runs {
 		cancel()
 	}
@@ -159,6 +203,12 @@ func (app *DesktopAgentApp) shutdown(context.Context) {
 		active.Cancel()
 	}
 	app.mu.Unlock()
+	if tray != nil {
+		tray.Close()
+	}
+	if app.workbenchTerminals != nil {
+		app.workbenchTerminals.CloseAll()
+	}
 	app.mcp.Close()
 	app.workflows.Close()
 	app.backups.Close()
@@ -170,6 +220,84 @@ func (app *DesktopAgentApp) shutdown(context.Context) {
 	}
 	app.remote.Close(5 * time.Second)
 	app.codex.Close()
+}
+
+// HideMainWindow keeps the desktop Agent and its schedulers alive in the
+// notification area. If the current platform cannot create a tray icon, the
+// close button retains the safe fallback of exiting instead of hiding an
+// unreachable process.
+func (app *DesktopAgentApp) HideMainWindow() {
+	app.mu.Lock()
+	trayReady := app.applicationTray != nil
+	ctx := app.ctx
+	app.mu.Unlock()
+	if ctx == nil {
+		return
+	}
+	if trayReady {
+		runtime.WindowHide(ctx)
+		return
+	}
+	app.mu.Lock()
+	app.allowApplicationExit = true
+	app.mu.Unlock()
+	runtime.Quit(ctx)
+}
+
+func (app *DesktopAgentApp) beforeClose(ctx context.Context) bool {
+	app.mu.Lock()
+	prevent := app.applicationTray != nil && !app.allowApplicationExit
+	app.mu.Unlock()
+	if prevent {
+		runtime.WindowHide(ctx)
+	}
+	return prevent
+}
+
+func (app *DesktopAgentApp) handleRemoteNodeSnapshot(snapshot desktopbridge.RemoteNodeSnapshot) {
+	app.mu.Lock()
+	newRequests := make([]desktopbridge.RemoteConnectionRequest, 0)
+	current := make(map[string]bool, len(snapshot.ConnectionRequests))
+	for _, request := range snapshot.ConnectionRequests {
+		current[request.RequestID] = true
+		if !app.remoteConnectionRequestIDs[request.RequestID] {
+			newRequests = append(newRequests, request)
+		}
+	}
+	app.remoteConnectionRequestIDs = current
+	app.mu.Unlock()
+	app.emit("remote-node:changed", snapshot)
+	for _, request := range newRequests {
+		if app.ctx == nil {
+			continue
+		}
+		_ = runtime.SendNotificationWithActions(app.ctx, runtime.NotificationOptions{
+			ID:         "remote-connect:" + request.RequestID,
+			Title:      "设备请求连接 Murong",
+			Body:       request.DeviceName + " · " + request.DeviceDisplayID,
+			CategoryID: "remote_connection",
+		})
+	}
+}
+
+func (app *DesktopAgentApp) handleNotificationResponse(result runtime.NotificationResult) {
+	const prefix = "remote-connect:"
+	if !strings.HasPrefix(result.Response.ID, prefix) {
+		return
+	}
+	requestID := strings.TrimPrefix(result.Response.ID, prefix)
+	switch result.Response.ActionIdentifier {
+	case "approve":
+		_, _ = app.remote.ApproveConnectionRequest(requestID)
+	case "reject":
+		_, _ = app.remote.RejectConnectionRequest(requestID)
+	case "block":
+		_, _ = app.remote.BlockConnectionRequest(requestID)
+	default:
+		if app.ctx != nil {
+			runtime.WindowShow(app.ctx)
+		}
+	}
 }
 
 func (app *DesktopAgentApp) Bootstrap() BootstrapState {
@@ -616,7 +744,12 @@ func (app *DesktopAgentApp) SaveRemoteNodeConfig(config desktopbridge.RemoteNode
 }
 
 func (app *DesktopAgentApp) StartRemoteNode(request StartRemoteNodeRequest) (desktopbridge.RemoteNodeSnapshot, error) {
-	return app.remote.Start(request.Config, request.PairCode)
+	github, err := app.workflows.store.runtimeGitHub()
+	if err != nil {
+		return app.remote.Snapshot(), err
+	}
+	app.remote.SetGitHubToken(github.Token)
+	return app.remote.StartWithGitHubToken(request.Config, request.PairCode, github.Token)
 }
 
 func (app *DesktopAgentApp) StopRemoteNode() desktopbridge.RemoteNodeSnapshot {
@@ -624,7 +757,53 @@ func (app *DesktopAgentApp) StopRemoteNode() desktopbridge.RemoteNodeSnapshot {
 }
 
 func (app *DesktopAgentApp) ClearRemoteNodePairing() (desktopbridge.RemoteNodeSnapshot, error) {
-	return app.remote.ClearPairing()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	return app.remote.RevokePairing(ctx)
+}
+
+func (app *DesktopAgentApp) RotateRemoteTemporaryCode() (desktopbridge.RemoteNodeSnapshot, error) {
+	return app.remote.RotateTemporaryCode()
+}
+
+func (app *DesktopAgentApp) SetRemoteSecurityPassword(password string) (desktopbridge.RemoteNodeSnapshot, error) {
+	return app.remote.SetSecurityPassword(password)
+}
+
+func (app *DesktopAgentApp) ClearRemoteSecurityPassword() (desktopbridge.RemoteNodeSnapshot, error) {
+	return app.remote.ClearSecurityPassword()
+}
+
+func (app *DesktopAgentApp) ApproveRemoteConnectionRequest(requestID string) (desktopbridge.RemoteNodeSnapshot, error) {
+	return app.remote.ApproveConnectionRequest(requestID)
+}
+
+func (app *DesktopAgentApp) RejectRemoteConnectionRequest(requestID string) (desktopbridge.RemoteNodeSnapshot, error) {
+	return app.remote.RejectConnectionRequest(requestID)
+}
+
+func (app *DesktopAgentApp) BlockRemoteConnectionRequest(requestID string) (desktopbridge.RemoteNodeSnapshot, error) {
+	return app.remote.BlockConnectionRequest(requestID)
+}
+
+func (app *DesktopAgentApp) SetRemoteDoNotDisturb(enabled bool) (desktopbridge.RemoteNodeSnapshot, error) {
+	return app.remote.SetDoNotDisturb(enabled)
+}
+
+func (app *DesktopAgentApp) UnblockRemotePeer(deviceID string) (desktopbridge.RemoteNodeSnapshot, error) {
+	return app.remote.UnblockPeer(deviceID)
+}
+
+func (app *DesktopAgentApp) DiscoverRemoteDevices() ([]desktopbridge.RemoteDiscoveredDevice, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return app.remote.DiscoverDevices(ctx)
+}
+
+func (app *DesktopAgentApp) DiscoverRemoteADBDevices() ([]desktopbridge.RemoteADBDevice, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	return app.remote.DiscoverADBDevices(ctx)
 }
 
 func (app *DesktopAgentApp) SelectRemoteWorkspace(current string) (string, error) {

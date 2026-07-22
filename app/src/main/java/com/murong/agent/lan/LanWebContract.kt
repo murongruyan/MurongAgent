@@ -1,11 +1,15 @@
 package com.murong.agent.lan
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 object LanWebContract {
     const val PORT = 8765
     const val API_PREFIX = "/api/v1"
     const val PAIR_PATH = "$API_PREFIX/pair"
+    const val PAIR_CHALLENGE_PATH = "$API_PREFIX/pair/challenge"
+    const val CONNECTION_REQUEST_PATH = "$API_PREFIX/connection/request"
+    const val CONNECTION_STATUS_PATH = "$API_PREFIX/connection/status"
     const val PUBLIC_STATUS_PATH = "$API_PREFIX/public/status"
     const val SESSIONS_PATH = "$API_PREFIX/sessions"
     const val MESSAGES_PATH = "$API_PREFIX/messages"
@@ -28,11 +32,19 @@ object LanWebContract {
 
     /** Password-wrapped bootstrap used to establish the long-lived device sync key. */
     const val SECURE_PAIRING_VERSION = "pbkdf2-sha256-aesgcm-v1"
+    const val SCRAM_PAIRING_VERSION = "scram-sha-256-v1"
     const val DEVICE_SYNC_ENVELOPE_VERSION = "aes256-gcm-v1"
+    const val DEVICE_LINK_ENVELOPE_VERSION = "ecdh-p256-aesgcm-v1"
     const val PAIRING_CODE_LENGTH = 16
 
     const val ACTION_START = "com.murong.agent.lan.START"
     const val ACTION_STOP = "com.murong.agent.lan.STOP"
+    const val ACTION_APPROVE_CONNECTION = "com.murong.agent.lan.APPROVE_CONNECTION"
+    const val ACTION_REJECT_CONNECTION = "com.murong.agent.lan.REJECT_CONNECTION"
+    const val ACTION_BLOCK_CONNECTION = "com.murong.agent.lan.BLOCK_CONNECTION"
+    const val ACTION_ADB_PAIR_CHALLENGE = "com.murong.agent.lan.ADB_PAIR_CHALLENGE"
+    const val EXTRA_CONNECTION_REQUEST_ID = "com.murong.agent.lan.extra.CONNECTION_REQUEST_ID"
+    const val EXTRA_ADB_CHALLENGE = "com.murong.agent.lan.extra.ADB_CHALLENGE"
 
     const val LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK"
 
@@ -44,7 +56,8 @@ object LanWebContract {
     const val MAX_WORKSPACE_CHANGES_BODY_BYTES = 1024 * 1024
     const val MAX_DESKTOP_AGENT_BODY_BYTES = 4 * 1024 * 1024
     const val MAX_DESKTOP_HANDOFF_BYTES = 1536 * 1024
-    const val MAX_DEVICE_SYNC_BODY_BYTES = 8 * 1024 * 1024
+    const val MAX_DEVICE_SYNC_PLAIN_BYTES = 32 * 1024 * 1024
+    const val MAX_DEVICE_SYNC_BODY_BYTES = 48 * 1024 * 1024
     const val MAX_MESSAGE_CHARS = 20_000
     const val MAX_CLIENT_NAME_CHARS = 40
     const val MAX_HISTORY_MESSAGES = 200
@@ -53,6 +66,26 @@ object LanWebContract {
 
     val requestIdPattern = Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{7,95}$")
     val sessionIdPattern = Regex("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+}
+
+object LanWebTrustSource {
+    const val LEGACY_CODE = "legacy_code"
+    const val TEMPORARY_CODE = "temporary_code"
+    const val SECURITY_PASSWORD = "security_password"
+    const val CONNECTION_APPROVAL = "connection_approval"
+    const val GITHUB_ACCOUNT = "github_account"
+    const val LAN_CONFIRMATION = "lan_confirmation"
+    const val ADB = "adb"
+
+    val values = setOf(
+        LEGACY_CODE,
+        TEMPORARY_CODE,
+        SECURITY_PASSWORD,
+        CONNECTION_APPROVAL,
+        GITHUB_ACCOUNT,
+        LAN_CONFIRMATION,
+        ADB,
+    )
 }
 
 @Serializable
@@ -64,7 +97,14 @@ data class LanWebErrorResponse(
 @Serializable
 data class LanWebPublicStatusResponse(
     val service: String = "murong-lan-web",
-    val pairingAvailable: Boolean
+    val pairingAvailable: Boolean,
+    val pairingMethods: List<String> = emptyList(),
+    val protocolVersion: Int = 3,
+    val deviceId: String = "",
+    val deviceDisplayId: String = "",
+    val devicePublicKey: String = "",
+    val deviceFingerprint: String = "",
+    val platform: String = "android",
 )
 
 @Serializable
@@ -81,6 +121,100 @@ data class LanWebPairResponse(
     val clientName: String,
     val createdAt: Long,
     val secureChannel: LanWebSecurePairingEnvelope? = null
+)
+
+@Serializable
+data class LanWebPairChallengeRequest(
+    val requestId: String,
+    val clientName: String,
+    val deviceId: String,
+    val devicePublicKey: String,
+    val deviceFingerprint: String,
+    val ephemeralPublicKey: String,
+    val platform: String = "desktop",
+    val issuedAt: Long,
+    val authMethod: String,
+    val clientNonce: String,
+    val signature: String,
+)
+
+@Serializable
+data class LanWebPairChallengeResponse(
+    val version: String = LanWebContract.SCRAM_PAIRING_VERSION,
+    val sessionId: String,
+    val serverNonce: String,
+    val salt: String,
+    val iterations: Int,
+    val expiresAt: Long,
+)
+
+@Serializable
+data class LanWebConnectionRequest(
+    val requestId: String,
+    val clientName: String,
+    val deviceId: String,
+    val devicePublicKey: String,
+    val deviceFingerprint: String,
+    val ephemeralPublicKey: String,
+    val platform: String = "desktop",
+    val issuedAt: Long,
+    val authMethod: String = LanWebTrustSource.CONNECTION_APPROVAL,
+    val authProof: String = "",
+    val signature: String,
+)
+
+@Serializable
+data class LanWebConnectionRequestAck(
+    val requestId: String,
+    val status: String,
+    val expiresAt: Long,
+    val message: String,
+)
+
+@Serializable
+data class LanWebConnectionStatusRequest(
+    val requestId: String,
+    val deviceId: String,
+    val issuedAt: Long,
+    val signature: String,
+)
+
+@Serializable
+data class LanWebConnectionStatusResponse(
+    val requestId: String,
+    val status: String,
+    val message: String,
+    val responderDeviceId: String = "",
+    val responderPublicKey: String = "",
+    val responderEphemeralPublicKey: String = "",
+    val responderSignature: String = "",
+    val clientId: String = "",
+    val clientName: String = "",
+    val createdAt: Long = 0L,
+    val authServerProof: String = "",
+    val secureChannel: LanWebDeviceLinkEnvelope? = null,
+)
+
+@Serializable
+data class LanWebDeviceLinkEnvelope(
+    val version: String = LanWebContract.DEVICE_LINK_ENVELOPE_VERSION,
+    val nonce: String,
+    val ciphertext: String,
+)
+
+@Serializable
+data class LanWebConnectionRequestSummary(
+    val requestId: String,
+    val deviceId: String,
+    val deviceDisplayId: String,
+    val clientName: String,
+    val platform: String,
+    val publicKeyFingerprint: String,
+    val authMethod: String,
+    val transport: String,
+    val createdAt: Long,
+    val expiresAt: Long,
+    val status: String,
 )
 
 @Serializable
@@ -103,6 +237,7 @@ data class LanWebDeviceSyncEnvelope(
 
 @Serializable
 data class LanWebDeviceSyncOptions(
+    val includeSessions: Boolean = false,
     val includeProviderCredentials: Boolean = true,
     val includeCodexLogin: Boolean = true,
     val includeGitHubCredentials: Boolean = true,
@@ -111,6 +246,15 @@ data class LanWebDeviceSyncOptions(
     val includeMcp: Boolean = false,
     val includeMcpCredentials: Boolean = false,
     val includeSavedWorkflows: Boolean = false,
+    val sessionCursor: Int = 0,
+)
+
+@Serializable
+data class LanWebSyncedSession(
+    val sourceSessionId: String,
+    val originPlatform: String = "",
+    val originSessionId: String = "",
+    val document: JsonObject,
 )
 
 @Serializable
@@ -224,7 +368,7 @@ data class LanWebSyncedSavedWorkflow(
 
 @Serializable
 data class LanWebCredentialSyncBundle(
-    val schemaVersion: Int = 4,
+    val schemaVersion: Int = 6,
     val sourcePlatform: String,
     val generatedAt: Long,
     val activeProviderId: String? = null,
@@ -237,10 +381,15 @@ data class LanWebCredentialSyncBundle(
     val mcpServers: List<LanWebSyncedMcpServer> = emptyList(),
     val mcpCredentialsIncluded: Boolean = false,
     val savedWorkflows: List<LanWebSyncedSavedWorkflow> = emptyList(),
+    val sessions: List<LanWebSyncedSession> = emptyList(),
+    val sessionNextCursor: Int? = null,
 )
 
 @Serializable
 data class LanWebCredentialSyncResult(
+    val importedSessions: Int = 0,
+    val conflictSessions: Int = 0,
+    val skippedSessions: Int = 0,
     val importedProviders: Int = 0,
     val importedApiKeys: Int = 0,
     val importedCodexLogin: Boolean = false,
@@ -262,7 +411,18 @@ data class LanWebClientSummary(
     val name: String,
     val createdAt: Long,
     val lastSeenAt: Long? = null,
-    val secureSync: Boolean = false
+    val secureSync: Boolean = false,
+    val deviceId: String = "",
+    val publicKeyFingerprint: String = "",
+    val trustSource: String = LanWebTrustSource.LEGACY_CODE,
+)
+
+@Serializable
+data class LanWebBlockedPeerSummary(
+    val deviceId: String,
+    val name: String,
+    val publicKeyFingerprint: String,
+    val blockedAt: Long,
 )
 
 @Serializable
@@ -658,9 +818,17 @@ data class LanWebServiceState(
     val starting: Boolean = false,
     val address: String? = null,
     val port: Int = LanWebContract.PORT,
+    val deviceId: String = "",
+    val deviceDisplayId: String = "",
+    val deviceFingerprint: String = "",
     val pairingCode: String? = null,
     val pairingExpiresAt: Long? = null,
+    val pairingCooldownUntil: Long? = null,
+    val securityPasswordConfigured: Boolean = false,
     val clients: List<LanWebClientSummary> = emptyList(),
+    val blockedPeers: List<LanWebBlockedPeerSummary> = emptyList(),
+    val doNotDisturb: Boolean = false,
+    val connectionRequests: List<LanWebConnectionRequestSummary> = emptyList(),
     val workspaceConnected: Boolean = false,
     val workspaceLabel: String? = null,
     val workspacePlatform: String? = null,
@@ -670,16 +838,15 @@ data class LanWebServiceState(
     val workspaceTerminals: List<LanWebTerminalBackend> = emptyList(),
     val desktopAgentConnected: Boolean = false,
     val desktopAgentControlAllowed: Boolean = false,
-    val cloudRelayConfigured: Boolean = false,
-    val cloudRelayEnabled: Boolean = false,
-    val cloudRelayUrl: String = "",
-    val cloudRelayRoomId: String = "",
-    val cloudRelayShareCode: String? = null,
-    val cloudRelayRunning: Boolean = false,
-    val cloudRelayConnecting: Boolean = false,
-    val cloudRelayConnected: Boolean = false,
-    val cloudRelayStatus: String = "云中继未启用",
-    val cloudRelayError: String? = null,
+    val deviceRelayRunning: Boolean = false,
+    val deviceRelayConnecting: Boolean = false,
+    val deviceRelayConnected: Boolean = false,
+    val deviceRelayStatus: String = "公网本机 ID 未启动",
+    val deviceRelayError: String? = null,
+    val outgoingDeviceConnection: Boolean = false,
+    val outgoingDeviceConnectionStatus: String = "",
+    val discoveringDevices: Boolean = false,
+    val environmentDevices: List<LanWebDiscoveredDevice> = emptyList(),
     val error: String? = null
 ) {
     val nodeUrl: String?

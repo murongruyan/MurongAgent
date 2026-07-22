@@ -10,6 +10,90 @@ import kotlin.test.assertTrue
 
 class PortableConversationBackupStoreTest {
     @Test
+    fun mergeIntoCurrentStore_atomicallyAddsSessionsAndSkipsIdenticalRepeat() {
+        val sourceDir = Files.createTempDirectory("portable-live-source").toFile()
+        val targetDir = Files.createTempDirectory("portable-live-target").toFile()
+        try {
+            assertTrue(ConversationStore(sourceDir).saveSession(session("desktop-1", "电脑任务", "来自电脑", 20)))
+            val records = PortableConversationBackupStore.forDirectory(sourceDir).exportAll()
+            assertTrue(ConversationStore(targetDir).saveSession(session("local", "手机任务", "本地保留", 30)))
+            val bridge = PortableConversationBackupStore.forDirectory(targetDir)
+
+            val first = bridge.mergeIntoCurrentStore("android", records)
+            assertEquals(1, first.importedSessions)
+            assertEquals(0, first.conflictCopies)
+            assertEquals(0, first.skippedSessions)
+            assertEquals(2, ConversationStore(targetDir).listSessions().size)
+            assertTrue(ConversationStore(targetDir).loadSession("local") != null)
+
+            val repeated = PortableConversationBackupStore.forDirectory(targetDir)
+                .mergeIntoCurrentStore("android", records)
+            assertEquals(0, repeated.importedSessions)
+            assertEquals(0, repeated.conflictCopies)
+            assertEquals(1, repeated.skippedSessions)
+            assertEquals(2, ConversationStore(targetDir).listSessions().size)
+        } finally {
+            sourceDir.deleteRecursively()
+            targetDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun mergeIntoCurrentStore_invalidInputLeavesLiveStoreUntouched() {
+        val sourceDir = Files.createTempDirectory("portable-live-invalid-source").toFile()
+        val targetDir = Files.createTempDirectory("portable-live-invalid-target").toFile()
+        try {
+            assertTrue(ConversationStore(sourceDir).saveSession(session("desktop-1", "电脑任务", "来自电脑", 20)))
+            val records = PortableConversationBackupStore.forDirectory(sourceDir).exportAll()
+            assertTrue(ConversationStore(targetDir).saveSession(session("local", "手机任务", "本地保留", 30)))
+
+            assertFailsWith<IllegalArgumentException> {
+                PortableConversationBackupStore.forDirectory(targetDir)
+                    .mergeIntoCurrentStore("windows", records)
+            }
+            val sessions = ConversationStore(targetDir).listSessions()
+            assertEquals(1, sessions.size)
+            assertEquals("local", sessions.single().id)
+        } finally {
+            sourceDir.deleteRecursively()
+            targetDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun mergeIntoCurrentStore_doesNotEchoOriginalAndroidSessionBackAsDuplicate() {
+        val sourceDir = Files.createTempDirectory("portable-echo-source").toFile()
+        val targetDir = Files.createTempDirectory("portable-echo-target").toFile()
+        try {
+            val original = session("android-origin", "原始手机任务", "相同内容", 20)
+            assertTrue(ConversationStore(sourceDir).saveSession(original))
+            assertTrue(ConversationStore(targetDir).saveSession(original))
+            val androidRecord = PortableConversationBackupStore.forDirectory(sourceDir).exportAll().single()
+            val windowsDocument = androidRecord.portableJson.replace(
+                "\"sourcePlatform\":\"android\"",
+                "\"sourcePlatform\":\"windows\""
+            )
+            assertTrue(windowsDocument.contains("\"sourcePlatform\":\"windows\""))
+            val echoed = androidRecord.copy(
+                sourceSessionId = "portable-windows-copy",
+                portableJson = windowsDocument,
+                originPlatform = "android",
+                originSessionId = original.id,
+            )
+
+            val result = PortableConversationBackupStore.forDirectory(targetDir)
+                .mergeIntoCurrentStore("windows", listOf(echoed))
+            assertEquals(0, result.importedSessions)
+            assertEquals(0, result.conflictCopies)
+            assertEquals(1, result.skippedSessions)
+            assertEquals(listOf(original.id), ConversationStore(targetDir).listSessions().map { it.id })
+        } finally {
+            sourceDir.deleteRecursively()
+            targetDir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun exportAndMerge_preservesExistingAndCreatesStableConflictCopy() {
         val sourceDir = Files.createTempDirectory("portable-backup-source").toFile()
         val targetDir = Files.createTempDirectory("portable-backup-target").toFile()
@@ -30,6 +114,11 @@ class PortableConversationBackupStoreTest {
 
             val importedStore = ConversationStore(mergedDir)
             val imported = importedStore.listSessions().first { it.id != "local" }
+            val reExported = PortableConversationBackupStore.forDirectory(mergedDir)
+                .exportAll()
+                .first { it.sourceSessionId == imported.id }
+            assertEquals("android", reExported.originPlatform)
+            assertEquals("source-1", reExported.originSessionId)
             assertTrue(
                 importedStore.saveSession(
                     importedStore.loadSession(imported.id)!!.copy(

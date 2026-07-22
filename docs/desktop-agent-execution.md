@@ -625,3 +625,174 @@ Murong Desktop Agent（Windows / macOS / Linux）
 - 部署后公网 Go API、DeployHook 和 Relay 健康继续返回 200，WSS 密文往返通过；旧 `/classes/GitHubOAuthService.php`、`/config/github_oauth.php`、`/migrations/004_create_release_download_events.sql` 均返回 404，管理页已显示 Go 自动建表提示，证明旧运行文件已从生产站点移除。仓库仅保留不经 Web 暴露的 `deploy/migrate-env-from-php.php`，用于其他旧服务器首次切换时一次性转换配置，不属于运行时后端。
 - OAuth 首次真实授权暴露并修复了回调桥接页的重复引号转义：旧模板会把正确的绝对地址解析成 `/api/%2522https:/...`。提交 `e59d068` 改由 `html/template` 直接生成安全 JavaScript 字符串，并为 HTTPS 管理页和 `murongagent://` 应用协议加入回归测试；Push 工作流 `29791830094` 与正式一键部署 `29791952824` 均完成测试、双架构包、滚动 Release 和正式部署。部署后从新的 OAuth start 再次授权，浏览器无需人工改址即精确落到 `https://murongagent.rl1.cc/admin/`，显示管理员“慕容茹艳 @murongruyan”和“数据已刷新”，用户、活跃、版本、设备、发布与下载统计均成功读取，证明 callback、一次性交换码、30 天服务端会话和管理 API 全链路成立。
 - 最终生产验收确认新首页、下载页和 GitHub 页面内容；OAuth start 包含 Client ID、本站 callback、`read:user repo` 和签名 state，恶意外域回跳返回 400。Usage 有效 heartbeat 返回 200、缺字段返回 400；Android 源码使用的三个 `.php` API 常量、两个 artifact key 和官方 WSS 地址与 Go 路由一致，启动后自动检查主程序与扩展版本，下载完成后交给系统安装器。主 APK 29,368,722 字节、扩展 APK 120,217,756 字节的跟踪 302、直接下载、Range 206、MIME、版本码和完整 SHA-256 均通过；正式移动同步 Job `88451409366` 上传并发布两包，当前管理后台也显示主程序 1.30、扩展 1.10 及真实下载记录。
+
+### 2026-07-21 P5b.18（云中继单码配对与故障提示）
+
+- 用户实测发现旧流程同时要求 `MR1` 云中继连接码和五分钟一次性配对码，两个同级密钥没有清晰教程，也让已经拥有 256 位端到端密钥的异网链路重复验证。本阶段把云中继主流程收敛为“手机生成并复制一个电脑连接码 → 电脑粘贴并启动”；局域网/Tailscale 直连继续使用一次性配对码。
+- 不修改现有 `MR1.<room>.<secret>` 格式。Android 与 Desktop 使用带域分离的 SHA-256，从 256 位中继密钥确定性派生 80 位配对引导值；桌面只发送其 SHA-256 证明，手机仅在云中继专用回环服务上按常量时间匹配，随后继续使用既有 PBKDF2-HMAC-SHA256（210,000 次）和 AES-256-GCM 封装首次访问令牌与设备同步密钥。公网局域网监听器不会接受这条自动配对路径，中继也仍看不到引导值、令牌或同步密钥。
+- 兼容性保持双向：新手机仍接受旧桌面提交的手机一次性码；新桌面给旧手机保留折叠的“一次性配对码”兼容入口。云中继连接码为空时才启用自动配对，用户主动填写兼容码时继续走原安全配对流程。
+- Android 设置页把主按钮统一称为“电脑连接码”，明确异网不再需要第二个码；局域网一次性配对按钮仅在手机确实有局域网地址时显示。Desktop 把一次性码收进旧版兼容折叠项，并按连接方式动态解释。内部虚拟 HTTP 地址 `murong-cloud-relay.invalid` 不再进入用户错误；WSS 拨号失败与“中继已连接但手机 30 秒未响应”分别给出不同提示，后者直接要求检查手机节点服务状态和两端电脑连接码。
+- 验证通过：Desktop Bridge 与 Desktop Agent 的 `go test -count=1 ./...`、`go vet ./...`，前端 `node --check`，Android 三组 LAN/云中继定向测试及全模块 `gradlew test`。固定密钥 `00..1f` 在 Go/Kotlin 两端都派生 `ZHDTNE5Y4DKX7RH7`；真实无手机中继测试确认 `.invalid` 不再泄漏，端点测试覆盖自动配对、旧桌面一次性码回退和凭据安全落盘。
+- Android `:app:installRelease` 用时 11 分 13 秒，成功覆盖安装到 `RMX5200`（`192.168.2.4:5555`），版本 `1.30 (26071902)`，最后更新时间 `2026-07-21 10:24:20`。Release APK 为 29,371,327 字节，SHA-256 `8D2BBCB39AA948AB99634969E8FE26544746D17632E96BFCC2B970326D1757CC`。
+- Windows x64 单 EXE 重新构建并通过内置 Codex、图标和版本资源检查，大小 160,303,616 字节，SHA-256 `032881B399994DAACCC7F09C067CFE60DCC15CB781950F5D91BE99F9CFFE4018`。真实窗口验收确认云中继首屏只突出电脑连接码、明确无需一次性码，旧版兼容项默认折叠，工作区、权限与启动区域无重叠；验收未保存配置或启动节点。
+
+### 2026-07-21 P5b.19（设备连接体系重构，进行中）
+
+- 用户否定把 `MR1`、WSS 地址和两层配对码暴露为主流程，并明确了目标交互：同 GitHub 账号可信设备免码、同网自动发现、ADB 受信直连、稳定本机 ID、临时验证码或安全密码、无密码连接申请，以及双端弹窗/通知、拒绝、拉黑和免打扰。现有 `MR1.<room>.<secret>` 保留为端到端加密底层和旧版兼容入口，不再作为普通用户需要理解的设备身份。
+- 联网核对了截至 2026-07-21 仍活跃的开源实现。RustDesk 使用稳定 ID、临时/永久密码和错误次数限制，并在临时密码连续失败后轮换；KDE Connect 同时使用 UDP 广播与 mDNS，持久设备 ID 配合 TLS 证书，首次配对由接收端确认；LocalSend Protocol 2.1 用证书 SHA-256 指纹记住设备，以 multicast 为主、HTTP 网段扫描为降级；Sunshine/Moonlight 用 PIN 完成一次证书配对；Tailscale/Headscale 把机器密钥、节点密钥和账号授权分层；scrcpy 复用 ADB 已建立的 RSA 主机信任。参考源码与协议：<https://github.com/rustdesk/rustdesk>、<https://github.com/KDE/kdeconnect-kde>、<https://github.com/localsend/protocol>、<https://github.com/LizardByte/Sunshine>、<https://github.com/tailscale/tailscale>、<https://github.com/juanfont/headscale>、<https://github.com/Genymobile/scrcpy>。
+- Murong 的安全结论是“自动发现不等于静默授权”。首次信任只允许来自四种证明之一：同 GitHub 账号的服务端短期证明、ADB 已授权通道、用户输入临时验证码/安全密码、接收端明确同意连接申请。发现包只公开协议版本、显示名、平台、稳定公开 ID、端口和设备公钥指纹，不包含 API Key、GitHub Token、访问令牌、同步密钥、项目路径或聊天摘要。
+- 新模型拆成三层：`DeviceIdentity` 保存稳定公开 ID、设备公钥和受保护私钥；`ConnectionRequest` 保存发起方、目标、认证方式、过期时间、状态与权限请求；`TrustedPeer` 保存对端公钥指纹、来源（GitHub/LAN-confirm/ADB/code/password）、允许能力、拉黑/DND 和最后活动时间。连接获批后仍沿用现有安全配对封装生成随机访问令牌和 AES-256-GCM 设备同步密钥，工具写入、Root、终端和 GitHub 修改继续经过既有四档审批。
+- 连接路径顺序固定为：已信任设备直接重连；同网发现后按可信状态直连或弹一次确认；ADB 通过 `adb reverse/forward` 和应用私有广播交付一次性挑战；同 GitHub 账号通过 Murong Go 后端验证双方会话并签发短期、绑定设备公钥和双 nonce 的证明；否则输入“本机 ID + 临时验证码/安全密码”，或仅输入 ID 发送连接申请。临时验证码默认 5 分钟、成功即轮换，连续失败触发轮换和冷却；安全密码只保存带独立 salt 的内存硬 KDF verifier；申请按来源设备和 IP 限速，可拒绝、拉黑或在 DND 下静默丢弃。
+- GitNexus 索引已按当前提交 `085de76` 强制重建为 30,611 nodes、80,973 edges、801 clusters、300 flows。现有 Android `LanWebAccessStore.pair` 直接影响 6 个测试，风险 MEDIUM；Desktop `apiClient.pair` 通过 `prepareNode` 影响 GUI、Service 和 CLI 共 10 个符号，风险 LOW。实施顺序据此固定为“协议/持久化类型 -> Android 服务与通知 -> Desktop 调用与 UI -> Relay/API -> 兼容层 -> 测试”。
+- 此前新增的“启动电脑节点服务时先保存当前云中继草稿”已重新执行 `:app:installRelease --no-daemon`，9 分 43 秒成功覆盖安装到 `RMX5200 - 16`，203 个 task 中 19 个执行、184 个复用；只有既有 `LocalClipboardManager` 弃用警告。真实无第二配对码中继测试已确认 `Started=True`、`StayedConnected=True`、`PairTokenSaved=True`、`SyncKeySaved=True`、`SecondCodeProvided=False`。
+- 本阶段尚未提交、尚未推送。只有完成协议安全测试、Android/Go 全量回归、Release 安装，以及 GitHub 同账号、LAN、ADB、临时码/安全密码、手动申请各路径的真实端到端验收并由用户确认后，才允许提交推送。
+### 2026-07-22：ADB Root 与 ColorOS Elsa 白名单（真机已通过）
+
+- 测试机通过 KernelSU 提供真实 Root：`adb shell id` 返回 `uid=0(root)`、SELinux 域为 `u:r:ksu:s0`。ADB 已授权本身作为首次设备信任证明；连接仍使用 32 字节一次性挑战、稳定 P-256 设备签名、临时 P-256 ECDH、HKDF-SHA256 和 AES-256-GCM bootstrap，访问令牌、同步密钥及后续工具审批没有降级。
+- ColorOS 的实际冻结策略来自 `/data/oplus/os/bpm/sys_elsa_config_list.xml`。电脑端 Root ADB 连接现在先扫描 `/data/adb/modules`；测试机确认存在 `/data/adb/modules/murongruyan/data/oplus/os/bpm/sys_elsa_config_list.xml`，因此先修改模块源，再检查当前生效文件，并在 `<!--third white app -->` 后幂等加入 `<whitePkg name="com.murong.agent" category="001" />`。
+- 写入前拉取原文件并验证路径；写入后重新解析完整 XML。原文件按内容和来源路径哈希备份到 `/data/adb/murongagent-backups`，保留原目标的 owner、mode 和 SELinux context；找不到指定白名单段、路径越界、XML 无效或校验失败都会拒绝更新。模块文件与当前文件均已实机确认包含 Murong 条目，两份备份均存在。
+- 同时自动执行 Android 公共后台策略：background restriction 设为 unrestricted、`RUN_IN_BACKGROUND`/`RUN_ANY_IN_BACKGROUND` 设为 allow、加入 device-idle allowlist、package unstop 和 ColorOS unfreeze；用户不需要再进入电池设置手工配置。此前尝试的虚假 Companion Device 登记、两个 Companion 权限和循环 `am unfreeze` 保活已删除。
+- `adb shell sh -c` 会被 ADB 重新拼接参数，曾在任何文件写入前触发语法错误；Root 脚本现统一以 Base64 传输并由设备端 `sh` 解码执行，避免空格、分号和引号被二次解释。跨路径 XML 插入、CRLF、幂等和非法路径测试均通过。
+- 真机集成测试先只清理 8 条名称精确为 `Murong ADB Integration Test` 的中断测试记录，并保留测试前访问文件备份；真实用户配对记录为 0。随后 ADB 冷启动、动态端口转发、签名申请、令牌鉴权、连续 60 秒心跳、撤销测试配对和转发清理全部通过：`TestADBTransportIntegration (64.18s)`。服务保持 `isForeground=true`、`isFrozen=false`。
+- 同一 Release 服务在线时，签名 UDP 自动发现真机测试也通过：电脑发现 Android 稳定 ID `AJXM-5CQ9-86MT-WRN5`，只使用数据包真实来源 `http://192.168.2.4:8765`，耗时 `4.08s`。
+
+### 2026-07-22：临时验证码与安全密码改为 SCRAM-SHA-256
+
+- 新增 `/api/v1/pair/challenge` 两阶段认证；临时验证码和安全密码均使用客户端/服务端随机数绑定的 SCRAM-SHA-256，不再把可重放的静态 SHA-256 code proof 作为新版直连认证。
+- SCRAM 使用 PBKDF2-HMAC-SHA256 210,000 次、ClientKey/StoredKey/ServerKey 和双向 proof；认证上下文绑定请求 ID、稳定设备 ID、公钥、指纹、临时 ECDH 公钥、平台、签发时间和认证方式。
+- 认证成功后复用稳定设备签名与临时 P-256 ECDH，访问令牌和 32 字节同步密钥仍只在 AES-256-GCM bootstrap 中返回；现有工具审批没有绕过。
+- 临时验证码有效 5 分钟、成功一次立即失效；连续 5 次错误后旧码失效并冷却 60 秒。新旧本地协议暂时共用同一显示码，旧版静态 proof 仅保留兼容入口。
+- 安全密码为 8–128 个字符，手机持久化文件只保存随机盐、迭代次数、StoredKey、ServerKey 和更新时间，不保存密码明文；手机 UI 可设置、更换和清除。
+- Desktop UI 可在“临时验证码 / 安全密码”之间明确选择；秘密只用于本次 proof，不进入电脑配置。留空仍发送无验证码连接申请，CLI 也不再强制交互询问配对码。
+- Go/Android 中文密码固定向量一致：client proof `K_STU2wDd0G4YjGThfQNElLzre25QTcoz7Qgf1fyrJI`，server proof `U45HJI_kHrwMNN5cuYao0dBersJCWLopSb6bcTExlN0`；篡改 proof 会被拒绝。
+- 已通过 Desktop Bridge 全量 Go 测试、Desktop Agent 全量 Go 测试、`node --check`，以及 Android ScramCrypto、PairingAuthenticator、ConnectionCoordinator、AccessStore、Server HTTP 集成测试；Android 定向回归 `BUILD SUCCESSFUL in 1m 52s`。
+- 尚待 Release 安装后的真实 LAN 临时码、安全密码和冷却轮换交互验收；本节记录的是自动化闭环完成，不提前宣称真机阶段完成。
+
+### 2026-07-22：同 GitHub 账号免码连接（协议与自动化已完成）
+
+- 电脑端复用已经安全保存的 GitHub Token，通过 Agent 后端新增的 `token_login` 换取 30 天后端会话；Agent 服务器无法直连 GitHub 时，继续使用受服务 Token 保护的 `murongdiaodu` 代理。代理新增“验证已有 access token”模式，只返回 GitHub `/user` 身份，不记录、不持久化，也不在响应中回显 Token。
+- 连接发起端向 Agent 后端申请 60 秒、一次性的随机账号票据。票据绑定 request ID、双方稳定设备 ID、公钥和 SHA-256 指纹、发起端临时 ECDH 公钥、平台与签发时间，并要求发起端用稳定 P-256 私钥签名；数据库只保存票据 SHA-256、连接摘要和使用状态。
+- 手机收到 `github_account` 连接申请后，先按原协议验证连接请求签名，再用自己的 GitHub 后端会话和稳定 P-256 私钥向服务端核验票据。服务端只有在双方会话属于同一 GitHub account、目标设备与连接摘要完全匹配、票据未过期且未使用时才原子消费并返回可信结果。
+- 同账号核验成功后继续走现有临时 P-256 ECDH + AES-256-GCM bootstrap，访问令牌和同步密钥不经过账号后端；后续 Root、文件写入、终端、GitHub 修改仍遵守原工具审批。账号票据不替代 E2EE，也不赋予额外工具权限。
+- 手机没有登录 GitHub、两端账号不同或账号后端暂时不可用时，不会静默授权：连接保留为普通待确认申请；电脑端在尚未向手机发送申请前发现账号服务不可用，会自动降级为接收端手动同意。DND 和黑名单仍优先拒绝陌生设备。
+- Desktop Node 配置 schema 升至 v6，只用 DPAPI/Keychain/本机凭据保护缓存后端会话，不在 UI 快照中暴露；清除手机配对不会清除电脑 GitHub 登录。手机继续从 Android 加密配置存储读取 `githubBackendSessionToken`。
+- 后端固定设备身份向量继续与 Android/Desktop 一致：公钥对应 `DMB77YSEX4BLAFRU` 和指纹 `XNJS-wzokyQ2-vjM0QQJgbie5K1rn-niorfnGqyyfNM`。自动化覆盖双方设备签名、票据字段绑定、同账号事务消费、GitHub Token 不回显、Desktop 发票据、Android HTTP 核验、同账号自动信任及非同账号保留 pending。
+- 已通过 `murongagent-backend` 相关 Go 测试、`murongdiaodu-backend-go/internal/service/admin` Go 测试、Desktop Bridge 全量 Go 测试、Desktop Agent 全量 Go 测试，以及 Android ConnectionCoordinator/GitHubAccountTrust 定向测试；Android 本轮 `BUILD SUCCESSFUL in 2m 30s`。完整 Go `-race`/`vet`、Android 全模块、Release 安装和真实双账号/同账号网络验收仍待后续总回归，尚未提交或推送。
+
+### 2026-07-22：公网稳定本机 ID Relay v2（协议与客户端接线完成，真实部署验收待进行）
+
+- Agent Go 后端新增 `/relay/v2/device`，设备必须用稳定 P-256 私钥签名登记自己的 16 位 ID、公钥、平台、时间和随机数；中继验证“ID 确实由该公钥派生”后才允许上线。同一 ID 的新连接替换旧连接，不保留离线邀请，并限制单连接消息速率、队列和帧大小。
+- Desktop 新增 `device_id` 连接方式：输入手机本机 ID 后，先签名查询目标公钥，再生成临时 P-256 邀请密钥、随机 16 字节房间和 32 字节隧道密钥。邀请使用临时 ECDH + HKDF-SHA256 + AES-256-GCM 加密并由电脑稳定身份签名，中继只能转发密文，不能获得房间密钥。
+- 手机电脑节点服务现在默认登记公网本机 ID；不再要求用户先启用旧 MR1。手机验证电脑稳定 ID、公钥和签名，解密邀请后只为本次连接打开一个短期 v2 加密隧道，再用手机稳定身份签名确认。邀请 90 秒过期，房间和密钥每次启动重新生成；重放、AAD 篡改、密文篡改和指纹变化均拒绝。
+- 公网邀请本身只负责建立端到端传输，不直接授权文件或终端。隧道内部仍走原有连接申请、同 GitHub 账号票据、SCRAM 临时验证码/安全密码、稳定设备信任和 AES-GCM bootstrap；拉黑设备在打开临时隧道前拒绝，DND、文件写入、终端、Root 与 GitHub 修改审批继续由原逻辑执行。
+- 按用户确认，旧 MR1 不是折叠兼容项而是完整删除：Android 删除连接码生成/解析、旧密钥仓库、常驻中继配置和自动配对入口；Desktop 删除 MR1/WSS 配置、独立 `murong-cloud-relay` 程序及其 Linux Release 产物。旧配置字段升级后直接忽略，不再提供恢复入口。
+- 旧 `/relay/v1/connect`、`murong-cloud-relay-v1` 子协议和独立中继产物已经删除；内部密文运输统一改为 `/relay/v2/tunnel` 与 `murong-device-tunnel-v2`。手机仅为当前邀请打开短期隧道，停止服务会销毁连接并清零会话密钥；仅移动数据、没有 Wi-Fi 或局域网权限时也可启动公网 ID 节点。
+- 双端 UI 只保留“输入手机本机 ID”、同网自动发现、ADB 和局域网地址；普通教程收敛为“复制 ID → 电脑粘贴 → 同账号直连或手机确认”，不再出现 MR1、WSS 地址或自建中继说明。
+- 自动化已通过：后端 Relay v2 路由/签名/篡改测试，Desktop Bridge 全量测试（包含真实 WebSocket 假中继上的注册、查询、ECDH 邀请、解密和签名 ACK），Desktop Agent 全量测试与 `node --check`，Android Relay v2 跨身份 ECDH/AES-GCM/签名/篡改定向测试。本轮 Android 定向测试 `BUILD SUCCESSFUL in 2m 23s`。
+- 删除旧连接流程后的回归通过：Desktop Bridge `go test -count=1 ./...`（22.897 秒）、Desktop Agent 全量测试、前端 `node --check`、Android `:app:compileDebugKotlin`（2 分 36 秒），以及 CloudRelay 内部隧道、AccessStore、ServerIntegration、DeviceRelayProtocol 四组定向测试（43 秒）。`git diff --check` 无空白错误；工作流只剩主 APK、扩展 APK 和六个桌面产物，不再构建或发布独立中继程序。
+- 仍未完成的是把新 Go 后端部署到正式服务器后的真实异网 ID 连接、Android Release 安装、断网重连、同账号/不同账号、拉黑/DND 和 Root ADB 真机联合验收；因此本阶段仍未提交、未推送，也不把目标标记完成。
+
+### 2026-07-22：双端统一连接主页与手机发起控制（进行中）
+
+- 按用户给出的信息层级重写远程控制主页：Android 与 Desktop 都直接显示稳定本机 ID、复制/分享、五分钟临时验证码、安全密码入口、已配对设备及撤销；不再显示异网中继开关、WSS 地址、MR1 连接码或“复制电脑连接码”。两端下方都提供“输入设备码 → 连接”和“当前环境已有设备 → 立即连接”。技术状态、DND、黑名单和诊断只留在更多设置，不干扰主流程。
+- 设备 Relay v2 从“同一 ID 只能有一个 WebSocket”扩展为按 `listener`/`session` 角色并存：常驻监听不会再被一次连接协商挤下线，邀请确认精确返回发起连接的 session，连接申请确认返回常驻 listener。后端新增稳定身份签名的 `connect_request`/`connect_ack`，手机和电脑都能发起；中继只转发签名消息，不取得设备私钥、密码、访问令牌或隧道密钥。
+- 手机发起控制采用安全回连：手机向电脑稳定 ID 发送签名请求，电脑同意后沿用现有 Desktop→Android 的一次性 ECDH 邀请与 v2 加密隧道主动回连；手机只对自己刚刚选择且公钥指纹匹配的电脑开放两分钟预期窗口，陌生设备不能借 LAN 广播诱导自动授权。已配对且指纹不变的设备可自动接受回连，指纹变化仍重新确认。
+- Android 新增 LAN 扫描器，Desktop 新增签名 UDP responder；两端复用同一随机 nonce、防重放时间窗、稳定 ID/公钥/指纹验证，并只信任数据包真实来源。电脑列表只显示 Android，手机列表只显示非 Android 电脑，避免把本机或同类无效目标显示成可连接设备。
+- Desktop 新增自己的临时验证码和安全密码验证器：临时码五分钟有效、成功即轮换、连续错误后冷却；安全密码持久化只保存 salt、PBKDF2 迭代数、StoredKey 和 ServerKey。手机输入电脑临时码/安全密码时，经 Relay v2 完成签名 `auth_begin`、目标签名 challenge、SCRAM-SHA-256 client/server proof；密码明文不进入中继或电脑配置。留空则发送手动确认申请。
+- 电脑收到手机申请时，Wails 前台弹窗和系统通知都会显示手机名称与本机 ID，并可同意或拒绝；同意只建立设备连接，不绕过文件写入、终端、Root、GitHub 修改和既有工具审批。Android 原有通知继续提供同意、拒绝和拉黑。
+- 当前自动化通过：Backend 设备路由测试覆盖 listener/session 并存、签名 lookup/invite/ack、auth begin/challenge、连接申请/确认；Desktop Bridge 全量测试覆盖临时码 SCRAM 双向 proof、成功轮换和安全密码不落明文；Desktop Agent 全量测试与 `node --check` 通过；Android 编译和 DeviceRelayProtocol/ConnectionCoordinator 定向测试通过。尚未进行正式后端部署、Release 安装和真实双机 LAN/密码/申请联合验收，因此没有提交或推送。
+
+### 2026-07-22：双端完整连接能力补齐（进行中）
+
+- 按用户确认，手机端与电脑端都提供完整连接主页，不再把功能只放在其中一端。两端主界面保持“本机 ID / 临时验证码 / 安全密码 / 已配对设备 / 输入设备码 / 当前环境设备”的顺序；免打扰、黑名单和诊断收进可展开的“更多设置”。手机原有通知继续提供同意、拒绝、拉黑；电脑弹窗和系统通知也补齐拉黑动作。
+- Desktop 新增独立、权限受限并原子写入的连接策略文件，持久化 DND 和最多 256 个黑名单身份。拉黑按稳定 ID 或公钥指纹生效，并立即清除命中的本地访问令牌、同步密钥和配对身份；黑名单和 DND 不会被普通“撤销配对”误清。陌生无密码申请每台设备每分钟最多三次、同一设备只保留一个待确认申请、总待确认数量最多 16 个，申请两分钟后自动过期。
+- “同 GitHub 账号免码”从单向扩展为双向：手机发起时先用 Android 加密配置中的后端会话签发 60 秒一次性账号票据，票据绑定双方稳定 ID、公钥/指纹、request ID、手机临时 P-256 公钥与签发时间；Desktop 使用 DPAPI/Keychain 保护的后端会话验证并原子消费。同账号直接回连，账号不同、会话缺失或服务不可用时降级为电脑端人工确认，不会静默放行。
+- Relay v2 的 `connect_request` 签名新增临时公钥绑定，Backend、Android 和 Desktop 使用完全一致的载荷顺序；后端同时验证 P-256 公钥和 GitHub 票据格式。验证码/安全密码仍走 SCRAM-SHA-256，人工申请仍不携带秘密。账号验证通过、密码正确或已配对身份自动回连时，不再短暂弹出一条随后消失的错误通知。
+- 手机从“当前环境已有设备”发起时，电脑会在回连前重新进行一次签名 LAN 发现并要求稳定 ID 与指纹完全一致；找到同网手机后优先使用真实私网地址直连，找不到才回退 Relay v2。这样手机发起同网连接也不会因为界面对称而实际绕公网传输。
+- Agent Go 后端已彻底移除旧 PHP 迁移器和部署包中的 PHP 文件，安装器只读取现有 Go 环境文件；首次安装生成 Go 模板并要求补全。官网旧“异网端到端加密中继”文案已改成本机 ID、同网发现和 ADB。部署包脚本同时修复 Windows PowerShell 5 不支持 `Path.GetRelativePath` 的问题，amd64 TAR/ZIP 已成功生成，TAR 共 28 个条目、无 PHP，外层 SHA-256 为 `7f5b827092844d95cd26f37392761c1bcf19165a28755237d71c928afbc8c26d`。
+- 当前回归：Backend 全量 `go test`/`go vet`、Desktop Bridge 全量 `go test`/`go vet`、Desktop Agent 全量 `go test`/`go vet`、前端 `node --check` 和 Android GitHubAccountTrust/DeviceRelayProtocol/ConnectionCoordinator 定向测试均通过；Android 定向构建用时 1 分 59 秒。全量 Android、Race、Release 安装、桌面正式产物和真实 LAN/ADB/异网联合验收仍在继续，未提交、未推送。
+- 本轮进一步通过 Android 全模块 `gradlew test`（55 秒）、Desktop Bridge 全量测试与 `go vet`、Desktop Agent 全量测试与 `go vet`、Backend 全量测试与 `go vet`、调度后端 GitHub Token 验证服务测试与 `go vet`，以及主仓库/后端 `git diff --check`。Desktop 文件监听在四项并行高负载时曾有一次 5 秒超时，随后该用例连续 5 次和全量套件均通过，未放宽断言。
+- 最终 Android Release 已于 `2026-07-22 22:34:16` 覆盖安装到 RMX5200：版本 `1.30 (26071902)`，APK 大小 `29,496,902` 字节，SHA-256 `E3F5F679D3A0303C27DEB6212E45BBD0D7E7C3A6F0C360F57A04E2F79A0A0D52`。当前默认 Ubuntu WSL 没有 Linux Go/C 编译器，本机 Go 又没有 GCC，因而不能伪造 `-race` 结果；正式 Linux `-race` 仍由后端 GitHub 工作流在提交后作为部署前门禁执行。
+- 最终 Windows amd64 单 EXE 已重新构建并通过内置资源校验，路径为 `desktop-agent/dist/murong-desktop-agent-windows-amd64.exe`，大小 `160,907,776` 字节，SHA-256 `711B7DF15D49BA61F0BC120F8DCC8F667660091E864D92BBE243A8E54B34A08A`。真实启动验收确认远程控制页不再出现 `REMOTE NODE`、原始 HTTP 地址、WSS、旧中继开关或复制连接码；旧本地配对仅显示“已配对设备”，附近设备可直接显示 RMX5200 和 `ADB 已授权`，电脑已识别 PowerShell 7、Windows PowerShell、CMD 和可用 WSL 终端。
+- 手机最终 Release 的真实界面验收也完成：远程控制页依次显示本机 ID `AJXM-5CQ9-86MT-WRN5`、复制/分享、临时验证码及倒计时、更改为安全密码、已配对设备、输入设备码和当前环境设备；签名 LAN 扫描发现电脑 `PC-20260411BFYM`，稳定 ID `PX5H-6CDW-XFZQ-TJ9A`，可直接点击“立即连接”。这与用户要求的手机、电脑同结构主页一致。
+- 线上 `https://murongagent.rl1.cc/relay/healthz` 当前仍明确报告 `relayProtocol: 1` 和 `/relay/v1/connect`，`/relay/v2/device` 返回 404，说明正式服尚未部署本轮 Relay v2。当前工作区没有提交；部署包脚本若直接打包脏工作区，会把旧 `git HEAD` 写入 `SOURCE_REVISION`，形成错误来源标记，因此在用户确认提交/推送以前不会部署这份本地源码。提交后必须先让 GitHub Linux `-race` 门禁通过，再部署并进行真实异网 ID、同账号/不同账号、密码/申请、拉黑和 DND 联合验收。
+
+### 2026-07-23：Desktop 工作台终端与编辑器重做（自动化验收已通过）
+
+- 删除工作台原来的“输入一条命令 → 新建进程 → 回显退出码”表单。每个终端标签现在直接创建持久 PTY：Windows 使用 ConPTY，Linux/macOS 使用系统 PTY；键盘输入、ANSI 控制序列、交互程序、窗口缩放、滚动缓冲和标签关闭都作用于同一个 Shell 进程。CMD 不再注入 `chcp` 等初始化命令，PowerShell/CMD/WSL/POSIX Shell 均直接启动；默认终端在设置中选择，新建终端立即进入该 Shell。
+- xterm.js 6.0.0 与 FitAddon 0.11.0 已离线打包进桌面 EXE，不依赖 CDN。终端仍可按设置只在右侧或底部显示；其他工具始终留在右侧。关闭工作台不会杀死标签内终端，关闭终端标签或退出应用才清理对应进程。
+- 编辑器布局改为左侧编辑/预览区、右侧项目文件树。CodeMirror 6 离线包提供行号、当前行、选区和按扩展名语法高亮，覆盖 JavaScript/TypeScript、JSON、HTML/CSS、Markdown、Python、Java/Kotlin、C/C++、Go、Rust、SQL、YAML、XML/SVG 与常见 Shell 文件；保存仍使用最近读取 SHA-256 防止覆盖外部修改。
+- PNG、JPEG、GIF、WebP、BMP、ICO 可直接在编辑区预览；后端只允许项目目录内的普通文件，限制 16 MiB，校验扩展名、图片解码格式和哈希。SVG 继续按 XML 文本编辑，避免把带脚本的 SVG 当页面执行。
+- 自动化覆盖真实交互 PTY 输入/输出与 resize、图片类型/尺寸/损坏文件、项目路径越界、并发写入冲突和前端旧表单清除。Desktop Agent 全量 `go test -count=1 ./...`、`go vet ./...`、`node --check`、npm 离线资源构建均通过。
+- Chromium 视觉验收确认终端画布直接显示 PowerShell 提示符，编辑区几何位置严格在文件树左侧，Go 文件出现语法高亮，图片切换到预览画布；同时修复无活动任务首次启动时状态栏把 `null` 当作 Token 统计对象导致的启动失败。
+- 本地 Release 脚本和 GitHub `build-all.yml` 已加入锁文件驱动的 `npm ci`、资源打包和前端语法门禁，六种桌面系统/架构产物不会依赖开发机残留 bundle。本阶段仍未提交、未推送。
+- ConPTY 压力测试复现并修复“进程已启动但极早输入偶发丢失”：ConPTY 自身会先输出 ANSI 初始化帧，Shell 输入管道稍后才可用；会话现在在首个输出后设置 75ms 就绪门，最长等待两秒后降级。连续 20 次测试均一次粘贴两行命令并正确回显，随后 resize 和退出也成功。
+- Windows ARM64 测试二进制交叉编译通过。Windows amd64 正式构建已通过前端重建、全量 Go 测试、`go vet`、内置 Codex 校验、Wails 编译和 PE 资源校验；最终单 EXE 为 `desktop-agent/dist/murong-desktop-agent-windows-amd64.exe`，大小 `162,548,224` 字节，SHA-256 `649F66DAC9B28BF7AD04CC45BEE0E4E218FDCF9FC77C04570D12AD35DC13836B`。
+
+### 2026-07-23：Desktop Markdown 预览与文件树可读性
+
+- 右侧项目文件树由 10px/180px 调整为 12px/220px，并增大行高、点击区域和图标列；长文件名继续省略显示，目录层级和选中状态不变。
+- `.md` 与 `.markdown` 文件新增“编辑 / 预览 / 分屏”三种模式，首次打开默认分屏；预览直接读取 CodeMirror 当前文档，因此未保存内容也会实时更新，保存仍沿用 SHA-256 并发覆盖保护。
+- Markdown 使用离线打包的 Marked 18.0.7 解析 GFM，并用 DOMPurify 3.4.12 净化后渲染；标题、列表、引用、表格、代码块、链接和图片具有独立阅读样式，事件属性和脚本不会进入页面。
+- 右侧工作台不再按工具类型写死宽度。用户可直接拖动工作台左边缘调整宽度，键盘左右键每次调整 24px，双击恢复 620px 默认值；宽度写入本机偏好并在刷新、重启后恢复，终端底部停靠时不显示横向拖动柄。
+- 左侧栏由纯黑改为浅灰蓝渐变，任务和导航使用白色卡片态；27px 状态底栏改为从窗口左边缘连续绘制，在侧栏宽度内使用相同背景，不再出现左下白块。1280px 浏览器验收确认侧栏/底栏分界都为 280px，拖动后的 596px 工作台刷新后仍为 596px；编辑器宽 375px、右侧文件树 220px，Markdown 分屏和净化继续通过。
+
+### 2026-07-23：聊天记录纳入手机与电脑端到端同步
+
+- 根因确认：原“手机与电脑设备同步”协议只包含模型连接、登录、设置、知识、MCP 和工作流，`CredentialSyncBundle` 从未定义会话字段，因此同步成功也不可能把手机聊天导入电脑，并非会话列表刷新问题。
+- 同步包升级为 schema v5，新增显式勾选的“聊天记录”；Android 与 Desktop 都先持久化当前空闲会话，再导出既有 `murong-portable-session` 跨平台文档。内容包含标题、消息、模型标识、Token 用量和压缩摘要；项目路径、Codex 线程、待审批状态及图片二进制不传输，图片只保留附件说明。
+- 手机和电脑都使用原子合并：首次同步导入；完全相同的重复同步跳过；同一原始会话在两端出现不同内容时保留内容哈希命名的冲突副本，不覆盖任一端。Android 使用同文件系统目录交换，Desktop 先写完整会话文件，失败时撤销本轮新增记录。
+- 每条同步记录持久保存“原始平台 + 原始会话 ID”。电脑推到手机后再从手机拉回会命中电脑原会话，手机原会话绕电脑一圈也同理；如果对端继续聊天，才生成冲突副本，避免双向同步每次凭空多一份记录。
+- 设备同步明文上限从 8 MiB 调整为 32 MiB，仍通过既有 ECDH 派生同步密钥与 AES-256-GCM 通道传输；最多 10,000 个会话，Desktop 会话文档总量限制 24 MiB，超出时提示使用完整备份。同步期间存在运行中任务或待审批交互会明确拒绝，不截取半写状态。
+- 自动化已覆盖 Desktop 首次导入、重复跳过、冲突副本、来源伪造拒绝、私有字段排除和往返回声；Android 覆盖原子目录交换、无效输入不改 live store、冲突副本、来源不匹配和往返回声。Desktop Agent 全量 Go 测试/`go vet`、Android core 与 app 定向编译测试、前端构建/语法检查均通过；Release 安装与真实双端聊天拉取仍在继续，本阶段未提交、未推送。
+
+### 2026-07-23：同步截断、透明分片与聊天入口修复（进行中）
+
+- 真实手机拉取出现 `同步失败：unexpected EOF` 的根因不是聊天文档损坏，而是 Desktop 通用 HTTP JSON 读取器仍只读取前 2 MiB；加密同步包虽然已允许 32 MiB，外层响应却被先行截断。设备同步现使用独立的 48 MiB 单包响应边界，并在反序列化前检测“超出边界”，不再把截断伪装成 EOF。
+- 用户指出“全部聊天记录”不应有固定大小限制后，已删除 Desktop 原有的 24 MiB 总历史校验。schema v6 以约 6 MiB 为目标自动分页，每页独立 AES-256-GCM 加密、校验并在失败时指出具体页；设置与登录状态只在第一页携带，后续页只包含会话，接收端检查游标前进、来源一致和会话 ID 不重复。单个加密包仍保留防内存攻击边界，但总历史不受该边界限制；每页使用独立 120 秒网络超时，完整同步不再套 150 秒总截止时间。
+- 同一套分页同步不绑定外部连接方式：局域网、电脑/手机热点、ADB 端口映射和公网 Relay v2 都复用相同的设备 API 与端到端加密；HTTP 只是内部 RPC 载体，不是 32 MiB 限制来源。FTP 不用于替代会话合并协议。
+- Android 会话按稳定 sourceSessionId 排序并返回下一游标；Desktop 推送也自动按实际 JSON 大小切页，重试时依靠既有原始身份与内容等价判断跳过已导入页。28 MiB 总历史拆分页、超过旧 24 MiB 校验、3 MiB HTTP 响应、Android 多页无漏项测试均已通过；Android `LanWebDeviceSyncContractTest` 完整编译测试用时 2 分 55 秒并通过。
+- 手机查看桌面任务已从 Compose `Dialog` 改为聊天主页内的 `DesktopAgentChatScreen`：从抽屉选择电脑任务会直接替换聊天内容区，返回时回到本地聊天，不再出现覆盖页面的弹窗。Desktop 新增可持久化的侧栏宽度、聊天内容横向边距和工作台宽度设置，侧栏/底栏继续使用统一浅色背景。
+- 模型与推理切换报 `Cannot read properties of null (reading 'selectedOptions')` 的根因是异步事件处理在 `await` 之后再次读取 `event.currentTarget`；DOM 已将其清空。两个处理器现都在 await 前捕获 select 元素、值和显示文字，并加入静态回归测试。
+- 当前仍未提交、未推送。下一步是重新构建 Android Release 与 Windows 单 EXE，完成真实大聊天拉取、重复同步、模型切换、手机内嵌电脑聊天和布局设置验收后再交给用户确认。
+
+### 2026-07-23：真实同步幂等性与项目分组侧栏（自动化和本机验收已通过）
+
+- Android 当前会话在设备同步前会先持久化，但旧实现每次构造会话都刷新 `updatedAt`，因此即使内容不变也可能被对端识别为冲突。现在会先比较除时间戳外的完整持久态；内容未变时复用旧对象和旧时间戳，内容变化才写盘。另一个真实旧会话标题两侧带空格，Desktop 导入会规范化标题但比较仍使用发送端原值；合并逻辑现统一比较 Desktop 实际可持久化的规范形态，重试不会为等价旧数据生成冲突副本。
+- 真实 RMX5200 联合验收通过：首次从手机导入 32 个会话、0 冲突；立即再次完整拉取时 32 个会话全部跳过、0 新增、0 冲突，且没有再出现 `unexpected EOF`。测试复制真实节点配置并使用临时 Desktop 数据目录，不覆盖电脑现有聊天、设置或凭据，也不输出聊天正文。
+- 修复 Desktop Bridge 拉取分页时先清空 `SessionNextCursor`、随后才读取游标的顺序错误；现在先保存游标再清除聚合结果中的内部字段，并新增真实加密 HTTP 两页响应测试，确认继续请求第二页、无漏项。大历史仍按页传输，不恢复总历史大小限制。
+- Desktop 左侧会话改为按有效项目路径分组：会话自身有绑定时使用绑定路径；旧会话为空时采用当前配置中的有效项目，不再错误显示“未绑定项目”。项目标题显示会话数和“折叠/展开”，折叠状态写入本机偏好；会话行只显示标题、消息数、时间或手机接管状态。
+- “知识库 / 自动化 / 远程节点 / 设置”从纵向文字菜单改成侧栏底部四个横排 SVG 图标。聊天始终作为底层主页面，点击图标打开带遮罩、圆角和关闭按钮的功能弹层；再次点击同一图标、点击遮罩、关闭按钮或按 Escape 都返回聊天，不再把主页面整体切走。
+- 自动化通过：前端 `node --check`、项目分组/弹层导航静态回归、Desktop Agent 与 Desktop Bridge 全量 `go test -count=1 ./...`，正式 Windows 构建脚本内的 npm 锁定安装、前端 bundle、全量 Go 测试、`go vet`、内置 Codex 校验、Wails 编译和 PE 资源检查。GitNexus 索引状态为当前提交最新；图查询接口本轮未挂载，因此以 `rg` 调用点检查和专门回归测试完成影响验证。
+- Android Release 已于 `2026-07-23 03:40:07` 覆盖安装到 RMX5200，版本 `1.30 (26071902)`；APK 大小 `29,506,092` 字节，SHA-256 `8A9BE6160D9D9E065DAC481233BCE08459024C7D11EBA121CB38FC4FF78D768E`。Windows amd64 单 EXE 已重新构建并启动，大小 `162,669,568` 字节，SHA-256 `C4E86C0052DA8B925B695D4FDDCA7CE2B259527C5467085F908BA84FCE31DD9E`；本机截图确认 `apk` 项目组、折叠状态、子会话列表和四个横排图标正确显示。
+- 当前仍未提交、未推送、未部署；继续遵守“用户验收后再提交推送”。
+
+### 2026-07-23：Desktop 单一设置入口、任务右键菜单与摘要轨道（进行中）
+
+- 按最新反馈删除左下“知识库 / 自动化 / 远程节点 / 设置”四入口，只保留一个 34px 设置图标。原有项目、模型、审批与工具、Agent、规则、记忆、Skills、MCP、GitHub、工作流、远程控制、设备同步、备份、终端和界面设置不再各自覆盖聊天页，而是进入一个相对窗口全局居中的分类设置弹窗；输入控件、状态和保存 API 保持原 ID 与原数据逻辑。
+- 聊天顶栏删除常驻“任务详情 / 删除”文字按钮，改为摘要跳转、底部终端和电脑侧栏三个紧凑按钮。底部按钮只会打开或收起终端；电脑侧栏没有可用工具标签时会直接打开编辑器，不再先弹出“＋”菜单。窗口右上角恢复为最小化、最大化、关闭三个系统按钮，不再把工作台按钮叠进窗口控制区。
+- 左侧任务增加右键菜单，包含打开、任务详情与重命名、在侧边任务中打开、分叉、导出 JSON、复制任务 ID 和两次点击确认删除；手机接管中的任务禁用删除，原任务详情弹窗、压缩摘要、三种导出、回退和导入能力继续保留。
+- 聊天与左栏分隔线右侧新增对话段摘要轨道。每条用户消息作为一段，短横线点击滚动到对应消息；悬停目标横线扩展为 4 倍，相邻两侧分别扩展为 3 倍和 2 倍，并只显示该段用户内容及随后助手回复的紧凑摘要。显示状态保存在本机偏好，可从顶栏随时隐藏。
+- 已通过前端 `node --check`、Desktop Agent 全量 `go test -count=1 ./...`（包含新的分类设置、右键菜单、摘要层级和面板按钮回归）、`go vet ./...`、`git diff --check`、内置 Codex 校验、Wails 正式编译和最终 PE 图标/版本资源校验。应用内浏览器因安全策略禁止打开本地 `file://` 页面，未绕过该限制。
+- 自动结束了仅占用标准 EXE 的旧 Murong 进程，先验证 `.next.exe` 覆盖和双击单实例，再以未锁定的标准文件名完成最终构建；无需用户手动退出托盘。最终 Windows amd64 单 EXE 为 `desktop-agent/dist/murong-desktop-agent-windows-amd64.exe`，大小 `162,691,072` 字节，SHA-256 `46530CB9B8F13E18DB51476BBE8145D1789368BC031A16DDA80A368A042F0522`。
+- 程序内视觉验收发现设置点击事件已执行、但嵌在主网格内的弹窗没有显示；现已在初始化时把设置弹窗挂载到全局 `body` 弹窗层。重新构建启动后确认居中设置弹窗、分类列表、内容滚动和分类切换均可见且可操作；检测到用户正在窗口内操作后停止自动点击，避免抢夺鼠标。本阶段仍未提交、未推送。
+- 修复手机同步 ChatGPT/Codex 登录后，电脑选择 Codex 连接发送消息仍反复打开模型设置的问题。根因是前端发送预检仍使用旧的全局 `model + hasApiKey` 条件，而 Codex 登录模式按设计没有 API Key，且允许模型由 Codex 自动决定；现改为按当前 Provider 判断，Codex 直接进入后端登录/运行时校验，OpenAI-compatible、DeepSeek 和 Claude 仍分别要求模型与 API Key。前端语法、Desktop Agent 全量测试和 `go vet` 通过；Windows amd64 单 EXE 已自动结束旧实例后覆盖并重启，大小 `162,691,584` 字节，SHA-256 `E63D9DBCD420FA2A80A4E6A6E253CCB4B83C42E17C4BDE9423963909FE082C3F`，当前单实例运行。
+- 真机继续发送后暴露第二个 Codex 协议错误：Murong 在 `thread/start` 发送 `dynamicTools`，初始化却把 `capabilities.experimentalApi` 明确声明为 `false`，内置 Codex 因此按协议返回 `-32600`。现统一由可测试的初始化参数函数声明 `experimentalApi: true`，并增加回归测试保证动态工具与 capability 不再自相矛盾；Desktop 全量测试和 `go vet` 通过。新版单 EXE 已再次自动覆盖重启，大小 `162,691,584` 字节，SHA-256 `F67E1C470B4648B086880A0E6867885D590B06CA5B04C867A29F32C39ADC8816`。
+
+### 2026-07-23：Desktop 聊天输入历史键盘召回
+
+- 修复的是聊天发送框，不改工作台终端。电脑端原发送框只处理 `@` 和 Enter/Shift+Enter，从未接入 Android 已有的输入历史，因此终端上键正常而聊天上键无效。
+- 发送成功的非空文字现在与 Android 一致：先移除相同旧记录，再追加到末尾，只保留最近 50 条，并写入本机 `localStorage` 跨重启保存。为兼容升级前已经存在的任务，启动和切换任务时还会按时间顺序提取当前任务的全部用户消息、去重合并到历史末尾，因此第一次按 ↑ 就是当前对话最后一次说的话；继续 ↑ 向前，↓ 向后并在末尾恢复召回前草稿，修改召回内容会退出历史浏览。
+- 首次进入历史只在光标位于第一行且没有选区时拦截 ↑，避免破坏多行文本内的普通光标移动；进入历史后 ↑/↓ 连续浏览。IME 合成、Shift/Ctrl/Alt/Meta 组合键保持原行为，Enter 发送和 Shift+Enter 换行未改变。
+- 新增 Desktop 前端回归，固定持久化键名、50 条上限、旧任务用户消息提取、发送记忆、上下键接线、去重及草稿恢复。独立状态机实测顺序为“第二条旧消息 → 第一条旧消息 → 第二条旧消息 → 未发送草稿”；`node --check`、Desktop Agent `go test -count=1 ./...`、`go vet ./...`、`git diff --check` 与 Release 脚本内全量门禁均通过。
+- Windows amd64 单 EXE 已再次自动结束旧实例、覆盖构建并重新启动，当前仅一个标准路径进程；大小 `162,696,704` 字节，SHA-256 `527D6C42C5C285B13356BEF120B79658AE22B96B933682B55EA514832055AD4A`。真实界面验收确认空聊天框按 ↑ 会提取当前任务最后一条用户消息“你好，你是什么模型？能干什么？”，按 ↓ 恢复为空草稿，过程中未发送消息。本阶段仍未提交、未推送。
+
+### 2026-07-23：设备连接体系 Release 后真实回归（公网部署前）
+
+- Desktop 的“撤销配对”已从只清理本机凭据改为双方撤销：先按当前直连、ADB 或本机 ID 隧道打开手机 API，调用 `/api/v1/unpair` 成功后再清理本机访问令牌、同步密钥和对端身份；手机已经返回 401/403 时按“对端已撤销”处理。网络或远端错误会保留本机凭据，避免界面声称撤销成功但手机仍信任。成功、手机不可达和手机已撤销三类测试均通过。
+- Android 全模块 `gradlew test` 用时 2 分 4 秒并通过；Desktop Bridge、Desktop Agent 和 Agent Go 后端的全量 `go test -count=1 ./...`、`go vet ./...` 均通过，前端 `node --check` 和主仓库/后端 `git diff --check` 通过。后端 GitNexus 变更检测覆盖 20 个文件、73 个符号和 23 条流程，因认证、Relay 与部署同时位于关键路径而标为 CRITICAL，必须继续以正式 Linux `-race` 和真实生产验收作为提交前门禁；当前 Windows/WSL 环境没有可用 CGO Linux 工具链，不伪造本地 race 结果。
+- 最新 Android Release 已覆盖安装到 RMX5200，版本仍为 `1.30 (26071902)`；APK 为 `app/build/outputs/apk/release/app-release.apk`，大小 `29,506,095` 字节，SHA-256 `7A7AFBFCB816B81D6F38A9CCE0D63685A8F49A8B147A6D09A8E619A65CB03DD6`。Windows amd64 单 EXE 为 `desktop-agent/dist/murong-desktop-agent-windows-amd64.exe`，大小 `162,708,992` 字节，SHA-256 `D5F33134E111E2728C20461046D4DF8977DC770F52A0DC864CC605293D3E1150`；正式脚本内的 npm 构建、Go 测试/静态检查、内置 Codex、Wails 和 PE 资源门禁全部通过，启动后保持单实例。
+- Release 安装后重新跑了真实 ADB 安全引导、稳定签名 LAN 自动发现、连接申请“同意 / 拒绝 / 拉黑”、DND 静默拒绝及状态恢复。ADB 使用已授权主机信任和一次性挑战；LAN 发现命中手机稳定 ID `AJXM-5CQ9-86MT-WRN5`。测试结束后测试客户端和黑名单均为 0、DND 恢复为关闭，原有配对设备“666”仍保留。
+- 临时验证码真实 SCRAM 已通过：验证码由真机界面生成，电脑完成 PBKDF2-HMAC-SHA256/SCRAM 双向 proof、临时 P-256 ECDH、AES-256-GCM bootstrap、访问令牌鉴权和主动撤销，成功后验证码按设计轮换。安全密码也已通过真实手机界面设置并完成同样的电脑端链路验收；测试前手机没有安全密码文件，结束后已删除测试 verifier、强制重启服务并确认恢复为“未设置”。持久化文件只出现 302 字节的 salt/StoredKey/ServerKey 等 verifier 数据，未保存明文密码。
+- 同 GitHub 账号真实测试暂未通过生产环境，不是客户端回归：手机和电脑都具备登录状态，但正式站点的 `github_auth.php?action=token_login` 与 `device_trust.php?action=issue` 仍返回 404，因此电脑安全降级为普通接收端确认，没有静默授权。公网 `/relay/v2/device` 也仍待正式部署。后端 amd64 部署包已从脏工作区明确标记为 `e59d068cb577b10ea7f3835921f9f42e173a0fc8-dirty`，路径 `murongagent-backend/dist/murongagent-backend-deploy-amd64.tar.gz`，SHA-256 `e5a757e9ce5ff3ab289b4b2e44a336ec7f76adac3f0b1d58c582be0439aacd10`，21 个清单文件已复算通过；不会把脏包伪装成旧提交。
+- 当前宝塔浏览器登录已失效，DeployHook 原始 Token 也不在本机安全存储中，所以尚未部署生产 Relay v2/GitHub 设备信任。继续遵守“先测试、用户确认后再提交推送”：用户重新登录服务器后先部署并验证两个 API、`/relay/healthz` 与 `/relay/v2/device`，再跑同账号免码和真实异网本机 ID 链路；本阶段仍未提交、未推送。

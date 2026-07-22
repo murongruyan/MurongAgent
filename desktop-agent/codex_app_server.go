@@ -465,10 +465,7 @@ func (server *codexAppServer) ensureStarted(ctx context.Context, preferred strin
 		CodexHome string `json:"codexHome"`
 		UserAgent string `json:"userAgent"`
 	}
-	err = client.Request(initializeContext, "initialize", map[string]any{
-		"clientInfo":   map[string]any{"name": "murong-desktop-agent", "title": "Murong Desktop Agent", "version": "1.30"},
-		"capabilities": map[string]any{"experimentalApi": false},
-	}, &initialized)
+	err = client.Request(initializeContext, "initialize", codexClientInitializeParams(), &initialized)
 	if err == nil {
 		err = client.Notify(initializeContext, "initialized", nil)
 	}
@@ -485,6 +482,13 @@ func (server *codexAppServer) ensureStarted(ctx context.Context, preferred strin
 		status.Error = ""
 	})
 	return client, nil
+}
+
+func codexClientInitializeParams() map[string]any {
+	return map[string]any{
+		"clientInfo":   map[string]any{"name": "murong-desktop-agent", "title": "Murong Desktop Agent", "version": "1.30"},
+		"capabilities": map[string]any{"experimentalApi": true},
+	}
 }
 
 func probeCodexVersion(parent context.Context, executable string) string {

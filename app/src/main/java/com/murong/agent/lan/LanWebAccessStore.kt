@@ -12,9 +12,11 @@ import kotlinx.serialization.json.Json
 
 @Serializable
 private data class LanWebAccessState(
-    val schemaVersion: Int = 1,
+    val schemaVersion: Int = 2,
     val clients: List<LanWebClientRecord> = emptyList(),
-    val recentRequests: List<LanWebRequestRecord> = emptyList()
+    val recentRequests: List<LanWebRequestRecord> = emptyList(),
+    val blockedPeers: List<LanWebBlockedPeerRecord> = emptyList(),
+    val doNotDisturb: Boolean = false,
 )
 
 @Serializable
@@ -24,7 +26,18 @@ private data class LanWebClientRecord(
     val tokenHash: String,
     val createdAt: Long,
     val lastSeenAt: Long? = null,
-    val secureSync: Boolean = false
+    val secureSync: Boolean = false,
+    val deviceId: String = "",
+    val publicKeyFingerprint: String = "",
+    val trustSource: String = LanWebTrustSource.LEGACY_CODE,
+)
+
+@Serializable
+private data class LanWebBlockedPeerRecord(
+    val deviceId: String,
+    val name: String,
+    val publicKeyFingerprint: String,
+    val blockedAt: Long,
 )
 
 @Serializable
@@ -59,14 +72,26 @@ class LanWebAccessStore internal constructor(
     private var activePairing: ActivePairingSession? = null
     private val pairingAttempts = LanWebRateLimiter(limit = 8, windowMillis = PAIR_ATTEMPT_WINDOW_MILLIS)
 
-    fun beginPairing(now: Long = System.currentTimeMillis()): LanWebPairingCode = synchronized(globalLock) {
+    fun beginPairing(
+        now: Long = System.currentTimeMillis(),
+        rawCode: String? = null,
+    ): LanWebPairingCode = synchronized(globalLock) {
         loadStateForMutation()
         clearActivePairing()
-        val normalizedCode = buildString(LanWebContract.PAIRING_CODE_LENGTH) {
-            repeat(LanWebContract.PAIRING_CODE_LENGTH) {
-                append(PAIRING_ALPHABET[secureRandom.nextInt(PAIRING_ALPHABET.length)])
+        val normalizedCode = rawCode?.uppercase()
+            ?.filterNot { it == '-' || it.isWhitespace() }
+            ?.takeIf {
+                it.length == LanWebContract.PAIRING_CODE_LENGTH && it.all { char -> char in PAIRING_ALPHABET }
             }
-        }
+            ?: if (rawCode == null) {
+                buildString(LanWebContract.PAIRING_CODE_LENGTH) {
+                    repeat(LanWebContract.PAIRING_CODE_LENGTH) {
+                        append(PAIRING_ALPHABET[secureRandom.nextInt(PAIRING_ALPHABET.length)])
+                    }
+                }
+            } else {
+                error("临时验证码格式无效")
+            }
         val expiresAt = now + PAIRING_TTL_MILLIS
         activePairing = ActivePairingSession(
             codeHash = hash(normalizedCode),
@@ -99,12 +124,19 @@ class LanWebAccessStore internal constructor(
         remoteAddress: String,
         secureSync: Boolean = false,
         rawCodeProof: String? = null,
+        deviceId: String = "",
+        publicKeyFingerprint: String = "",
+        trustSource: String = LanWebTrustSource.LEGACY_CODE,
         now: Long = System.currentTimeMillis()
     ): Result<LanWebIssuedClient> = synchronized(globalLock) {
         runCatching {
             require(pairingAttempts.tryAcquire(remoteAddress, now)) { "配对尝试过于频繁，请稍后再试" }
             val clientName = LanWebSecurity.normalizeClientName(rawClientName)
                 ?: error("客户端名称无效")
+            val normalizedDeviceId = normalizeOptionalDeviceId(deviceId)
+            val normalizedFingerprint = normalizeOptionalFingerprint(publicKeyFingerprint)
+            require(trustSource in LanWebTrustSource.values) { "设备信任来源无效" }
+            require(!isBlockedLocked(normalizedDeviceId, normalizedFingerprint)) { "该设备已被拉黑" }
             val session = activePairing ?: error("当前没有可用配对码")
             if (session.expiresAt <= now) {
                 clearActivePairing()
@@ -113,9 +145,9 @@ class LanWebAccessStore internal constructor(
             if (secureSync) {
                 val proof = rawCodeProof
                     ?.takeIf { it.length == SHA256_BASE64URL_LENGTH && it.all(::isBase64UrlCharacter) }
-                    ?: recordPairFailure(session, "安全配对证明无效")
-                if (!constantTimeEquals(proof, session.codeHash)) {
+                if (proof == null || !constantTimeEquals(proof, session.codeHash)) {
                     recordPairFailure(session, "安全配对证明无效")
+                    error("安全配对证明无效")
                 }
             } else {
                 val normalizedCode = rawCode.uppercase()
@@ -124,9 +156,9 @@ class LanWebAccessStore internal constructor(
                         it.length == LanWebContract.PAIRING_CODE_LENGTH &&
                             it.all { char -> char in PAIRING_ALPHABET }
                     }
-                    ?: recordPairFailure(session, "配对码无效")
-                if (!constantTimeEquals(hash(normalizedCode), session.codeHash)) {
+                if (normalizedCode == null || !constantTimeEquals(hash(normalizedCode), session.codeHash)) {
                     recordPairFailure(session, "配对码无效")
+                    error("配对码无效")
                 }
             }
 
@@ -146,6 +178,9 @@ class LanWebAccessStore internal constructor(
                 createdAt = now,
                 lastSeenAt = now,
                 secureSync = syncKey != null,
+                deviceId = normalizedDeviceId,
+                publicKeyFingerprint = normalizedFingerprint,
+                trustSource = trustSource,
             )
             if (syncKey != null) syncKeyStore?.put(record.id, syncKey)
             try {
@@ -166,6 +201,65 @@ class LanWebAccessStore internal constructor(
         val record = state.clients.firstOrNull { it.id == clientId && it.secureSync }
             ?: return@synchronized null
         syncKeyStore?.read(record.id)
+    }
+
+    fun trustedClient(deviceId: String, publicKeyFingerprint: String): LanWebClientSummary? = synchronized(globalLock) {
+        val normalizedDeviceId = normalizeOptionalDeviceId(deviceId)
+        val normalizedFingerprint = normalizeOptionalFingerprint(publicKeyFingerprint)
+        if (normalizedDeviceId.isBlank() || normalizedFingerprint.isBlank()) return@synchronized null
+        loadStateOrNull()?.clients?.firstOrNull {
+            it.deviceId == normalizedDeviceId && it.publicKeyFingerprint == normalizedFingerprint
+        }?.toSummary()
+    }
+
+    fun issueTrustedClient(
+        rawClientName: String,
+        deviceId: String,
+        publicKeyFingerprint: String,
+        trustSource: String,
+        now: Long = System.currentTimeMillis(),
+    ): LanWebIssuedClient = synchronized(globalLock) {
+        val clientName = LanWebSecurity.normalizeClientName(rawClientName) ?: error("客户端名称无效")
+        val normalizedDeviceId = normalizeOptionalDeviceId(deviceId)
+        val normalizedFingerprint = normalizeOptionalFingerprint(publicKeyFingerprint)
+        require(normalizedDeviceId.isNotBlank() && normalizedFingerprint.isNotBlank()) { "设备身份不完整" }
+        require(trustSource in LanWebTrustSource.values) { "设备信任来源无效" }
+        require(!isBlockedLocked(normalizedDeviceId, normalizedFingerprint)) { "该设备已被拉黑" }
+        val state = loadStateForMutation()
+        val replaced = state.clients.filter {
+            it.deviceId == normalizedDeviceId || it.publicKeyFingerprint == normalizedFingerprint
+        }
+        val remaining = state.clients - replaced.toSet()
+        require(remaining.size < MAX_CLIENTS) { "已配对客户端达到上限，请先撤销旧客户端" }
+        val token = randomToken()
+        val syncKey = requireNotNull(syncKeyStore) { "当前运行环境不支持安全设备同步" }
+            .let { LanWebPairingCrypto.newSyncKey(secureRandom) }
+        val record = LanWebClientRecord(
+            id = UUID.randomUUID().toString(),
+            name = clientName,
+            tokenHash = hash(token),
+            createdAt = now,
+            lastSeenAt = now,
+            secureSync = true,
+            deviceId = normalizedDeviceId,
+            publicKeyFingerprint = normalizedFingerprint,
+            trustSource = trustSource,
+        )
+        replaced.forEach { syncKeyStore?.remove(it.id) }
+        syncKeyStore?.put(record.id, syncKey)
+        try {
+            writeState(
+                state.copy(
+                    clients = remaining + record,
+                    recentRequests = state.recentRequests.filterNot { request -> replaced.any { it.id == request.clientId } },
+                )
+            )
+        } catch (error: Throwable) {
+            syncKeyStore?.remove(record.id)
+            syncKey.fill(0)
+            throw error
+        }
+        LanWebIssuedClient(record.toSummary(), token, syncKey)
     }
 
     fun authenticate(token: String, now: Long = System.currentTimeMillis()): LanWebClientSummary? =
@@ -215,6 +309,64 @@ class LanWebAccessStore internal constructor(
         loadStateOrNull()?.clients?.map { it.toSummary() }.orEmpty()
     }
 
+    fun blockedPeers(): List<LanWebBlockedPeerSummary> = synchronized(globalLock) {
+        loadStateOrNull()?.blockedPeers?.map { it.toSummary() }.orEmpty()
+    }
+
+    fun doNotDisturb(): Boolean = synchronized(globalLock) {
+        loadStateOrNull()?.doNotDisturb == true
+    }
+
+    fun setDoNotDisturb(enabled: Boolean) = synchronized(globalLock) {
+        val state = loadStateForMutation()
+        writeState(state.copy(doNotDisturb = enabled))
+    }
+
+    fun isBlocked(deviceId: String, publicKeyFingerprint: String): Boolean = synchronized(globalLock) {
+        isBlockedLocked(normalizeOptionalDeviceId(deviceId), normalizeOptionalFingerprint(publicKeyFingerprint))
+    }
+
+    fun blockPeer(
+        deviceId: String,
+        rawName: String,
+        publicKeyFingerprint: String,
+        now: Long = System.currentTimeMillis(),
+    ): Boolean = synchronized(globalLock) {
+        val normalizedDeviceId = normalizeOptionalDeviceId(deviceId)
+        val normalizedFingerprint = normalizeOptionalFingerprint(publicKeyFingerprint)
+        require(normalizedDeviceId.isNotBlank() && normalizedFingerprint.isNotBlank()) { "拉黑设备身份不完整" }
+        val name = LanWebSecurity.normalizeClientName(rawName) ?: "未知设备"
+        val state = loadStateForMutation()
+        val revoked = state.clients.filter {
+            it.deviceId == normalizedDeviceId || it.publicKeyFingerprint == normalizedFingerprint
+        }
+        revoked.forEach { syncKeyStore?.remove(it.id) }
+        val nextBlocked = state.blockedPeers
+            .filterNot { it.deviceId == normalizedDeviceId || it.publicKeyFingerprint == normalizedFingerprint }
+            .takeLast(MAX_BLOCKED_PEERS - 1) + LanWebBlockedPeerRecord(
+                deviceId = normalizedDeviceId,
+                name = name,
+                publicKeyFingerprint = normalizedFingerprint,
+                blockedAt = now,
+            )
+        writeState(
+            state.copy(
+                clients = state.clients - revoked.toSet(),
+                recentRequests = state.recentRequests.filterNot { request -> revoked.any { it.id == request.clientId } },
+                blockedPeers = nextBlocked,
+            )
+        )
+        true
+    }
+
+    fun unblockPeer(deviceId: String): Boolean = synchronized(globalLock) {
+        val normalized = normalizeOptionalDeviceId(deviceId)
+        val state = loadStateForMutation()
+        if (state.blockedPeers.none { it.deviceId == normalized }) return@synchronized false
+        writeState(state.copy(blockedPeers = state.blockedPeers.filterNot { it.deviceId == normalized }))
+        true
+    }
+
     fun revokeClient(clientId: String): Boolean = synchronized(globalLock) {
         val state = runCatching { loadStateForMutation() }.getOrNull() ?: return@synchronized false
         if (state.clients.none { it.id == clientId }) return@synchronized false
@@ -229,7 +381,8 @@ class LanWebAccessStore internal constructor(
     }
 
     fun revokeAll() = synchronized(globalLock) {
-        writeState(LanWebAccessState())
+        val state = loadStateForMutation()
+        writeState(state.copy(clients = emptyList(), recentRequests = emptyList()))
         syncKeyStore?.clear()
         clearActivePairing()
     }
@@ -255,11 +408,37 @@ class LanWebAccessStore internal constructor(
     private fun isBase64UrlCharacter(value: Char): Boolean =
         value in 'A'..'Z' || value in 'a'..'z' || value in '0'..'9' || value == '-' || value == '_'
 
+    private fun normalizeOptionalDeviceId(value: String): String {
+        if (value.isBlank()) return ""
+        return LanWebDeviceIdentity.normalizeDeviceId(value) ?: error("设备 ID 无效")
+    }
+
+    private fun normalizeOptionalFingerprint(value: String): String {
+        if (value.isBlank()) return ""
+        require(value.length == SHA256_BASE64URL_LENGTH && value.all(::isBase64UrlCharacter)) { "设备公钥指纹无效" }
+        return value
+    }
+
+    private fun isBlockedLocked(deviceId: String, fingerprint: String): Boolean {
+        if (deviceId.isBlank() && fingerprint.isBlank()) return false
+        val state = loadStateOrNull() ?: return true
+        return state.blockedPeers.any {
+            deviceId.isNotBlank() && it.deviceId == deviceId ||
+                fingerprint.isNotBlank() && it.publicKeyFingerprint == fingerprint
+        }
+    }
+
     private fun loadStateOrNull(): LanWebAccessState? {
         if (!stateFile.exists()) return LanWebAccessState()
         return runCatching { json.decodeFromString<LanWebAccessState>(stateFile.readText()) }
             .getOrNull()
-            ?.takeIf { it.schemaVersion == 1 }
+            ?.let { state ->
+                when (state.schemaVersion) {
+                    1 -> state.copy(schemaVersion = 2)
+                    2 -> state
+                    else -> null
+                }
+            }
     }
 
     private fun loadStateForMutation(): LanWebAccessState {
@@ -298,6 +477,16 @@ class LanWebAccessStore internal constructor(
         createdAt = createdAt,
         lastSeenAt = lastSeenAt,
         secureSync = secureSync,
+        deviceId = deviceId,
+        publicKeyFingerprint = publicKeyFingerprint,
+        trustSource = trustSource,
+    )
+
+    private fun LanWebBlockedPeerRecord.toSummary() = LanWebBlockedPeerSummary(
+        deviceId = deviceId,
+        name = name,
+        publicKeyFingerprint = publicKeyFingerprint,
+        blockedAt = blockedAt,
     )
 
     private companion object {
@@ -305,6 +494,7 @@ class LanWebAccessStore internal constructor(
         const val STATE_FILE_NAME = "lan_web_access.json"
         const val MAX_CLIENTS = 8
         const val MAX_RECENT_REQUESTS = 256
+        const val MAX_BLOCKED_PEERS = 128
         const val PAIRING_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
         const val MAX_PAIRING_FAILURES = 8
         const val PAIRING_TTL_MILLIS = 5 * 60 * 1000L

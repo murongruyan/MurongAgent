@@ -1,11 +1,14 @@
 package com.murong.agent.lan
 
+import com.murong.agent.core.loop.PortableConversationBackupRecord
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 class LanWebDeviceSyncContractTest {
     private val json = Json {
@@ -15,7 +18,7 @@ class LanWebDeviceSyncContractTest {
     }
 
     @Test
-    fun versionFourBundleKeepsCredentialsPortableCategoriesAndExecutionProfiles() {
+    fun versionSixBundleKeepsSessionsCredentialsPortableCategoriesAndExecutionProfiles() {
         val bundle = LanWebCredentialSyncBundle(
             sourcePlatform = "windows",
             generatedAt = System.currentTimeMillis(),
@@ -62,11 +65,26 @@ class LanWebDeviceSyncContractTest {
                 )
             ),
             mcpCredentialsIncluded = true,
+            sessions = listOf(
+                LanWebSyncedSession(
+                    sourceSessionId = "windows-session-1",
+                    originPlatform = "windows",
+                    originSessionId = "windows-session-1",
+                    document = buildJsonObject {
+                        put("format", "murong-portable-session")
+                        put("sourcePlatform", "windows")
+                    }
+                )
+            ),
         )
 
         val restored = json.decodeFromString<LanWebCredentialSyncBundle>(json.encodeToString(bundle))
 
-        assertEquals(4, restored.schemaVersion)
+        assertEquals(6, restored.schemaVersion)
+        assertEquals("windows-session-1", restored.sessions.single().sourceSessionId)
+        assertEquals("windows", restored.sessions.single().originPlatform)
+        assertEquals("windows-session-1", restored.sessions.single().originSessionId)
+        assertEquals("murong-portable-session", restored.sessions.single().document["format"]?.toString()?.trim('"'))
         assertEquals("api-key-secret", restored.providers.single().apiKey)
         assertTrue(restored.codexAuthJson!!.contains("tokens"))
         assertEquals("github-token-secret", restored.github?.token)
@@ -89,6 +107,7 @@ class LanWebDeviceSyncContractTest {
     @Test
     fun syncOptionsKeepCredentialCategoriesExplicit() {
         val options = LanWebDeviceSyncOptions(
+            includeSessions = true,
             includeProviderCredentials = true,
             includeCodexLogin = true,
             includeGitHubCredentials = true,
@@ -97,14 +116,39 @@ class LanWebDeviceSyncContractTest {
             includeMcp = true,
             includeMcpCredentials = true,
             includeSavedWorkflows = true,
+            sessionCursor = 23,
         )
 
         val restored = json.decodeFromString<LanWebDeviceSyncOptions>(json.encodeToString(options))
 
+        assertTrue(restored.includeSessions)
         assertTrue(restored.includeProviderCredentials)
         assertTrue(restored.includeCodexLogin)
         assertTrue(restored.includeGitHubCredentials)
         assertTrue(restored.includeMcpCredentials)
         assertTrue(restored.includeSavedWorkflows)
+        assertEquals(23, restored.sessionCursor)
+    }
+
+    @Test
+    fun chatHistoryIsReturnedAcrossTransparentPagesWithoutDroppingSessions() {
+        val payload = "x".repeat(4 * 1024 * 1024)
+        val records = (0 until 3).map { index ->
+            PortableConversationBackupRecord(
+                sourceSessionId = "session-$index",
+                portableJson = "{\"payload\":\"$payload\"}",
+                originPlatform = "android",
+                originSessionId = "session-$index",
+            )
+        }
+        val received = mutableListOf<String>()
+        var cursor = 0
+        do {
+            val page = buildDeviceSyncSessionPage(records, cursor, json)
+            received += page.sessions.map(LanWebSyncedSession::sourceSessionId)
+            cursor = page.nextCursor ?: records.size
+        } while (cursor < records.size)
+
+        assertEquals(records.map(PortableConversationBackupRecord::sourceSessionId), received)
     }
 }

@@ -11,15 +11,14 @@ import (
 	"strings"
 )
 
-const nodeConfigSchemaVersion = 2
+const nodeConfigSchemaVersion = 6
 
 type nodeConfig struct {
 	SchemaVersion             int      `json:"schemaVersion"`
 	ConnectionMode            string   `json:"connectionMode,omitempty"`
+	PairingAuthMethod         string   `json:"pairingAuthMethod,omitempty"`
 	PhoneURL                  string   `json:"phoneUrl"`
-	CloudRelayURL             string   `json:"cloudRelayUrl,omitempty"`
-	CloudRelayRoomID          string   `json:"cloudRelayRoomId,omitempty"`
-	ProtectedCloudRelaySecret string   `json:"protectedCloudRelaySecret,omitempty"`
+	ADBSerial                 string   `json:"adbSerial,omitempty"`
 	Workspace                 string   `json:"workspace"`
 	Label                     string   `json:"label"`
 	ClientName                string   `json:"clientName"`
@@ -30,6 +29,10 @@ type nodeConfig struct {
 	TerminalBackends          []string `json:"terminalBackends,omitempty"`
 	ProtectedToken            string   `json:"protectedToken"`
 	ProtectedSyncKey          string   `json:"protectedSyncKey,omitempty"`
+	ProtectedDevicePrivateKey string   `json:"protectedDevicePrivateKey,omitempty"`
+	ProtectedGitHubSession    string   `json:"protectedGitHubSession,omitempty"`
+	PairedDeviceID            string   `json:"pairedDeviceId,omitempty"`
+	PairedDeviceFingerprint   string   `json:"pairedDeviceFingerprint,omitempty"`
 }
 
 func defaultNodeConfigPath() (string, error) {
@@ -45,7 +48,10 @@ func defaultNodeConfigPath() (string, error) {
 }
 
 func loadNodeConfig(path string) (nodeConfig, error) {
-	config := nodeConfig{SchemaVersion: nodeConfigSchemaVersion, CloudRelayURL: OfficialCloudRelayURL}
+	config := nodeConfig{
+		SchemaVersion:     nodeConfigSchemaVersion,
+		PairingAuthMethod: connectionTemporaryCodeAuth,
+	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return config, nil
@@ -58,16 +64,28 @@ func loadNodeConfig(path string) (nodeConfig, error) {
 	}
 	if config.SchemaVersion == 1 {
 		config.SchemaVersion = nodeConfigSchemaVersion
-		config.ConnectionMode = CloudRelayConnectionDirect
+		config.ConnectionMode = ConnectionModeDirect
+	}
+	if config.SchemaVersion == 2 {
+		config.SchemaVersion = nodeConfigSchemaVersion
+	}
+	if config.SchemaVersion == 3 {
+		config.SchemaVersion = nodeConfigSchemaVersion
+	}
+	if config.SchemaVersion == 4 {
+		config.SchemaVersion = nodeConfigSchemaVersion
+	}
+	if config.SchemaVersion == 5 {
+		config.SchemaVersion = nodeConfigSchemaVersion
 	}
 	if config.SchemaVersion != nodeConfigSchemaVersion {
 		return config, fmt.Errorf("不支持的配置版本 %d", config.SchemaVersion)
 	}
 	if strings.TrimSpace(config.ConnectionMode) == "" {
-		config.ConnectionMode = CloudRelayConnectionDirect
+		config.ConnectionMode = ConnectionModeDirect
 	}
-	if strings.TrimSpace(config.CloudRelayURL) == "" {
-		config.CloudRelayURL = OfficialCloudRelayURL
+	if strings.TrimSpace(config.PairingAuthMethod) == "" {
+		config.PairingAuthMethod = connectionTemporaryCodeAuth
 	}
 	return config, nil
 }

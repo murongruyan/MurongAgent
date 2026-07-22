@@ -1,9 +1,78 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
+
+func TestAsyncModelSelectorsCaptureTheEventTargetBeforeAwait(t *testing.T) {
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(script)
+	for _, marker := range []string{
+		"async function activateComposerModel(event) {\n  const target = event.currentTarget;",
+		"async function setComposerReasoningEffort(event) {\n  const target = event.currentTarget;",
+		"const selectedLabel = target?.selectedOptions?.[0]?.textContent",
+	} {
+		if !strings.Contains(js, marker) {
+			t.Fatalf("async model selector regression guard is missing %q", marker)
+		}
+	}
+}
+
+func TestDesktopSidebarGroupsSessionsByProjectAndUsesCategorisedSettingsDialog(t *testing.T) {
+	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := frontendAssets.ReadFile("frontend/dist/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, js, css := string(index), string(script), string(styles)
+	for _, marker := range []string{
+		`<div class="section-caption">项目</div>`, `class="sidebar-nav" aria-label="功能面板"`,
+		`id="open-settings"`, `id="settings-modal"`, `id="settings-category-list"`, `id="settings-category-content"`,
+		`data-settings-section="model"`, `data-settings-section="rules"`, `data-settings-section="memory"`,
+		`data-settings-section="skills"`, `data-settings-section="mcp"`, `data-settings-section="remote"`,
+	} {
+		if !strings.Contains(html, marker) {
+			t.Fatalf("desktop project sidebar or utility dialog is missing %q", marker)
+		}
+	}
+	if strings.Contains(html, `class="nav-item active" data-view="chat"`) {
+		t.Fatal("chat must remain the base page instead of occupying a utility navigation icon")
+	}
+	if strings.Count(html, `class="nav-item"`) != 1 {
+		t.Fatal("desktop sidebar must expose one compact settings entry")
+	}
+	for _, marker := range []string{
+		`function effectiveSessionProjectPath(session)`, `session?.projectPath || state.config?.projectPath`,
+		`function sessionProjectGroupKey(projectPath)`, `session-project-header`, `session-project-toggle-label`,
+		`murong.sessions.projectCollapsed`, `function initialiseSettingsDialog()`,
+		`modal.parentElement !== document.body`, `document.body.append(modal)`,
+		`function openSettingsCategory(categoryKey = "model")`, `document.querySelectorAll("[data-settings-section]")`,
+	} {
+		if !strings.Contains(js, marker) {
+			t.Fatalf("desktop project grouping or utility dialog wiring is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{
+		`.session-project-group`, `.session-project-header`, `.session-project-group.collapsed .session-project-sessions`,
+		`.settings-modal-backdrop`, `.settings-dialog`, `.settings-category-list`, `.settings-category-content`,
+	} {
+		if !strings.Contains(css, marker) {
+			t.Fatalf("desktop project grouping or utility dialog styling is missing %q", marker)
+		}
+	}
+}
 
 func TestDesktopChatComposerKeepsPrimaryControlsVisible(t *testing.T) {
 	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
@@ -12,8 +81,9 @@ func TestDesktopChatComposerKeepsPrimaryControlsVisible(t *testing.T) {
 	}
 	html := string(index)
 	for _, marker := range []string{
-		`id="delete-session"`,
-		`>删除</button>`,
+		`id="toggle-summary-rail"`,
+		`id="toggle-bottom-terminal"`,
+		`id="toggle-workbench"`,
 		`id="composer-add"`,
 		`composer-model-control`,
 		`<span>模型</span>`,
@@ -31,6 +101,77 @@ func TestDesktopChatComposerKeepsPrimaryControlsVisible(t *testing.T) {
 	}
 	if strings.Contains(html, `data-composer-picker="files"`) {
 		t.Fatal("file and folder selection must live inside the plus menu, not beside it")
+	}
+	if strings.Contains(html, `id="session-details"`) || strings.Contains(html, `id="delete-session"`) {
+		t.Fatal("task details and deletion must live in the session context menu, not the chat topbar")
+	}
+}
+
+func TestDesktopChatComposerRecallsPersistentInputHistory(t *testing.T) {
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(script)
+	for _, marker := range []string{
+		`const composerInputHistoryStorageKey = "murong.chat.inputHistory";`,
+		`const composerInputHistoryLimit = 50;`,
+		`restoreComposerInputHistory();`,
+		`syncComposerInputHistoryFromActiveSession();`,
+		`function syncComposerInputHistoryFromActiveSession()`,
+		`.filter((message) => message?.role === "user")`,
+		`.map((message) => String(message?.content || "").trim())`,
+		`rememberComposerInput(content);`,
+		`function recallPreviousComposerInput(input)`,
+		`function recallNextComposerInput(input)`,
+		`function handleComposerInputHistoryKeydown(event)`,
+		`event.key === "ArrowUp"`,
+		`event.key === "ArrowDown"`,
+		`resetComposerInputHistoryNavigation(updatedText)`,
+	} {
+		if !strings.Contains(js, marker) {
+			t.Fatalf("desktop composer input history is missing %q", marker)
+		}
+	}
+	if !strings.Contains(js, `state.composerInputHistory = state.composerInputHistory.filter((value) => value !== sentText);`) {
+		t.Fatal("desktop composer input history must match Android duplicate removal")
+	}
+	if !strings.Contains(js, `state.composerInputDraftBeforeHistory = input.value;`) || !strings.Contains(js, `applyRecalledComposerInput(input, draft);`) {
+		t.Fatal("desktop composer history navigation must preserve and restore the current draft")
+	}
+	if !strings.Contains(js, `merged = merged.filter((value) => value !== sentText);`) || !strings.Contains(js, `merged.push(sentText);`) {
+		t.Fatal("desktop composer must seed history from the active session in chronological order")
+	}
+}
+
+func TestDesktopConversationSummaryRailAndPanelButtonsAreWired(t *testing.T) {
+	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := frontendAssets.ReadFile("frontend/dist/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, js, css := string(index), string(script), string(styles)
+	for _, marker := range []string{`id="conversation-summary-rail"`, `id="conversation-summary-markers"`, `id="toggle-summary-rail"`, `id="toggle-bottom-terminal"`, `id="toggle-workbench"`} {
+		if !strings.Contains(html, marker) {
+			t.Fatalf("desktop summary or panel control is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{`function renderConversationSummaryRail()`, `function highlightSummaryMarkers(activeIndex)`, `marker.dataset.distance = distance`, `function toggleBottomTerminal()`, `function toggleSideWorkbench()`} {
+		if !strings.Contains(js, marker) {
+			t.Fatalf("desktop summary or panel wiring is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{`.conversation-summary-marker[data-distance="0"]`, `width: 40px`, `.conversation-summary-marker[data-distance="1"]`, `width: 30px`, `.conversation-summary-marker[data-distance="2"]`, `width: 20px`} {
+		if !strings.Contains(css, marker) {
+			t.Fatalf("desktop summary hover hierarchy is missing %q", marker)
+		}
 	}
 }
 
@@ -154,7 +295,7 @@ func TestDesktopSessionAdvancedControlsAreWired(t *testing.T) {
 	html := string(index)
 	js := string(script)
 	for _, marker := range []string{
-		`id="session-details"`, `>任务详情</button>`, `id="session-details-modal"`,
+		`id="session-context-menu"`, `id="session-details-modal"`,
 		`id="rename-session-form"`, `id="fork-session"`, `id="import-session"`,
 		`id="export-session-json"`, `id="export-session-portable"`, `id="export-session-markdown"`, `id="session-action-modal"`,
 		`id="compress-session"`, `id="toggle-session-compression"`,
@@ -167,6 +308,7 @@ func TestDesktopSessionAdvancedControlsAreWired(t *testing.T) {
 		`backend().RenameSession`, `backend().ForkSession`, `backend().RollbackSession`,
 		`backend().CompressSession`, `backend().SetSessionCompressionActive`,
 		`backend().GetSessionStats`, `backend().ExportSession`, `backend().ImportSession`, `exportActiveSession("portable")`,
+		`function openSessionContextMenu(event, session)`, `任务详情与重命名`, `在侧边任务中打开`, `再次点击确认删除`,
 		`从此处分叉`, `回退到此处`, `Token 为本地估算，不代表供应商账单用量`,
 	} {
 		if !strings.Contains(js, marker) {
@@ -277,10 +419,15 @@ func TestDesktopCodexProviderUsesBuiltinRuntimeAndReasoningControl(t *testing.T)
 	for _, marker := range []string{
 		`backend().RefreshCodexStatus`, `backend().StartCodexDeviceLogin`,
 		`window.runtime.EventsOn("codex:changed"`, `executablePath: profile.executablePath`, `formatCodexRateLimits`,
+		`function activeProviderSendProblem()`, `profile.providerId === "codex-chatgpt"`,
+		`const providerProblem = activeProviderSendProblem()`,
 	} {
 		if !strings.Contains(js, marker) {
 			t.Fatalf("desktop Codex provider wiring is missing %q", marker)
 		}
+	}
+	if strings.Contains(js, `!state.config.model || !state.config.hasApiKey`) {
+		t.Fatal("desktop send preflight must not require an API key from Codex / ChatGPT profiles")
 	}
 }
 
@@ -299,7 +446,7 @@ func TestDesktopCredentialSyncIsExplicitEncryptedAndBidirectional(t *testing.T) 
 	}
 	html, js, css := string(index), string(script), string(styles)
 	for _, marker := range []string{
-		`id="sync-provider-credentials"`, `id="sync-codex-login"`, `id="sync-github-credentials"`,
+		`id="sync-sessions"`, `id="sync-provider-credentials"`, `id="sync-codex-login"`, `id="sync-github-credentials"`,
 		`id="sync-agent-settings"`, `id="sync-knowledge"`, `id="sync-mcp"`,
 		`id="sync-mcp-credentials"`, `id="sync-saved-workflows"`,
 		`id="pull-credentials"`, `id="push-credentials"`,
@@ -311,7 +458,7 @@ func TestDesktopCredentialSyncIsExplicitEncryptedAndBidirectional(t *testing.T) 
 	}
 	for _, marker := range []string{
 		`backend().PushCredentialsToPhone`, `backend().PullCredentialsFromPhone`,
-		`config.secureSyncReady`, `openCredentialSyncConfirmation`, `includeGitHubCredentials`, `importedGitHubToken`, `includeMcpCredentials`,
+		`config.secureSyncReady`, `openCredentialSyncConfirmation`, `includeSessions`, `importedSessions`, `includeGitHubCredentials`, `importedGitHubToken`, `includeMcpCredentials`,
 	} {
 		if !strings.Contains(js, marker) {
 			t.Fatalf("desktop credential sync wiring is missing %q", marker)
@@ -322,7 +469,7 @@ func TestDesktopCredentialSyncIsExplicitEncryptedAndBidirectional(t *testing.T) 
 	}
 }
 
-func TestDesktopRemoteNodeOffersDirectAndEncryptedCloudRelayModes(t *testing.T) {
+func TestDesktopRemoteNodeOffersDeviceIDLANAndADBModes(t *testing.T) {
 	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
 	if err != nil {
 		t.Fatal(err)
@@ -337,28 +484,157 @@ func TestDesktopRemoteNodeOffersDirectAndEncryptedCloudRelayModes(t *testing.T) 
 	}
 	html, js, css := string(index), string(script), string(styles)
 	for _, marker := range []string{
-		`id="remote-connection-mode"`, `value="direct"`, `value="cloud_relay"`,
-		`id="remote-cloud-relay-url"`, `id="remote-cloud-relay-code"`,
-		`端到端加密`, `公网地址必须使用 WSS`, `一次性配对码`,
-		`Tailscale 直连（推荐，无需服务器）`, `普通用户保持官方地址即可`,
-		`wss://murongagent.rl1.cc/relay/v1/connect`, `自建中继说明`,
+		`id="remote-device-id"`, `id="copy-remote-device-id"`, `id="share-remote-device-id"`,
+		`id="remote-paired-device"`, `id="reconnect-remote-paired"`, `id="clear-remote-pairing"`,
+		`id="remote-target-device-id"`, `id="connect-remote-device"`, `请输入要配对的设备`,
+		`id="remote-environment-devices"`, `id="refresh-remote-environment"`, `当前环境已有设备`,
+		`id="remote-connect-modal"`, `id="remote-connect-auth-method"`, `id="remote-connect-secret"`,
+		`id="request-remote-connect"`, `id="confirm-remote-connect"`,
+		`id="remote-more-settings"`, `id="remote-do-not-disturb"`, `id="remote-blocked-peers"`,
+		`id="block-remote-incoming"`,
 	} {
 		if !strings.Contains(html, marker) {
-			t.Fatalf("desktop cloud relay UI is missing %q", marker)
+			t.Fatalf("desktop device connection UI is missing %q", marker)
 		}
 	}
 	for _, marker := range []string{
 		`connectionMode: $("#remote-connection-mode").value`,
-		`cloudRelayUrl: $("#remote-cloud-relay-url").value.trim()`,
-		`cloudRelayCode: $("#remote-cloud-relay-code").value.trim()`,
-		`renderRemoteConnectionMode`, `config.cloudRelayConfigured`,
+		`adbSerial: $("#remote-adb-serial").value.trim()`,
+		`peerDeviceId: $("#remote-target-device-id").value.trim()`,
+		`backend().DiscoverRemoteDevices()`, `backend().DiscoverRemoteADBDevices()`,
+		`refreshRemoteEnvironment`, `renderRemoteEnvironmentDevices`,
+		`openRemoteConnectDialog`, `confirmRemoteConnect`, `shareRemoteDeviceID`,
+		`$("#remote-pair-code").value = ""`, `await startRemoteNode()`,
+		`SetRemoteDoNotDisturb`, `BlockRemoteConnectionRequest`, `UnblockRemotePeer`,
 	} {
 		if !strings.Contains(js, marker) {
-			t.Fatalf("desktop cloud relay wiring is missing %q", marker)
+			t.Fatalf("desktop device connection wiring is missing %q", marker)
 		}
 	}
-	if !strings.Contains(css, ".secure-relay-panel") || !strings.Contains(css, ".relay-deploy-help") {
-		t.Fatal("desktop cloud relay styling is missing")
+	if !strings.Contains(css, ".remote-environment-device") || !strings.Contains(css, ".remote-connect-panel") || !strings.Contains(css, ".remote-blocked-peer") {
+		t.Fatal("desktop device connection styling is missing")
+	}
+	for _, removed := range []string{
+		`value="cloud_relay"`, `remote-cloud-relay-code`, `MR1.`, `自建中继说明`,
+		`id="remote-pairing-code-panel"`, `输入手机本机 ID（推荐，支持异网）`, `REMOTE NODE`,
+	} {
+		if strings.Contains(html, removed) || strings.Contains(js, removed) {
+			t.Fatalf("removed MR1 UI is still present: %q", removed)
+		}
+	}
+}
+
+func TestDesktopWindowCloseUsesNotificationTray(t *testing.T) {
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainSource, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	traySource, err := os.ReadFile("application_tray_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, html, mainGo, trayGo := string(script), string(index), string(mainSource), string(traySource)
+	if !strings.Contains(js, `$("#window-close").addEventListener("click", () => backend().HideMainWindow())`) {
+		t.Fatal("desktop close button does not hide the main window through the tray-aware backend")
+	}
+	if strings.Contains(js, `$("#window-close").addEventListener("click", () => window.runtime?.Quit())`) {
+		t.Fatal("desktop close button still exits the process directly")
+	}
+	if !strings.Contains(mainGo, "OnBeforeClose:            app.beforeClose") {
+		t.Fatal("native window close is not routed through the tray-aware close guard")
+	}
+	for _, marker := range []string{"Shell_NotifyIconW", "打开 Murong", "退出 Murong", "trayWMLButtonDblClk"} {
+		if !strings.Contains(trayGo, marker) {
+			t.Fatalf("Windows tray implementation is missing %q", marker)
+		}
+	}
+	if !strings.Contains(html, "关闭主窗口后 Murong 会驻留系统托盘并继续调度") {
+		t.Fatal("desktop scheduling copy does not explain tray residency")
+	}
+}
+
+func TestDesktopWorkbenchProvidesTabbedComputerToolsAndStatus(t *testing.T) {
+	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := frontendAssets.ReadFile("frontend/dist/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vendor, err := frontendAssets.ReadFile("frontend/dist/workbench-vendor.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vendorStyles, err := frontendAssets.ReadFile("frontend/dist/workbench-vendor.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, js, css := string(index), string(script), string(styles)
+	for _, marker := range []string{
+		`id="toggle-workbench"`, `id="workbench-panel"`, `id="workbench-resizer"`, `id="workbench-tabstrip"`,
+		`data-workbench-tool="terminal"`, `data-workbench-tool="browser"`, `data-workbench-tool="editor"`,
+		`data-workbench-tool="git"`, `data-workbench-tool="subagents"`, `data-workbench-tool="sidechat"`,
+		`id="terminal-dock-setting"`, `id="default-terminal-setting"`, `id="workbench-terminal-host"`,
+		`id="workbench-code-editor"`, `id="workbench-image-preview"`,
+		`id="agent-statusbar"`, `id="statusbar-cache"`, `id="statusbar-tokens"`, `id="statusbar-context"`,
+	} {
+		if !strings.Contains(html, marker) {
+			t.Fatalf("desktop workbench UI is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{
+		"openWorkbenchTab", "StartWorkbenchTerminalSession", "WriteWorkbenchTerminalSession", "ResizeWorkbenchTerminalSession", "CloseWorkbenchTerminalSession",
+		"ListWorkbenchFiles", "ReadWorkbenchFile", "ReadWorkbenchAsset", "SaveWorkbenchFile", "MurongWorkbenchVendor",
+		"GetWorkbenchGit", "BrowserOpenURL", "refreshWorkbenchSideChat", "refreshStatusBar",
+		"beginWorkbenchResize", "clampWorkbenchWidth", "murong.workbench.width",
+	} {
+		if !strings.Contains(js, marker) {
+			t.Fatalf("desktop workbench wiring is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{".workbench-panel", ".workbench-resizer", ".workbench-tab", ".workbench-terminal-host", ".workbench-editor-layout", ".workbench-image-preview", ".agent-statusbar", ".workbench-terminal-bottom", "--sidebar-width", "--workbench-width"} {
+		if !strings.Contains(css, marker) {
+			t.Fatalf("desktop workbench styling is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{"Terminal", "FitAddon", "createCodeEditor", "setCodeEditorDocument"} {
+		if !strings.Contains(string(vendor), marker) {
+			t.Fatalf("desktop workbench vendor bundle is missing %q", marker)
+		}
+	}
+	if !strings.Contains(string(vendorStyles), ".xterm") {
+		t.Fatal("desktop workbench vendor CSS does not contain xterm styling")
+	}
+	for _, obsolete := range []string{`id="workbench-terminal-form"`, `id="workbench-terminal-command"`, `id="workbench-editor-content"`} {
+		if strings.Contains(html, obsolete) {
+			t.Fatalf("desktop workbench still contains obsolete command-form UI %q", obsolete)
+		}
+	}
+}
+
+func TestWindowsStartupClosesTheWailsSingleInstanceRace(t *testing.T) {
+	source, err := os.ReadFile("application_instance_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, marker := range []string{"CreateMutex", "ERROR_ALREADY_EXISTS", "notifyExistingApplicationInstance", "wailsSingleInstanceCopyDataID", "activateExistingApplicationWindow"} {
+		if !strings.Contains(text, marker) {
+			t.Fatalf("Windows early single-instance guard is missing %q", marker)
+		}
 	}
 }
 

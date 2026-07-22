@@ -6379,6 +6379,49 @@ class ChatSessionManager(
         PortableConversationCodec.encode(persistedSession)
     }
 
+    @Synchronized
+    fun exportPortableDeviceSyncSessions(): List<PortableConversationBackupRecord> {
+        flushCurrentSessionForDeviceSync()
+        return PortableConversationBackupStore(context).exportAll()
+    }
+
+    @Synchronized
+    fun importPortableDeviceSyncSessions(
+        sourcePlatform: String,
+        records: List<PortableConversationBackupRecord>
+    ): PortableConversationMergeResult {
+        flushCurrentSessionForDeviceSync()
+        val result = PortableConversationBackupStore(context).mergeIntoCurrentStore(sourcePlatform, records)
+        cachedCurrentPersistedSession = currentSessionId.takeIf(String::isNotBlank)
+            ?.let(conversationStore::loadSession)
+        _sessionLifecycleNotices.tryEmit(
+            "设备同步已导入 ${result.importedSessions} 个会话" +
+                if (result.conflictCopies > 0) "，保留 ${result.conflictCopies} 个冲突副本" else ""
+        )
+        return result
+    }
+
+    private fun flushCurrentSessionForDeviceSync() {
+        requirePortableHandoffIdle(_state.value, "同步聊天记录")
+        if (currentSessionId.isBlank()) return
+        latestPersistJob?.cancel()
+        latestPersistJob = null
+        val generation = ++persistenceGeneration
+        val previous = cachedCurrentPersistedSession?.takeIf { it.id == currentSessionId }
+            ?: conversationStore.loadSession(currentSessionId)
+        val candidate = buildPersistedSession(
+            state = _state.value,
+            sessionId = currentSessionId,
+            approvedScopes = approvedApprovalScopes.toList(),
+            cachedSession = previous,
+        )
+        val persisted = preserveSessionTimestampWhenUnchanged(previous, candidate)
+        if (persisted !== previous) {
+            require(conversationStore.saveSession(persisted)) { "无法保存待同步的手机会话" }
+        }
+        if (generation == persistenceGeneration) cachedCurrentPersistedSession = persisted
+    }
+
     fun discardPortableHandoffSession(sessionId: String): Boolean = deleteSession(sessionId)
 
     private fun requirePortableHandoffIdle(state: SessionState, action: String) {
@@ -10941,6 +10984,8 @@ class ChatSessionManager(
                 ?: state.messages.firstOrNull()?.timestamp
                 ?: System.currentTimeMillis(),
             updatedAt = System.currentTimeMillis(),
+            syncOriginPlatform = savedSession?.syncOriginPlatform.orEmpty(),
+            syncOriginSessionId = savedSession?.syncOriginSessionId.orEmpty(),
             providerId = providerId,
             modelName = modelName,
             agentBackend = agentBackend,
@@ -12303,6 +12348,17 @@ private const val AUTO_COMPRESSION_MIN_SAVED_TOKENS = 900
 private const val AUTO_COMPRESSION_MIN_REDUCTION_PERCENT = 22
 private const val AUTO_COMPRESSION_NEW_MESSAGES_THRESHOLD = 8
 private const val AUTO_COMPRESSION_ENABLE_EXISTING_MAX_NEW_MESSAGES = 4
+
+internal fun preserveSessionTimestampWhenUnchanged(
+    previous: PersistedSession?,
+    candidate: PersistedSession,
+): PersistedSession = if (
+    previous != null && candidate.copy(updatedAt = previous.updatedAt) == previous
+) {
+    previous
+} else {
+    candidate
+}
 private const val STREAMING_FLUSH_INTERVAL_MS = 40L
 private val DEFAULT_COMPRESSION_CONTINUE_REQUIREMENTS = listOf(
     "继续遵守现有规则、记忆、Skills、审批限制。",

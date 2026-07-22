@@ -57,6 +57,34 @@ func TestCredentialSyncImportsAPIKeyProtectedAndCanRestoreSnapshot(t *testing.T)
 	}
 }
 
+func TestCredentialSyncAcceptsAndroidOfficialProviderWithoutBaseURL(t *testing.T) {
+	t.Setenv("MURONG_DESKTOP_DATA_DIR", t.TempDir())
+	store, err := newDesktopStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeProvider, activeProfile := providerDeepSeek, "android-official-deepseek"
+	bundle := desktopbridge.CredentialSyncBundle{
+		SchemaVersion: 4, SourcePlatform: "android", GeneratedAt: time.Now().UnixMilli(),
+		ActiveProviderID: &activeProvider, ActiveProfileID: &activeProfile,
+		Providers: []desktopbridge.SyncedProviderCredential{{
+			ProfileID: activeProfile, ProviderID: providerDeepSeek, Name: "DeepSeek 官方",
+			BaseURL: "", Model: "deepseek-chat", ReasoningEffort: "high",
+		}},
+	}
+	if err := validateCredentialBundle(bundle); err != nil {
+		t.Fatalf("Android official provider bundle was rejected: %v", err)
+	}
+	providers, _, err := store.importSyncedProviders(bundle)
+	if err != nil || providers != 1 {
+		t.Fatalf("unexpected import result providers=%d err=%v", providers, err)
+	}
+	profile := findProviderProfile(store.rawConfig().ProviderProfiles, activeProfile)
+	if profile == nil || profile.BaseURL != defaultProviderProfile(providerDeepSeek).BaseURL {
+		t.Fatalf("official provider did not resolve to the desktop default: %#v", profile)
+	}
+}
+
 func TestCredentialSyncExportsAPIKeyAndCodexLoginForEncryptedDeviceTransfer(t *testing.T) {
 	t.Setenv("MURONG_DESKTOP_DATA_DIR", t.TempDir())
 	store, err := newDesktopStore()
@@ -110,10 +138,10 @@ func TestCredentialSyncExportsAPIKeyAndCodexLoginForEncryptedDeviceTransfer(t *t
 	if bundle.CodexAuthJSON == nil || !strings.Contains(*bundle.CodexAuthJSON, "refresh-secret") {
 		t.Fatal("Codex login tokens were not exported for the encrypted device channel")
 	}
-	if bundle.SchemaVersion != 4 || bundle.GitHub == nil || bundle.GitHub.Token == nil || *bundle.GitHub.Token != githubToken || bundle.GitHub.ViewerLogin != "murong-user" {
+	if bundle.SchemaVersion != 6 || bundle.GitHub == nil || bundle.GitHub.Token == nil || *bundle.GitHub.Token != githubToken || bundle.GitHub.ViewerLogin != "murong-user" {
 		t.Fatalf("GitHub login was not exported for the encrypted device channel: %#v", bundle.GitHub)
 	}
-	if bundle.SchemaVersion != 4 || bundle.AgentSettings == nil || bundle.AgentSettings.PlannerProfileEnabled == nil || !*bundle.AgentSettings.PlannerProfileEnabled || bundle.AgentSettings.PlannerModel == nil || *bundle.AgentSettings.PlannerModel != "desktop-planner" || bundle.AgentSettings.PlannerReasoningEffort == nil || *bundle.AgentSettings.PlannerReasoningEffort != "xhigh" || bundle.AgentSettings.SubagentProfileEnabled == nil || !*bundle.AgentSettings.SubagentProfileEnabled || bundle.AgentSettings.SubagentModel == nil || *bundle.AgentSettings.SubagentModel != "desktop-child" || bundle.AgentSettings.SubagentReasoningEffort == nil || *bundle.AgentSettings.SubagentReasoningEffort != "medium" {
+	if bundle.SchemaVersion != 6 || bundle.AgentSettings == nil || bundle.AgentSettings.PlannerProfileEnabled == nil || !*bundle.AgentSettings.PlannerProfileEnabled || bundle.AgentSettings.PlannerModel == nil || *bundle.AgentSettings.PlannerModel != "desktop-planner" || bundle.AgentSettings.PlannerReasoningEffort == nil || *bundle.AgentSettings.PlannerReasoningEffort != "xhigh" || bundle.AgentSettings.SubagentProfileEnabled == nil || !*bundle.AgentSettings.SubagentProfileEnabled || bundle.AgentSettings.SubagentModel == nil || *bundle.AgentSettings.SubagentModel != "desktop-child" || bundle.AgentSettings.SubagentReasoningEffort == nil || *bundle.AgentSettings.SubagentReasoningEffort != "medium" {
 		t.Fatalf("execution profiles were not exported: %#v", bundle.AgentSettings)
 	}
 	clearCredentialBundle(&bundle)

@@ -15,7 +15,7 @@ import (
 	"github.com/coder/websocket"
 )
 
-type cloudRelayTransport struct {
+type deviceTunnelTransport struct {
 	relayURL *url.URL
 	roomID   string
 	secret   []byte
@@ -27,16 +27,18 @@ type cloudRelayTransport struct {
 	dialing  chan struct{}
 	dialErr  error
 	closed   bool
-	pending  map[string]*cloudRelayPending
+	pending  map[string]*deviceTunnelPending
 	writeMu  sync.Mutex
 	replayMu sync.Mutex
-	replay   cloudRelayReplayCache
+	replay   deviceTunnelReplayCache
 }
 
-type cloudRelayPending struct {
+var errDeviceTunnelPhoneResponseTimeout = errors.New("加密隧道已连接但手机端没有响应")
+
+type deviceTunnelPending struct {
 	requestID  string
-	start      chan cloudRelayResponseStart
-	frames     chan cloudRelayTunnelMessage
+	start      chan deviceTunnelResponseStart
+	frames     chan deviceTunnelMessage
 	done       chan struct{}
 	reader     *io.PipeReader
 	writer     *io.PipeWriter
@@ -45,72 +47,73 @@ type cloudRelayPending struct {
 	onFinish   func()
 }
 
-type cloudRelayResponseStart struct {
+type deviceTunnelResponseStart struct {
 	status  int
 	headers http.Header
 	err     error
 }
 
-type cloudRelayResponseBody struct {
+type deviceTunnelResponseBody struct {
 	reader    *io.PipeReader
-	transport *cloudRelayTransport
+	transport *deviceTunnelTransport
 	requestID string
 	once      sync.Once
 }
 
-func newCloudRelayAPIClient(relayURL *url.URL, roomID string, secret []byte) (*apiClient, error) {
-	transport, err := newCloudRelayTransport(relayURL, roomID, secret)
+func newDeviceTunnelAPIClient(relayURL *url.URL, roomID string, secret []byte) (*apiClient, error) {
+	transport, err := newDeviceTunnelTransport(relayURL, roomID, secret)
 	if err != nil {
 		return nil, err
 	}
-	base, _ := url.Parse("http://murong-cloud-relay.invalid")
+	base, _ := url.Parse("http://murong-device-tunnel.invalid")
 	return &apiClient{
-		base:       base,
-		httpClient: &http.Client{Transport: transport},
-		close:      transport.Close,
+		base:         base,
+		httpClient:   &http.Client{Transport: transport},
+		close:        transport.Close,
+		deviceTunnel: true,
 	}, nil
 }
 
-func newCloudRelayTransport(relayURL *url.URL, roomID string, secret []byte) (*cloudRelayTransport, error) {
+func newDeviceTunnelTransport(relayURL *url.URL, roomID string, secret []byte) (*deviceTunnelTransport, error) {
 	if relayURL == nil {
-		return nil, errors.New("云中继地址不能为空")
+		return nil, errors.New("加密隧道地址不能为空")
 	}
-	if err := validateCloudRelayRoomID(roomID); err != nil {
+	if err := validateDeviceTunnelRoomID(roomID); err != nil {
 		return nil, err
 	}
-	if len(secret) != cloudRelaySecretBytes {
-		return nil, errors.New("云中继端到端密钥长度无效")
+	if len(secret) != deviceTunnelSecretBytes {
+		return nil, errors.New("加密隧道端到端密钥长度无效")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &cloudRelayTransport{
+	return &deviceTunnelTransport{
 		relayURL: relayURL,
 		roomID:   roomID,
 		secret:   append([]byte(nil), secret...),
 		context:  ctx,
 		cancel:   cancel,
-		pending:  make(map[string]*cloudRelayPending),
+		pending:  make(map[string]*deviceTunnelPending),
 	}, nil
 }
 
-func (transport *cloudRelayTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+func (transport *deviceTunnelTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if request == nil || request.URL == nil {
-		return nil, errors.New("云中继请求无效")
+		return nil, errors.New("加密隧道请求无效")
 	}
 	if request.Method != http.MethodGet && request.Method != http.MethodPost {
-		return nil, errors.New("云中继只允许 GET 和 POST")
+		return nil, errors.New("加密隧道只允许 GET 和 POST")
 	}
 	if !strings.HasPrefix(request.URL.Path, "/api/v1/") {
-		return nil, errors.New("云中继只转发 Murong API")
+		return nil, errors.New("加密隧道只转发 Murong API")
 	}
 	if err := transport.ensureConnected(request.Context()); err != nil {
 		return nil, err
 	}
 	requestID := mustRandomID("relayreq")
 	reader, writer := io.Pipe()
-	pending := &cloudRelayPending{
+	pending := &deviceTunnelPending{
 		requestID: requestID,
-		start:     make(chan cloudRelayResponseStart, 1),
-		frames:    make(chan cloudRelayTunnelMessage, 64),
+		start:     make(chan deviceTunnelResponseStart, 1),
+		frames:    make(chan deviceTunnelMessage, 64),
 		done:      make(chan struct{}),
 		reader:    reader,
 		writer:    writer,
@@ -119,37 +122,37 @@ func (transport *cloudRelayTransport) RoundTrip(request *http.Request) (*http.Re
 	transport.mu.Lock()
 	if transport.closed {
 		transport.mu.Unlock()
-		return nil, errors.New("云中继连接已关闭")
+		return nil, errors.New("加密隧道连接已关闭")
 	}
 	transport.pending[requestID] = pending
 	transport.mu.Unlock()
 	go pending.run()
 
-	start := newCloudRelayTunnelMessage(requestID, "request_start")
+	start := newDeviceTunnelMessage(requestID, "request_start")
 	start.Method = request.Method
 	start.Path = request.URL.EscapedPath()
 	if start.Path == "" {
 		start.Path = request.URL.Path
 	}
-	start.Headers = filterCloudRelayHeaders(request.Header, true)
+	start.Headers = filterDeviceTunnelHeaders(request.Header, true)
 	if err := transport.send(request.Context(), start); err != nil {
 		pending.finish(err)
 		return nil, err
 	}
 	if request.Body != nil {
 		defer request.Body.Close()
-		buffer := make([]byte, cloudRelayChunkBytes)
+		buffer := make([]byte, deviceTunnelChunkBytes)
 		total := 0
 		for {
 			count, readErr := request.Body.Read(buffer)
 			if count > 0 {
 				total += count
-				if total > cloudRelayMaxBodyBytes {
-					err := errors.New("云中继请求正文超过大小限制")
+				if total > deviceTunnelMaxBodyBytes {
+					err := errors.New("加密隧道请求正文超过大小限制")
 					pending.finish(err)
 					return nil, err
 				}
-				chunk := newCloudRelayTunnelMessage(requestID, "request_chunk")
+				chunk := newDeviceTunnelMessage(requestID, "request_chunk")
 				chunk.Chunk = base64.RawURLEncoding.EncodeToString(buffer[:count])
 				if err := transport.send(request.Context(), chunk); err != nil {
 					pending.finish(err)
@@ -165,7 +168,7 @@ func (transport *cloudRelayTransport) RoundTrip(request *http.Request) (*http.Re
 			}
 		}
 	}
-	if err := transport.send(request.Context(), newCloudRelayTunnelMessage(requestID, "request_end")); err != nil {
+	if err := transport.send(request.Context(), newDeviceTunnelMessage(requestID, "request_end")); err != nil {
 		pending.finish(err)
 		return nil, err
 	}
@@ -179,27 +182,31 @@ func (transport *cloudRelayTransport) RoundTrip(request *http.Request) (*http.Re
 			StatusCode: result.status,
 			Status:     fmt.Sprintf("%d %s", result.status, http.StatusText(result.status)),
 			Header:     result.headers,
-			Body: &cloudRelayResponseBody{
+			Body: &deviceTunnelResponseBody{
 				reader: reader, transport: transport, requestID: requestID,
 			},
 			Request: request,
 		}
 		return response, nil
 	case <-request.Context().Done():
-		transport.cancelRequest(requestID, request.Context().Err())
-		return nil, request.Context().Err()
+		cause := request.Context().Err()
+		if errors.Is(cause, context.DeadlineExceeded) {
+			cause = errors.Join(errDeviceTunnelPhoneResponseTimeout, cause)
+		}
+		transport.cancelRequest(requestID, cause)
+		return nil, cause
 	case <-transport.context.Done():
-		transport.cancelRequest(requestID, errors.New("云中继连接已关闭"))
-		return nil, errors.New("云中继连接已关闭")
+		transport.cancelRequest(requestID, errors.New("加密隧道连接已关闭"))
+		return nil, errors.New("加密隧道连接已关闭")
 	}
 }
 
-func (transport *cloudRelayTransport) ensureConnected(ctx context.Context) error {
+func (transport *deviceTunnelTransport) ensureConnected(ctx context.Context) error {
 	for {
 		transport.mu.Lock()
 		if transport.closed {
 			transport.mu.Unlock()
-			return errors.New("云中继连接已关闭")
+			return errors.New("加密隧道连接已关闭")
 		}
 		if transport.conn != nil {
 			transport.mu.Unlock()
@@ -238,7 +245,7 @@ func (transport *cloudRelayTransport) ensureConnected(ctx context.Context) error
 				_ = connection.Close(websocket.StatusNormalClosure, "")
 			}
 			if err == nil {
-				err = errors.New("云中继连接已关闭")
+				err = errors.New("加密隧道连接已关闭")
 			}
 			transport.dialErr = err
 		}
@@ -249,15 +256,15 @@ func (transport *cloudRelayTransport) ensureConnected(ctx context.Context) error
 	}
 }
 
-func (transport *cloudRelayTransport) dial(ctx context.Context) (*websocket.Conn, error) {
+func (transport *deviceTunnelTransport) dial(ctx context.Context) (*websocket.Conn, error) {
 	target := *transport.relayURL
 	query := target.Query()
 	query.Set("room", transport.roomID)
-	query.Set("role", CloudRelayRoleDesktop)
-	query.Set("v", "1")
+	query.Set("role", DeviceTunnelRoleDesktop)
+	query.Set("v", "2")
 	target.RawQuery = query.Encode()
 	connection, response, err := websocket.Dial(ctx, target.String(), &websocket.DialOptions{
-		Subprotocols:    []string{CloudRelaySubprotocol},
+		Subprotocols:    []string{DeviceTunnelSubprotocol},
 		CompressionMode: websocket.CompressionDisabled,
 		HTTPClient: &http.Client{Transport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
@@ -268,20 +275,20 @@ func (transport *cloudRelayTransport) dial(ctx context.Context) (*websocket.Conn
 	})
 	if err != nil {
 		if response != nil {
-			return nil, fmt.Errorf("云中继握手失败（HTTP %d）：%w", response.StatusCode, err)
+			return nil, fmt.Errorf("加密隧道握手失败（HTTP %d）：%w", response.StatusCode, err)
 		}
-		return nil, fmt.Errorf("无法连接云中继：%w", err)
+		return nil, fmt.Errorf("无法连接加密隧道：%w", err)
 	}
-	if connection.Subprotocol() != CloudRelaySubprotocol {
+	if connection.Subprotocol() != DeviceTunnelSubprotocol {
 		_ = connection.Close(websocket.StatusPolicyViolation, "subprotocol mismatch")
-		return nil, errors.New("云中继协议协商失败")
+		return nil, errors.New("加密隧道协议协商失败")
 	}
-	connection.SetReadLimit(cloudRelayMaxFrameBytes)
+	connection.SetReadLimit(deviceTunnelMaxFrameBytes)
 	return connection, nil
 }
 
-func (transport *cloudRelayTransport) send(ctx context.Context, message cloudRelayTunnelMessage) error {
-	payload, err := encryptCloudRelayMessage(transport.secret, transport.roomID, CloudRelayRoleDesktop, message)
+func (transport *deviceTunnelTransport) send(ctx context.Context, message deviceTunnelMessage) error {
+	payload, err := encryptDeviceTunnelMessage(transport.secret, transport.roomID, DeviceTunnelRoleDesktop, message)
 	if err != nil {
 		return err
 	}
@@ -292,7 +299,7 @@ func (transport *cloudRelayTransport) send(ctx context.Context, message cloudRel
 	connection := transport.conn
 	transport.mu.Unlock()
 	if connection == nil {
-		return errors.New("云中继尚未连接")
+		return errors.New("加密隧道尚未连接")
 	}
 	transport.writeMu.Lock()
 	defer transport.writeMu.Unlock()
@@ -301,12 +308,12 @@ func (transport *cloudRelayTransport) send(ctx context.Context, message cloudRel
 	cancel()
 	if err != nil {
 		transport.failConnection(connection, err)
-		return fmt.Errorf("云中继发送失败：%w", err)
+		return fmt.Errorf("加密隧道发送失败：%w", err)
 	}
 	return nil
 }
 
-func (transport *cloudRelayTransport) readLoop(connection *websocket.Conn) {
+func (transport *deviceTunnelTransport) readLoop(connection *websocket.Conn) {
 	for {
 		messageType, payload, err := connection.Read(transport.context)
 		if err != nil {
@@ -314,11 +321,11 @@ func (transport *cloudRelayTransport) readLoop(connection *websocket.Conn) {
 			return
 		}
 		if messageType != websocket.MessageBinary {
-			transport.failConnection(connection, errors.New("云中继返回了非加密数据"))
+			transport.failConnection(connection, errors.New("加密隧道返回了非加密数据"))
 			return
 		}
-		message, err := decryptCloudRelayMessage(
-			transport.secret, transport.roomID, CloudRelayRolePhone, payload, time.Now(),
+		message, err := decryptDeviceTunnelMessage(
+			transport.secret, transport.roomID, DeviceTunnelRolePhone, payload, time.Now(),
 		)
 		if err != nil {
 			transport.failConnection(connection, err)
@@ -345,26 +352,26 @@ func (transport *cloudRelayTransport) readLoop(connection *websocket.Conn) {
 	}
 }
 
-func (transport *cloudRelayTransport) failConnection(connection *websocket.Conn, cause error) {
+func (transport *deviceTunnelTransport) failConnection(connection *websocket.Conn, cause error) {
 	transport.mu.Lock()
 	if transport.conn != connection {
 		transport.mu.Unlock()
 		return
 	}
 	transport.conn = nil
-	pending := make([]*cloudRelayPending, 0, len(transport.pending))
+	pending := make([]*deviceTunnelPending, 0, len(transport.pending))
 	for _, item := range transport.pending {
 		pending = append(pending, item)
 	}
-	transport.pending = make(map[string]*cloudRelayPending)
+	transport.pending = make(map[string]*deviceTunnelPending)
 	transport.mu.Unlock()
 	_ = connection.Close(websocket.StatusInternalError, "relay connection lost")
 	for _, item := range pending {
-		item.finish(fmt.Errorf("云中继连接中断：%w", cause))
+		item.finish(fmt.Errorf("加密隧道连接中断：%w", cause))
 	}
 }
 
-func (transport *cloudRelayTransport) removePending(requestID string, pending *cloudRelayPending) {
+func (transport *deviceTunnelTransport) removePending(requestID string, pending *deviceTunnelPending) {
 	transport.mu.Lock()
 	if transport.pending[requestID] == pending {
 		delete(transport.pending, requestID)
@@ -372,7 +379,7 @@ func (transport *cloudRelayTransport) removePending(requestID string, pending *c
 	transport.mu.Unlock()
 }
 
-func (transport *cloudRelayTransport) cancelRequest(requestID string, cause error) {
+func (transport *deviceTunnelTransport) cancelRequest(requestID string, cause error) {
 	transport.mu.Lock()
 	pending := transport.pending[requestID]
 	transport.mu.Unlock()
@@ -380,12 +387,12 @@ func (transport *cloudRelayTransport) cancelRequest(requestID string, cause erro
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_ = transport.send(ctx, newCloudRelayTunnelMessage(requestID, "cancel"))
+	_ = transport.send(ctx, newDeviceTunnelMessage(requestID, "cancel"))
 	cancel()
 	pending.finish(cause)
 }
 
-func (transport *cloudRelayTransport) Close() {
+func (transport *deviceTunnelTransport) Close() {
 	transport.mu.Lock()
 	if transport.closed {
 		transport.mu.Unlock()
@@ -394,33 +401,33 @@ func (transport *cloudRelayTransport) Close() {
 	transport.closed = true
 	connection := transport.conn
 	transport.conn = nil
-	pending := make([]*cloudRelayPending, 0, len(transport.pending))
+	pending := make([]*deviceTunnelPending, 0, len(transport.pending))
 	for _, item := range transport.pending {
 		pending = append(pending, item)
 	}
-	transport.pending = make(map[string]*cloudRelayPending)
+	transport.pending = make(map[string]*deviceTunnelPending)
 	transport.mu.Unlock()
 	transport.cancel()
 	if connection != nil {
 		_ = connection.Close(websocket.StatusNormalClosure, "desktop node stopped")
 	}
 	for _, item := range pending {
-		item.finish(errors.New("云中继连接已关闭"))
+		item.finish(errors.New("加密隧道连接已关闭"))
 	}
 	clearBytes(transport.secret)
 }
 
-func (transport *cloudRelayTransport) CloseIdleConnections() {
+func (transport *deviceTunnelTransport) CloseIdleConnections() {
 	transport.Close()
 }
 
-func (pending *cloudRelayPending) run() {
+func (pending *deviceTunnelPending) run() {
 	for {
 		select {
 		case message := <-pending.frames:
 			switch message.Kind {
 			case "response_start":
-				pending.publishStart(cloudRelayResponseStart{
+				pending.publishStart(deviceTunnelResponseStart{
 					status: message.Status, headers: http.Header(message.Headers),
 				})
 			case "response_chunk":
@@ -446,17 +453,17 @@ func (pending *cloudRelayPending) run() {
 	}
 }
 
-func (pending *cloudRelayPending) publishStart(result cloudRelayResponseStart) {
+func (pending *deviceTunnelPending) publishStart(result deviceTunnelResponseStart) {
 	pending.startOnce.Do(func() { pending.start <- result })
 }
 
-func (pending *cloudRelayPending) finish(err error) {
+func (pending *deviceTunnelPending) finish(err error) {
 	pending.finishOnce.Do(func() {
 		if err != nil {
-			pending.publishStart(cloudRelayResponseStart{err: err})
+			pending.publishStart(deviceTunnelResponseStart{err: err})
 			_ = pending.writer.CloseWithError(err)
 		} else {
-			pending.publishStart(cloudRelayResponseStart{err: errors.New("云中继响应缺少状态")})
+			pending.publishStart(deviceTunnelResponseStart{err: errors.New("加密隧道响应缺少状态")})
 			_ = pending.writer.Close()
 		}
 		close(pending.done)
@@ -466,11 +473,11 @@ func (pending *cloudRelayPending) finish(err error) {
 	})
 }
 
-func (body *cloudRelayResponseBody) Read(buffer []byte) (int, error) {
+func (body *deviceTunnelResponseBody) Read(buffer []byte) (int, error) {
 	return body.reader.Read(buffer)
 }
 
-func (body *cloudRelayResponseBody) Close() error {
+func (body *deviceTunnelResponseBody) Close() error {
 	body.once.Do(func() {
 		body.transport.cancelRequest(body.requestID, context.Canceled)
 	})

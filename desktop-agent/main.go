@@ -21,6 +21,14 @@ var applicationIcon []byte
 
 func main() {
 	prepareApplicationIdentity()
+	instanceLock, primary, lockErr := acquireApplicationInstance(os.Args[1:])
+	if lockErr != nil {
+		log.Printf("Murong 单实例检查：%v", lockErr)
+	}
+	if !primary {
+		return
+	}
+	defer instanceLock.Close()
 	app, err := newDesktopAgentApp()
 	if err != nil {
 		log.Fatal(err)
@@ -37,6 +45,7 @@ func main() {
 		AssetServer:              &assetserver.Options{Assets: frontendAssets},
 		OnStartup:                app.startup,
 		OnShutdown:               app.shutdown,
+		OnBeforeClose:            app.beforeClose,
 		Bind:                     []interface{}{app},
 		EnableDefaultContextMenu: true,
 		SingleInstanceLock: &options.SingleInstanceLock{

@@ -471,6 +471,23 @@ jobs:
             desktop-agent/go.sum
             desktop-bridge/go.sum
 
+      - name: Set Up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop-agent/frontend/package-lock.json
+
+      - name: Build Desktop Workbench Frontend
+        shell: pwsh
+        run: |
+          npm ci --prefix frontend --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build --prefix frontend
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --check frontend/dist/app.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Install Linux WebView Dependencies
         if: matrix.goos == 'linux'
         shell: bash
@@ -580,66 +597,9 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  relay:
-    name: Cloud Relay ${{ matrix.label }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: Linux x64
-            runner: ubuntu-24.04
-            goarch: amd64
-          - label: Linux ARM64
-            runner: ubuntu-24.04-arm
-            goarch: arm64
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: desktop-bridge
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set Up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-          cache-dependency-path: desktop-bridge/go.sum
-
-      - name: Test Relay And Bridge
-        run: |
-          go test -count=1 ./...
-          go vet ./...
-
-      - name: Build Static Relay
-        env:
-          GOOS: linux
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
-        run: |
-          set -euo pipefail
-          name="murong-cloud-relay-linux-${GOARCH}"
-          mkdir -p dist/package
-          go build -trimpath -ldflags="-s -w" -o "dist/package/${name}" ./cmd/murong-cloud-relay
-          "dist/package/${name}" -h >/dev/null
-          tar -C dist/package -czf "dist/${name}.tar.gz" "${name}"
-          (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
-
-      - name: Upload Relay Artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: murong-cloud-relay-linux-${{ matrix.goarch }}
-          path: |
-            desktop-bridge/dist/*.tar.gz
-            desktop-bridge/dist/*.sha256
-          if-no-files-found: error
-          retention-days: 7
-
   verify:
     name: Verify Complete Release Set
-    needs: [android_app, terminal_extension, desktop, relay]
+    needs: [android_app, terminal_extension, desktop]
     runs-on: ubuntu-24.04
     steps:
       - name: Download Main APK Artifact
@@ -661,14 +621,7 @@ jobs:
           path: dist/desktop
           merge-multiple: true
 
-      - name: Download All Relay Artifacts
-        uses: actions/download-artifact@v8
-        with:
-          pattern: murong-cloud-relay-*
-          path: dist/relay
-          merge-multiple: true
-
-      - name: Verify All Ten Packages
+      - name: Verify All Eight Packages
         shell: bash
         env:
           MAIN_APK_FILE: ${{ needs.android_app.outputs.apk_file }}
@@ -692,11 +645,6 @@ jobs:
             murong-desktop-agent-linux-amd64.tar.gz
             murong-desktop-agent-linux-arm64.tar.gz
           )
-          relay_expected=(
-            murong-cloud-relay-linux-amd64.tar.gz
-            murong-cloud-relay-linux-arm64.tar.gz
-          )
-
           for relative in "${mobile_expected[@]}"; do
             test -f "dist/$relative" || { echo "Missing mobile package: $relative" >&2; exit 1; }
             test -f "dist/$relative.sha256" || { echo "Missing mobile checksum: $relative.sha256" >&2; exit 1; }
@@ -705,11 +653,6 @@ jobs:
             test -f "dist/desktop/$package" || { echo "Missing desktop package: $package" >&2; exit 1; }
             test -f "dist/desktop/$package.sha256" || { echo "Missing desktop checksum: $package.sha256" >&2; exit 1; }
           done
-          for package in "${relay_expected[@]}"; do
-            test -f "dist/relay/$package" || { echo "Missing relay package: $package" >&2; exit 1; }
-            test -f "dist/relay/$package.sha256" || { echo "Missing relay checksum: $package.sha256" >&2; exit 1; }
-          done
-
           mapfile -t mobile_actual < <(find dist/android-app dist/terminal-extension -maxdepth 1 -type f \( -name '*.apk' \) -printf '%f\n' | sort)
           mapfile -t mobile_wanted < <(printf '%s\n' "${MAIN_APK_FILE}" "${EXTENSION_APK_FILE}" | sort)
           if [[ "${mobile_actual[*]}" != "${mobile_wanted[*]}" ]]; then
@@ -726,15 +669,6 @@ jobs:
             printf 'Actual:   %s\n' "${desktop_actual[*]}" >&2
             exit 1
           fi
-          mapfile -t relay_actual < <(find dist/relay -maxdepth 1 -type f ! -name '*.sha256' -printf '%f\n' | sort)
-          mapfile -t relay_wanted < <(printf '%s\n' "${relay_expected[@]}" | sort)
-          if [[ "${relay_actual[*]}" != "${relay_wanted[*]}" ]]; then
-            echo "Unexpected relay release set" >&2
-            printf 'Expected: %s\n' "${relay_wanted[*]}" >&2
-            printf 'Actual:   %s\n' "${relay_actual[*]}" >&2
-            exit 1
-          fi
-
           mkdir -p dist/release
           : > dist/release/SHA256SUMS.txt
           for relative in "${mobile_expected[@]}"; do
@@ -747,16 +681,10 @@ jobs:
             (cd dist/desktop && sha256sum --check "$package.sha256")
             cp "dist/desktop/$package" dist/release/
           done
-          for package in "${relay_expected[@]}"; do
-            (cd dist/relay && sha256sum --check "$package.sha256")
-            cp "dist/relay/$package" dist/release/
-          done
-
           (cd dist/release && sha256sum \
             "${MAIN_APK_FILE}" \
             "${EXTENSION_APK_FILE}" \
-            "${desktop_expected[@]}" \
-            "${relay_expected[@]}" > SHA256SUMS.txt)
+            "${desktop_expected[@]}" > SHA256SUMS.txt)
 
           python3 - <<'PY'
           import hashlib
@@ -766,8 +694,8 @@ jobs:
 
           release = Path("dist/release")
           packages = sorted(path for path in release.iterdir() if path.is_file() and path.name not in {"SHA256SUMS.txt", "release-manifest.json"})
-          if len(packages) != 10:
-              raise SystemExit(f"Expected exactly 10 packages, found {len(packages)}")
+          if len(packages) != 8:
+              raise SystemExit(f"Expected exactly 8 packages, found {len(packages)}")
           manifest = {
               "schemaVersion": 1,
               "runId": os.environ["GITHUB_RUN_ID"],
@@ -826,13 +754,6 @@ jobs:
           path: release
           merge-multiple: true
 
-      - name: Download All Relay Artifacts
-        uses: actions/download-artifact@v8
-        with:
-          pattern: murong-cloud-relay-*
-          path: release
-          merge-multiple: true
-
       - name: Download Complete Release Manifest
         uses: actions/download-artifact@v8
         with:
@@ -849,7 +770,7 @@ jobs:
           set -euo pipefail
           find release -maxdepth 1 -type f \( -name '*.sha256' -o -name 'android-app.json' -o -name 'terminal-extension.json' \) -delete
           mapfile -t packages < <(find release -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' ! -name 'release-manifest.json' -printf '%p\n' | sort)
-          [[ ${#packages[@]} -eq 10 ]] || { echo "Expected 10 release packages, found ${#packages[@]}" >&2; exit 1; }
+          [[ ${#packages[@]} -eq 8 ]] || { echo "Expected 8 release packages, found ${#packages[@]}" >&2; exit 1; }
           tag="${INPUT_RELEASE_TAG:-murong-suite-v${GITHUB_RUN_NUMBER}}"
           assets=("${packages[@]}" release/SHA256SUMS.txt release/release-manifest.json)
           if gh release view "$tag" >/dev/null 2>&1; then

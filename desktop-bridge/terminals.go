@@ -163,11 +163,42 @@ func discoverWSLBackends(ctx context.Context, executable string) []terminalBacke
 		if name == "" || (version != "1" && version != "2") {
 			continue
 		}
-		backends = append(backends, terminalBackend{
-			ID: terminalWSLPrefix + name, Label: "WSL · " + name, Version: "WSL " + version, Kind: "wsl", Executable: executable, Distribution: name,
-		})
+		backend, available := probeWSLDistribution(ctx, executable, name, version)
+		if available {
+			backends = append(backends, backend)
+		}
 	}
 	return backends
+}
+
+func probeWSLDistribution(ctx context.Context, executable, distribution, wslVersion string) (terminalBackend, bool) {
+	probeContext, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	command := exec.CommandContext(
+		probeContext,
+		executable,
+		"-d", distribution,
+		"--exec", "sh", "-lc", "printf 'MURONG_WSL_READY\\n'; uname -sr 2>/dev/null || true",
+	)
+	prepareHiddenCommand(command)
+	output, err := command.Output()
+	if err != nil || probeContext.Err() != nil {
+		return terminalBackend{}, false
+	}
+	lines := strings.Split(strings.ReplaceAll(decodeCommandBytes(output), "\r\n", "\n"), "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "MURONG_WSL_READY" {
+		return terminalBackend{}, false
+	}
+	version := "WSL " + wslVersion
+	if len(lines) > 1 {
+		if guestVersion := truncateRunes(strings.TrimSpace(lines[1]), 80); guestVersion != "" {
+			version += " · " + guestVersion
+		}
+	}
+	return terminalBackend{
+		ID: terminalWSLPrefix + distribution, Label: "WSL · " + distribution,
+		Version: version, Kind: "wsl", Executable: executable, Distribution: distribution,
+	}, true
 }
 
 func resolveConfiguredTerminals(config nodeConfig, inventory terminalInventory) (nodeConfig, map[string]terminalBackend, error) {

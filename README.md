@@ -25,7 +25,7 @@ MurongAgent 不是单纯的聊天壳。Android 端强调随身使用、语音、
 | Root 能力 | 通过持久化 Shell 与 Root 文件访问支撑系统级操作 |
 | 数据本地化 | 配置、会话、缓存与项目状态保存在本地设备 |
 | 跨平台桌面端 | 原生支持 Windows、macOS、Linux 的 amd64 与 arm64，不依赖手机在线 |
-| 跨端协作 | 手机可通过局域网/自有私网直连，或通过端到端加密云中继异网查看和控制共享桌面任务，并可显式同步配置与所选凭据 |
+| 跨端协作 | 手机可通过稳定本机 ID、同网自动发现、ADB 或局域网地址连接电脑，异网链路端到端加密，并可显式同步配置与所选凭据 |
 | 备份恢复 | `murong-backup` v2 支持同系统精确恢复和 Android/桌面跨系统安全合并 |
 | Go 云后端 | OAuth、发布更新、使用统计、管理后台、APK 分发与密文中继统一由 Go 服务提供，并支持 GitHub Actions 一键原子部署 |
 
@@ -207,7 +207,7 @@ Windows 本机构建可使用：
 - [x] Windows、macOS、Linux 的 amd64/arm64 原生发布矩阵
 - [x] Android 与桌面端 `murong-backup` v2 跨系统备份互通
 - [x] MCP stdio、Streamable HTTP 与旧版 HTTP+SSE 核心能力
-- [x] 手机/电脑异网端到端加密云中继与自托管中继包
+- [x] 手机/电脑稳定本机 ID 异网连接、同网发现与 ADB 直连
 - [x] 跨端实时单权威会话、离线显式接管/归还与冲突分支保护
 - [x] PHP API 兼容迁移到 Go，并接入 GitHub Actions 一键原子部署
 - [ ] 更完整的 Agent 工作流与后台能力

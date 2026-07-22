@@ -32,15 +32,17 @@ const (
 	desktopAgentSnapshotPath   = "/api/v1/desktop-agent/snapshot"
 	desktopAgentResultPath     = "/api/v1/desktop-agent/result"
 	desktopAgentDisconnectPath = "/api/v1/desktop-agent/disconnect"
+	unpairPath                 = "/api/v1/unpair"
 	sessionCookieName          = "murong_lan_session"
 	maxSSELineBytes            = 8 * 1024 * 1024
 )
 
 type apiClient struct {
-	base       *url.URL
-	token      string
-	httpClient *http.Client
-	close      func()
+	base         *url.URL
+	token        string
+	httpClient   *http.Client
+	close        func()
+	deviceTunnel bool
 }
 
 type apiError struct {
@@ -223,7 +225,8 @@ func newComputerNode(api *apiClient, workspace *workspace, config nodeConfig, te
 }
 
 func (api *apiClient) pair(ctx context.Context, code, clientName string) (string, []byte, error) {
-	proof, err := pairingCodeProof(code)
+	pairingCode := strings.TrimSpace(code)
+	proof, err := pairingCodeProof(pairingCode)
 	if err != nil {
 		return "", nil, err
 	}
@@ -240,18 +243,19 @@ func (api *apiClient) pair(ctx context.Context, code, clientName string) (string
 	request.Header.Set("Content-Type", "application/json")
 	response, err := api.httpClient.Do(request)
 	if err != nil {
-		return "", nil, err
+		return "", nil, api.translateRequestError(err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return "", nil, decodeAPIError(response)
+		decoded := decodeAPIError(response)
+		return "", nil, decoded
 	}
 	var payload pairResponse
 	if err := json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&payload); err != nil {
 		return "", nil, fmt.Errorf("配对响应无法解析：%w", err)
 	}
 	if payload.SecureChannel != nil {
-		token, syncKey, err := decryptPairingBootstrap(code, payload)
+		token, syncKey, err := decryptPairingBootstrap(pairingCode, payload)
 		if err != nil {
 			return "", nil, fmt.Errorf("安全配对响应无法解密：%w", err)
 		}
@@ -272,6 +276,20 @@ func (api *apiClient) postJSON(ctx context.Context, path string, input, output a
 }
 
 func (api *apiClient) postJSONWithTimeout(ctx context.Context, path string, input, output any, timeout time.Duration) error {
+	return api.postJSONWithTimeoutAndLimit(ctx, path, input, output, timeout, 2*1024*1024)
+}
+
+func (api *apiClient) postJSONWithTimeoutAndLimit(
+	ctx context.Context,
+	path string,
+	input,
+	output any,
+	timeout time.Duration,
+	maxResponseBytes int64,
+) error {
+	if maxResponseBytes <= 0 {
+		return errors.New("HTTP JSON 响应大小上限无效")
+	}
 	body, err := json.Marshal(input)
 	if err != nil {
 		return err
@@ -287,7 +305,7 @@ func (api *apiClient) postJSONWithTimeout(ctx context.Context, path string, inpu
 	request.Header.Set("Accept", "application/json")
 	response, err := api.httpClient.Do(request)
 	if err != nil {
-		return err
+		return api.translateRequestError(err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -297,7 +315,17 @@ func (api *apiClient) postJSONWithTimeout(ctx context.Context, path string, inpu
 		_, _ = io.Copy(io.Discard, response.Body)
 		return nil
 	}
-	return json.NewDecoder(io.LimitReader(response.Body, 2*1024*1024)).Decode(output)
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(responseBody)) > maxResponseBytes {
+		return fmt.Errorf("HTTP JSON 响应超过 %d 字节上限", maxResponseBytes)
+	}
+	if err := json.Unmarshal(responseBody, output); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (api *apiClient) endpoint(path string) string {
@@ -306,6 +334,20 @@ func (api *apiClient) endpoint(path string) string {
 	copy.RawQuery = ""
 	copy.Fragment = ""
 	return copy.String()
+}
+
+func (api *apiClient) translateRequestError(err error) error {
+	if err == nil || !api.deviceTunnel {
+		return err
+	}
+	var requestError *url.Error
+	if errors.As(err, &requestError) && requestError.Err != nil {
+		err = requestError.Err
+	}
+	if errors.Is(err, errDeviceTunnelPhoneResponseTimeout) {
+		return errors.New("公网加密隧道已建立，但手机端未在 30 秒内响应。请确认手机“电脑节点”服务已启动且公网本机 ID 在线，然后重试")
+	}
+	return err
 }
 
 func decodeAPIError(response *http.Response) error {
@@ -476,7 +518,7 @@ func (api *apiClient) consumeEvents(
 	request.Header.Set("Accept", "text/event-stream")
 	response, err := api.httpClient.Do(request)
 	if err != nil {
-		return err
+		return api.translateRequestError(err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {

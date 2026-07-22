@@ -6,10 +6,12 @@
   <meta name="color-scheme" content="light">
   <title>Murong</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="workbench-vendor.css">
+  <script src="workbench-vendor.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
-  <div id="loading" class="loading-screen">
+    <div id="loading" class="loading-screen">
     <img class="loading-avatar" src="app-icon.jpg" alt="">
     <p>正在启动 Murong…</p>
   </div>
@@ -32,25 +34,14 @@
       </button>
 
       <section class="session-section">
-        <div class="section-caption">最近任务</div>
+        <div class="section-caption">项目</div>
         <nav id="session-list" class="session-list"></nav>
       </section>
 
-      <nav class="sidebar-nav">
-        <button class="nav-item active" data-view="chat">
-          <span class="nav-icon">✦</span><span>桌面 Agent</span>
-        </button>
-        <button class="nav-item" data-view="knowledge">
-          <span class="nav-icon">◈</span><span>知识库</span>
-        </button>
-        <button class="nav-item" data-view="automation">
-          <span class="nav-icon">◇</span><span>自动化</span><span id="workflow-dot" class="nav-dot"></span>
-        </button>
-        <button class="nav-item" data-view="remote">
-          <span class="nav-icon">⌁</span><span>远程节点</span><span id="node-dot" class="nav-dot"></span>
-        </button>
-        <button class="nav-item" data-view="settings">
-          <span class="nav-icon">⚙</span><span>设置</span>
+      <nav class="sidebar-nav" aria-label="功能面板">
+        <button id="open-settings" class="nav-item" type="button" title="设置" aria-label="打开设置">
+          <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.97 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.97 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08a1.7 1.7 0 0 0 1.03 1.52 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9 1.7 1.7 0 0 0 20.92 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"/></svg></span><span class="visually-hidden">设置</span>
+          <span id="workflow-dot" class="nav-dot hidden"></span><span id="node-dot" class="nav-dot hidden"></span>
         </button>
       </nav>
     </aside>
@@ -69,8 +60,11 @@
         <div class="run-actions">
           <span id="run-status" class="run-status">就绪</span>
           <button id="stop-run" class="ghost danger hidden">停止</button>
-          <button id="session-details" class="ghost" title="重命名、分叉、导入导出和查看用量">任务详情</button>
-          <button id="delete-session" class="ghost danger" title="删除当前任务">删除</button>
+          <div class="chat-panel-actions" aria-label="聊天布局">
+            <button id="toggle-summary-rail" class="chat-panel-button active" type="button" title="隐藏摘要跳转" aria-label="隐藏摘要跳转" aria-pressed="true"><span class="summary-toggle-glyph" aria-hidden="true"><i></i><i></i><i></i></span></button>
+            <button id="toggle-bottom-terminal" class="chat-panel-button" type="button" title="打开底部终端" aria-label="打开底部终端" aria-expanded="false"><span class="terminal-toggle-glyph" aria-hidden="true">›_</span></button>
+            <button id="toggle-workbench" class="chat-panel-button workbench-toggle" type="button" title="展开电脑侧栏" aria-label="展开电脑侧栏" aria-expanded="false"><span class="panel-toggle-glyph" aria-hidden="true"><i></i></span></button>
+          </div>
         </div>
       </header>
 
@@ -82,7 +76,11 @@
         <button id="reclaim-session-execution" class="secondary danger" type="button">强制收回</button>
       </section>
 
-      <section id="messages" class="messages">
+      <div class="messages-shell">
+        <aside id="conversation-summary-rail" class="conversation-summary-rail" aria-label="对话摘要跳转">
+          <div id="conversation-summary-markers" class="conversation-summary-markers"></div>
+        </aside>
+        <section id="messages" class="messages">
         <div class="empty-state">
           <div class="empty-orbit"><span>✦</span></div>
           <h3>让 Murong 在电脑上直接工作</h3>
@@ -97,7 +95,8 @@
             <button class="suggestion">检查最近的 Git 修改</button>
           </div>
         </div>
-      </section>
+        </section>
+      </div>
 
 	  <section id="workflow-plan-card" class="workflow-plan-card hidden" aria-live="polite">
 		<div class="workflow-plan-heading">
@@ -190,14 +189,25 @@
       </footer>
     </section>
 
-    <section id="view-knowledge" class="main-view knowledge-view hidden">
+    <div id="settings-modal" class="settings-modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+      <section class="settings-dialog">
+        <header class="settings-dialog-header">
+          <div><p class="eyebrow">MURONG DESKTOP</p><h2 id="settings-modal-title">设置</h2></div>
+          <button id="close-settings" class="icon-button" type="button" title="关闭设置" aria-label="关闭设置">×</button>
+        </header>
+        <div class="settings-dialog-body">
+          <nav id="settings-category-list" class="settings-category-list" aria-label="设置分类"></nav>
+          <section class="settings-category-pane">
+            <header class="settings-category-header"><h3 id="settings-category-title">模型</h3><p id="settings-category-description"></p></header>
+            <div id="settings-category-content" class="settings-category-content">
+    <section id="view-knowledge" class="main-view utility-view knowledge-view hidden" aria-label="知识库">
       <header class="page-header">
         <p class="eyebrow">AGENT KNOWLEDGE</p>
         <h2>规则、记忆与 Skills</h2>
         <p>与手机端使用相同的核心字段。规则直接进入系统上下文；记忆按需检索；Skill 只在需要时读取完整说明。</p>
       </header>
 
-      <div class="knowledge-toolbar">
+      <div class="knowledge-toolbar" data-settings-visible-for="rules,memory,skills,mcp">
         <div class="scope-switch" aria-label="知识库范围">
           <button class="active" data-knowledge-scope="global">全局</button>
           <button data-knowledge-scope="project">当前项目</button>
@@ -205,13 +215,13 @@
         <span id="knowledge-scope-detail">应用到所有桌面会话</span>
       </div>
 
-      <div class="knowledge-summary">
+      <div class="knowledge-summary" data-settings-visible-for="rules,memory,skills">
         <div><strong id="rule-count">0</strong><span>全局规则</span></div>
         <div><strong id="memory-count">0</strong><span>长期记忆</span></div>
         <div><strong id="skill-count">0</strong><span>Skills</span></div>
       </div>
 
-      <section class="knowledge-section">
+      <section class="knowledge-section" data-settings-section="rules">
         <div class="knowledge-heading">
           <div><h3>全局规则</h3><p>启用后每轮都会注入，适合长期且必须遵守的行为约束。</p></div>
           <button id="add-rule" class="secondary">＋ 添加规则</button>
@@ -219,7 +229,7 @@
         <div id="rule-list" class="knowledge-list"></div>
       </section>
 
-      <section class="knowledge-section">
+      <section class="knowledge-section" data-settings-section="memory">
         <div class="knowledge-heading">
           <div><h3>长期记忆</h3><p>不会整库塞进提示词；Agent 会先搜索，再读取匹配内容。</p></div>
           <button id="add-memory" class="secondary">＋ 添加记忆</button>
@@ -227,7 +237,7 @@
         <div id="memory-list" class="knowledge-list"></div>
       </section>
 
-      <section class="knowledge-section">
+      <section class="knowledge-section" data-settings-section="skills">
         <div class="knowledge-heading">
           <div><h3>Skills</h3><p>保存可复用的工作方法、工具边界和模型偏好。</p></div>
           <button id="add-skill" class="secondary">＋ 添加 Skill</button>
@@ -235,7 +245,7 @@
         <div id="skill-list" class="knowledge-list"></div>
       </section>
 
-      <section class="knowledge-section mcp-section">
+      <section class="knowledge-section mcp-section" data-settings-section="mcp">
         <div class="knowledge-heading">
           <div><h3>MCP 集成</h3><p>连接本机 stdio 或 Streamable HTTP 服务器；工具会进入 Agent、审批和＋菜单。</p></div>
           <button id="toggle-mcp-panel" class="secondary" type="button">展开</button>
@@ -256,13 +266,13 @@
         </div>
       </section>
 
-      <footer class="page-footer">
+      <footer class="page-footer" data-settings-visible-for="rules,memory,skills,mcp">
         <span id="knowledge-status"></span>
         <button id="save-knowledge" class="primary">保存知识库</button>
       </footer>
     </section>
 
-    <section id="view-automation" class="main-view automation-view hidden">
+    <section id="view-automation" class="main-view utility-view automation-view hidden" aria-label="自动化">
       <header class="page-header">
         <p class="eyebrow">SAVED AUTOMATION</p>
         <h2>GitHub 与保存的工作流</h2>
@@ -270,7 +280,7 @@
       </header>
 
       <div class="automation-grid">
-        <section class="settings-card wide github-card">
+        <section class="settings-card wide github-card" data-settings-section="github">
           <div class="card-heading">
             <div><h3>GitHub 连接</h3><p>Token 与工作流定义分离，并由当前系统的本机凭据保护机制加密；工作流只保存 owner/repository。</p></div>
             <span id="github-connection-state" class="profile-state">未配置</span>
@@ -291,9 +301,9 @@
           </div>
         </section>
 
-        <section class="settings-card wide workflow-card">
+        <section class="settings-card wide workflow-card" data-settings-section="workflows">
           <div class="card-heading">
-            <div><h3>保存的工作流</h3><p>关闭 Murong 后不会在后台驻留；下次启动会恢复调度，并明确标记上次中断的运行。</p></div>
+            <div><h3>保存的工作流</h3><p>关闭主窗口后 Murong 会驻留系统托盘并继续调度；从托盘选择“退出”才会结束程序。</p></div>
             <button id="add-saved-workflow" class="primary" type="button">＋ 新建工作流</button>
           </div>
           <div class="workflow-overview">
@@ -307,7 +317,7 @@
       </div>
     </section>
 
-    <section id="view-settings" class="main-view settings-view hidden">
+    <section id="view-settings" class="main-view utility-view settings-view hidden" aria-label="设置">
       <header class="page-header">
         <p class="eyebrow">DESKTOP AGENT</p>
         <h2>项目与模型</h2>
@@ -315,7 +325,7 @@
       </header>
 
       <div class="settings-grid">
-        <section class="settings-card wide">
+        <section class="settings-card wide" data-settings-section="project">
           <div class="card-heading">
             <div><h3>当前项目</h3><p>所有文件工具都被限制在这个目录内。</p></div>
             <div class="project-card-actions">
@@ -327,7 +337,7 @@
           <input id="project-path" class="wide-input" readonly placeholder="尚未选择电脑项目">
         </section>
 
-        <section class="settings-card wide provider-card">
+        <section class="settings-card wide provider-card" data-settings-section="model">
           <div class="card-heading">
             <div><h3>模型连接</h3><p>保存 API 供应商或直接使用 ChatGPT 登录；每个连接拥有独立的模型与推理强度。</p></div>
             <div class="provider-actions">
@@ -403,7 +413,7 @@
           </div>
         </section>
 
-        <section class="settings-card wide tool-policy-card">
+        <section class="settings-card wide tool-policy-card" data-settings-section="permissions">
           <div class="card-heading">
             <div><h3>审批与工具权限</h3><p>审批仍然只有四档；高级开关只决定 Agent 能看到哪些工具，不额外制造确认弹窗。</p></div>
             <div class="scope-switch tool-scope-switch">
@@ -474,7 +484,7 @@
           </div>
         </section>
 
-        <section class="settings-card wide">
+        <section class="settings-card wide" data-settings-section="agent">
           <div class="card-heading">
             <div><h3>Agent 系统行为</h3><p>系统提示词和回答详细度会应用到所有桌面会话；全局规则在知识库中管理。</p></div>
             <label class="compact-select">回答详细度
@@ -526,7 +536,7 @@
           <label class="permission-toggle"><input id="enable-multimodal-messages" type="checkbox" checked><span><strong>允许图片消息</strong><small>在聊天中选择图片，并发送给支持视觉输入的 OpenAI、DeepSeek、Claude 或 Codex 模型</small></span></label>
         </section>
 
-        <details id="backup-panel" class="settings-card wide backup-card">
+        <details id="backup-panel" class="settings-card wide backup-card" data-settings-section="backup">
           <summary class="backup-summary-row">
             <div><h3>完整备份与恢复</h3><p>v2 ZIP 同时保存原生完整状态和 Android、Windows、macOS、Linux 可互导的跨平台状态。</p></div>
             <span id="backup-summary-badge" class="backup-summary-badge">手动备份</span>
@@ -556,78 +566,93 @@
           </div>
         </details>
 
-        <section class="settings-card wide">
-          <h3>本机终端</h3>
-          <p>Agent 会直接调用当前系统实际安装的 Shell；Windows Terminal 等窗口宿主不会被误当成 Shell。</p>
+        <section class="settings-card wide" data-settings-section="terminal">
+          <div class="card-heading">
+            <div><h3>本机终端</h3><p>Agent 会直接调用当前系统实际安装的 Shell；Windows Terminal 等窗口宿主不会被误当成 Shell。</p></div>
+            <div class="terminal-settings">
+              <label class="terminal-dock-setting">默认终端<select id="default-terminal-setting"></select></label>
+              <label class="terminal-dock-setting">显示位置<select id="terminal-dock-setting"><option value="side">右侧</option><option value="bottom">底部</option></select></label>
+            </div>
+          </div>
           <div id="terminal-list" class="terminal-list"></div>
+        </section>
+
+        <section class="settings-card wide" data-settings-section="appearance">
+          <div class="card-heading">
+            <div><h3>界面布局</h3><p>按你的屏幕手动调整左栏、页面边距和电脑侧栏宽度；修改后立即生效并保存在当前电脑。</p></div>
+            <div class="layout-setting-actions">
+              <button id="reset-layout-settings" class="secondary" type="button">恢复默认</button>
+              <button id="apply-layout-settings" class="primary" type="button">应用布局</button>
+            </div>
+          </div>
+          <div class="layout-settings-grid">
+            <label>左侧栏宽度（px）<input id="sidebar-width-setting" type="number" min="220" max="360" step="4" value="280"></label>
+            <label>页面左右边距（px）<input id="content-padding-setting" type="number" min="16" max="96" step="4" value="48"></label>
+            <label>电脑侧栏宽度（px）<input id="workbench-width-setting" type="number" min="340" max="960" step="10" value="620"></label>
+          </div>
         </section>
       </div>
 
-      <footer class="page-footer">
+      <footer class="page-footer" data-settings-visible-for="project,model,permissions,agent,backup,terminal,appearance">
         <span id="settings-status"></span>
         <button id="save-settings" class="primary">保存设置</button>
       </footer>
     </section>
 
-    <section id="view-remote" class="main-view remote-view hidden">
+    <section id="view-remote" class="main-view utility-view remote-view hidden" aria-label="远程节点">
       <header class="page-header">
-        <p class="eyebrow">REMOTE NODE</p>
-        <h2>手机远程节点</h2>
-        <p>远程节点已整合进 Murong 主程序。手机可调用这台电脑的项目文件和所选终端，无需再启动第二个程序。</p>
+        <h2>远程控制</h2>
+        <p>用设备码连接手机，或从当前环境发现的设备中直接选择。</p>
       </header>
 
       <div class="remote-layout">
-        <section class="remote-status-card">
+        <section class="remote-status-card" data-settings-section="remote">
           <img src="app-icon.jpg" alt="" class="remote-avatar">
           <div class="status-line"><span id="remote-status-dot" class="status-dot"></span><strong id="remote-status">内置远程节点已停止</strong></div>
           <p id="remote-status-detail">配置完成后，可在这里直接启停。</p>
-          <div class="remote-badges"><span id="remote-pairing-state">未配对</span><span id="remote-transport-state">局域网直连</span><span>主程序内置</span></div>
+          <div class="remote-device-id">
+            <span>本机 ID</span>
+            <strong id="remote-device-id">正在初始化</strong>
+            <button id="copy-remote-device-id" class="ghost" type="button">复制</button>
+            <button id="share-remote-device-id" class="ghost" type="button">分享</button>
+          </div>
+          <div class="remote-device-id remote-temporary-code">
+            <span>临时验证码</span>
+            <strong id="remote-temporary-code">正在生成</strong>
+            <button id="copy-remote-temporary-code" class="ghost" type="button">复制</button>
+            <button id="rotate-remote-temporary-code" class="ghost" type="button">更换</button>
+          </div>
+          <button id="change-remote-security-password" class="ghost remote-password-button" type="button">更改为安全密码</button>
+          <div class="remote-paired-device">
+            <span>已配对设备：</span>
+            <strong id="remote-paired-device">暂无</strong>
+            <div><button id="reconnect-remote-paired" class="secondary" type="button">立即连接</button><button id="clear-remote-pairing" class="ghost danger" type="button">撤销</button></div>
+          </div>
         </section>
 
-        <section class="settings-card remote-form-card">
-          <h3>连接手机</h3>
-          <label>连接方式
-            <select id="remote-connection-mode">
-              <option value="direct">局域网 / Tailscale 直连（推荐，无需服务器）</option>
-              <option value="cloud_relay">Murong 官方 / 自建 WSS 中继（异网加密）</option>
-            </select>
-          </label>
-          <div id="remote-direct-fields" class="remote-connection-panel">
-            <label>手机 Murong 地址
-              <input id="remote-phone" placeholder="http://192.168.1.20:8765">
-            </label>
-            <p class="form-hint"><strong>异网也可直连：</strong>手机和电脑加入同一 Tailscale/Headscale 后，填写手机的 <code>http://100.x.y.z:8765</code>，无需购买或部署中继服务器。也可使用同一局域网的私网地址。</p>
+        <section class="settings-card remote-form-card" data-settings-section="remote">
+          <h3>请输入要配对的设备：</h3>
+          <div class="remote-connect-row">
+            <input id="remote-target-device-id" placeholder="请输入设备码">
+            <button id="connect-remote-device" class="primary" type="button">连接</button>
           </div>
-          <div id="remote-cloud-fields" class="remote-connection-panel secure-relay-panel hidden">
-            <p class="relay-address-help"><strong>普通用户保持官方地址即可。</strong>默认使用 <code>wss://murongagent.rl1.cc/relay/v1/connect</code>，这里不是填手机或电脑 IP；高级用户也可替换为自己的 WSS 中继。Tailscale 直连仍是不经过中继的选项。</p>
-            <label>中继 WSS 地址（默认官方，可改为自建）
-              <input id="remote-cloud-relay-url" inputmode="url" placeholder="wss://murongagent.rl1.cc/relay/v1/connect">
-            </label>
-            <label>手机生成的连接码
-              <input id="remote-cloud-relay-code" type="password" autocomplete="off" placeholder="MR1.…（已配置时可留空）">
-            </label>
-            <p id="remote-cloud-relay-state" class="form-hint">先在手机“电脑节点”中启用云中继并复制连接码。</p>
-            <p class="secure-relay-note"><strong>端到端加密：</strong>手机和电脑都只建立出站连接，中继服务器只看到房间标识、密文大小和时间，无法读取配对令牌、聊天、文件、命令或 API 凭据。公网地址必须使用 WSS。</p>
-            <details class="relay-deploy-help">
-              <summary>自建中继说明</summary>
-              <ol>
-                <li>在公网 Linux 服务器运行发布包里的 <code>murong-cloud-relay</code>。</li>
-                <li>用 Caddy/Nginx 把 <code>/v1/connect</code> 反向代理为 <code>wss://你的域名/v1/connect</code>。</li>
-                <li>手机和电脑填写同一个 WSS 地址；连接码由手机生成。仅本机联调可用 <code>ws://127.0.0.1:8787/v1/connect</code>，不能用于异网。</li>
-              </ol>
-            </details>
+          <input id="remote-connection-mode" type="hidden" value="device_id">
+          <input id="remote-phone" type="hidden">
+          <input id="remote-adb-serial" type="hidden">
+          <input id="remote-pair-auth-method" type="hidden" value="temporary_code">
+          <input id="remote-pair-code" type="hidden">
+          <div class="card-heading compact-heading remote-environment-heading">
+            <div><strong>当前环境已有设备：</strong><p>包含同网设备和已授权的 ADB 设备。</p></div>
+            <button id="refresh-remote-environment" class="secondary" type="button">刷新</button>
           </div>
+          <div id="remote-environment-devices" class="remote-discovered-devices"></div>
           <div class="remote-two-columns">
             <label>电脑端名称<input id="remote-client-name" placeholder="这台电脑的 Murong 节点"></label>
             <label>工作区名称<input id="remote-label" placeholder="默认使用目录名称"></label>
           </div>
-          <label>一次性配对码
-            <input id="remote-pair-code" autocomplete="off" placeholder="仅首次配对或重新配对时填写">
-          </label>
-          <p class="form-hint">连接码只建立加密隧道；首次连接仍要输入手机显示的一次性配对码，权限与撤销逻辑和直连完全相同。</p>
         </section>
 
-        <section class="settings-card remote-form-card wide">
+        <section class="settings-card remote-form-card wide" data-settings-section="remote">
           <div class="card-heading">
             <div><h3>电脑工作区</h3><p>手机端只能访问这个目录，所有路径仍会做越界和符号链接校验。</p></div>
             <button id="choose-remote-workspace" class="secondary">选择目录</button>
@@ -635,7 +660,7 @@
           <input id="remote-workspace" readonly placeholder="尚未选择远程工作区">
         </section>
 
-        <section class="settings-card remote-form-card wide">
+        <section class="settings-card remote-form-card wide" data-settings-section="remote">
           <h3>允许的电脑能力</h3>
           <label class="permission-toggle"><input id="remote-allow-write" type="checkbox"><span><strong>文件写入</strong><small>仍需由手机端 Agent 的审批策略授权</small></span></label>
           <label class="permission-toggle"><input id="remote-share-desktop-tasks" type="checkbox"><span><strong>在手机显示桌面任务</strong><small>同步任务标题、最近消息、运行状态和待审批；不包含 API Key、项目目录或上下文附件</small></span></label>
@@ -644,15 +669,25 @@
           <div id="remote-terminal-list" class="remote-terminal-list"></div>
         </section>
 
-        <section class="settings-card credential-sync-card wide">
+        <details id="remote-more-settings" class="settings-card remote-more-settings wide" data-settings-section="remote">
+          <summary>更多设置</summary>
+          <div class="remote-more-settings-body">
+            <label class="permission-toggle"><input id="remote-do-not-disturb" type="checkbox"><span><strong>免打扰</strong><small>开启后静默拒绝陌生设备的无密码申请；已配对设备和正确验证码或安全密码仍可连接。</small></span></label>
+            <div class="remote-blocklist-heading"><strong>黑名单</strong><small>被拉黑的设备无法再次申请或连接。</small></div>
+            <div id="remote-blocked-peers" class="remote-blocked-peers"></div>
+          </div>
+        </details>
+
+        <section class="settings-card credential-sync-card wide" data-settings-section="device-sync">
           <div class="card-heading">
             <div>
               <h3>手机与电脑设备同步</h3>
-              <p>同一套 Murong 的设置可双向同步。API Key、ChatGPT/Codex 登录、GitHub Token 和所选 MCP 凭据使用设备密钥端到端加密；接收后由 Android Keystore、Windows DPAPI 或电脑端应用私有密钥保护。普通备份包仍不包含这些敏感项。</p>
+              <p>聊天记录和同一套 Murong 设置可双向同步。所有内容都通过设备密钥端到端加密；API Key、登录令牌和所选 MCP 凭据在接收后由 Android Keystore、Windows DPAPI 或电脑端应用私有密钥保护。</p>
             </div>
             <span id="credential-sync-badge" class="secure-sync-badge">等待安全配对</span>
           </div>
           <div class="credential-sync-options">
+            <label class="permission-toggle"><input id="sync-sessions" type="checkbox" checked><span><strong>聊天记录</strong><small>同步跨平台可读的对话内容与 Token 用量；图片只保留附件说明，同一来源发生分歧时保留冲突副本</small></span></label>
             <label class="permission-toggle"><input id="sync-provider-credentials" type="checkbox" checked><span><strong>模型连接与 API Key</strong><small>同步 OpenAI-compatible、DeepSeek、Claude 的地址、模型、推理强度和 API Key</small></span></label>
             <label class="permission-toggle"><input id="sync-codex-login" type="checkbox" checked><span><strong>ChatGPT / Codex 登录</strong><small>同步 Murong 私有 Codex 登录；接收端会联网验证账号，失败时自动恢复原登录</small></span></label>
             <label class="permission-toggle"><input id="sync-github-credentials" type="checkbox" checked><span><strong>GitHub 登录与 Token</strong><small>同步 GitHub API 地址和访问令牌；接收端使用系统对应的本机凭据保护机制保存</small></span></label>
@@ -670,15 +705,171 @@
         </section>
       </div>
 
-      <footer class="page-footer remote-footer">
-        <button id="clear-remote-pairing" class="ghost danger">清除配对</button>
+      <footer class="page-footer remote-footer" data-settings-visible-for="remote,device-sync">
         <span id="remote-config-status"></span>
         <button id="save-remote" class="secondary">保存配置</button>
         <button id="stop-remote" class="secondary danger">停止节点</button>
-        <button id="start-remote" class="primary">启动内置节点</button>
       </footer>
     </section>
+
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>
+
+    <div id="session-context-menu" class="session-context-menu hidden" role="menu" aria-label="任务操作"></div>
+
+    <aside id="workbench-panel" class="workbench-panel hidden" aria-label="电脑侧栏">
+      <div id="workbench-resizer" class="workbench-resizer" role="separator" aria-label="调整电脑侧栏宽度" aria-orientation="vertical" tabindex="0" title="拖动调整宽度，双击恢复默认"></div>
+      <header class="workbench-chrome">
+        <div id="workbench-tabstrip" class="workbench-tabstrip" role="tablist"></div>
+        <button id="workbench-add-tab" class="workbench-chrome-button" type="button" title="新建工具标签" aria-label="新建工具标签" aria-expanded="false">＋</button>
+        <span class="workbench-chrome-spacer"></span>
+        <button id="close-workbench" class="workbench-chrome-button panel-close-button" type="button" title="收起电脑侧栏" aria-label="收起电脑侧栏"><span class="panel-toggle-glyph" aria-hidden="true"><i></i></span></button>
+      </header>
+      <div id="workbench-add-menu" class="workbench-add-menu hidden" role="menu" aria-label="新建工具标签">
+        <button type="button" data-workbench-tool="editor" role="menuitem"><span class="workbench-menu-icon">▱</span><strong>文件</strong><kbd>Ctrl+P</kbd></button>
+        <button type="button" data-workbench-tool="sidechat" role="menuitem"><span class="workbench-menu-icon">⊕</span><strong>侧边任务</strong><kbd>Ctrl+Alt+S</kbd></button>
+        <button type="button" data-workbench-tool="browser" role="menuitem"><span class="workbench-menu-icon">◎</span><strong>浏览器</strong><kbd>Ctrl+T</kbd></button>
+        <button type="button" data-workbench-tool="terminal" role="menuitem"><span class="workbench-menu-icon">›_</span><strong>终端</strong><kbd>Ctrl+`</kbd></button>
+        <div class="workbench-menu-separator" role="separator"></div>
+        <button type="button" data-workbench-tool="git" role="menuitem"><span class="workbench-menu-icon">⑂</span><strong>Git</strong></button>
+        <button type="button" data-workbench-tool="subagents" role="menuitem"><span class="workbench-menu-icon">⌘</span><strong>子代理</strong></button>
+      </div>
+      <div class="workbench-body">
+        <section id="workbench-empty" class="workbench-empty workbench-empty-home">
+          <nav class="workbench-empty-launcher" aria-label="电脑工具">
+            <button type="button" data-workbench-tool="editor"><span class="workbench-menu-icon">▱</span><strong>文件</strong><kbd>Ctrl+P</kbd></button>
+            <button type="button" data-workbench-tool="sidechat"><span class="workbench-menu-icon">⊕</span><strong>侧边任务</strong><kbd>Ctrl+Alt+S</kbd></button>
+            <button type="button" data-workbench-tool="browser"><span class="workbench-menu-icon">◎</span><strong>浏览器</strong><kbd>Ctrl+T</kbd></button>
+            <button type="button" data-workbench-tool="terminal"><span class="workbench-menu-icon">›_</span><strong>终端</strong><kbd>Ctrl+`</kbd></button>
+            <div class="workbench-menu-separator" role="separator"></div>
+            <button type="button" data-workbench-tool="git"><span class="workbench-menu-icon">⑂</span><strong>Git</strong></button>
+            <button type="button" data-workbench-tool="subagents"><span class="workbench-menu-icon">⌘</span><strong>子代理</strong></button>
+          </nav>
+        </section>
+
+        <section id="workbench-terminal" class="workbench-tool-view hidden">
+          <div class="workbench-toolbar terminal-toolbar">
+            <strong id="workbench-terminal-label">终端</strong>
+            <span id="workbench-terminal-directory">项目根目录</span>
+            <button id="clear-workbench-terminal" class="workbench-toolbar-icon" type="button" title="清屏" aria-label="清屏">⌫</button>
+          </div>
+          <div id="workbench-terminal-host" class="workbench-terminal-host">
+            <div id="workbench-terminal-placeholder" class="workbench-terminal-placeholder">选择项目后打开真实系统终端。</div>
+          </div>
+        </section>
+
+        <section id="workbench-browser" class="workbench-tool-view hidden">
+          <form id="workbench-browser-form" class="workbench-browser-bar">
+            <button id="workbench-browser-back" class="secondary" type="button" title="后退">←</button>
+            <button id="workbench-browser-forward" class="secondary" type="button" title="前进">→</button>
+            <button id="workbench-browser-refresh" class="secondary" type="button" title="刷新">↻</button>
+            <input id="workbench-browser-url" autocomplete="off" placeholder="输入 HTTP 或 HTTPS 地址">
+            <button class="primary" type="submit">访问</button>
+            <button id="workbench-browser-external" class="secondary" type="button">系统浏览器</button>
+          </form>
+          <div id="workbench-browser-placeholder" class="workbench-browser-placeholder">输入网址后在独立标签中浏览；不允许文件、本地脚本或危险协议。</div>
+          <iframe id="workbench-browser-frame" class="workbench-browser-frame hidden" title="Murong 浏览器" sandbox="allow-forms allow-scripts allow-same-origin allow-popups allow-downloads"></iframe>
+        </section>
+
+        <section id="workbench-editor" class="workbench-tool-view hidden">
+          <div class="workbench-toolbar">
+            <button id="workbench-editor-up" class="secondary" type="button">上一级</button><code id="workbench-editor-directory">.</code>
+            <button id="workbench-editor-new" class="secondary" type="button">新建文件</button><button id="workbench-editor-refresh" class="secondary" type="button">刷新</button>
+          </div>
+          <div class="workbench-editor-layout">
+            <section class="workbench-editor-main">
+              <header>
+                <strong id="workbench-editor-path">选择文件</strong><span id="workbench-editor-state"></span>
+                <div id="workbench-markdown-modes" class="workbench-editor-modes hidden" role="group" aria-label="Markdown 显示方式">
+                  <button type="button" data-markdown-mode="edit" aria-pressed="false">编辑</button>
+                  <button type="button" data-markdown-mode="preview" aria-pressed="false">预览</button>
+                  <button type="button" data-markdown-mode="split" aria-pressed="false">分屏</button>
+                </div>
+                <button id="workbench-editor-save" class="primary" type="button" disabled>保存</button>
+              </header>
+              <div id="workbench-editor-surface" class="workbench-editor-surface">
+                <div id="workbench-code-editor" class="workbench-code-editor hidden"></div>
+                <article id="workbench-markdown-preview" class="workbench-markdown-preview hidden" aria-label="Markdown 预览"></article>
+                <figure id="workbench-image-preview" class="workbench-image-preview hidden"><img id="workbench-image-preview-source" alt=""><figcaption id="workbench-image-preview-detail"></figcaption></figure>
+                <div id="workbench-editor-placeholder" class="workbench-editor-placeholder">从右侧文件列表选择文本或图片</div>
+              </div>
+            </section>
+            <nav id="workbench-file-list" class="workbench-file-list" aria-label="项目文件"></nav>
+          </div>
+        </section>
+
+        <section id="workbench-git" class="workbench-tool-view hidden">
+          <div class="workbench-toolbar"><strong id="workbench-git-branch">Git</strong><span id="workbench-git-message"></span><button id="workbench-git-refresh" class="secondary" type="button">刷新</button></div>
+          <div class="workbench-git-layout"><section><h4>状态</h4><pre id="workbench-git-status">尚未读取。</pre></section><section><h4>工作树 Diff</h4><pre id="workbench-git-diff">尚未读取。</pre></section></div>
+        </section>
+
+        <section id="workbench-subagents" class="workbench-tool-view hidden"><div class="workbench-toolbar"><strong>当前任务的子代理</strong><span>状态会随任务实时更新</span></div><div id="workbench-subagent-list" class="workbench-subagent-list"></div></section>
+
+        <section id="workbench-sidechat" class="workbench-tool-view hidden">
+          <div class="workbench-toolbar"><select id="workbench-sidechat-session" aria-label="侧边会话"></select><button id="workbench-sidechat-refresh" class="secondary" type="button">刷新</button></div>
+          <div id="workbench-sidechat-messages" class="workbench-sidechat-messages"></div>
+          <form id="workbench-sidechat-form" class="workbench-command-row"><input id="workbench-sidechat-input" maxlength="20000" autocomplete="off" placeholder="向这个任务发送消息"><button class="primary" type="submit">发送</button></form>
+        </section>
+      </div>
+    </aside>
+
+    <footer id="agent-statusbar" class="agent-statusbar">
+      <span id="statusbar-project">未选择项目</span><span id="statusbar-model">模型未配置</span><span id="statusbar-cache">缓存 0</span><span id="statusbar-tokens">Token 0</span><span id="statusbar-context">上下文 0</span><span id="statusbar-run">就绪</span>
+    </footer>
   </main>
+
+  <div id="remote-connect-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="remote-connect-title">
+    <section class="remote-connect-panel">
+      <h2 id="remote-connect-title">连接设备</h2>
+      <p id="remote-connect-target">请输入临时验证码或安全密码，也可以直接向对方发送连接申请。</p>
+      <label>验证方式
+        <select id="remote-connect-auth-method">
+          <option value="temporary_code">临时验证码</option>
+          <option value="security_password">安全密码</option>
+        </select>
+      </label>
+      <label><span id="remote-connect-secret-label">临时验证码</span>
+        <input id="remote-connect-secret" type="password" autocomplete="off" placeholder="请输入对方设备显示的验证码">
+      </label>
+      <div class="modal-actions remote-connect-actions">
+        <button id="cancel-remote-connect" class="secondary" type="button">取消</button>
+        <button id="request-remote-connect" class="secondary" type="button">发送连接申请</button>
+        <button id="confirm-remote-connect" class="primary" type="button">连接</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="remote-incoming-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="remote-incoming-title">
+    <section class="remote-connect-panel">
+      <h2 id="remote-incoming-title">设备请求连接</h2>
+      <p id="remote-incoming-name">一台手机希望连接这台电脑。</p>
+      <strong id="remote-incoming-device-id"></strong>
+      <p>同意后，电脑会主动建立端到端加密连接；文件写入、终端、Root 与外部修改仍按现有审批设置执行。</p>
+      <div class="modal-actions remote-connect-actions">
+        <button id="reject-remote-incoming" class="secondary danger" type="button">拒绝</button>
+        <button id="block-remote-incoming" class="secondary danger" type="button">拉黑</button>
+        <button id="approve-remote-incoming" class="primary" type="button">同意连接</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="remote-password-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="remote-password-title">
+    <section class="remote-connect-panel">
+      <h2 id="remote-password-title">安全密码</h2>
+      <p>安全密码只在这台电脑保存 SCRAM 验证记录，不保存明文，也不会通过网络发送。</p>
+      <label>新安全密码
+        <input id="remote-security-password" type="password" minlength="8" maxlength="128" autocomplete="new-password" placeholder="8–128 个字符">
+      </label>
+      <div class="modal-actions remote-connect-actions">
+        <button id="clear-remote-security-password" class="secondary danger" type="button">清除密码</button>
+        <button id="cancel-remote-security-password" class="secondary" type="button">取消</button>
+        <button id="save-remote-security-password" class="primary" type="button">保存</button>
+      </div>
+    </section>
+  </div>
 
   <div id="credential-sync-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="credential-sync-title">
     <section class="credential-sync-confirm-panel">
@@ -686,7 +877,7 @@
       <h2 id="credential-sync-title">确认设备同步</h2>
       <p id="credential-sync-confirm-summary"></p>
       <ul id="credential-sync-confirm-list"></ul>
-      <p class="credential-sync-warning">目标设备中同 ID 的条目会更新；ChatGPT/Codex 登录会在联网验证成功后替换。所有所选类别按一次事务导入，任一步失败都会回滚本次变更。</p>
+      <p class="credential-sync-warning">目标设备中同 ID 的设置条目会更新，任一步失败都会回滚；聊天记录使用原子合并，不会覆盖分歧内容，而会保留冲突副本。ChatGPT/Codex 登录会在联网验证成功后替换。</p>
       <div class="modal-actions">
         <button id="cancel-credential-sync" class="secondary" type="button">取消</button>
         <button id="confirm-credential-sync" class="primary" type="button">确认并同步</button>

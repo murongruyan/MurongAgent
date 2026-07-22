@@ -3,13 +3,16 @@ package com.murong.agent.core.loop
 import android.content.Context
 import java.io.File
 import java.security.MessageDigest
+import java.util.UUID
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 /** A single session carried by the cross-platform section of a complete backup. */
 data class PortableConversationBackupRecord(
     val sourceSessionId: String,
-    val portableJson: String
+    val portableJson: String,
+    val originPlatform: String = "",
+    val originSessionId: String = "",
 )
 
 data class PortableConversationMergeResult(
@@ -33,9 +36,12 @@ class PortableConversationBackupStore private constructor(
             .asSequence()
             .mapNotNull { summary -> store.loadSession(summary.id) }
             .map { session ->
+                val origin = session.syncOrigin()
                 PortableConversationBackupRecord(
                     sourceSessionId = session.id,
-                    portableJson = PortableConversationCodec.encode(session)
+                    portableJson = PortableConversationCodec.encode(session),
+                    originPlatform = origin.first,
+                    originSessionId = origin.second,
                 )
             }
             .toList()
@@ -61,8 +67,13 @@ class PortableConversationBackupStore private constructor(
 
         records.forEach { record ->
             val envelope = PortableConversationCodec.decode(record.portableJson)
-            val incoming = envelope.toPersistedSession("pending")
-            val primaryId = portableSessionId(sourcePlatform, record.sourceSessionId)
+            val origin = record.syncOrigin(sourcePlatform)
+            val incoming = envelope.toPersistedSession("pending", origin.first, origin.second)
+            val primaryId = if (origin.first == "android") {
+                origin.second
+            } else {
+                portableSessionId(origin.first, origin.second)
+            }
             val primary = targetStore.loadSession(primaryId)
             val targetId = when {
                 primary == null -> primaryId
@@ -92,6 +103,42 @@ class PortableConversationBackupStore private constructor(
         return PortableConversationMergeResult(imported, conflicts, skipped)
     }
 
+    /**
+     * Merges portable sessions into the live store through a same-filesystem directory swap.
+     * Existing local sessions are copied first, so an interrupted merge never exposes a
+     * half-written conversation directory.
+     */
+    fun mergeIntoCurrentStore(
+        sourcePlatform: String,
+        records: List<PortableConversationBackupRecord>
+    ): PortableConversationMergeResult {
+        val parent = conversationDir.parentFile ?: error("会话存储目录无效")
+        require(parent.mkdirs() || parent.isDirectory) { "无法创建会话存储父目录" }
+        val token = UUID.randomUUID().toString()
+        val staging = File(parent, ".${conversationDir.name}.device-sync-$token")
+        val backup = File(parent, ".${conversationDir.name}.device-sync-backup-$token")
+        val result = prepareMergedDirectory(sourcePlatform, records, staging)
+        var previousMoved = false
+        try {
+            if (conversationDir.exists()) {
+                require(conversationDir.renameTo(backup)) { "无法锁定当前会话存储" }
+                previousMoved = true
+            }
+            require(staging.renameTo(conversationDir)) { "无法启用同步后的会话存储" }
+            if (previousMoved) backup.deleteRecursively()
+            return result
+        } catch (error: Throwable) {
+            if (conversationDir.exists()) conversationDir.deleteRecursively()
+            if (previousMoved && backup.exists()) {
+                check(backup.renameTo(conversationDir)) { "会话同步失败，且无法恢复原会话存储" }
+            }
+            throw error
+        } finally {
+            if (staging.exists()) staging.deleteRecursively()
+            if (backup.exists() && conversationDir.exists()) backup.deleteRecursively()
+        }
+    }
+
     fun validateRecords(sourcePlatform: String, records: List<PortableConversationBackupRecord>) {
         require(sourcePlatform in SUPPORTED_SOURCE_PLATFORMS) { "跨端备份会话来源平台无效" }
         require(records.size <= MAX_PORTABLE_BACKUP_SESSIONS) { "跨端备份会话数量超过上限" }
@@ -99,6 +146,9 @@ class PortableConversationBackupStore private constructor(
         var totalBytes = 0L
         records.forEach { record ->
             validateSourceSessionId(record.sourceSessionId)
+            val origin = record.syncOrigin(sourcePlatform)
+            require(origin.first in SUPPORTED_SOURCE_PLATFORMS) { "跨端会话原始来源平台无效" }
+            validateSourceSessionId(origin.second)
             val bytes = record.portableJson.toByteArray(Charsets.UTF_8)
             totalBytes = Math.addExact(totalBytes, bytes.size.toLong())
             require(totalBytes <= MAX_PORTABLE_BACKUP_TOTAL_BYTES) { "跨端备份会话总大小超过上限" }
@@ -128,7 +178,11 @@ class PortableConversationBackupStore private constructor(
         }
     }
 
-    private fun PortableConversationEnvelope.toPersistedSession(id: String): PersistedSession {
+    private fun PortableConversationEnvelope.toPersistedSession(
+        id: String,
+        originPlatform: String,
+        originSessionId: String
+    ): PersistedSession {
         val convertedMessages = session.messages.mapIndexed { index, message ->
             PersistedMessage(
                 id = (index + 1).toLong(),
@@ -158,6 +212,8 @@ class PortableConversationBackupStore private constructor(
             title = session.title.trim(),
             createdAt = session.createdAtEpochMillis,
             updatedAt = session.updatedAtEpochMillis,
+            syncOriginPlatform = originPlatform,
+            syncOriginSessionId = originSessionId,
             providerId = session.providerId.orEmpty(),
             modelName = session.modelName.orEmpty(),
             sessionGoal = session.goal,
@@ -186,6 +242,26 @@ class PortableConversationBackupStore private constructor(
     private fun portableSessionId(sourcePlatform: String, sourceSessionId: String): String {
         val bytes = "$sourcePlatform\u0000$sourceSessionId".toByteArray(Charsets.UTF_8)
         return "portable-${sourcePlatform}-${MessageDigest.getInstance("SHA-256").digest(bytes).toHex().take(24)}"
+    }
+
+    private fun PersistedSession.syncOrigin(): Pair<String, String> {
+        val platform = syncOriginPlatform.trim()
+        val sessionId = syncOriginSessionId.trim()
+        return if (platform.isNotEmpty() && sessionId.isNotEmpty()) {
+            platform to sessionId
+        } else {
+            "android" to id
+        }
+    }
+
+    private fun PortableConversationBackupRecord.syncOrigin(sourcePlatform: String): Pair<String, String> {
+        val platform = originPlatform.trim()
+        val sessionId = originSessionId.trim()
+        return if (platform.isNotEmpty() && sessionId.isNotEmpty()) {
+            platform to sessionId
+        } else {
+            sourcePlatform.trim() to sourceSessionId.trim()
+        }
     }
 
     private fun validateSourceSessionId(value: String) {

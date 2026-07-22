@@ -851,6 +851,7 @@ func (gui *nodeGUI) startNode(fromAutoStart bool) {
 		launch, err := prepareNode(prepareContext, gui.configPath, config, pairCode)
 		prepareCancel()
 		if err == nil {
+			defer launch.api.Close()
 			launch.node.onStatus = gui.postStatus
 			gui.mu.Lock()
 			gui.loadedConfig = launch.config
@@ -958,7 +959,7 @@ func (gui *nodeGUI) pairingHintForConfig(config nodeConfig) string {
 	if config.ProtectedToken != "" {
 		return "已保存配对凭据（Windows DPAPI 加密）；配对码留空即可继续使用。"
 	}
-	return "尚未配对：先在手机生成一次性配对码，再填写并启动。"
+	return "尚未配对：推荐输入手机本机 ID 并在手机确认；也可使用临时验证码或安全密码。"
 }
 
 func (gui *nodeGUI) isBusy() bool {

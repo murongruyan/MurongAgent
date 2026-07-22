@@ -22,6 +22,9 @@ import com.murong.agent.core.mcp.McpConfigSource
 import com.murong.agent.core.mcp.McpRegistry
 import com.murong.agent.core.mcp.McpServerConfig
 import com.murong.agent.core.mcp.McpTransportType
+import com.murong.agent.core.loop.ChatSessionManager
+import com.murong.agent.core.loop.PortableConversationBackupRecord
+import com.murong.agent.core.loop.PortableConversationBackupStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.FileOutputStream
@@ -40,6 +43,7 @@ class LanWebCredentialSyncBridge @Inject constructor(
     private val configRepository: ConfigRepository,
     private val codexAppServer: CodexAppServerClient,
     private val mcpRegistry: McpRegistry,
+    private val chatSessionManager: ChatSessionManager? = null,
 ) {
     private val json = Json { ignoreUnknownKeys = false; encodeDefaults = true; explicitNulls = false }
     private val importMutex = Mutex()
@@ -49,6 +53,7 @@ class LanWebCredentialSyncBridge @Inject constructor(
         val config = configRepository.getConfig()
         val providers = if (options.includeProviderCredentials) exportProviders(config) else emptyList()
         val auth = if (options.includeCodexLogin) readValidatedCodexAuth() else null
+        val sessionPage = exportSessionPage(options)
         return LanWebCredentialSyncBundle(
             sourcePlatform = "android",
             generatedAt = System.currentTimeMillis(),
@@ -74,7 +79,21 @@ class LanWebCredentialSyncBridge @Inject constructor(
             mcpServers = if (options.includeMcp) exportMcpServers(options.includeMcpCredentials) else emptyList(),
             mcpCredentialsIncluded = options.includeMcp && options.includeMcpCredentials,
             savedWorkflows = if (options.includeSavedWorkflows) exportSavedWorkflows() else emptyList(),
+            sessions = sessionPage.sessions,
+            sessionNextCursor = sessionPage.nextCursor,
         )
+    }
+
+    private fun exportSessionPage(options: LanWebDeviceSyncOptions): SessionPage {
+        require(options.sessionCursor >= 0) { "聊天记录分页游标无效" }
+        if (!options.includeSessions) {
+            require(options.sessionCursor == 0) { "未同步聊天记录时不能指定分页游标" }
+            return SessionPage(emptyList(), null)
+        }
+        val records = requireNotNull(chatSessionManager) { "聊天记录同步服务尚未初始化" }
+            .exportPortableDeviceSyncSessions()
+            .sortedBy(PortableConversationBackupRecord::sourceSessionId)
+        return buildDeviceSyncSessionPage(records, options.sessionCursor, json)
     }
 
     /** Builds the non-secret, cross-platform subset embedded in complete backup v2 archives. */
@@ -267,7 +286,26 @@ class LanWebCredentialSyncBridge @Inject constructor(
                 accountEmail = replaceCodexAuthAndVerify(auth)
                 importedCodex = true
             }
+            val sessionMerge = if (bundle.sessions.isNotEmpty()) {
+                requireNotNull(chatSessionManager) { "聊天记录同步服务尚未初始化" }
+                    .importPortableDeviceSyncSessions(
+                        sourcePlatform = bundle.sourcePlatform,
+                        records = bundle.sessions.map {
+                            PortableConversationBackupRecord(
+                                sourceSessionId = it.sourceSessionId,
+                                portableJson = it.document.toString(),
+                                originPlatform = it.originPlatform,
+                                originSessionId = it.originSessionId,
+                            )
+                        }
+                    )
+            } else {
+                null
+            }
             return LanWebCredentialSyncResult(
+                importedSessions = sessionMerge?.importedSessions ?: 0,
+                conflictSessions = sessionMerge?.conflictCopies ?: 0,
+                skippedSessions = sessionMerge?.skippedSessions ?: 0,
                 importedProviders = importedProviders,
                 importedApiKeys = importedApiKeys,
                 importedCodexLogin = importedCodex,
@@ -540,7 +578,7 @@ class LanWebCredentialSyncBridge @Inject constructor(
     }
 
     private fun validateBundle(bundle: LanWebCredentialSyncBundle) {
-        require(bundle.schemaVersion in 1..4) { "设备同步格式版本不受支持" }
+        require(bundle.schemaVersion in 1..6) { "设备同步格式版本不受支持" }
         require(bundle.sourcePlatform in setOf("windows", "darwin", "linux", "desktop", "android")) { "凭据同步来源无效" }
         val now = System.currentTimeMillis()
         require(bundle.generatedAt in (now - 5 * 60_000L)..(now + 60_000L)) { "设备同步时间无效" }
@@ -604,6 +642,10 @@ class LanWebCredentialSyncBridge @Inject constructor(
             validPortableId(it.id) && it.name.isNotBlank() && it.name.length <= 500 && it.nodes.size <= 100 &&
                 it.intervalMinutes in 15..10_080
         }) { "保存的工作流定义无效" }
+        PortableConversationBackupStore(context).validateRecords(
+            bundle.sourcePlatform,
+            bundle.sessions.map { PortableConversationBackupRecord(it.sourceSessionId, it.document.toString()) }
+        )
         bundle.codexAuthJson?.let(::validateCodexAuth)
     }
 
@@ -725,6 +767,46 @@ class LanWebCredentialSyncBridge @Inject constructor(
         const val MAX_WORKFLOWS = 500
     }
 }
+
+internal data class SessionPage(
+    val sessions: List<LanWebSyncedSession>,
+    val nextCursor: Int?,
+)
+
+internal fun buildDeviceSyncSessionPage(
+    records: List<PortableConversationBackupRecord>,
+    startCursor: Int,
+    json: Json = Json { ignoreUnknownKeys = false; encodeDefaults = true; explicitNulls = false },
+): SessionPage {
+    require(startCursor in 0..records.size) { "聊天记录分页游标已失效，请重新同步" }
+    val sessions = ArrayList<LanWebSyncedSession>()
+    var pageBytes = 0
+    var cursor = startCursor
+    while (cursor < records.size) {
+        val record = records[cursor]
+        val recordBytes = record.portableJson.toByteArray(Charsets.UTF_8).size +
+            record.sourceSessionId.toByteArray(Charsets.UTF_8).size +
+            record.originPlatform.toByteArray(Charsets.UTF_8).size +
+            record.originSessionId.toByteArray(Charsets.UTF_8).size + DEVICE_SYNC_SESSION_RECORD_JSON_OVERHEAD_BYTES
+        require(recordBytes <= MAX_DEVICE_SYNC_SESSION_RECORD_BYTES) {
+            "聊天记录 ${record.sourceSessionId} 单条超过安全传输上限"
+        }
+        if (sessions.isNotEmpty() && pageBytes + recordBytes > DEVICE_SYNC_SESSION_PAGE_TARGET_BYTES) break
+        sessions += LanWebSyncedSession(
+            sourceSessionId = record.sourceSessionId,
+            originPlatform = record.originPlatform,
+            originSessionId = record.originSessionId,
+            document = json.parseToJsonElement(record.portableJson).jsonObject,
+        )
+        pageBytes += recordBytes
+        cursor++
+    }
+    return SessionPage(sessions, cursor.takeIf { it < records.size })
+}
+
+private const val DEVICE_SYNC_SESSION_PAGE_TARGET_BYTES = 6 * 1024 * 1024
+private const val MAX_DEVICE_SYNC_SESSION_RECORD_BYTES = 28 * 1024 * 1024
+private const val DEVICE_SYNC_SESSION_RECORD_JSON_OVERHEAD_BYTES = 512
 
 internal fun mergeSyncedGitHubCredential(
     current: ProviderConfig,

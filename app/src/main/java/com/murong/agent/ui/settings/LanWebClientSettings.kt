@@ -1,6 +1,7 @@
 package com.murong.agent.ui.settings
 
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -8,9 +9,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -29,10 +28,12 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -53,6 +54,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -71,12 +73,32 @@ class LanWebSettingsViewModel @Inject constructor(
     private val mutableDesktopAgentError = MutableStateFlow<String?>(null)
     val desktopAgentError: StateFlow<String?> = mutableDesktopAgentError.asStateFlow()
 
-    fun startService() = LanWebForegroundService.requestStart(context)
+    fun saveAndStartService() = LanWebForegroundService.requestStart(context)
 
     fun stopService() = LanWebForegroundService.requestStop(context)
 
     fun beginPairing() {
         runtime.beginPairing()
+    }
+
+    fun setSecurityPassword(password: String) {
+        viewModelScope.launch(Dispatchers.Default) { runtime.setSecurityPassword(password) }
+    }
+
+    fun clearSecurityPassword() {
+        viewModelScope.launch(Dispatchers.Default) { runtime.clearSecurityPassword() }
+    }
+
+    fun connectDevice(deviceId: String, authMethod: String = "", secret: String = "") {
+        viewModelScope.launch {
+            runtime.requestDeviceConnection(deviceId, authMethod, secret)
+        }
+    }
+
+    fun discoverDevices() {
+        viewModelScope.launch {
+            runtime.discoverEnvironmentDevices()
+        }
     }
 
     fun revokeClient(clientId: String) {
@@ -87,17 +109,29 @@ class LanWebSettingsViewModel @Inject constructor(
         runtime.revokeAllClients()
     }
 
+    fun blockClient(clientId: String) {
+        state.value.clients.firstOrNull { it.id == clientId }?.let(runtime::blockClient)
+    }
+
+    fun unblockPeer(deviceId: String) {
+        runtime.unblockPeer(deviceId)
+    }
+
+    fun setDoNotDisturb(enabled: Boolean) {
+        runtime.setDoNotDisturb(enabled)
+    }
+
+    fun approveConnectionRequest(requestId: String) {
+        runtime.approveConnectionRequest(requestId)
+    }
+
+    fun rejectConnectionRequest(requestId: String, block: Boolean) {
+        runtime.rejectConnectionRequest(requestId, block)
+    }
+
     fun reportPermissionDenied() = runtime.reportPermissionDenied()
 
     fun clearError() = runtime.clearError()
-
-    fun configureCloudRelay(enabled: Boolean, relayUrl: String) {
-        runtime.configureCloudRelay(enabled, relayUrl)
-    }
-
-    fun regenerateCloudRelayCode() {
-        runtime.regenerateCloudRelayCode()
-    }
 
     fun refreshDesktopAgent() = runDesktopAgentCommand { desktopAgentBridge.command("refresh") }
 
@@ -205,138 +239,267 @@ fun LanWebClientSettingsSection(
     var confirmRevokeAll by remember { mutableStateOf(false) }
     var showDesktopTasks by remember { mutableStateOf(false) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    var cloudRelayEnabledDraft by remember(state.cloudRelayEnabled) {
-        mutableStateOf(state.cloudRelayEnabled)
-    }
-    var cloudRelayUrlDraft by remember(state.cloudRelayUrl) {
-        mutableStateOf(state.cloudRelayUrl)
-    }
+    var securityPasswordDraft by remember { mutableStateOf("") }
+    var showSecurityPasswordEditor by remember { mutableStateOf(false) }
+    var showRemoteDetails by remember { mutableStateOf(false) }
+    var targetDeviceId by remember { mutableStateOf("") }
+    var pendingTargetDeviceId by remember { mutableStateOf<String?>(null) }
+    var connectAuthMethod by remember { mutableStateOf(com.murong.agent.lan.LanWebTrustSource.TEMPORARY_CODE) }
+    var connectSecret by remember { mutableStateOf("") }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) viewModel.startService() else viewModel.reportPermissionDenied()
+    ) {
+        // 公网本机 ID 不依赖局域网权限；授权结果只决定能否同网自动发现。
+        viewModel.saveAndStartService()
     }
 
-    LaunchedEffect(state.pairingExpiresAt) {
-        val expiresAt = state.pairingExpiresAt
-        while (expiresAt != null && expiresAt > System.currentTimeMillis()) {
+    LaunchedEffect(state.pairingExpiresAt, state.pairingCooldownUntil) {
+        val expiresAt = maxOf(state.pairingExpiresAt ?: 0L, state.pairingCooldownUntil ?: 0L)
+        while (expiresAt > System.currentTimeMillis()) {
             now = System.currentTimeMillis()
             delay(1_000)
         }
     }
 
+    LaunchedEffect(expanded, state.running) {
+        if (expanded && state.running) viewModel.discoverDevices()
+    }
+
     SettingsExpandableSectionCard(
-        title = "电脑节点（手机控制）",
+        title = "远程控制",
         subtitle = when {
-            state.workspaceConnected -> "$connectedPlatformLabel 已连接 · ${state.workspaceLabel.orEmpty()}"
-            state.running && state.nodeUrl != null -> "等待 Murong Desktop · ${state.nodeUrl}"
-            state.running && state.cloudRelayEnabled -> "等待 Murong Desktop · ${state.cloudRelayStatus}"
-            state.running -> "电脑节点服务已启动"
+            state.workspaceConnected -> "$connectedPlatformLabel 已连接"
+            state.running -> "已开启 · ${state.clients.size} 台已配对设备"
             state.starting -> "正在启动…"
-            else -> "默认关闭；让手机 Agent 使用电脑文件和终端"
+            else -> "未开启"
         },
         expanded = expanded,
         onExpandedChange = onExpandedChange
     ) {
-                Text(
-                    text = when {
-                        state.workspaceConnected -> "$connectedPlatformLabel 已连接 · ${state.workspaceLabel.orEmpty()}"
-                        state.running && state.nodeUrl != null -> "手机局域网节点地址：${state.nodeUrl}"
-                        state.running && state.cloudRelayEnabled -> "异网节点：${state.cloudRelayStatus}"
-                        state.running -> "电脑节点服务正在运行"
-                        state.starting -> "正在启动…"
-                        else -> "先在手机启动服务，再在电脑运行对应系统的 Murong Desktop。"
-                    },
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                Text(
-                    text = "Windows、macOS 或 Linux 上的 Murong Desktop 都可给手机 Agent 提供电脑文件和所选终端，也可按电脑端开关把桌面任务同步到手机查看或控制。同一 Wi-Fi 或 Tailscale/Headscale 可直接连接；没有私网互通时可使用下面预填的 Murong 官方 WSS 中继，不需要自己准备服务器。高级用户仍可替换为自建地址。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth().padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("本机 ID", style = MaterialTheme.typography.labelLarge)
+                        Text(
+                            state.deviceDisplayId.ifBlank { "正在初始化" },
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                    }
+                    Row {
+                        TextButton(
+                            onClick = { clipboard.setText(AnnotatedString(state.deviceDisplayId)) },
+                            enabled = state.deviceDisplayId.isNotBlank(),
+                        ) { Text("复制") }
+                        TextButton(
+                            onClick = {
+                                val text = "我的 Murong 本机 ID：${state.deviceDisplayId}"
+                                context.startActivity(
+                                    Intent.createChooser(
+                                        Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(Intent.EXTRA_TEXT, text)
+                                        },
+                                        "分享本机 ID",
+                                    )
+                                )
+                            },
+                            enabled = state.deviceDisplayId.isNotBlank(),
+                        ) { Text("分享") }
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("临时验证码", style = MaterialTheme.typography.labelLarge)
+                        Text(
+                            state.pairingCode ?: when {
+                                state.starting -> "正在生成"
+                                state.running -> "正在生成"
+                                else -> "开启后显示"
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        state.pairingExpiresAt?.takeIf { state.pairingCode != null }?.let { expiresAt ->
+                            val seconds = ((expiresAt - now) / 1_000L).coerceAtLeast(0L)
+                            Text(
+                                "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')} 后自动更换",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    TextButton(
+                        onClick = { state.pairingCode?.let { clipboard.setText(AnnotatedString(it)) } },
+                        enabled = state.pairingCode != null,
+                    ) { Text("复制") }
+                }
+                TextButton(onClick = { showSecurityPasswordEditor = !showSecurityPasswordEditor }) {
+                    Text(if (state.securityPasswordConfigured) "更改安全密码" else "更改为安全密码")
+                }
+
+                Text("已配对设备：", style = MaterialTheme.typography.labelLarge)
+                if (state.clients.isEmpty()) {
+                    Text(
+                        "暂无",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    state.clients.forEach { client ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("异网端到端加密中继（可选）", style = MaterialTheme.typography.labelLarge)
+                                Text(client.name, style = MaterialTheme.typography.bodyMedium)
                                 Text(
-                                    "默认使用 Murong 官方地址 wss://murongagent.rl1.cc/relay/v1/connect。手机和电脑都只建立出站连接，中继仅转发 AES-256-GCM 密文；连接码中的端到端密钥只保存在自己的两台设备。也可改为自建 WSS 地址。",
+                                    client.deviceId.takeIf { it.isNotBlank() }?.chunked(4)?.joinToString("-")
+                                        ?: client.id.take(8),
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
-                            Switch(
-                                checked = cloudRelayEnabledDraft,
-                                onCheckedChange = { cloudRelayEnabledDraft = it },
-                                enabled = !state.running
-                            )
+                            TextButton(onClick = { viewModel.revokeClient(client.id) }) { Text("撤销") }
                         }
-                        OutlinedTextField(
-                            value = cloudRelayUrlDraft,
-                            onValueChange = { cloudRelayUrlDraft = it },
-                            label = { Text("中继地址（默认官方，可改为自建）") },
-                            placeholder = { Text("wss://murongagent.rl1.cc/relay/v1/connect") },
-                            singleLine = true,
-                            enabled = !state.running,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Text(
-                            "普通用户保持默认地址即可。自托管时，在公网 Linux 服务器运行 murong-cloud-relay，再用 Caddy/Nginx 提供 WSS；手机和电脑必须填写同一个地址。仅本机联调可用 ws://127.0.0.1:8787/v1/connect，不能用于异网。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            state.cloudRelayStatus,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = when {
-                                state.cloudRelayConnected -> MaterialTheme.colorScheme.primary
-                                state.cloudRelayError != null -> MaterialTheme.colorScheme.error
-                                else -> MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                        )
-                        state.cloudRelayError?.let { relayError ->
-                            Text(
-                                relayError,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                        }
+                    }
+                }
+
+                Text("请输入要配对的设备：", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = targetDeviceId,
+                        onValueChange = { targetDeviceId = it.uppercase().take(24) },
+                        placeholder = { Text("请输入设备码") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Button(
+                        onClick = { pendingTargetDeviceId = targetDeviceId },
+                        enabled = state.running && !state.outgoingDeviceConnection && targetDeviceId.isNotBlank(),
+                    ) { Text("连接") }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("当前环境已有设备：", style = MaterialTheme.typography.labelLarge)
+                    TextButton(
+                        onClick = viewModel::discoverDevices,
+                        enabled = state.running && !state.discoveringDevices,
+                    ) { Text(if (state.discoveringDevices) "查找中" else "刷新") }
+                }
+                if (state.environmentDevices.isEmpty()) {
+                    Text(
+                        if (state.discoveringDevices) "正在查找当前网络中的设备…" else "暂未发现，也可以直接输入设备码连接。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    state.environmentDevices.forEach { device ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            OutlinedButton(
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(device.name, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    "${device.deviceDisplayId} · ${device.platform}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            TextButton(
                                 onClick = {
-                                    viewModel.configureCloudRelay(
-                                        cloudRelayEnabledDraft,
-                                        cloudRelayUrlDraft
-                                    )
+                                    targetDeviceId = device.deviceDisplayId
+                                    // Signed environment discovery already identifies the target.
+                                    // Connect without asking the initiating user for a password;
+                                    // an untrusted peer will ask for approval on the receiving device.
+                                    viewModel.connectDevice(device.deviceDisplayId)
                                 },
-                                enabled = !state.running,
-                                modifier = Modifier.weight(1f)
-                            ) { Text("保存中继设置") }
-                            OutlinedButton(
-                                onClick = viewModel::regenerateCloudRelayCode,
-                                enabled = !state.running,
-                                modifier = Modifier.weight(1f)
-                            ) { Text(if (state.cloudRelayConfigured) "更换连接码" else "生成连接码") }
+                                enabled = !state.outgoingDeviceConnection,
+                            ) { Text("立即连接") }
                         }
-                        state.cloudRelayShareCode?.let { shareCode ->
+                    }
+                }
+                state.outgoingDeviceConnectionStatus.takeIf { it.isNotBlank() }?.let { status ->
+                    Text(
+                        status,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (state.deviceRelayError == null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                    )
+                }
+                if (showRemoteDetails) {
+                    Text(
+                        text = state.deviceRelayStatus,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = when {
+                            state.deviceRelayConnected -> MaterialTheme.colorScheme.primary
+                            state.deviceRelayError != null -> MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                    state.deviceRelayError?.let { relayError ->
+                        Text(relayError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("免打扰", style = MaterialTheme.typography.labelLarge)
                             Text(
-                                "连接码已就绪 · 房间 ${state.cloudRelayRoomId.take(8)}…",
+                                "开启后静默忽略陌生设备的连接申请；已信任设备仍可连接。",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                            FilledTonalButton(
-                                onClick = { clipboard.setText(AnnotatedString(shareCode)) },
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("复制云中继连接码到电脑") }
+                        }
+                        Switch(checked = state.doNotDisturb, onCheckedChange = viewModel::setDoNotDisturb)
+                    }
+                }
+                if (state.connectionRequests.isNotEmpty()) {
+                    Text("等待连接确认", style = MaterialTheme.typography.labelLarge)
+                    state.connectionRequests.forEach { request ->
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(request.clientName, style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "${request.deviceDisplayId} · ${request.platform} · ${request.transport}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                "允许连接只建立设备信任，文件写入、终端、Root 和 GitHub 修改仍按审批设置执行。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = { viewModel.approveConnectionRequest(request.requestId) }) {
+                                    Text("同意")
+                                }
+                                OutlinedButton(
+                                    onClick = { viewModel.rejectConnectionRequest(request.requestId, false) },
+                                ) { Text("拒绝") }
+                                TextButton(
+                                    onClick = { viewModel.rejectConnectionRequest(request.requestId, true) },
+                                ) { Text("拉黑") }
+                            }
                         }
                     }
                 }
@@ -349,16 +512,16 @@ fun LanWebClientSettingsSection(
                 }
 
                 if (state.running) {
-                    Card(modifier = Modifier.fillMaxWidth()) {
+                    if (showRemoteDetails) Card(modifier = Modifier.fillMaxWidth()) {
                         Column(
                             modifier = Modifier.fillMaxWidth().padding(14.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Text("电脑端怎么运行", style = MaterialTheme.typography.labelLarge)
+                            Text("连接说明", style = MaterialTheme.typography.labelLarge)
                             Text(
-                                "1. 下载并启动当前系统与架构对应的 Murong Desktop：Windows 使用 .exe，macOS 使用 .app，Linux 使用发布压缩包。\n" +
-                                    "2. 打开主程序的“手机远程节点”；同网或 Tailscale 异网选择直连并填写手机地址。普通异网选择云中继，保持两端相同的 Murong 官方地址并粘贴上面的连接码；自托管时再替换地址。\n" +
-                                    "3. 在手机生成一次性配对码，填入电脑后按需要开启文件、终端或桌面任务能力，再点击“启动内置节点”。",
+                                "1. 复制上面的 16 位本机 ID。\n" +
+                                    "2. 在 Murong Desktop 选择“输入手机本机 ID”并粘贴。\n" +
+                                    "3. 同一 GitHub 账号会直接连接；其他设备使用临时验证码、安全密码或连接确认。",
                                 style = MaterialTheme.typography.bodySmall
                             )
                             state.nodeUrl?.let { nodeUrl ->
@@ -368,17 +531,6 @@ fun LanWebClientSettingsSection(
                                     color = MaterialTheme.colorScheme.primary
                                 )
                             }
-                            if (state.cloudRelayEnabled) {
-                                Text(
-                                    "异网中继：${state.cloudRelayStatus}",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = if (state.cloudRelayConnected) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    }
-                                )
-                            }
                             Text(
 								"电脑文件能力默认只读；可同时授权当前系统发现的多个终端。桌面聊天默认不共享，需在 Murong Desktop 明确开启。以后启动同一个桌面应用即可复用已加密保存的配对凭据。",
                                 style = MaterialTheme.typography.bodySmall,
@@ -386,43 +538,80 @@ fun LanWebClientSettingsSection(
                             )
                         }
                     }
-                    state.nodeUrl?.let { nodeUrl ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            FilledTonalButton(
-                                onClick = { clipboard.setText(AnnotatedString(nodeUrl)) },
-                                modifier = Modifier.weight(1f)
-                            ) { Text("复制局域网地址") }
-                            OutlinedButton(
-                                onClick = viewModel::stopService,
-                                modifier = Modifier.weight(1f)
-                            ) { Text("停止节点服务") }
-                        }
-                    } ?: OutlinedButton(
+                    OutlinedButton(
                         onClick = viewModel::stopService,
                         modifier = Modifier.fillMaxWidth()
-                    ) { Text("停止节点服务") }
-                    Button(
-                        onClick = viewModel::beginPairing,
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text(if (state.pairingCode == null) "生成一次性配对码" else "重新生成配对码") }
+                    ) { Text("关闭远程控制") }
                 } else {
                     Button(
                         onClick = {
-                            if (state.cloudRelayEnabled || hasLanPermission(context)) {
-                                viewModel.startService()
+                            if (hasLanPermission(context)) {
+                                viewModel.saveAndStartService()
                             } else {
                                 permissionLauncher.launch(LanWebContract.LOCAL_NETWORK_PERMISSION)
                             }
                         },
                         enabled = !state.starting,
                         modifier = Modifier.fillMaxWidth()
-                    ) { Text("启动电脑节点服务") }
+                    ) { Text("开启远程控制") }
                 }
 
-                if (state.running) {
+                if (showSecurityPasswordEditor) Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("安全密码", style = MaterialTheme.typography.labelLarge)
+                        Text(
+                            if (state.securityPasswordConfigured) {
+                                "安全密码已设置。输入新密码即可替换；手机不会保存密码明文。"
+                            } else {
+                                "设置后可长期使用，不必每次输入临时验证码。密码不会通过网络发送。"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        OutlinedTextField(
+                            value = securityPasswordDraft,
+                            onValueChange = { securityPasswordDraft = it.take(128) },
+                            label = { Text(if (state.securityPasswordConfigured) "输入新密码以替换" else "8–128 个字符") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            FilledTonalButton(
+                                onClick = {
+                                    viewModel.setSecurityPassword(securityPasswordDraft)
+                                    securityPasswordDraft = ""
+                                    showSecurityPasswordEditor = false
+                                },
+                                enabled = securityPasswordDraft.trim().length >= 8,
+                                modifier = Modifier.weight(1f),
+                            ) { Text(if (state.securityPasswordConfigured) "更换密码" else "设置密码") }
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.clearSecurityPassword()
+                                    showSecurityPasswordEditor = false
+                                },
+                                enabled = state.securityPasswordConfigured,
+                                modifier = Modifier.weight(1f),
+                            ) { Text("清除") }
+                        }
+                        state.pairingCooldownUntil?.takeIf { it > now }?.let { cooldownUntil ->
+                            Text(
+                                "临时验证码因连续失败已轮换，${((cooldownUntil - now + 999) / 1_000)} 秒后可重新生成。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
+
+                if (state.running && showRemoteDetails) {
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(
                             modifier = Modifier.fillMaxWidth().padding(14.dp),
@@ -447,7 +636,11 @@ fun LanWebClientSettingsSection(
                                 )
                             } else {
                                 Text(
-                                    "尚未连接。请启动当前系统对应的 Murong Desktop，在“手机远程节点”中填写手机地址、选择电脑目录并输入配对码；不需要用 Chrome 打开这个地址。",
+                            if (state.deviceRelayRunning) {
+                                "尚未连接。请在 Murong Desktop 选择“输入手机本机 ID”，填写 ${state.deviceDisplayId}；同账号直接连接，否则手机会弹出确认。"
+                            } else {
+                                "远程控制尚未开启。开启后可通过本机 ID、同网发现或已授权 ADB 与电脑连接。"
+                            },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -465,70 +658,87 @@ fun LanWebClientSettingsSection(
                     }
                 }
 
-                state.pairingCode?.let { code ->
-                    val seconds = ((state.pairingExpiresAt.orEmpty() - now) / 1_000L).coerceAtLeast(0L)
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth().padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text("一次性配对码", style = MaterialTheme.typography.labelMedium)
-                            Text(code, style = MaterialTheme.typography.headlineSmall)
-                            Text(
-                                "约 ${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')} 后过期，成功使用一次后立即失效。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            TextButton(
-                                onClick = { clipboard.setText(AnnotatedString(code)) }
-                            ) { Text("复制配对码") }
-                        }
-                    }
-                }
-
-                Text("已配对电脑 / 兼容客户端 ${state.clients.size}/8", style = MaterialTheme.typography.labelLarge)
-                if (state.clients.isEmpty()) {
-                    Text(
-                        "暂无已配对电脑。服务停止不会删除节点凭据；可在这里随时撤销。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
-                    state.clients.forEach { client ->
+                if (showRemoteDetails && state.clients.isNotEmpty()) OutlinedButton(
+                    onClick = { confirmRevokeAll = true },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("撤销全部客户端") }
+                if (showRemoteDetails && state.blockedPeers.isNotEmpty()) {
+                    Text("黑名单 ${state.blockedPeers.size}", style = MaterialTheme.typography.labelLarge)
+                    state.blockedPeers.forEach { peer ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(client.name, style = MaterialTheme.typography.bodyMedium)
+                                Text(peer.name, style = MaterialTheme.typography.bodyMedium)
                                 Text(
-                                    "ID ${client.id.take(8)} · 最近使用 ${client.lastSeenAt?.let(::formatRelativeTime) ?: "从未"}",
+                                    peer.deviceId.chunked(4).joinToString("-"),
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Text(
-                                    if (client.secureSync) {
-                                        "账号同步：端到端加密已就绪"
-                                    } else {
-                                        "账号同步：旧配对不支持，请撤销后重新配对"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (client.secureSync) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.error
-                                    }
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
-                            TextButton(onClick = { viewModel.revokeClient(client.id) }) { Text("撤销") }
+                            TextButton(onClick = { viewModel.unblockPeer(peer.deviceId) }) { Text("移出") }
                         }
                     }
-                    Spacer(Modifier.height(2.dp))
-                    OutlinedButton(
-                        onClick = { confirmRevokeAll = true },
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("撤销全部客户端") }
                 }
+                TextButton(onClick = { showRemoteDetails = !showRemoteDetails }) {
+                    Text(if (showRemoteDetails) "收起更多设置" else "更多设置")
+                }
+    }
+
+    pendingTargetDeviceId?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingTargetDeviceId = null; connectSecret = "" },
+            title = { Text("连接设备") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(target, style = MaterialTheme.typography.titleSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilledTonalButton(
+                            onClick = { connectAuthMethod = com.murong.agent.lan.LanWebTrustSource.TEMPORARY_CODE },
+                            enabled = connectAuthMethod != com.murong.agent.lan.LanWebTrustSource.TEMPORARY_CODE,
+                        ) { Text("临时验证码") }
+                        FilledTonalButton(
+                            onClick = { connectAuthMethod = com.murong.agent.lan.LanWebTrustSource.SECURITY_PASSWORD },
+                            enabled = connectAuthMethod != com.murong.agent.lan.LanWebTrustSource.SECURITY_PASSWORD,
+                        ) { Text("安全密码") }
+                    }
+                    OutlinedTextField(
+                        value = connectSecret,
+                        onValueChange = { connectSecret = it.take(128) },
+                        label = {
+                            Text(if (connectAuthMethod == com.murong.agent.lan.LanWebTrustSource.TEMPORARY_CODE) "输入对方临时验证码" else "输入对方安全密码")
+                        },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        "也可以不输入密码，直接发送申请让对方手动同意。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    pendingTargetDeviceId = null
+                    viewModel.connectDevice(target, connectAuthMethod, connectSecret)
+                    connectSecret = ""
+                }, enabled = connectSecret.isNotBlank()) { Text("连接") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        pendingTargetDeviceId = null
+                        connectSecret = ""
+                        viewModel.connectDevice(target)
+                    }) { Text("发送申请") }
+                    TextButton(onClick = { pendingTargetDeviceId = null; connectSecret = "" }) { Text("取消") }
+                }
+            },
+        )
     }
 
     if (confirmRevokeAll) {
@@ -549,9 +759,9 @@ fun LanWebClientSettingsSection(
     }
 
     if (showDesktopTasks) {
-        DesktopAgentTasksDialog(
+        DesktopAgentChatScreen(
             viewModel = viewModel,
-            onDismiss = {
+            onExit = {
                 showDesktopTasks = false
                 viewModel.clearDesktopAgentError()
             }

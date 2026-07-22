@@ -28,6 +28,10 @@ class LanWebServer(
     context: Context?,
     private val bindAddress: String,
     private val accessStore: LanWebAccessStore,
+    private val deviceIdentity: LanWebDeviceIdentity? = null,
+    private val connectionCoordinator: LanWebConnectionCoordinator? = null,
+    private val pairingAuthenticator: LanWebPairingAuthenticator? = null,
+    private val githubAccountAvailable: (() -> Boolean)? = null,
     private val chatBridge: LanWebChatGateway,
     private val eventHub: LanWebEventHub,
     private val computerWorkspaceBridge: LanWebComputerWorkspaceBridge? = null,
@@ -49,6 +53,7 @@ class LanWebServer(
     private val serverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val apiRateLimiter = LanWebRateLimiter(limit = 180, windowMillis = 60_000L)
     private val mutationRateLimiter = LanWebRateLimiter(limit = 30, windowMillis = 60_000L)
+    private val deviceSyncRateLimiter = LanWebRateLimiter(limit = 512, windowMillis = 60_000L)
     private val workspaceRateLimiter = LanWebRateLimiter(limit = 180, windowMillis = 60_000L)
     private val sseConnections = ConcurrentHashMap<String, AtomicInteger>()
     private val json = Json {
@@ -73,13 +78,14 @@ class LanWebServer(
             when {
                 session.method == Method.GET && session.uri in staticAssets.keys -> serveStatic(session.uri)
                 session.method == Method.GET && session.uri == LanWebContract.PUBLIC_STATUS_PATH ->
-                    jsonResponse(
-                        Response.Status.OK,
-                        LanWebPublicStatusResponse(
-                            pairingAvailable = accessStore.isPairingAvailable()
-                        )
-                    )
+                    jsonResponse(Response.Status.OK, publicStatus())
+                session.method == Method.POST && session.uri == LanWebContract.PAIR_CHALLENGE_PATH ->
+                    handlePairChallenge(session)
                 session.method == Method.POST && session.uri == LanWebContract.PAIR_PATH -> handlePair(session)
+                session.method == Method.POST && session.uri == LanWebContract.CONNECTION_REQUEST_PATH ->
+                    handleConnectionRequest(session)
+                session.method == Method.POST && session.uri == LanWebContract.CONNECTION_STATUS_PATH ->
+                    handleConnectionStatus(session)
                 session.uri.startsWith(LanWebContract.API_PREFIX) -> handleAuthenticatedApi(session)
                 else -> errorResponse(Response.Status.NOT_FOUND, "not_found", "页面或接口不存在")
             }
@@ -104,6 +110,42 @@ class LanWebServer(
         serverScope.cancel()
     }
 
+    private fun publicStatus(): LanWebPublicStatusResponse {
+        val auth = pairingAuthenticator?.snapshot()
+        val methods = buildList {
+            add(LanWebTrustSource.CONNECTION_APPROVAL)
+            if (auth?.temporaryCodeAvailable == true) add(LanWebTrustSource.TEMPORARY_CODE)
+            if (auth?.securityPasswordConfigured == true) add(LanWebTrustSource.SECURITY_PASSWORD)
+            if (githubAccountAvailable?.invoke() == true) add(LanWebTrustSource.GITHUB_ACCOUNT)
+        }
+        return LanWebPublicStatusResponse(
+            pairingAvailable = accessStore.isPairingAvailable() || methods.size > 1,
+            pairingMethods = methods,
+            deviceId = deviceIdentity?.snapshot?.deviceId.orEmpty(),
+            deviceDisplayId = deviceIdentity?.snapshot?.displayId.orEmpty(),
+            devicePublicKey = deviceIdentity?.snapshot?.publicKey.orEmpty(),
+            deviceFingerprint = deviceIdentity?.snapshot?.publicKeyFingerprint.orEmpty(),
+        )
+    }
+
+    private fun handlePairChallenge(session: IHTTPSession): Response {
+        val authenticator = pairingAuthenticator
+            ?: return errorResponse(Response.Status.NOT_FOUND, "scram_unavailable", "手机端未启用密码认证")
+        val body = readJsonBody<LanWebPairChallengeRequest>(session)
+            ?: return errorResponse(Response.Status.BAD_REQUEST, "invalid_request", "密码认证请求格式无效")
+        val response = authenticator.beginChallenge(
+            request = body,
+            remoteAddress = session.remoteIpAddress.orEmpty(),
+        ).getOrElse { error ->
+            return errorResponse(
+                Response.Status.UNAUTHORIZED,
+                "pairing_challenge_failed",
+                safeError(error.message ?: "无法开始密码认证"),
+            )
+        }
+        return jsonResponse(Response.Status.OK, response)
+    }
+
     private fun handlePair(session: IHTTPSession): Response {
         val body = readJsonBody<LanWebPairRequest>(session)
             ?: return errorResponse(Response.Status.BAD_REQUEST, "invalid_request", "配对请求格式无效")
@@ -115,13 +157,15 @@ class LanWebServer(
         }
         val securePairing = body.secureChannelVersion == LanWebContract.SECURE_PAIRING_VERSION
         val remoteAddress = session.remoteIpAddress.orEmpty()
-        val issued = accessStore.pair(
+        val issuedResult = accessStore.pair(
             rawCode = body.code,
             rawCodeProof = body.codeProof,
             rawClientName = body.clientName,
             remoteAddress = remoteAddress,
             secureSync = securePairing,
-        ).getOrElse { error ->
+        )
+        val issued = issuedResult.getOrElse { error ->
+            if (!accessStore.isPairingAvailable()) onPairingConsumed()
             return errorResponse(
                 Response.Status.UNAUTHORIZED,
                 "pairing_failed",
@@ -187,6 +231,43 @@ class LanWebServer(
             )
         }
         return response
+    }
+
+    private fun handleConnectionRequest(session: IHTTPSession): Response {
+        val coordinator = connectionCoordinator
+            ?: return errorResponse(Response.Status.NOT_IMPLEMENTED, "device_link_unavailable", "当前版本未启用设备连接")
+        val body = readJsonBody<LanWebConnectionRequest>(session)
+            ?: return errorResponse(Response.Status.BAD_REQUEST, "invalid_request", "连接申请格式无效")
+        val result = coordinator.submit(
+            request = body,
+            remoteAddress = session.remoteIpAddress.orEmpty(),
+            transport = if (bindAddress == "127.0.0.1") "relay_or_adb" else "lan",
+        ).getOrElse { error ->
+            return errorResponse(
+                Response.Status.FORBIDDEN,
+                "connection_request_rejected",
+                safeError(error.message ?: "连接申请未获准"),
+            )
+        }
+        return jsonResponse(
+            if (result.status == LanWebConnectionCoordinator.STATUS_APPROVED) Response.Status.OK else Response.Status.ACCEPTED,
+            result,
+        )
+    }
+
+    private fun handleConnectionStatus(session: IHTTPSession): Response {
+        val coordinator = connectionCoordinator
+            ?: return errorResponse(Response.Status.NOT_IMPLEMENTED, "device_link_unavailable", "当前版本未启用设备连接")
+        val body = readJsonBody<LanWebConnectionStatusRequest>(session)
+            ?: return errorResponse(Response.Status.BAD_REQUEST, "invalid_request", "连接状态请求格式无效")
+        val result = coordinator.status(body).getOrElse { error ->
+            return errorResponse(
+                Response.Status.NOT_FOUND,
+                "connection_request_missing",
+                safeError(error.message ?: "连接申请不存在或已过期"),
+            )
+        }
+        return jsonResponse(Response.Status.OK, result)
     }
 
     private fun handleAuthenticatedApi(session: IHTTPSession): Response {
@@ -542,7 +623,7 @@ class LanWebServer(
     }
 
     private fun handleDeviceSyncPush(session: IHTTPSession, client: LanWebClientSummary): Response {
-        if (!mutationRateLimiter.tryAcquire("device-sync:${client.id}")) {
+        if (!deviceSyncRateLimiter.tryAcquire(client.id)) {
             return errorResponse(Response.Status.FORBIDDEN, "rate_limited", "凭据同步请求过于频繁")
         }
         val bridge = credentialSyncBridge
@@ -568,7 +649,7 @@ class LanWebServer(
     }
 
     private fun handleDeviceSyncPull(session: IHTTPSession, client: LanWebClientSummary): Response {
-        if (!mutationRateLimiter.tryAcquire("device-sync:${client.id}")) {
+        if (!deviceSyncRateLimiter.tryAcquire(client.id)) {
             return errorResponse(Response.Status.FORBIDDEN, "rate_limited", "凭据同步请求过于频繁")
         }
         val bridge = credentialSyncBridge
@@ -581,7 +662,7 @@ class LanWebServer(
             val plaintext = LanWebDeviceSyncCrypto.decrypt(key, envelope)
             val options = json.decodeFromString<LanWebDeviceSyncOptions>(plaintext)
             require(
-                options.includeProviderCredentials || options.includeCodexLogin || options.includeAgentSettings ||
+                options.includeSessions || options.includeProviderCredentials || options.includeCodexLogin || options.includeAgentSettings ||
                     options.includeKnowledge || options.includeMcp || options.includeSavedWorkflows
             ) { "至少选择一种同步内容" }
             val bundle = runBlocking(Dispatchers.IO) { bridge.exportBundle(options) }
@@ -596,6 +677,7 @@ class LanWebServer(
             key.fill(0)
         }
     }
+
 
     private fun validatedSyncKey(
         client: LanWebClientSummary,
@@ -710,7 +792,13 @@ class LanWebServer(
             return errorResponse(Response.Status.FORBIDDEN, "remote_forbidden", "只允许局域网客户端访问")
         }
         val host = session.headers["host"]
-        if (!LanWebSecurity.isAllowedHost(host, bindAddress, listeningPort)) {
+        if (!LanWebSecurity.isAllowedHost(
+                host,
+                bindAddress,
+                listeningPort,
+                allowLoopbackForwardPort = bindAddress == "127.0.0.1" || bindAddress == "::1",
+            )
+        ) {
             return errorResponse(Response.Status.FORBIDDEN, "host_forbidden", "Host 不在当前局域网服务范围")
         }
         if (!LanWebSecurity.isAllowedOrigin(session.headers["origin"], host, listeningPort)) {

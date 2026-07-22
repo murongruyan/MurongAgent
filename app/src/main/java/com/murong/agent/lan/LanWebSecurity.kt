@@ -27,7 +27,12 @@ internal object LanWebSecurity {
         }
     }
 
-    fun isAllowedHost(hostHeader: String?, bindAddress: String, port: Int): Boolean {
+    fun isAllowedHost(
+        hostHeader: String?,
+        bindAddress: String,
+        port: Int,
+        allowLoopbackForwardPort: Boolean = false,
+    ): Boolean {
         val actual = hostHeader?.trim()?.lowercase(Locale.ROOT) ?: return false
         val normalizedBind = bindAddress.trim().substringBefore('%').lowercase(Locale.ROOT)
         val expected = if (normalizedBind.contains(':')) {
@@ -36,7 +41,13 @@ internal object LanWebSecurity {
             "$normalizedBind:$port"
         }
         val loopbackHosts = setOf("127.0.0.1:$port", "localhost:$port", "[::1]:$port")
-        return actual == expected || actual in loopbackHosts
+        if (actual == expected || actual in loopbackHosts) return true
+        if (!allowLoopbackForwardPort || normalizedBind !in setOf("127.0.0.1", "::1")) return false
+        val forwarded = runCatching { URI("http://$actual") }.getOrNull() ?: return false
+        if (forwarded.userInfo != null || forwarded.port !in 1..65535) return false
+        val forwardedHost = forwarded.host?.lowercase(Locale.ROOT) ?: return false
+        if (forwardedHost == "localhost") return true
+        return runCatching { InetAddress.getByName(forwardedHost).isLoopbackAddress }.getOrDefault(false)
     }
 
     fun isAllowedOrigin(originHeader: String?, hostHeader: String?, port: Int): Boolean {

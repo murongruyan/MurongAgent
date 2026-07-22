@@ -40,6 +40,17 @@ internal object LanWebPairingCrypto {
         }
     }
 
+    internal fun matchesCodeProof(pairingSecret: ByteArray, rawProof: String?): Boolean {
+        if (rawProof.isNullOrBlank()) return false
+        val expected = runCatching {
+            codeProof(String(pairingSecret, StandardCharsets.US_ASCII))
+        }.getOrNull() ?: return false
+        return MessageDigest.isEqual(
+            expected.toByteArray(StandardCharsets.US_ASCII),
+            rawProof.toByteArray(StandardCharsets.US_ASCII),
+        )
+    }
+
     fun encryptBootstrap(
         pairingSecret: ByteArray,
         summary: LanWebClientSummary,

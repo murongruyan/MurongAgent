@@ -110,7 +110,7 @@ import com.murong.agent.ui.project.ProjectSecondaryHostBridgeState
 import com.murong.agent.ui.project.ProjectScreen
 import com.murong.agent.ui.settings.AppUpdateUiState
 import com.murong.agent.ui.settings.AboutPage
-import com.murong.agent.ui.settings.DesktopAgentTasksDialog
+import com.murong.agent.ui.settings.DesktopAgentChatScreen
 import com.murong.agent.ui.settings.LanWebSettingsViewModel
 import com.murong.agent.ui.settings.MURONG_EXTENSION_PACKAGE_NAME
 import com.murong.agent.ui.settings.SettingsScreen
@@ -413,7 +413,7 @@ internal fun MainScreen(
     var isChatSessionPanelVisible by rememberSaveable { mutableStateOf(false) }
     var chatSessionPanelBackProgress by remember { mutableFloatStateOf(0f) }
     var dialogState by remember { mutableStateOf(MainScreenDialogState()) }
-    var showDesktopAgentTasks by rememberSaveable { mutableStateOf(false) }
+    var selectedDesktopSessionId by rememberSaveable { mutableStateOf<String?>(null) }
     var hasAutoCheckedUpdates by rememberSaveable { mutableStateOf(false) }
     var dismissedUpdateDialogKey by rememberSaveable { mutableStateOf<String?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -1304,7 +1304,13 @@ internal fun MainScreen(
                         isChatSessionPanelVisible
                     @Composable
                     fun ChatMainPage() {
-                        if (shouldRenderFullChat) {
+                        if (shouldRenderFullChat && selectedDesktopSessionId != null) {
+                            DesktopAgentChatScreen(
+                                viewModel = lanWebVm,
+                                onExit = { selectedDesktopSessionId = null },
+                                bottomReservedPadding = pageLayoutState.bottomPadding,
+                            )
+                        } else if (shouldRenderFullChat) {
                             ChatScreen(
                                 state = chatState,
                                 isScreenActive = pageOwnsShellState &&
@@ -1599,23 +1605,26 @@ internal fun MainScreen(
                                         desktopSessions = desktopAgentState.snapshot?.sessions.orEmpty(),
                                         desktopConnected = desktopAgentState.connected,
                                         onNewSession = {
+                                            selectedDesktopSessionId = null
                                             dispatchChatAction(
                                                 MainScreenChatAction.StartNewSession(closeDrawer = true)
                                             )
                                         },
                                         onNewTask = {
+                                            selectedDesktopSessionId = null
                                             dispatchChatAction(
                                                 MainScreenChatAction.OpenTaskDialog(projectPath = "")
                                             )
                                         },
                                         onLoadSession = { sessionId ->
+                                            selectedDesktopSessionId = null
                                             dispatchChatAction(
                                                 MainScreenChatAction.LoadSession(sessionId = sessionId)
                                             )
                                         },
                                         onLoadDesktopSession = { sessionId ->
                                             lanWebVm.openDesktopSession(sessionId)
-                                            showDesktopAgentTasks = true
+                                            selectedDesktopSessionId = sessionId
                                             dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
                                         },
                                         onRenameSession = { sessionId ->
@@ -2516,13 +2525,6 @@ internal fun MainScreen(
                         end = 16.dp,
                         bottom = if (showBottomBar) 112.dp else 20.dp,
                     ),
-            )
-        }
-
-        if (showDesktopAgentTasks) {
-            DesktopAgentTasksDialog(
-                viewModel = lanWebVm,
-                onDismiss = { showDesktopAgentTasks = false }
             )
         }
 

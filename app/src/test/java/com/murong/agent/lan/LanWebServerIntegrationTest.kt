@@ -1,5 +1,9 @@
 package com.murong.agent.lan
 
+import java.security.KeyPair
+import java.security.KeyPairGenerator
+import java.security.spec.ECGenParameterSpec
+import java.util.Base64
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.TimeUnit
 import kotlin.io.path.createTempDirectory
@@ -19,6 +23,14 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
 class LanWebServerIntegrationTest {
+    private class MemorySyncKeyStore : LanWebSyncKeyStore {
+        private val values = linkedMapOf<String, ByteArray>()
+        override fun put(clientId: String, key: ByteArray) { values[clientId] = key.copyOf() }
+        override fun read(clientId: String): ByteArray? = values[clientId]?.copyOf()
+        override fun remove(clientId: String) { values.remove(clientId)?.fill(0) }
+        override fun clear() { values.values.forEach { it.fill(0) }; values.clear() }
+    }
+
     private val json = Json { ignoreUnknownKeys = true }
     private val client = OkHttpClient.Builder().readTimeout(3, TimeUnit.SECONDS).build()
     private lateinit var accessStore: LanWebAccessStore
@@ -26,12 +38,17 @@ class LanWebServerIntegrationTest {
     private lateinit var gateway: FakeGateway
     private lateinit var workspaceBridge: LanWebComputerWorkspaceBridge
     private lateinit var desktopAgentBridge: LanWebDesktopAgentBridge
+    private lateinit var pairingAuthenticator: LanWebPairingAuthenticator
+    private lateinit var phoneIdentity: LanWebDeviceIdentity
     private lateinit var baseUrl: String
 
     @BeforeTest
     fun setUp() {
-        val file = createTempDirectory("lan-server-").resolve("access.json").toFile()
-        accessStore = LanWebAccessStore(file)
+        val directory = createTempDirectory("lan-server-")
+        val file = directory.resolve("access.json").toFile()
+        accessStore = LanWebAccessStore(file, syncKeyStore = MemorySyncKeyStore())
+        pairingAuthenticator = LanWebPairingAuthenticator(directory.resolve("pairing-auth.json").toFile())
+        phoneIdentity = LanWebDeviceIdentity { keyPair() }
         gateway = FakeGateway()
         workspaceBridge = LanWebComputerWorkspaceBridge()
         desktopAgentBridge = LanWebDesktopAgentBridge()
@@ -39,6 +56,13 @@ class LanWebServerIntegrationTest {
             context = null,
             bindAddress = "127.0.0.1",
             accessStore = accessStore,
+            deviceIdentity = phoneIdentity,
+            connectionCoordinator = LanWebConnectionCoordinator(
+                accessStore = accessStore,
+                identity = phoneIdentity,
+                passwordAuthenticator = pairingAuthenticator::authenticate,
+            ),
+            pairingAuthenticator = pairingAuthenticator,
             chatBridge = gateway,
             eventHub = LanWebEventHub(),
             computerWorkspaceBridge = workspaceBridge,
@@ -94,6 +118,101 @@ class LanWebServerIntegrationTest {
             }
         }
         assertEquals(1, gateway.enqueued.get())
+    }
+
+    @Test
+    fun `SCRAM challenge route establishes stable device trust without sending the code`() {
+        val now = System.currentTimeMillis()
+        val code = pairingAuthenticator.beginTemporaryCode(now)
+        accessStore.beginPairing(now = now, rawCode = code.value)
+        val desktop = LanWebDeviceIdentity { keyPair() }
+        val requesterEphemeral = keyPair()
+        val unsignedChallenge = LanWebPairChallengeRequest(
+            requestId = "connect-http-scram1",
+            clientName = "Murong Desktop",
+            deviceId = desktop.snapshot.deviceId,
+            devicePublicKey = desktop.snapshot.publicKey,
+            deviceFingerprint = desktop.snapshot.publicKeyFingerprint,
+            ephemeralPublicKey = LanWebDeviceIdentity.publicKey(requesterEphemeral),
+            platform = "windows",
+            issuedAt = now,
+            authMethod = LanWebTrustSource.TEMPORARY_CODE,
+            clientNonce = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(18) { it.toByte() }),
+            signature = "",
+        )
+        val challengeRequest = unsignedChallenge.copy(
+            signature = desktop.sign(LanWebPairingAuthenticator.pairChallengeSignaturePayload(unsignedChallenge)),
+        )
+        val challenge = postPublic(
+            LanWebContract.PAIR_CHALLENGE_PATH,
+            json.encodeToString(challengeRequest),
+        ).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            assertEquals(200, response.code, text)
+            assertFalse(text.contains(code.value))
+            json.decodeFromString<LanWebPairChallengeResponse>(text)
+        }
+        val salt = requireNotNull(LanWebScramCrypto.decode(challenge.salt, LanWebScramCrypto.SALT_BYTES))
+        val authMessage = LanWebScramCrypto.authMessage(challengeRequest, challenge)
+        val proof = LanWebScramCrypto.clientProof(
+            code.value.replace("-", ""), salt, challenge.iterations, authMessage,
+        )
+        salt.fill(0)
+        authMessage.fill(0)
+        val unsignedConnection = LanWebConnectionRequest(
+            requestId = challengeRequest.requestId,
+            clientName = challengeRequest.clientName,
+            deviceId = challengeRequest.deviceId,
+            devicePublicKey = challengeRequest.devicePublicKey,
+            deviceFingerprint = challengeRequest.deviceFingerprint,
+            ephemeralPublicKey = challengeRequest.ephemeralPublicKey,
+            platform = challengeRequest.platform,
+            issuedAt = challengeRequest.issuedAt,
+            authMethod = challengeRequest.authMethod,
+            authProof = "${challenge.sessionId}.${proof.proof}",
+            signature = "",
+        )
+        val connection = unsignedConnection.copy(
+            signature = desktop.sign(LanWebConnectionCoordinator.connectionRequestSignaturePayload(unsignedConnection)),
+        )
+        postPublic(LanWebContract.CONNECTION_REQUEST_PATH, json.encodeToString(connection)).execute().use { response ->
+            assertEquals(200, response.code, response.body?.string().orEmpty())
+        }
+        val unsignedStatus = LanWebConnectionStatusRequest(connection.requestId, connection.deviceId, now + 1, "")
+        val status = unsignedStatus.copy(
+            signature = desktop.sign(LanWebConnectionCoordinator.statusSignaturePayload(unsignedStatus)),
+        )
+        postPublic(LanWebContract.CONNECTION_STATUS_PATH, json.encodeToString(status)).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            assertEquals(200, response.code, text)
+            val approved = json.decodeFromString<LanWebConnectionStatusResponse>(text)
+            assertEquals(LanWebConnectionCoordinator.STATUS_APPROVED, approved.status)
+            assertEquals(proof.expectedServerProof, approved.authServerProof)
+        }
+        assertEquals(LanWebTrustSource.TEMPORARY_CODE, accessStore.clients().single().trustSource)
+        assertFalse(pairingAuthenticator.snapshot(now + 2).temporaryCodeAvailable)
+    }
+
+    @Test
+    fun `legacy desktop proof still uses an active temporary code on the relay loopback`() {
+        val temporaryCode = accessStore.beginPairing().value
+        val body = json.encodeToString(
+            LanWebPairRequest(
+                clientName = "Older Murong Desktop",
+                secureChannelVersion = LanWebContract.SECURE_PAIRING_VERSION,
+                codeProof = LanWebPairingCrypto.codeProof(temporaryCode),
+            )
+        )
+        val request = Request.Builder()
+            .url("$baseUrl/api/v1/pair")
+            .post(body.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        client.newCall(request).execute().use { response ->
+            val responseText = response.body?.string().orEmpty()
+            assertEquals(200, response.code, responseText)
+            assertNotNull(json.decodeFromString<LanWebPairResponse>(responseText).secureChannel)
+            assertFalse(accessStore.isPairingAvailable())
+        }
     }
 
     @Test
@@ -324,8 +443,20 @@ class LanWebServerIntegrationTest {
             .build()
     )
 
+    private fun postPublic(path: String, body: String) = client.newCall(
+        Request.Builder()
+            .url("$baseUrl$path")
+            .post(body.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+    )
+
     private fun assertNullHeader(value: String?) {
         assertTrue(value == null)
+    }
+
+    private fun keyPair(): KeyPair = KeyPairGenerator.getInstance("EC").run {
+        initialize(ECGenParameterSpec("secp256r1"))
+        generateKeyPair()
     }
 
     private class FakeGateway : LanWebChatGateway {
