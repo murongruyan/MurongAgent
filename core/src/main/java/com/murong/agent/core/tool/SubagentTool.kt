@@ -1667,6 +1667,7 @@ class SubagentTool(
                 ensureNotCancelled(request.runId)
                 when (event) {
                     is AgentEvent.ContentDelta -> content.append(event.text)
+                    AgentEvent.ReasoningStart -> Unit
                     is AgentEvent.ReasoningDelta -> reasoning.append(event.text)
                     is AgentEvent.Error -> lastError = event.message
                     is AgentEvent.ReadinessAudit -> Unit

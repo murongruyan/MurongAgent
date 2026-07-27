@@ -35,6 +35,7 @@ func (app *DesktopAgentApp) desktopAgentSnapshot() desktopbridge.DesktopAgentSna
 		result.Sessions = append(result.Sessions, desktopbridge.DesktopAgentTaskSummary{
 			ID:               summary.ID,
 			Title:            truncateRunes(summary.Title, remoteDesktopMaxTitleRunes),
+			ProjectPath:      summary.ProjectPath,
 			UpdatedAt:        summary.UpdatedAt,
 			MessageCount:     summary.MessageCount,
 			Running:          running[summary.ID],

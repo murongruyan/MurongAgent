@@ -701,7 +701,8 @@ class CheckpointCapturePolicyTest {
                             question = "继续吗？",
                             options = listOf(AskOptionUi("继续"))
                         )
-                    )
+                    ),
+                    createdAt = 20L
                 )
             )
         )
@@ -720,6 +721,7 @@ class CheckpointCapturePolicyTest {
                                 options = listOf(AskOptionUi("继续"))
                             )
                         ),
+                        createdAt = 20L,
                         isReplayOnly = true,
                         replayNotice = "replayed"
                     )

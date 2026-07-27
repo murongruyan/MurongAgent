@@ -1,5 +1,6 @@
 package com.murong.agent.ui
 
+import android.Manifest
 import android.app.DownloadManager
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -35,10 +36,9 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -101,11 +101,13 @@ import com.murong.agent.ui.chat.updatePendingPromptClarificationInteractionState
 import com.murong.agent.ui.chat.updatePendingPromptWorkflowPlanInteractionState
 import com.murong.agent.ui.chat.SessionDrawerContent
 import com.murong.agent.ui.chat.buildConversationText
-import com.murong.agent.ui.auth.AuthViewModel
 import com.murong.agent.ui.auth.GitHubAuthFlow
-import com.murong.agent.ui.auth.GitHubLoginScreen
+import com.murong.agent.ui.assistant.VoiceAssistantEntry
+import com.murong.agent.ui.assistant.VoiceAssistantLaunchAction
+import com.murong.agent.ui.assistant.voiceAssistantLaunchAction
 import com.murong.agent.ui.project.ProjectEditorMenuAction
 import com.murong.agent.ui.project.ProjectGitHubRepoRef
+import com.murong.agent.ui.project.ProjectPrimaryTab
 import com.murong.agent.ui.project.ProjectSecondaryHostBridgeState
 import com.murong.agent.ui.project.ProjectScreen
 import com.murong.agent.ui.settings.AppUpdateUiState
@@ -114,6 +116,8 @@ import com.murong.agent.ui.settings.DesktopAgentChatScreen
 import com.murong.agent.ui.settings.LanWebSettingsViewModel
 import com.murong.agent.ui.settings.MURONG_EXTENSION_PACKAGE_NAME
 import com.murong.agent.ui.settings.SettingsScreen
+import com.murong.agent.ui.settings.SettingsDirectoryPage
+import com.murong.agent.ui.settings.SettingsFocus
 import com.murong.agent.ui.settings.ThemeSettingsPage
 import com.murong.agent.ui.settings.SettingsViewModel
 import com.murong.agent.ui.settings.PendingApkInstallDownload
@@ -121,6 +125,7 @@ import com.murong.agent.ui.settings.enqueueApkInstallDownload
 import com.murong.agent.ui.settings.openDownloadedApkInstaller
 import com.murong.agent.ui.settings.queryDownloadFailureReason
 import com.murong.agent.ui.tools.ToolsScreen
+import com.murong.agent.ui.tools.ToolsSection
 import com.murong.agent.ui.tools.buildApprovalToolsPresentation
 import com.murong.agent.ui.tools.buildCheckpointRollbackSuccessMessage
 import com.murong.agent.ui.tools.buildCheckpointToolsPresentation
@@ -172,10 +177,12 @@ class MainActivity : ComponentActivity() {
             MurongTheme {
                 MainScreen(
                     externalShareRequests = externalShareRequests,
-                    savedWorkflowOpenRequests = savedWorkflowOpenRequests
+                    savedWorkflowOpenRequests = savedWorkflowOpenRequests,
+                    voiceAssistantEntryRequests = VoiceAssistantEntry.requests
                 )
             }
         }
+        VoiceAssistantEntry.dispatch(intent)
         dispatchExternalShare(intent, deliveredViaOnNewIntent = false)
         dispatchSavedWorkflowOpen(intent)
     }
@@ -184,6 +191,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         dispatchGitHubOAuthCallback(intent)
+        VoiceAssistantEntry.dispatch(intent)
         dispatchExternalShare(intent, deliveredViaOnNewIntent = true)
         dispatchSavedWorkflowOpen(intent)
     }
@@ -239,6 +247,7 @@ sealed class Screen(val route: String, val title: String) {
 
 internal sealed interface SettingsSubpage {
     data object Main : SettingsSubpage
+    data class Detail(val focus: SettingsFocus) : SettingsSubpage
     data object Theme : SettingsSubpage
     data object About : SettingsSubpage
 }
@@ -255,7 +264,8 @@ internal data class ProjectSecondaryChromeState(
 @Composable
 internal fun MainScreen(
     externalShareRequests: Flow<ExternalShareDraft> = emptyFlow(),
-    savedWorkflowOpenRequests: Flow<Unit> = emptyFlow()
+    savedWorkflowOpenRequests: Flow<Unit> = emptyFlow(),
+    voiceAssistantEntryRequests: Flow<Unit> = emptyFlow()
 ) {
     val shellScreens = remember {
         listOf(Screen.Chat, Screen.Projects, Screen.Tools, Screen.Settings)
@@ -268,6 +278,11 @@ internal fun MainScreen(
     val topLevelBackProgress = topLevelNavigationState.backProgress
     var settingsState by remember { mutableStateOf(MainScreenSettingsState()) }
     var projectSecondaryHostState by remember { mutableStateOf(MainScreenProjectSecondaryHostState()) }
+    var requestedProjectTab by remember { mutableStateOf(ProjectPrimaryTab.EDITOR) }
+    var requestedProjectTabSignal by remember { mutableIntStateOf(0) }
+    var requestedToolsSection by remember { mutableStateOf(ToolsSection.BUILTIN) }
+    var requestedToolsSectionSignal by remember { mutableIntStateOf(0) }
+    var returnToSettingsDirectory by remember { mutableStateOf(false) }
     val settingsSubpage = settingsState.subpage
     val settingsBackProgress = settingsState.backProgress
     val scope = rememberCoroutineScope()
@@ -277,11 +292,9 @@ internal fun MainScreen(
         pageCount = { shellScreens.size }
     )
     MurongInteractionPerformanceHint(active = pagerState.isScrollInProgress)
-    val authVm: AuthViewModel = hiltViewModel()
     val chatVm: ChatViewModel = hiltViewModel()
     val settingsVm: SettingsViewModel = hiltViewModel()
     val lanWebVm: LanWebSettingsViewModel = hiltViewModel()
-    val authState by authVm.uiState.collectAsState()
     val chatState by chatVm.state.collectAsState()
     val chatConfig by chatVm.config.collectAsState()
     val codexUsage by chatVm.codexUsage.collectAsState()
@@ -389,6 +402,15 @@ internal fun MainScreen(
         mutableStateOf(false)
     }
     val context = LocalContext.current
+    val voiceAssistantMicrophoneLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            chatVm.startVoiceInput()
+        } else {
+            chatVm.reportVoiceInputError("需要麦克风权限才能开始系统语音助手")
+        }
+    }
     val uriHandler = LocalUriHandler.current
     val hostPackageInfo = remember(context) {
         runCatching {
@@ -552,6 +574,9 @@ internal fun MainScreen(
     val chatPageIndex = remember(shellScreens) {
         shellScreens.indexOfFirst { it.route == Screen.Chat.route }.coerceAtLeast(0)
     }
+    val settingsPageIndex = remember(shellScreens) {
+        shellScreens.indexOfFirst { it.route == Screen.Settings.route }.coerceAtLeast(0)
+    }
     val darkMode = uiController.themeMode == MurongThemeMode.DARK ||
         (uiController.themeMode == MurongThemeMode.SYSTEM &&
             murongIsDarkColor(MaterialTheme.colorScheme.background))
@@ -712,7 +737,14 @@ internal fun MainScreen(
             }
             MainScreenHostAction.NavigateTopLevelBack -> {
                 dispatchSettingsAction(MainScreenSettingsAction.CloseSecondaryPage)
-                dispatchTopLevelNavigationAction(MainScreenTopLevelNavigationAction.NavigateBack)
+                if (returnToSettingsDirectory) {
+                    returnToSettingsDirectory = false
+                    dispatchTopLevelNavigationAction(
+                        MainScreenTopLevelNavigationAction.NavigateBackToPage(settingsPageIndex)
+                    )
+                } else {
+                    dispatchTopLevelNavigationAction(MainScreenTopLevelNavigationAction.NavigateBack)
+                }
             }
             is MainScreenHostAction.NavigateToTopLevelPage -> {
                 dispatchSettingsAction(MainScreenSettingsAction.CloseSecondaryPage)
@@ -724,10 +756,32 @@ internal fun MainScreen(
         }
     }
 
-    fun navigateToTopLevel(target: Screen) {
+    fun navigateToTopLevel(
+        target: Screen,
+        shouldReturnToSettingsDirectory: Boolean = false
+    ) {
         val targetIndex = shellScreens.indexOfFirst { it.route == target.route }
         if (targetIndex < 0) return
+        returnToSettingsDirectory = shouldReturnToSettingsDirectory
         dispatchHostAction(MainScreenHostAction.NavigateToTopLevelPage(targetIndex))
+    }
+
+    fun openProjectWorkspace(tab: ProjectPrimaryTab) {
+        requestedProjectTab = tab
+        requestedProjectTabSignal += 1
+        navigateToTopLevel(
+            target = Screen.Projects,
+            shouldReturnToSettingsDirectory = true
+        )
+    }
+
+    fun openToolsSection(section: ToolsSection) {
+        requestedToolsSection = section
+        requestedToolsSectionSignal += 1
+        navigateToTopLevel(
+            target = Screen.Tools,
+            shouldReturnToSettingsDirectory = true
+        )
     }
 
     fun dispatchChatAction(action: MainScreenChatAction) {
@@ -742,12 +796,19 @@ internal fun MainScreen(
                 }
             }
             is MainScreenChatAction.LoadSession -> {
-                chatVm.loadSession(action.sessionId)
-                if (action.closeDrawer) {
-                    dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
-                }
-                if (action.dismissMenu) {
-                    dispatchOverlayVisibilityAction(MainScreenOverlayVisibilityAction.HIDE_CHAT_MENU)
+                if (chatVm.loadSession(action.sessionId)) {
+                    if (action.closeDrawer) {
+                        dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
+                    }
+                    if (action.dismissMenu) {
+                        dispatchOverlayVisibilityAction(MainScreenOverlayVisibilityAction.HIDE_CHAT_MENU)
+                    }
+                } else {
+                    scope.launch {
+                        snackbarHostState.showSnackbar(
+                            "无法打开这条会话：记录可能已删除，或当前任务正在运行"
+                        )
+                    }
                 }
             }
             is MainScreenChatAction.DeleteSession -> {
@@ -802,7 +863,6 @@ internal fun MainScreen(
 
     LaunchedEffect(Unit) {
         MainActivity.gitHubOAuthCallbackFlow.collect { callbackUri ->
-            authVm.handleGitHubCallback(callbackUri)
             settingsVm.handleGitHubOAuthCallback(callbackUri)
         }
     }
@@ -810,6 +870,25 @@ internal fun MainScreen(
     LaunchedEffect(savedWorkflowOpenRequests) {
         savedWorkflowOpenRequests.collect {
             navigateToTopLevel(Screen.Tools)
+        }
+    }
+
+    LaunchedEffect(voiceAssistantEntryRequests) {
+        voiceAssistantEntryRequests.collect {
+            navigateToTopLevel(Screen.Chat)
+            when (
+                voiceAssistantLaunchAction(
+                    microphoneGranted = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                )
+            ) {
+                VoiceAssistantLaunchAction.START_RECOGNITION -> chatVm.startVoiceInput()
+                VoiceAssistantLaunchAction.REQUEST_MICROPHONE_PERMISSION -> {
+                    voiceAssistantMicrophoneLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                }
+            }
         }
     }
 
@@ -880,12 +959,6 @@ internal fun MainScreen(
         }
         projectSecondaryHostState.bridgeState.backRequest?.invoke()
         dispatchProjectSecondaryHostAction(MainScreenProjectSecondaryHostAction.ConsumeCommand)
-    }
-
-    LaunchedEffect(authState.authorizationUrl) {
-        val authorizationUrl = authState.authorizationUrl?.trim().orEmpty()
-        if (authorizationUrl.isBlank()) return@LaunchedEffect
-        runCatching { uriHandler.openUri(authorizationUrl) }
     }
 
     LaunchedEffect(Unit) {
@@ -980,7 +1053,11 @@ internal fun MainScreen(
         settingsSubpage = settingsSubpage,
         projectSecondaryChromeState = projectSecondaryChromeState,
         chatPageIndex = chatPageIndex,
-        topLevelHistoryLastPage = topLevelHistory.lastOrNull(),
+        topLevelHistoryLastPage = if (returnToSettingsDirectory) {
+            settingsPageIndex
+        } else {
+            topLevelHistory.lastOrNull()
+        },
         topLevelBackProgress = topLevelBackProgress
     )
     val chromeScreen = shellState.chromeScreen
@@ -998,7 +1075,7 @@ internal fun MainScreen(
     val hasSecondaryPage = secondaryHostRuntimeState.hasSecondaryPage
     val showBottomBar = shellState.showBottomBar
     val isChatChromeVisible = shellState.isChatChromeVisible
-    val topBarState = resolveMainScreenTopBarState(
+    val baseTopBarState = resolveMainScreenTopBarState(
         settingsSubpage = settingsSubpage,
         chromeScreen = chromeScreen,
         chatSessionTitle = chatState.sessionTitle,
@@ -1006,9 +1083,25 @@ internal fun MainScreen(
         projectSecondaryChromeState = projectSecondaryChromeState,
         isProjectSecondaryPage = isProjectSecondaryPage,
         isChatChromeVisible = isChatChromeVisible,
-        hasTopLevelHistory = shellState.hasTopLevelHistory,
+        hasTopLevelHistory = shellState.hasTopLevelHistory || returnToSettingsDirectory,
         isTopLevelNavigationSettled = shellState.isTopLevelNavigationSettled
     )
+    val topBarState = when {
+        settingsSubpage != SettingsSubpage.Main -> baseTopBarState
+        chromeScreen is Screen.Projects && !isProjectSecondaryPage -> {
+            baseTopBarState.copy(
+                title = requestedProjectTab.label,
+                subtitle = ""
+            )
+        }
+        chromeScreen is Screen.Tools -> {
+            baseTopBarState.copy(
+                title = requestedToolsSection.label,
+                subtitle = ""
+            )
+        }
+        else -> baseTopBarState
+    }
     val overlayState = resolveMainScreenOverlayState(
         shellState = shellState,
         topBarState = topBarState,
@@ -1129,14 +1222,6 @@ internal fun MainScreen(
         } finally {
             dispatchSettingsAction(MainScreenSettingsAction.UpdateBackProgress(0f))
         }
-    }
-
-    if (!authState.isAuthenticated) {
-        GitHubLoginScreen(
-            uiState = authState,
-            onStartGitHubLogin = { authVm.startGitHubLogin() }
-        )
-        return
     }
 
     val importConversationLauncher = rememberLauncherForActivityResult(
@@ -1623,9 +1708,16 @@ internal fun MainScreen(
                                             )
                                         },
                                         onLoadDesktopSession = { sessionId ->
-                                            lanWebVm.openDesktopSession(sessionId)
-                                            selectedDesktopSessionId = sessionId
-                                            dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
+                                            if (lanWebVm.openDesktopSession(sessionId)) {
+                                                selectedDesktopSessionId = sessionId
+                                                dispatchHostAction(MainScreenHostAction.CloseChatDrawer)
+                                            } else {
+                                                scope.launch {
+                                                    snackbarHostState.showSnackbar(
+                                                        "这项电脑任务尚未同步完成，已保留任务列表"
+                                                    )
+                                                }
+                                            }
                                         },
                                         onRenameSession = { sessionId ->
                                             val sessionTitle = chatSessions
@@ -1662,6 +1754,8 @@ internal fun MainScreen(
                         config = settingsConfig,
                         currentProjectPath = chatState.projectPath,
                         currentProjectScopePath = chatState.activeProjectScopePath,
+                        requestedPrimaryTab = requestedProjectTab,
+                        primaryTabRequestSignal = requestedProjectTabSignal,
                         projectKnowledgeDraftPaths = chatState.projectKnowledgePaths,
                         projectKnowledgeSnapshots = chatState.projectKnowledgeSnapshots,
                         projectRules = chatState.projectRules,
@@ -1711,6 +1805,9 @@ internal fun MainScreen(
                         onDeleteProjectKnowledgeSnapshot = { snapshotId ->
                             chatVm.deleteProjectKnowledgeSnapshot(snapshotId)
                         },
+                        onPrimaryTabChanged = { tab ->
+                            requestedProjectTab = tab
+                        },
                         onProjectSecondaryHostBridgeStateChanged = { state ->
                             if (pageOwnsShellState) {
                                 dispatchProjectSecondaryHostAction(
@@ -1739,6 +1836,8 @@ internal fun MainScreen(
                 is Screen.Tools -> {
                     ToolsScreen(
                         config = settingsConfig,
+                        requestedSection = requestedToolsSection,
+                        sectionRequestSignal = requestedToolsSectionSignal,
                         currentProjectPath = chatState.projectPath,
                         projectRuleCount = chatState.projectRules.count { it.enabled },
                         projectMemoryCount = chatState.projectMemories.count { it.enabled },
@@ -1813,7 +1912,7 @@ internal fun MainScreen(
 
                 is Screen.Settings -> {
                     @Composable
-                    fun SettingsMainPage() {
+                    fun SettingsConfigurationPage(focus: SettingsFocus) {
                         SettingsScreen(
                             config = settingsConfig,
                             durableGlobalMemories = settingsDurableGlobalMemories,
@@ -1870,6 +1969,48 @@ internal fun MainScreen(
                             },
                             onOpenAboutPage = {
                                 dispatchSettingsAction(MainScreenSettingsAction.OpenAboutPage)
+                            },
+                            focus = focus
+                        )
+                    }
+                    @Composable
+                    fun SettingsMainPage() {
+                        SettingsDirectoryPage(
+                            onOpenProjects = {
+                                openProjectWorkspace(ProjectPrimaryTab.EDITOR)
+                            },
+                            onOpenProjectConfig = {
+                                openProjectWorkspace(ProjectPrimaryTab.CONFIG)
+                            },
+                            onOpenTerminal = {
+                                openProjectWorkspace(ProjectPrimaryTab.TERMINAL)
+                            },
+                            onOpenGit = {
+                                openProjectWorkspace(ProjectPrimaryTab.GIT)
+                            },
+                            onOpenBuiltInTools = {
+                                openToolsSection(ToolsSection.BUILTIN)
+                            },
+                            onOpenPhoneTools = {
+                                openToolsSection(ToolsSection.PHONE)
+                            },
+                            onOpenAutomationTools = {
+                                openToolsSection(ToolsSection.AUTOMATION)
+                            },
+                            onOpenApprovalTools = {
+                                openToolsSection(ToolsSection.APPROVALS)
+                            },
+                            onOpenActivityTools = {
+                                openToolsSection(ToolsSection.ACTIVITY)
+                            },
+                            onOpenFocus = {
+                                dispatchSettingsAction(MainScreenSettingsAction.OpenDetail(it))
+                            },
+                            onOpenTheme = {
+                                dispatchSettingsAction(MainScreenSettingsAction.OpenThemePage)
+                            },
+                            onOpenAbout = {
+                                dispatchSettingsAction(MainScreenSettingsAction.OpenAboutPage)
                             }
                         )
                     }
@@ -1877,6 +2018,9 @@ internal fun MainScreen(
                     fun SettingsDetailPage() {
                         when (settingsSubpage) {
                             SettingsSubpage.Main -> SettingsMainPage()
+                            is SettingsSubpage.Detail -> {
+                                SettingsConfigurationPage(settingsSubpage.focus)
+                            }
                             SettingsSubpage.Theme -> ThemeSettingsPage()
                             SettingsSubpage.About -> AboutPage(
                                 onDownloadAppUpdate = { updateState ->
@@ -1922,9 +2066,9 @@ internal fun MainScreen(
         MurongGlassSurface(
             modifier = modifier
                 .statusBarsPadding()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            shape = RoundedCornerShape(26.dp),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            shape = RoundedCornerShape(18.dp),
+            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
             surfaceColorOverride = chromeColor.copy(alpha = if (darkMode) 0.60f else 0.68f)
         ) {
             Row(
@@ -1932,25 +2076,33 @@ internal fun MainScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
-                    modifier = Modifier.width(92.dp),
+                    modifier = Modifier.width(48.dp),
                     contentAlignment = Alignment.CenterStart
                 ) {
                     when (topBarStateValue.leadingAction) {
                         MainScreenTopBarLeadingAction.SETTINGS_BACK -> {
-                            MurongOutlinedActionButton(
-                                text = "返回",
+                            IconButton(
                                 onClick = {
                                     dispatchHostAction(topBarStateValue.leadingHostAction)
                                 }
-                            )
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                                    contentDescription = "返回"
+                                )
+                            }
                         }
                         MainScreenTopBarLeadingAction.PROJECT_BACK -> {
-                            MurongOutlinedActionButton(
-                                text = "返回",
+                            IconButton(
                                 onClick = {
                                     dispatchHostAction(topBarStateValue.leadingHostAction)
                                 }
-                            )
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                                    contentDescription = "返回"
+                                )
+                            }
                         }
                         MainScreenTopBarLeadingAction.CHAT_DRAWER -> {
                             IconButton(
@@ -1975,12 +2127,16 @@ internal fun MainScreen(
                             }
                         }
                         MainScreenTopBarLeadingAction.TOP_LEVEL_BACK -> {
-                            MurongOutlinedActionButton(
-                                text = "返回",
+                            IconButton(
                                 onClick = {
                                     dispatchHostAction(topBarStateValue.leadingHostAction)
                                 }
-                            )
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                                    contentDescription = "返回"
+                                )
+                            }
                         }
                         MainScreenTopBarLeadingAction.BRAND -> {
                             Text(
@@ -2018,7 +2174,10 @@ internal fun MainScreen(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (topBarStateValue.subtitle.isNotBlank()) {
+                    if (
+                        topBarStateValue.showProjectEditorMenu &&
+                        topBarStateValue.subtitle.isNotBlank()
+                    ) {
                         Text(
                             text = topBarStateValue.subtitle,
                             style = MaterialTheme.typography.labelSmall,
@@ -2027,7 +2186,7 @@ internal fun MainScreen(
                     }
                 }
                 Row(
-                    modifier = Modifier.widthIn(min = 92.dp),
+                    modifier = Modifier.widthIn(min = 48.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.End
                 ) {
@@ -2150,10 +2309,6 @@ internal fun MainScreen(
                             ChatUsageSummaryBadge(usageSummary = chatState.usageSummary)
                             Spacer(modifier = Modifier.width(6.dp))
                         }
-                    }
-                    if (topBarStateValue.showTag) {
-                        MurongTagButton(text = topBarStateValue.tag, onClick = {})
-                        Spacer(modifier = Modifier.width(6.dp))
                     }
                     if (topBarStateValue.showChatOverflowMenu) {
                         Box {
@@ -2349,6 +2504,14 @@ internal fun MainScreen(
                                 }
                             }
                         }
+                        IconButton(
+                            onClick = { navigateToTopLevel(Screen.Settings) }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Settings,
+                                contentDescription = "设置"
+                            )
+                        }
                     }
                 }
             }
@@ -2489,26 +2652,6 @@ internal fun MainScreen(
                         }
                     }
                 }
-            }
-
-            if (showBottomBar) {
-                MurongFloatingBottomBar(
-                    items = listOf(
-                        MurongBottomBarItem("聊天", Icons.Outlined.MoreVert),
-                        MurongBottomBarItem("项目", Icons.Outlined.Edit),
-                        MurongBottomBarItem("工具", Icons.Outlined.Search),
-                        MurongBottomBarItem("设置", Icons.Outlined.Settings)
-                    ),
-                    selectedIndex = selectedTopLevelPage,
-                    visualIndex = pagerVisualIndex,
-                    onSelect = { index ->
-                        dispatchHostAction(MainScreenHostAction.NavigateToTopLevelPage(index))
-                    },
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                )
             }
 
             VoicePlaybackFloatingWindow(
@@ -2717,7 +2860,7 @@ internal fun MainScreen(
                 }
             )
         }
-    }
+}
 
 @Composable
 private fun MainScreenSnackbarHost(

@@ -91,16 +91,28 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 		app.runCodexAgent(ctx, sessionID, config, profile)
 		return
 	}
-	if profile.ProtectedAPIKey == "" {
-		app.failRun(sessionID, errors.New("尚未配置 API Key"))
+	if profile.ProviderID == providerBuiltinLocal {
+		descriptor, _, localErr := app.vision.ActiveDescriptor()
+		if localErr != nil {
+			app.failRun(sessionID, errors.New("尚未安装可用的内置本地模型，请先在本地模型中心安装并选择"))
+			return
+		}
+		profile.Model = descriptor.DisplayName
+	}
+	if profile.ProviderID != providerBuiltinLocal &&
+		profile.ProtectedAPIKey == "" && !isLocalModelBaseURL(profile.BaseURL) {
+		app.failRun(sessionID, errors.New("尚未配置 API Key，且当前连接不是本机模型地址"))
 		return
 	}
-	plainAPIKey, err := unprotectSecret(profile.ProtectedAPIKey)
-	if err != nil {
-		app.failRun(sessionID, fmt.Errorf("无法解密 API Key：%w", err))
-		return
+	apiKey := ""
+	if profile.ProtectedAPIKey != "" {
+		plainAPIKey, err := unprotectSecret(profile.ProtectedAPIKey)
+		if err != nil {
+			app.failRun(sessionID, fmt.Errorf("无法解密 API Key：%w", err))
+			return
+		}
+		apiKey = string(plainAPIKey)
 	}
-	apiKey := string(plainAPIKey)
 	workspace, err := newLocalWorkspace(config.ProjectPath)
 	if err != nil {
 		app.failRun(sessionID, err)
@@ -135,7 +147,7 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 					content = "请分析这些图片，并提取与当前任务相关的关键信息。"
 				}
 			}
-			messages = append(messages, modelMessage{Role: message.Role, Content: content, Images: images})
+			messages = append(messages, modelMessage{Role: message.Role, Content: content, ReasoningContent: message.Reasoning, Images: images})
 		}
 	}
 	client := newModelClientWithGeneration(config.Temperature, config.MaxTokens)
@@ -156,8 +168,17 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 		}
 		streamID := newID("stream")
 		app.emit("agent:stream-start", map[string]any{"sessionId": sessionID, "streamId": streamID})
-		result, err := client.streamChat(ctx, profile, apiKey, messages, tools, func(delta string) {
+		reasoningStarted := false
+		result, err := app.streamConfiguredChat(ctx, client, profile, apiKey, messages, tools, func(delta string) {
 			app.emit("agent:delta", map[string]any{"sessionId": sessionID, "streamId": streamID, "delta": delta})
+		}, func(delta string) {
+			if !reasoningStarted {
+				reasoningStarted = true
+				app.emit("agent:reasoning-start", map[string]any{"sessionId": sessionID, "streamId": streamID})
+			}
+			if delta != "" {
+				app.emit("agent:reasoning-delta", map[string]any{"sessionId": sessionID, "streamId": streamID, "delta": delta})
+			}
 		})
 		app.emit("agent:stream-end", map[string]any{"sessionId": sessionID, "streamId": streamID})
 		if err != nil {
@@ -174,7 +195,7 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 			app.failRun(sessionID, err)
 			return
 		}
-		assistantMessage := modelMessage{Role: "assistant", Content: result.Content, ToolCalls: result.ToolCalls}
+		assistantMessage := modelMessage{Role: "assistant", Content: result.Content, ReasoningContent: result.Reasoning, ToolCalls: result.ToolCalls}
 		messages = append(messages, assistantMessage)
 		if strings.TrimSpace(result.Content) != "" {
 			kind := ""
@@ -183,7 +204,9 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 			} else if planMode {
 				kind = "plan"
 			}
-			updated, saveErr := app.store.appendMessage(sessionID, ChatMessage{Role: "assistant", Content: result.Content, Kind: kind})
+			updated, saveErr := app.store.appendMessage(sessionID, ChatMessage{
+				Role: "assistant", Content: result.Content, Reasoning: result.Reasoning, Kind: kind,
+			})
 			if saveErr != nil {
 				app.failRun(sessionID, saveErr)
 				return
@@ -283,6 +306,7 @@ func filterPlanModeToolDefinitionsWithMCP(tools []any, trustedMCP func(string) b
 	safe := map[string]bool{
 		"list_files": true, "read_file": true, "file_exists": true, "code_search": true,
 		"workspace_diff":         true,
+		"gui":                    true,
 		"ask_user":               true,
 		"session_history_search": true,
 		"web_search":             true, "web_fetch": true, "memory_list": true, "memory_search": true,
@@ -417,6 +441,9 @@ func (app *DesktopAgentApp) toolDefinitions(config desktopConfig) []any {
 			"path":            map[string]any{"type": "string", "description": "项目内相对工作目录，默认 ."},
 			"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 600},
 		}, []string{"command"}))
+	}
+	if isBuiltinToolEnabled(config, "gui") && guiPlatformSupported() {
+		tools = append(tools, guiToolDefinition())
 	}
 	if isBuiltinToolEnabled(config, "code_search") {
 		tools = append(tools, functionTool("code_search", "按关键字或正则搜索项目代码，返回精确相对路径、行号和上下文；默认排除生成目录", map[string]any{
@@ -593,6 +620,8 @@ func isDesktopToolEnabled(config desktopConfig, name string) bool {
 		return isBuiltinToolEnabled(config, "file") && isFileOperationEnabled(config, "chmod")
 	case "run_terminal":
 		return isBuiltinToolEnabled(config, "shell")
+	case "gui":
+		return isBuiltinToolEnabled(config, "gui") && guiPlatformSupported()
 	case "code_search":
 		return isBuiltinToolEnabled(config, "code_search")
 	case "workspace_diff":
@@ -672,6 +701,8 @@ func (app *DesktopAgentApp) executeTool(
 	}
 
 	switch call.Function.Name {
+	case "gui":
+		return app.executeGUITool(ctx, sessionID, config, call, raw)
 	case "session_history_search":
 		return app.executeSessionHistoryTool(ctx, sessionID, config, call)
 	case "ask_user":

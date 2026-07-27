@@ -58,7 +58,9 @@ func (client *modelClient) streamAnthropicMessages(
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream")
-	request.Header.Set("x-api-key", apiKey)
+	if strings.TrimSpace(apiKey) != "" {
+		request.Header.Set("x-api-key", apiKey)
+	}
 	request.Header.Set("anthropic-version", "2023-06-01")
 	request.Header.Set("User-Agent", "Murong-Desktop-Agent/0.2")
 	response, err := client.httpClient.Do(request)

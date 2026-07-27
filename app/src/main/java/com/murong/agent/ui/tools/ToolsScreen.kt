@@ -5,6 +5,8 @@ package com.murong.agent.ui.tools
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -30,6 +33,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -39,10 +44,13 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -55,6 +63,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.murong.agent.core.config.DEFAULT_ENABLED_FILE_TOOL_OPERATIONS
+import com.murong.agent.core.config.GuiInferenceMode
 import com.murong.agent.core.config.ProjectToolPreferences
 import com.murong.agent.core.config.ProviderConfig
 import com.murong.agent.core.config.ToolApprovalMode
@@ -78,11 +87,23 @@ import com.murong.agent.core.loop.ErrorRecordKind
 import com.murong.agent.core.loop.ErrorRecordUi
 import com.murong.agent.core.loop.ToolCallRecordUi
 import com.murong.agent.core.loop.buildFinalReadinessAuditOverview
+import com.murong.agent.core.provider.BuiltinLocalProvider
+import com.murong.agent.core.provider.ProviderRegistry
 import com.murong.agent.core.mcp.McpConfigSource
 import com.murong.agent.core.mcp.McpServerConfig
 import com.murong.agent.core.mcp.McpServerStatus
 import com.murong.agent.core.mcp.McpTransportType
 import com.murong.agent.core.mcp.canonicalMcpToolName
+import com.murong.agent.core.tool.AndroidGuiAccessibilityAccess
+import com.murong.agent.core.tool.AndroidGuiAccessibilityService
+import com.murong.agent.core.tool.BuiltinLocalComputeBackend
+import com.murong.agent.core.tool.BuiltinLocalCpuCorePolicy
+import com.murong.agent.core.tool.BuiltinVisionEngine
+import com.murong.agent.core.tool.BuiltinVisionModelManager
+import com.murong.agent.core.tool.BuiltinVisionModels
+import com.murong.agent.core.tool.BuiltinVisionRuntime
+import com.murong.agent.core.tool.BuiltinVisionTier
+import com.murong.agent.core.tool.RootAccessibilityEnableResult
 import com.murong.agent.automation.ExternalWorkflowContract
 import com.murong.agent.ui.settings.ExternalWorkflowAutomationUiState
 import com.murong.agent.ui.PendingApprovalSummaryCard
@@ -92,7 +113,6 @@ import com.murong.agent.ui.MurongInfoCard
 import com.murong.agent.ui.MurongInteractionPerformanceHint
 import com.murong.agent.ui.MurongLargeDialogCardShape
 import com.murong.agent.ui.MurongLargeDialogScaffold
-import com.murong.agent.ui.rememberMurongBottomBarScrollPadding
 import com.murong.agent.ui.MurongPopupSurface
 import com.murong.agent.ui.MurongPopupCardShape
 import com.murong.agent.ui.MurongPrimaryPageSurface
@@ -101,8 +121,13 @@ import com.murong.agent.ui.buildApprovalPostureCopyPresentation
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 
 private data class ToolEntry(
     val name: String,
@@ -110,6 +135,148 @@ private data class ToolEntry(
     val description: String,
     val status: String
 )
+
+internal enum class ToolsSection(val label: String) {
+    BUILTIN("内置工具"),
+    PHONE("手机操作"),
+    AUTOMATION("自动化与 MCP"),
+    APPROVALS("审批策略"),
+    ACTIVITY("执行记录")
+}
+
+internal data class PhoneAgentModelOption(
+    val providerId: String?,
+    val relayId: String,
+    val title: String,
+    val subtitle: String,
+    val enabled: Boolean = true
+) {
+    val key: String
+        get() = providerId?.let { "$it:$relayId" } ?: "follow-chat"
+}
+
+internal fun buildPhoneAgentModelOptions(
+    config: ProviderConfig,
+    installedTiers: Set<BuiltinVisionTier>
+): List<PhoneAgentModelOption> {
+    val currentProfile = if (config.usesCodexChatGptBackend()) {
+        "ChatGPT / Codex · ${config.codexModel.trim().ifBlank { "账号默认模型" }}"
+    } else {
+        val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
+        "${provider.name} · ${provider.formatModelDisplayName(config.getActiveModel())}"
+    }
+    val currentChatSupportsVision = config.usesCodexChatGptBackend() ||
+        config.activeProviderId != BuiltinLocalProvider.ID ||
+        BuiltinVisionRuntime.model(config.getActiveModel())?.supportsVision == true
+    return buildList {
+        add(
+            PhoneAgentModelOption(
+                providerId = null,
+                relayId = "",
+                title = "跟随当前聊天模型",
+                subtitle = if (currentChatSupportsVision) {
+                    currentProfile
+                } else {
+                    "$currentProfile · 当前是纯文本模型，不能读取手机截图"
+                },
+                enabled = currentChatSupportsVision,
+            )
+        )
+        installedTiers
+            .map(BuiltinVisionModels::descriptor)
+            .sortedByDescending { it.supportsVision }
+            .forEach { descriptor ->
+                add(
+                    PhoneAgentModelOption(
+                        providerId = BuiltinLocalProvider.ID,
+                        relayId = descriptor.id,
+                        title = "内置本地模型 · ${descriptor.displayName}",
+                        subtitle = if (descriptor.supportsVision) {
+                            "已安装 · 截图只在本机处理；不会更改聊天当前使用的模型"
+                        } else {
+                            "已安装，但它是纯文本模型，不能读取手机截图"
+                        },
+                        enabled = descriptor.supportsVision
+                    )
+                )
+            }
+        ProviderRegistry.getAllProviders().forEach { provider ->
+            config.getRelayConfigs(provider.id)
+                .filter { relay -> config.isRelayConfigured(provider.id, relay) }
+                .forEach { relay ->
+                    val model = relay.model.trim().ifBlank {
+                        provider.defaultModel
+                    }
+                    add(
+                        PhoneAgentModelOption(
+                            providerId = provider.id,
+                            relayId = relay.id,
+                            title = "${provider.name} · ${provider.formatModelDisplayName(model)}",
+                            subtitle = "${config.configuredConnectionLabel(provider.id, relay)} · 需支持图片输入"
+                        )
+                    )
+                }
+        }
+    }
+}
+
+internal fun buildAssistantCodeModelOptions(
+    config: ProviderConfig,
+    installedTiers: Set<BuiltinVisionTier>,
+): List<PhoneAgentModelOption> {
+    val currentProfile = if (config.usesCodexChatGptBackend()) {
+        "ChatGPT / Codex · ${config.codexModel.trim().ifBlank { "账号默认模型" }}"
+    } else {
+        val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
+        "${provider.name} · ${provider.formatModelDisplayName(config.getActiveModel())}"
+    }
+    return buildList {
+        add(
+            PhoneAgentModelOption(
+                providerId = null,
+                relayId = "",
+                title = "跟随当前聊天模型",
+                subtitle = currentProfile,
+            ),
+        )
+        installedTiers
+            .map(BuiltinVisionModels::descriptor)
+            .sortedWith(
+                compareByDescending<com.murong.agent.core.tool.BuiltinVisionModelDescriptor> {
+                    !it.supportsVision
+                }.thenByDescending { it.estimatedDownloadBytes },
+            )
+            .forEach { descriptor ->
+                add(
+                    PhoneAgentModelOption(
+                        providerId = BuiltinLocalProvider.ID,
+                        relayId = descriptor.id,
+                        title = "内置本地模型 · ${descriptor.displayName}",
+                        subtitle = if (descriptor.supportsVision) {
+                            "已安装 · 支持文本、图片和代码"
+                        } else {
+                            "已安装 · 纯文本/代码"
+                        },
+                    ),
+                )
+            }
+        ProviderRegistry.getAllProviders().forEach { provider ->
+            config.getRelayConfigs(provider.id)
+                .filter { relay -> config.isRelayConfigured(provider.id, relay) }
+                .forEach { relay ->
+                    val model = relay.model.trim().ifBlank { provider.defaultModel }
+                    add(
+                        PhoneAgentModelOption(
+                            providerId = provider.id,
+                            relayId = relay.id,
+                            title = "${provider.name} · ${provider.formatModelDisplayName(model)}",
+                            subtitle = config.configuredConnectionLabel(provider.id, relay),
+                        ),
+                    )
+                }
+        }
+    }
+}
 
 private data class SkillUsageAuditSummary(
     val totalCount: Int,
@@ -120,6 +287,8 @@ private data class SkillUsageAuditSummary(
 @Composable
 internal fun ToolsScreen(
     config: ProviderConfig,
+    requestedSection: ToolsSection = ToolsSection.BUILTIN,
+    sectionRequestSignal: Int = 0,
     currentProjectPath: String?,
     projectRuleCount: Int,
     projectMemoryCount: Int,
@@ -155,7 +324,7 @@ internal fun ToolsScreen(
     onClearOneTimeExternalWorkflowToken: () -> Unit,
     onUpdateConfig: (ProviderConfig) -> Unit
 ) {
-    val bottomBarScrollPadding = rememberMurongBottomBarScrollPadding()
+    val bottomBarScrollPadding = 24.dp
     val toolsListState = rememberLazyListState()
     MurongInteractionPerformanceHint(active = toolsListState.isScrollInProgress)
     val pendingApprovalPresentation = approvalPresentation.pendingApproval
@@ -173,10 +342,26 @@ internal fun ToolsScreen(
     var editingSavedWorkflow by remember { mutableStateOf<SavedWorkflowDefinition?>(null) }
     var showSavedWorkflowEditor by remember { mutableStateOf(false) }
     var pendingForegroundWorkflow by remember { mutableStateOf<SavedWorkflowDefinition?>(null) }
+    var guiAccessibilityConnected by remember {
+        mutableStateOf(AndroidGuiAccessibilityService.isConnected())
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
     val subagentPresetNames = remember { listOf("explore", "research", "review", "security_review") }
     val mcpConfigsByName = remember(mcpServers) { mcpServers.associateBy { it.name } }
 
     LaunchedEffect(Unit) { onRefreshSavedWorkflows() }
+    LaunchedEffect(sectionRequestSignal, requestedSection) {
+        toolsListState.scrollToItem(0)
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                guiAccessibilityConnected = AndroidGuiAccessibilityService.isConnected()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     fun updateBuiltinToolEnabled(toolName: String, enabled: Boolean) {
         val updated = config.enabledBuiltinTools.toMutableSet()
@@ -217,7 +402,13 @@ internal fun ToolsScreen(
             status.toolNames.map { canonicalMcpToolName(status.name, it) }
         }.distinct().sorted()
     }
-    val builtInTools = remember(config, pendingApprovalPresentation, checkpointPresentation.fileChanges) {
+    val builtInTools = remember(
+        config,
+        pendingApprovalPresentation,
+        checkpointPresentation.fileChanges,
+        guiAccessibilityConnected,
+        rootStatus
+    ) {
         listOf(
             ToolEntry(
                 name = "file",
@@ -244,6 +435,17 @@ internal fun ToolsScreen(
                     !config.isBuiltinToolEnabled("shell") -> "已禁用"
                     pendingApprovalPresentation?.toolName == "shell" -> "等待审批"
                     else -> "已启用"
+                }
+            ),
+            ToolEntry(
+                name = "gui",
+                title = "界面操作",
+                description = "优先读取 Android Accessibility 语义树，Root/UIAutomator 与视觉识别作为后备。",
+                status = when {
+                    !config.isBuiltinToolEnabled("gui") -> "已禁用"
+                    guiAccessibilityConnected -> "无障碍已连接"
+                    rootStatus == true -> "使用 Root 后备"
+                    else -> "待开启无障碍"
                 }
             ),
             ToolEntry(
@@ -298,168 +500,184 @@ internal fun ToolsScreen(
     MurongPrimaryPageSurface(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 2.dp)
     ) {
         LazyColumn(
             state = toolsListState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = 2.dp, bottom = bottomBarScrollPadding),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            contentPadding = PaddingValues(
+                start = 6.dp,
+                top = 8.dp,
+                end = 6.dp,
+                bottom = bottomBarScrollPadding
+            ),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            item {
-                SectionTitleWithAction(
-                    title = "内置工具",
-                    subtitle = "把常用开关直接收在这一页，少弹窗、少跳转。",
-                    action = {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text("权限编辑", style = MaterialTheme.typography.bodySmall)
-                            Switch(
-                                checked = showInlineToolAccess,
-                                onCheckedChange = { showInlineToolAccess = it }
+                when (requestedSection) {
+                    ToolsSection.BUILTIN -> {
+                        item {
+                            SectionTitleWithAction(
+                                title = "内置工具",
+                                subtitle = "开关与权限",
+                                action = {
+                                    TextButton(
+                                        onClick = { showInlineToolAccess = !showInlineToolAccess }
+                                    ) {
+                                        Text(if (showInlineToolAccess) "收起权限" else "权限")
+                                    }
+                                }
+                            )
+                        }
+                        item("builtin-tools") {
+                            CompactBuiltInToolsPanel(
+                                tools = builtInTools,
+                                subagentPresets = subagentPresetTools,
+                                isEnabled = config::isBuiltinToolEnabled,
+                                subagentExpanded = showSubagentGroup,
+                                onSubagentExpandedChange = { showSubagentGroup = it },
+                                onToggle = ::updateBuiltinToolEnabled
+                            )
+                        }
+                        if (showInlineToolAccess) {
+                            item("inline-tool-access") {
+                                ToolAccessInlineCard(
+                                    config = config,
+                                    mcpToolNames = mcpToolNames,
+                                    onFileOperationToggle = ::updateFileOperationEnabled,
+                                    onAllowAllMcpToggle = { enabled ->
+                                        onUpdateConfig(config.copy(allowAllMcpTools = enabled))
+                                    },
+                                    onMcpToolToggle = { toolName, enabled ->
+                                        val updated = config.allowedMcpTools.toMutableSet()
+                                        if (enabled) updated.add(toolName) else updated.remove(toolName)
+                                        onUpdateConfig(config.copy(allowedMcpTools = updated.sorted()))
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    ToolsSection.PHONE -> {
+                        item { SectionTitle("手机操作", "无障碍、Root 与视觉识别设置") }
+                        item("gui-automation-settings") {
+                            GuiAutomationSettingsCard(
+                                config = config,
+                                accessibilityConnected = guiAccessibilityConnected,
+                                rootAvailable = rootStatus == true,
+                                onRefreshAccessibility = {
+                                    guiAccessibilityConnected = AndroidGuiAccessibilityService.isConnected()
+                                },
+                                onUpdateConfig = onUpdateConfig
                             )
                         }
                     }
-                )
-            }
-            items(builtInTools, key = { it.name }) { tool ->
-                if (tool.name == "subagent") {
-                    CollapsibleToolGroupCard(
-                        tool = tool,
-                        checked = config.isBuiltinToolEnabled(tool.name),
-                        expanded = showSubagentGroup,
-                        onCheckedChange = { updateBuiltinToolEnabled(tool.name, it) },
-                        onExpandedChange = { showSubagentGroup = it }
-                    ) {
-                        subagentPresetTools.forEach { preset ->
-                            ToolToggleRow(
-                                tool = preset,
-                                checked = config.isBuiltinToolEnabled(preset.name),
-                                enabled = config.isBuiltinToolEnabled("subagent"),
-                                onCheckedChange = { updateBuiltinToolEnabled(preset.name, it) }
+
+                    ToolsSection.AUTOMATION -> {
+                        item { SectionTitle("自动化", "工作流与 MCP 连接") }
+                        item {
+                            WorkflowCard(
+                                config = config,
+                                onManageWorkflow = { showWorkflowExecutionEditor = true },
+                                onManageApproval = { showApprovalPolicyEditor = true }
+                            )
+                        }
+                        item {
+                            SavedWorkflowCard(
+                                workflows = savedWorkflows,
+                                externalAutomationState = externalWorkflowAutomationState,
+                                onCreate = {
+                                    editingSavedWorkflow = null
+                                    showSavedWorkflowEditor = true
+                                },
+                                onEdit = {
+                                    editingSavedWorkflow = it
+                                    showSavedWorkflowEditor = true
+                                },
+                                onRunNow = { workflow ->
+                                    if (
+                                        workflow.backgroundEligibility() ==
+                                        SavedWorkflowBackgroundEligibility.ALLOWED_READ_ONLY
+                                    ) {
+                                        onRunSavedWorkflowNow(workflow.id, false)
+                                    } else {
+                                        pendingForegroundWorkflow = workflow
+                                    }
+                                },
+                                onDelete = onDeleteSavedWorkflow,
+                                onEnableExternalAutomation = onEnableExternalWorkflowAutomation,
+                                onDisableExternalAutomation = onDisableExternalWorkflowAutomation,
+                                onRotateExternalToken = onRotateExternalWorkflowToken
+                            )
+                        }
+                        item {
+                            McpCard(
+                                mcpServers = mcpServers,
+                                mcpStatuses = mcpStatuses,
+                                mcpConnectError = mcpConnectError,
+                                onConnectMcpServers = onConnectMcpServers,
+                                onRefreshMcpStatus = onRefreshMcpStatus,
+                                onOpenStatus = { selectedMcpServerName = it }
                             )
                         }
                     }
-                } else {
-                    ToolToggleCard(
-                        tool = tool,
-                        checked = config.isBuiltinToolEnabled(tool.name),
-                        onCheckedChange = { updateBuiltinToolEnabled(tool.name, it) }
-                    )
+
+                    ToolsSection.APPROVALS -> {
+                        item { SectionTitle("审批", "策略、待处理请求与项目偏好") }
+                        item {
+                            ApprovalPostureCard(overview = approvalPresentation.postureOverview)
+                        }
+                        item {
+                            ApprovalCard(
+                                cardPresentation = approvalPresentation.approvalCard,
+                                onOpenChat = onOpenChat,
+                                onOpenDetail = onOpenApprovalDetail,
+                                onApprove = onApprovePendingTool,
+                                onReject = onRejectPendingTool
+                            )
+                        }
+                        item {
+                            ProjectApprovalCard(
+                                cardPresentation = approvalPresentation.projectApprovalCard
+                            )
+                        }
+                        item {
+                            ProjectPreferenceCard(
+                                currentProjectPath = currentProjectPath,
+                                projectRuleCount = projectRuleCount,
+                                projectMemoryCount = projectMemoryCount,
+                                projectSkillCount = projectSkillCount
+                            )
+                        }
+                    }
+
+                    ToolsSection.ACTIVITY -> {
+                        item { SectionTitle("执行记录", "审计、错误、文件改动与检查点") }
+                        item {
+                            AuditCard(
+                                recentFinalReadinessAudits = recentFinalReadinessAudits,
+                                recentToolCalls = recentToolCalls,
+                                recentErrors = recentErrors,
+                                onOpenToolCall = { selectedToolCall = it },
+                                onOpenError = { selectedError = it }
+                            )
+                        }
+                        item {
+                            FileChangeCard(
+                                presentation = checkpointPresentation,
+                                onOpenCheckpoint = { selectedCheckpointId = it },
+                                onOpenRecord = { selectedRecordId = it },
+                                onOpenRecovery = { selectedRecoveryId = it },
+                                onOpenRecoveryTimeline = { showRecoveryTimeline = true },
+                                onRollbackCheckpoint = onRollbackCheckpoint
+                            )
+                        }
+                    }
+                }
+                item {
+                    Spacer(modifier = Modifier.height(12.dp))
                 }
             }
-            if (showInlineToolAccess) {
-                item("inline-tool-access") {
-                    ToolAccessInlineCard(
-                        config = config,
-                        mcpToolNames = mcpToolNames,
-                        onFileOperationToggle = ::updateFileOperationEnabled,
-                        onAllowAllMcpToggle = { enabled ->
-                            onUpdateConfig(config.copy(allowAllMcpTools = enabled))
-                        },
-                        onMcpToolToggle = { toolName, enabled ->
-                            val updated = config.allowedMcpTools.toMutableSet()
-                            if (enabled) updated.add(toolName) else updated.remove(toolName)
-                            onUpdateConfig(config.copy(allowedMcpTools = updated.sorted()))
-                        }
-                    )
-                }
-            }
-            item {
-                WorkflowCard(
-                    config = config,
-                    onManageWorkflow = { showWorkflowExecutionEditor = true },
-                    onManageApproval = { showApprovalPolicyEditor = true }
-                )
-            }
-            item {
-                SavedWorkflowCard(
-                    workflows = savedWorkflows,
-                    externalAutomationState = externalWorkflowAutomationState,
-                    onCreate = {
-                        editingSavedWorkflow = null
-                        showSavedWorkflowEditor = true
-                    },
-                    onEdit = {
-                        editingSavedWorkflow = it
-                        showSavedWorkflowEditor = true
-                    },
-                    onRunNow = { workflow ->
-                        if (workflow.backgroundEligibility() == SavedWorkflowBackgroundEligibility.ALLOWED_READ_ONLY) {
-                            onRunSavedWorkflowNow(workflow.id, false)
-                        } else {
-                            pendingForegroundWorkflow = workflow
-                        }
-                    },
-                    onDelete = onDeleteSavedWorkflow,
-                    onEnableExternalAutomation = onEnableExternalWorkflowAutomation,
-                    onDisableExternalAutomation = onDisableExternalWorkflowAutomation,
-                    onRotateExternalToken = onRotateExternalWorkflowToken
-                )
-            }
-            item {
-                ApprovalPostureCard(
-                    overview = approvalPresentation.postureOverview,
-                )
-            }
-            item {
-                ApprovalCard(
-                    cardPresentation = approvalPresentation.approvalCard,
-                    onOpenChat = onOpenChat,
-                    onOpenDetail = onOpenApprovalDetail,
-                    onApprove = onApprovePendingTool,
-                    onReject = onRejectPendingTool
-                )
-            }
-            item {
-                ProjectApprovalCard(
-                    cardPresentation = approvalPresentation.projectApprovalCard
-                )
-            }
-            item {
-                ProjectPreferenceCard(
-                    currentProjectPath = currentProjectPath,
-                    projectRuleCount = projectRuleCount,
-                    projectMemoryCount = projectMemoryCount,
-                    projectSkillCount = projectSkillCount
-                )
-            }
-            item {
-                AuditCard(
-                    recentFinalReadinessAudits = recentFinalReadinessAudits,
-                    recentToolCalls = recentToolCalls,
-                    recentErrors = recentErrors,
-                    onOpenToolCall = { selectedToolCall = it },
-                    onOpenError = { selectedError = it }
-                )
-            }
-            item {
-                FileChangeCard(
-                    presentation = checkpointPresentation,
-                    onOpenCheckpoint = { selectedCheckpointId = it },
-                    onOpenRecord = { selectedRecordId = it },
-                    onOpenRecovery = { selectedRecoveryId = it },
-                    onOpenRecoveryTimeline = { showRecoveryTimeline = true },
-                    onRollbackCheckpoint = onRollbackCheckpoint
-                )
-            }
-            item {
-                McpCard(
-                    mcpServers = mcpServers,
-                    mcpStatuses = mcpStatuses,
-                    mcpConnectError = mcpConnectError,
-                    onConnectMcpServers = onConnectMcpServers,
-                    onRefreshMcpStatus = onRefreshMcpStatus,
-                    onOpenStatus = { selectedMcpServerName = it }
-                )
-            }
-            item {
-                Spacer(modifier = Modifier.height(24.dp))
-            }
-        }
     }
 
     if (showApprovalPolicyEditor) {
@@ -586,6 +804,919 @@ internal fun ToolsScreen(
             onDismiss = { selectedMcpServerName = null }
         )
     }
+}
+
+@Composable
+private fun PermissionToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled) { onCheckedChange(!checked) }
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+                }
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                    alpha = if (enabled) 1f else 0.45f
+                )
+            )
+        }
+        Switch(
+            checked = checked,
+            enabled = enabled,
+            onCheckedChange = onCheckedChange
+        )
+    }
+}
+
+@Composable
+private fun GuiAutomationSettingsCard(
+    config: ProviderConfig,
+    accessibilityConnected: Boolean,
+    rootAvailable: Boolean,
+    onRefreshAccessibility: () -> Unit,
+    onUpdateConfig: (ProviderConfig) -> Unit
+) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val visionModelManager = remember(context) {
+        BuiltinVisionModelManager.shared(context.applicationContext)
+    }
+    val visionModelState by visionModelManager.state.collectAsState()
+    val activeLocalModel = BuiltinVisionModels.all.firstOrNull {
+        it.tier == visionModelState.activeTier
+    }
+    var isEnablingWithRoot by remember { mutableStateOf(false) }
+    var enableMessage by remember { mutableStateOf<String?>(null) }
+    var showAdvancedLocalVision by remember { mutableStateOf(false) }
+    var showLocalRuntimeSettings by remember { mutableStateOf(false) }
+    var showPhoneAgentSettings by remember { mutableStateOf(false) }
+    var showPhoneAgentModelPicker by remember { mutableStateOf(false) }
+    var localRuntimeSettings by remember(context) {
+        mutableStateOf(BuiltinVisionRuntime.runtimeSettings(context))
+    }
+    val localCpuTopology = remember { BuiltinVisionRuntime.cpuTopology() }
+    val availableCpuThreads = when (localRuntimeSettings.cpuCorePolicy) {
+        BuiltinLocalCpuCorePolicy.PERFORMANCE_CLUSTER ->
+            localCpuTopology.recommendedThreadCount
+        BuiltinLocalCpuCorePolicy.ALL_CORES ->
+            localCpuTopology.logicalCoreCount
+    }
+    val phoneAgentModelConfig = config.getPhoneAgentResolvedConfig()
+    val phoneAgentFollowsChat = config.phoneAgentProviderId.isBlank()
+    val phoneAgentModelOptions = buildPhoneAgentModelOptions(
+        config,
+        visionModelState.installedTiers
+    )
+    val phoneAgentModelSummary = if (phoneAgentModelConfig.usesCodexChatGptBackend()) {
+        "ChatGPT / Codex · " +
+            phoneAgentModelConfig.codexModel.trim().ifBlank { "账号默认模型" }
+    } else {
+        val provider = ProviderRegistry.getActiveProvider(phoneAgentModelConfig.activeProviderId)
+        "${
+            provider.name
+        } · ${provider.formatModelDisplayName(phoneAgentModelConfig.getActiveModel())}"
+    }
+    val phoneAgentAuthenticationSummary = when {
+        phoneAgentModelConfig.usesCodexChatGptBackend() ->
+            "使用设置中的 ChatGPT/Codex 账号登录"
+        phoneAgentModelConfig.isActiveProviderLocal() -> "本地运行，无需 API"
+        phoneAgentModelConfig.getActiveApiKey().isNotBlank() -> "使用设置中已保存的 API"
+        else -> "尚未在设置中填写 API"
+    }
+    fun applyLocalRuntimeSettings(
+        updated: com.murong.agent.core.tool.BuiltinLocalRuntimeSettings
+    ) {
+        localRuntimeSettings = BuiltinVisionRuntime.updateRuntimeSettings(context, updated)
+        coroutineScope.launch { BuiltinVisionRuntime.release() }
+    }
+    fun enableAccessibilityWithRoot() {
+        if (isEnablingWithRoot) return
+        isEnablingWithRoot = true
+        enableMessage = null
+        coroutineScope.launch {
+            val result = try {
+                AndroidGuiAccessibilityAccess.enableWithRoot(context.applicationContext)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                RootAccessibilityEnableResult(
+                    success = false,
+                    serviceConnected = false,
+                    message = "Root 启用失败：${error.message ?: error.javaClass.simpleName}"
+                )
+            } finally {
+                isEnablingWithRoot = false
+            }
+            enableMessage = result.message
+            onRefreshAccessibility()
+        }
+    }
+    DisposableEffect(visionModelManager) {
+        visionModelManager.refresh()
+        onDispose { }
+    }
+    ToolsPanelCard {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("手机界面操作", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Android 13+ 优先使用无障碍语义树；截图仅在内存中生成，密码字段始终脱敏。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                StatusBadge(
+                    text = if (accessibilityConnected) "无障碍已连接" else "无障碍未连接",
+                    color = if (accessibilityConnected) Color(0xFF2E7D32) else MaterialTheme.colorScheme.primary
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton(
+                    enabled = !isEnablingWithRoot,
+                    onClick = {
+                        if (accessibilityConnected) {
+                            openGuiAccessibilitySettings(context)
+                        } else if (rootAvailable) {
+                            enableAccessibilityWithRoot()
+                        } else {
+                            openGuiAccessibilitySettings(context)
+                        }
+                    }
+                ) {
+                    if (isEnablingWithRoot) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("正在启用…")
+                    } else {
+                        Text(if (accessibilityConnected) "管理无障碍" else "启用界面操作")
+                    }
+                }
+                TextButton(onClick = onRefreshAccessibility) { Text("刷新状态") }
+            }
+            enableMessage?.let { message ->
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (accessibilityConnected) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    }
+                )
+            }
+
+            Text("内置本地模型", style = MaterialTheme.typography.labelLarge)
+            Text(
+                visionModelState.recommendation?.message
+                    ?: "安装后可直接用于离线聊天、看图、写代码和 GUI 操作；可选 Qwen、Gemma、智谱与 DeepSeek。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.36f)
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "本地推理设置",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                "${
+                                    when (localRuntimeSettings.cpuCorePolicy) {
+                                        BuiltinLocalCpuCorePolicy.PERFORMANCE_CLUSTER -> "大核簇（默认）"
+                                        BuiltinLocalCpuCorePolicy.ALL_CORES -> "全部核心"
+                                    }
+                                } · ${localRuntimeSettings.cpuThreads} 线程 · ${
+                                    if (activeLocalModel?.engine == BuiltinVisionEngine.LLAMA_CPP) {
+                                        "CPU（当前 GGUF 有效后端）"
+                                    } else {
+                                        when (localRuntimeSettings.backend) {
+                                            BuiltinLocalComputeBackend.AUTO -> "自动后端"
+                                            BuiltinLocalComputeBackend.GPU -> "仅 GPU"
+                                            BuiltinLocalComputeBackend.CPU -> "仅 CPU"
+                                        }
+                                    }
+                                }",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(
+                            onClick = {
+                                showLocalRuntimeSettings = !showLocalRuntimeSettings
+                            }
+                        ) {
+                            Text(if (showLocalRuntimeSettings) "收起" else "展开")
+                        }
+                    }
+                    if (showLocalRuntimeSettings) {
+                        listOf(
+                        Triple(
+                            BuiltinLocalComputeBackend.AUTO,
+                            "自动",
+                            "按模型选择稳定后端：LiteRT 优先 GPU，MNN 按兼容性选择，GGUF 使用 CPU"
+                        ),
+                        Triple(
+                            BuiltinLocalComputeBackend.GPU,
+                            "仅 GPU",
+                            "MNN / LiteRT 强制 GPU；当前 llama.cpp GGUF 包仅含 CPU，遇到这类模型会自动安全回退"
+                        ),
+                        Triple(
+                            BuiltinLocalComputeBackend.CPU,
+                            "仅 CPU",
+                            "兼容性最好，但大模型生成速度通常较慢"
+                        )
+                    ).forEach { (backend, title, subtitle) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    applyLocalRuntimeSettings(
+                                        localRuntimeSettings.copy(backend = backend)
+                                    )
+                                },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = localRuntimeSettings.backend == backend,
+                                onClick = {
+                                    applyLocalRuntimeSettings(
+                                        localRuntimeSettings.copy(backend = backend)
+                                    )
+                                }
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(title, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    subtitle,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                    Text("CPU 核心范围", style = MaterialTheme.typography.bodyMedium)
+                    listOf(
+                        Triple(
+                            BuiltinLocalCpuCorePolicy.PERFORMANCE_CLUSTER,
+                            "大核簇（默认）",
+                            "动态识别最高性能的一半核心：" +
+                                localCpuTopology.performanceCoreIds.joinToString(
+                                    prefix = " CPU ",
+                                    separator = "、"
+                                )
+                        ),
+                        Triple(
+                            BuiltinLocalCpuCorePolicy.ALL_CORES,
+                            "全部核心",
+                            "允许使用设备全部 ${localCpuTopology.logicalCoreCount} 个逻辑核心"
+                        )
+                    ).forEach { (policy, title, subtitle) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    val threads = when (policy) {
+                                        BuiltinLocalCpuCorePolicy.PERFORMANCE_CLUSTER ->
+                                            localCpuTopology.recommendedThreadCount
+                                        BuiltinLocalCpuCorePolicy.ALL_CORES ->
+                                            localCpuTopology.logicalCoreCount
+                                    }
+                                    applyLocalRuntimeSettings(
+                                        localRuntimeSettings.copy(
+                                            cpuCorePolicy = policy,
+                                            cpuThreads = threads
+                                        )
+                                    )
+                                },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = localRuntimeSettings.cpuCorePolicy == policy,
+                                onClick = {
+                                    val threads = when (policy) {
+                                        BuiltinLocalCpuCorePolicy.PERFORMANCE_CLUSTER ->
+                                            localCpuTopology.recommendedThreadCount
+                                        BuiltinLocalCpuCorePolicy.ALL_CORES ->
+                                            localCpuTopology.logicalCoreCount
+                                    }
+                                    applyLocalRuntimeSettings(
+                                        localRuntimeSettings.copy(
+                                            cpuCorePolicy = policy,
+                                            cpuThreads = threads
+                                        )
+                                    )
+                                }
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(title, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    subtitle,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("CPU 线程数", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "当前核心范围最多 $availableCpuThreads 线程；CPU 后端和 GPU 回退时生效",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(
+                            enabled = localRuntimeSettings.cpuThreads > 1,
+                            onClick = {
+                                applyLocalRuntimeSettings(
+                                    localRuntimeSettings.copy(
+                                        cpuThreads = localRuntimeSettings.cpuThreads - 1
+                                    )
+                                )
+                            }
+                        ) {
+                            Text("－")
+                        }
+                        Text(
+                            "${localRuntimeSettings.cpuThreads}",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        TextButton(
+                            enabled = localRuntimeSettings.cpuThreads < availableCpuThreads,
+                            onClick = {
+                                applyLocalRuntimeSettings(
+                                    localRuntimeSettings.copy(
+                                        cpuThreads = localRuntimeSettings.cpuThreads + 1
+                                    )
+                                )
+                            }
+                        ) {
+                            Text("＋")
+                        }
+                    }
+                    PermissionToggleRow(
+                        title = "推理时临时拉满 CPU / GPU 频率",
+                        subtitle = if (rootAvailable) {
+                            "仅推理期间通过 Root 提升最低频率，结束或失败后恢复；慕容调度可通过包名排除列表跳过本应用。会显著增加发热和耗电。"
+                        } else {
+                            "需要 Root；当前未检测到 Root，设置不会生效。"
+                        },
+                        checked = localRuntimeSettings.forceMaxPerformance,
+                        enabled = rootAvailable || localRuntimeSettings.forceMaxPerformance,
+                        onCheckedChange = { enabled ->
+                            applyLocalRuntimeSettings(
+                                localRuntimeSettings.copy(forceMaxPerformance = enabled)
+                            )
+                        }
+                    )
+                    }
+                }
+            }
+            BuiltinVisionModels.all.forEach { descriptor ->
+                val installed = descriptor.tier in visionModelState.installedTiers
+                val active = visionModelState.activeTier == descriptor.tier
+                val installing = visionModelState.installingTier == descriptor.tier
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.46f)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    descriptor.displayName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    "约 ${formatVisionModelSize(descriptor.totalBytes)} · " +
+                                        descriptor.recommendation,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    buildString {
+                                        append(if (descriptor.supportsVision) "文本 / 图片 / GUI" else "纯文本 / 代码")
+                                        if (descriptor.reasoningModes.isNotEmpty()) append(" · 可开关思考")
+                                        if (!descriptor.androidSupported) {
+                                            append(" · ")
+                                            append(descriptor.unavailableReason)
+                                        }
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            when {
+                                active -> StatusBadge(
+                                    text = "当前使用",
+                                    color = Color(0xFF2E7D32)
+                                )
+                                installed -> TextButton(
+                                    onClick = { visionModelManager.select(descriptor.tier) }
+                                ) {
+                                    Text("使用")
+                                }
+                                else -> FilledTonalButton(
+                                    enabled = !visionModelState.isInstalling &&
+                                        descriptor.androidSupported,
+                                    onClick = {
+                                        BuiltinVisionModelDownloadService.enqueue(
+                                            context,
+                                            descriptor.tier,
+                                        )
+                                    }
+                                ) {
+                                    Text(
+                                        when {
+                                            installing -> "下载中"
+                                            !descriptor.androidSupported -> "电脑端可用"
+                                            else -> "安装"
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                        if (installed) {
+                            TextButton(
+                                enabled = !visionModelState.isInstalling,
+                                onClick = { visionModelManager.delete(descriptor.tier) }
+                            ) {
+                                Text("删除模型")
+                            }
+                        }
+                    }
+                }
+            }
+            if (visionModelState.isInstalling) {
+                LinearProgressIndicator(
+                    progress = { visionModelState.progress },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "${visionModelState.message} · " +
+                            "${(visionModelState.progress * 100).toInt()}%",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    TextButton(onClick = { visionModelManager.cancelInstall() }) {
+                        Text("暂停")
+                    }
+                }
+            } else {
+                visionModelState.message.takeIf { it.isNotBlank() }?.let { message ->
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            visionModelState.error?.let { error ->
+                Text(
+                    error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            Text(
+                "模型文件下载后保存在应用私有目录，逐文件校验 SHA-256；聊天文本和图片直接交给本地运行时，截图只在内存中处理。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Text("视觉推理策略", style = MaterialTheme.typography.labelLarge)
+            listOf(
+                Triple(
+                    GuiInferenceMode.LOCAL_FIRST,
+                    "内置优先",
+                    "所选内置模型失败后，仅在下方隐私权限允许时回退用户 API。"
+                ),
+                Triple(
+                    GuiInferenceMode.LOCAL_ONLY,
+                    "仅内置",
+                    "任何情况下都不把截图交给用户 API。"
+                ),
+                Triple(
+                    GuiInferenceMode.USER_API,
+                    "用户 API",
+                    "直接使用当前模型连接；远程地址仍受截图权限限制。"
+                )
+            ).forEach { (mode, title, subtitle) ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            onUpdateConfig(config.copy(guiInferenceMode = mode))
+                        },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = config.guiInferenceMode == mode,
+                        onClick = { onUpdateConfig(config.copy(guiInferenceMode = mode)) }
+                    )
+                    Column {
+                        Text(title, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            subtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            TextButton(
+                onClick = { showAdvancedLocalVision = !showAdvancedLocalVision }
+            ) {
+                Text(if (showAdvancedLocalVision) "收起高级本地服务" else "高级：连接外部本地服务")
+            }
+            if (showAdvancedLocalVision) {
+                OutlinedTextField(
+                    value = config.guiLocalBaseUrl,
+                    onValueChange = {
+                        onUpdateConfig(config.copy(guiLocalBaseUrl = it.take(500)))
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("外部 OpenAI-compatible Base URL") },
+                    supportingText = {
+                        Text("仅用于高级兼容；内置模型不需要填写地址、模型名或 API Key。")
+                    },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = config.guiLocalModel,
+                    onValueChange = {
+                        onUpdateConfig(config.copy(guiLocalModel = it.take(200)))
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("外部本地视觉模型名") },
+                    singleLine = true
+                )
+            }
+
+            PermissionToggleRow(
+                title = "允许远程主模型读取精简语义树",
+                subtitle = "只含可访问控件、坐标和非密码文本；关闭后远程模型只能看到去文本结构。",
+                checked = config.guiAllowRemoteSemanticTree,
+                onCheckedChange = {
+                    onUpdateConfig(config.copy(guiAllowRemoteSemanticTree = it))
+                }
+            )
+            PermissionToggleRow(
+                title = "允许用户 API 接收截图",
+                subtitle = "只在 vision_query 且选择用户 API 或本地识别失败时生效。",
+                checked = config.guiAllowRemoteScreenshots,
+                onCheckedChange = {
+                    onUpdateConfig(
+                        config.copy(
+                            guiAllowRemoteScreenshots = it,
+                            guiAllowRemoteFullScreen = if (it) {
+                                config.guiAllowRemoteFullScreen
+                            } else {
+                                false
+                            }
+                        )
+                    )
+                }
+            )
+            PermissionToggleRow(
+                title = "允许上传完整屏幕",
+                subtitle = "高隐私风险；关闭时远程视觉只能处理明确裁剪的区域。",
+                checked = config.guiAllowRemoteFullScreen,
+                enabled = config.guiAllowRemoteScreenshots,
+                onCheckedChange = {
+                    onUpdateConfig(config.copy(guiAllowRemoteFullScreen = it))
+                }
+            )
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.36f)
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "手机操作 Agent",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                "可从已配置模型中独立选择，不限定 AutoGLM；支付和验证码自动停下接管。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = config.phoneAgentEnabled,
+                            onCheckedChange = {
+                                onUpdateConfig(config.copy(phoneAgentEnabled = it))
+                            }
+                        )
+                    }
+                    TextButton(onClick = { showPhoneAgentSettings = !showPhoneAgentSettings }) {
+                        Text(if (showPhoneAgentSettings) "收起操作设置" else "手机操作设置")
+                    }
+                    if (showPhoneAgentSettings) {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.68f)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    "${
+                                        if (phoneAgentFollowsChat) "跟随聊天" else "独立选择"
+                                    }：$phoneAgentModelSummary",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    phoneAgentAuthenticationSummary,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    if (phoneAgentModelConfig.usesCodexChatGptBackend()) {
+                                        "账号登录模型由当前对话直接连续调用 GUI，不会再要求登录第二次。"
+                                    } else {
+                                        "API、地址和模型只在统一设置中配置一次。所选模型需支持图片输入；动作支持函数调用、JSON 和 AutoGLM do/finish 协议。"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                TextButton(onClick = { showPhoneAgentModelPicker = true }) {
+                                    Text("选择手机操作模型")
+                                }
+                            }
+                        }
+                        OutlinedTextField(
+                            value = config.phoneAgentMaxSteps.toString(),
+                            onValueChange = { raw ->
+                                raw.filter(Char::isDigit).toIntOrNull()?.let { value ->
+                                    onUpdateConfig(
+                                        config.copy(phoneAgentMaxSteps = value.coerceIn(1, 100))
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("单任务最大步骤（1–100）") },
+                            singleLine = true
+                        )
+                        PermissionToggleRow(
+                            title = "允许当前远程模型接收完整截图",
+                            subtitle = "手机操作必须看见屏幕；本地模型不上传，远程模型关闭此项时不会启动连续任务。",
+                            checked = config.phoneAgentAllowRemoteScreenshots,
+                            enabled = config.phoneAgentEnabled,
+                            onCheckedChange = {
+                                onUpdateConfig(
+                                    config.copy(phoneAgentAllowRemoteScreenshots = it)
+                                )
+                            }
+                        )
+                        PermissionToggleRow(
+                            title = "敏感操作保护",
+                            subtitle = "支付、订单、验证码等核心风险始终拦截；开启后还会尊重模型附带的人工确认提示。",
+                            checked = config.phoneAgentSafeMode,
+                            enabled = config.phoneAgentEnabled,
+                            onCheckedChange = {
+                                onUpdateConfig(config.copy(phoneAgentSafeMode = it))
+                            }
+                        )
+                        Text("外卖比价平台", style = MaterialTheme.typography.labelLarge)
+                        listOf("美团", "饿了么", "京东秒送", "淘宝闪购").forEach { platform ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val updated = config.phoneAgentFoodPlatforms.toMutableSet()
+                                        if (platform in updated) updated.remove(platform) else updated.add(platform)
+                                        onUpdateConfig(
+                                            config.copy(phoneAgentFoodPlatforms = updated.toList())
+                                        )
+                                    },
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = platform in config.phoneAgentFoodPlatforms,
+                                    onCheckedChange = { checked ->
+                                        val updated = config.phoneAgentFoodPlatforms.toMutableSet()
+                                        if (checked) updated.add(platform) else updated.remove(platform)
+                                        onUpdateConfig(
+                                            config.copy(phoneAgentFoodPlatforms = updated.toList())
+                                        )
+                                    }
+                                )
+                                Text(platform, style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                        Text(
+                            "聊天中说“比较某商品外卖最低到手价”即可触发；只比较到结算前，不会自动下单或付款。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (showPhoneAgentModelPicker) {
+        ModalBottomSheet(onDismissRequest = { showPhoneAgentModelPicker = false }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "选择手机操作模型",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    "显示全部已安装本地模型和已配置连接；纯文本模型会保留在列表中并说明不能读取手机截图。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 560.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(phoneAgentModelOptions, key = { it.key }) { option ->
+                        val selected = if (option.providerId == null) {
+                            config.phoneAgentProviderId.isBlank()
+                        } else {
+                            config.phoneAgentProviderId == option.providerId &&
+                                (
+                                    config.phoneAgentRelayId == option.relayId ||
+                                        (
+                                            option.providerId == BuiltinLocalProvider.ID &&
+                                                config.phoneAgentRelayId.isBlank() &&
+                                                BuiltinVisionRuntime.activeModel()?.id ==
+                                                option.relayId
+                                            )
+                                    )
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = option.enabled) {
+                                    onUpdateConfig(
+                                        config.copy(
+                                            phoneAgentProviderId = option.providerId.orEmpty(),
+                                            phoneAgentRelayId = option.relayId
+                                        )
+                                    )
+                                    showPhoneAgentModelPicker = false
+                                }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = selected,
+                                enabled = option.enabled,
+                                onClick = null
+                            )
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(start = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    option.title,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (selected) {
+                                        FontWeight.SemiBold
+                                    } else {
+                                        FontWeight.Normal
+                                    }
+                                )
+                                Text(
+                                    option.subtitle,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (option.enabled) {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    } else {
+                                        MaterialTheme.colorScheme.error
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+            }
+        }
+    }
+}
+
+private fun openGuiAccessibilitySettings(context: Context) {
+    val appContext = context.applicationContext
+    val detailsIntent = Intent(AndroidGuiAccessibilityAccess.DETAILS_SETTINGS_ACTION)
+        .putExtra(
+            Intent.EXTRA_COMPONENT_NAME,
+            AndroidGuiAccessibilityAccess.serviceComponentName(appContext)
+        )
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    if (runCatching { appContext.startActivity(detailsIntent) }.isSuccess) return
+
+    appContext.startActivity(
+        Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    )
+}
+
+private fun formatVisionModelSize(bytes: Long): String {
+    val gib = bytes.toDouble() / (1024.0 * 1024.0 * 1024.0)
+    return String.format(Locale.US, "%.2f GB", gib)
 }
 
 @Composable
@@ -1425,6 +2556,106 @@ private fun McpCard(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CompactBuiltInToolsPanel(
+    tools: List<ToolEntry>,
+    subagentPresets: List<ToolEntry>,
+    isEnabled: (String) -> Boolean,
+    subagentExpanded: Boolean,
+    onSubagentExpandedChange: (Boolean) -> Unit,
+    onToggle: (String, Boolean) -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow
+    ) {
+        Column {
+            tools.forEachIndexed { index, tool ->
+                CompactToolToggleRow(
+                    tool = tool,
+                    checked = isEnabled(tool.name),
+                    onCheckedChange = { onToggle(tool.name, it) },
+                    action = if (tool.name == "subagent") {
+                        {
+                            TextButton(
+                                onClick = {
+                                    onSubagentExpandedChange(!subagentExpanded)
+                                }
+                            ) {
+                                Text(if (subagentExpanded) "收起" else "详情")
+                            }
+                        }
+                    } else {
+                        null
+                    }
+                )
+                if (tool.name == "subagent" && subagentExpanded) {
+                    Column(
+                        modifier = Modifier.padding(start = 14.dp),
+                    ) {
+                        subagentPresets.forEach { preset ->
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                            )
+                            CompactToolToggleRow(
+                                tool = preset,
+                                checked = isEnabled(preset.name),
+                                enabled = isEnabled("subagent"),
+                                onCheckedChange = { onToggle(preset.name, it) }
+                            )
+                        }
+                    }
+                }
+                if (index != tools.lastIndex) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 14.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactToolToggleRow(
+    tool: ToolEntry,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit,
+    action: (@Composable () -> Unit)? = null
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(tool.title, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                tool.description,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        action?.invoke()
+        Spacer(modifier = Modifier.width(6.dp))
+        Switch(
+            checked = checked,
+            enabled = enabled,
+            onCheckedChange = onCheckedChange
+        )
     }
 }
 
@@ -2431,6 +3662,7 @@ private fun builtInToolCatalog(): List<ToolEntry> {
     return listOf(
         ToolEntry("shell", "命令工具", "可选择 Root 系统环境或终端扩展环境执行命令。", ""),
         ToolEntry("file", "文件工具", "读写、列目录、删除和 chmod。", ""),
+        ToolEntry("gui", "界面操作", "使用 Android Accessibility 语义树、手势与本地优先视觉识别。", ""),
         ToolEntry("code_edit", "代码编辑", "查看文件并执行 SEARCH/REPLACE。", ""),
         ToolEntry("web_search", "联网搜索", "联网检索文档与网页内容。", ""),
         ToolEntry("web_fetch", "网页抓取", "抓取单个网页并提取标题、摘要和正文。", ""),

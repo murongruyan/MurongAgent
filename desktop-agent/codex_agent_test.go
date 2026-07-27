@@ -111,7 +111,8 @@ func TestCodexAskUserDynamicToolMatchesAppServerSchema(t *testing.T) {
 
 func TestCodexDynamicToolsExposeKnowledgeAndKeepPlanModeReadOnly(t *testing.T) {
 	app := &DesktopAgentApp{}
-	regular, plan := app.codexDynamicTools(false), app.codexDynamicTools(true)
+	config := defaultDesktopConfig()
+	regular, plan := app.codexDynamicTools(config, false), app.codexDynamicTools(config, true)
 	names := func(values []any) map[string]bool {
 		result := map[string]bool{}
 		for _, raw := range values {
@@ -128,6 +129,9 @@ func TestCodexDynamicToolsExposeKnowledgeAndKeepPlanModeReadOnly(t *testing.T) {
 		return result
 	}
 	regularNames, planNames := names(regular), names(plan)
+	if guiPlatformSupported() && (!regularNames["gui"] || !planNames["gui"]) {
+		t.Fatalf("Codex dynamic tools did not expose Windows GUI automation")
+	}
 	for _, name := range []string{sessionHistoryToolName, askUserToolName, "memory_list", "memory_search", "memory_read", "read_skill", "remember_memory", "forget_memory", "run_skill", "create_global_skill", "create_project_skill"} {
 		if !regularNames[name] {
 			t.Fatalf("regular Codex dynamic tools missing %s: %#v", name, regularNames)

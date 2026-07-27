@@ -293,13 +293,28 @@ func (app *DesktopAgentApp) CompressSession(id string) (*ChatSession, error) {
 	localSummary := buildLocalSessionCompressionSummary(plan.Session, plan.CompressedMessages)
 	summary, method := localSummary, "local"
 	config := app.store.rawConfig()
-	if profile := findProviderProfile(config.ProviderProfiles, config.ActiveProviderProfileID); profile != nil && profile.ProtectedAPIKey != "" {
-		if plain, decryptErr := unprotectSecret(profile.ProtectedAPIKey); decryptErr == nil {
-			result, requestErr := newModelClientWithGeneration(config.Temperature, config.MaxTokens).streamChat(
+	if profile := findProviderProfile(config.ProviderProfiles, config.ActiveProviderProfileID); profile != nil &&
+		(profile.ProviderID == providerBuiltinLocal ||
+			profile.ProtectedAPIKey != "" ||
+			isLocalModelBaseURL(profile.BaseURL)) {
+		apiKey := ""
+		decryptOK := true
+		if profile.ProtectedAPIKey != "" {
+			plain, decryptErr := unprotectSecret(profile.ProtectedAPIKey)
+			decryptOK = decryptErr == nil
+			if decryptOK {
+				apiKey = string(plain)
+			}
+		}
+		if decryptOK {
+			client := newModelClientWithGeneration(config.Temperature, config.MaxTokens)
+			result, requestErr := app.streamConfiguredChat(
 				ctx,
+				client,
 				*profile,
-				string(plain),
+				apiKey,
 				buildSessionCompressionPrompt(plan.Session, plan.CompressedMessages, localSummary),
+				nil,
 				nil,
 				nil,
 			)

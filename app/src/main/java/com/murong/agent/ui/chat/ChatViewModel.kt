@@ -147,7 +147,7 @@ class ChatViewModel @Inject constructor(
         return if (config.usesCodexChatGptBackend()) {
             sessionManager.hasCodexChatGptAccount()
         } else {
-            config.getActiveApiKey().isNotBlank()
+            config.hasUsableActiveProviderCredentials()
         }
     }
 
@@ -501,13 +501,13 @@ class ChatViewModel @Inject constructor(
         refreshSessions()
     }
 
-    fun loadSession(sessionId: String) {
-        if (sessionManager.loadSession(sessionId)) {
-            val currentSessionId = state.value.sessionId
-            sessionManager.replayPendingPrompts()
-            replayTriggerGate.markReplayHandled(currentSessionId)
-            refreshSessions()
-        }
+    fun loadSession(sessionId: String): Boolean {
+        if (!sessionManager.loadSession(sessionId)) return false
+        val currentSessionId = state.value.sessionId
+        sessionManager.replayPendingPrompts()
+        replayTriggerGate.markReplayHandled(currentSessionId)
+        refreshSessions()
+        return true
     }
 
     fun replayPendingPrompts(): Boolean = sessionManager.replayPendingPrompts()

@@ -8,6 +8,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.murong.agent.ui.project.ProjectEditorMenuAction
 import com.murong.agent.ui.project.ProjectSecondaryHostBridgeState
+import com.murong.agent.ui.settings.SettingsFocus
 
 internal data class MainScreenShellState(
     val shellOwnerTopLevelPage: Int,
@@ -227,6 +228,7 @@ internal sealed interface MainScreenChatAction {
 
 internal sealed interface MainScreenTopLevelNavigationAction {
     data class NavigateToPage(val page: Int) : MainScreenTopLevelNavigationAction
+    data class NavigateBackToPage(val page: Int) : MainScreenTopLevelNavigationAction
     data object NavigateBack : MainScreenTopLevelNavigationAction
     data class SyncSettledPage(val page: Int) : MainScreenTopLevelNavigationAction
     data class RequestDrawerCommand(
@@ -237,6 +239,7 @@ internal sealed interface MainScreenTopLevelNavigationAction {
 }
 
 internal sealed interface MainScreenSettingsAction {
+    data class OpenDetail(val focus: SettingsFocus) : MainScreenSettingsAction
     data object OpenThemePage : MainScreenSettingsAction
     data object OpenAboutPage : MainScreenSettingsAction
     data object CloseSecondaryPage : MainScreenSettingsAction
@@ -292,7 +295,9 @@ internal fun resolveMainScreenShellState(
             hasTopLevelHistory &&
             !hasSecondaryPage &&
             isTopLevelNavigationSettled
-    val showBottomBar = !hasSecondaryPage
+    // Mobile now follows the desktop workbench model: one active workspace at a time,
+    // reached through contextual actions instead of a permanent bottom navigation rail.
+    val showBottomBar = false
     val isChatChromeVisible =
         settingsSubpage == SettingsSubpage.Main &&
             !hasSecondaryPage &&
@@ -341,6 +346,7 @@ internal fun resolveMainScreenTopBarState(
     isTopLevelNavigationSettled: Boolean
 ): MainScreenTopBarState {
     val title = when (settingsSubpage) {
+        is SettingsSubpage.Detail -> settingsSubpage.focus.title
         SettingsSubpage.Theme -> "主题界面"
         SettingsSubpage.About -> "关于"
         SettingsSubpage.Main -> when (chromeScreen) {
@@ -351,6 +357,7 @@ internal fun resolveMainScreenTopBarState(
         }
     }
     val subtitle = when (settingsSubpage) {
+        is SettingsSubpage.Detail -> settingsSubpage.focus.summary
         SettingsSubpage.Theme -> "风格、模式与强调色"
         SettingsSubpage.About -> "应用信息与产品方向"
         SettingsSubpage.Main -> when (chromeScreen) {
@@ -365,6 +372,7 @@ internal fun resolveMainScreenTopBarState(
         }
     }
     val tag = when (settingsSubpage) {
+        is SettingsSubpage.Detail -> "设置"
         SettingsSubpage.Theme -> "外观"
         SettingsSubpage.About -> "信息"
         SettingsSubpage.Main -> when (chromeScreen) {
@@ -425,17 +433,11 @@ internal fun resolveMainScreenTopLevelPredictivePreviewState(
     shellState: MainScreenShellState
 ): MainScreenTopLevelPredictivePreviewState {
     val targetPage = shellState.topLevelPredictivePreviewTargetPage
-    val directionMultiplier = when {
-        targetPage == null -> 1f
-        selectedTopLevelPage > targetPage -> 1f
-        selectedTopLevelPage < targetPage -> -1f
-        else -> 1f
-    }
     return MainScreenTopLevelPredictivePreviewState(
         isVisible = shellState.showTopLevelPredictivePreview,
         currentPage = selectedTopLevelPage,
         targetPage = targetPage,
-        directionMultiplier = directionMultiplier
+        directionMultiplier = 1f
     )
 }
 
@@ -444,7 +446,7 @@ internal fun resolveMainScreenChatDrawerState(
 ): MainScreenChatDrawerState {
     return MainScreenChatDrawerState(
         mountDrawerContent = shellState.isChatChromeVisible,
-        gesturesEnabled = shellState.isChatChromeVisible && shellState.showBottomBar
+        gesturesEnabled = shellState.isChatChromeVisible
     )
 }
 
@@ -682,6 +684,9 @@ internal fun reduceMainScreenSettingsState(
     action: MainScreenSettingsAction
 ): MainScreenSettingsState {
     return when (action) {
+        is MainScreenSettingsAction.OpenDetail -> {
+            state.copy(subpage = SettingsSubpage.Detail(action.focus), backProgress = 0f)
+        }
         MainScreenSettingsAction.OpenThemePage -> {
             state.copy(subpage = SettingsSubpage.Theme, backProgress = 0f)
         }
@@ -737,6 +742,23 @@ internal fun reduceMainScreenTopLevelNavigationState(
                     action.page
                 },
                 consumingBackNavigation = false,
+                drawerCommand = MainScreenDrawerCommand.CLOSE
+            )
+        }
+        is MainScreenTopLevelNavigationAction.NavigateBackToPage -> {
+            state.copy(
+                selectedPage = action.page,
+                navigationTargetPage = if (action.page == state.lastSettledPage) {
+                    null
+                } else {
+                    action.page
+                },
+                history = if (state.history.lastOrNull() == action.page) {
+                    state.history.dropLast(1)
+                } else {
+                    state.history
+                },
+                consumingBackNavigation = true,
                 drawerCommand = MainScreenDrawerCommand.CLOSE
             )
         }

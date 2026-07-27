@@ -39,11 +39,17 @@ class ConfigRepository(private val context: Context) {
         private const val SECRET_DEEPSEEK_API_KEY = "deepseek_api_key"
         private const val SECRET_OPENAI_API_KEY = "openai_api_key"
         private const val SECRET_CLAUDE_API_KEY = "claude_api_key"
+        private const val LEGACY_SECRET_PHONE_AGENT_API_KEY = "phone_agent_api_key"
         private const val SECRET_GITHUB_TOKEN = "github_token"
         private const val SECRET_GITHUB_CLIENT_SECRET = "github_client_secret"
         private const val SECRET_GITHUB_BACKEND_SESSION_TOKEN = "github_backend_session_token"
         private const val SECRET_WEB_SEARCH_BING_API_KEY = "web_search_bing_api_key"
         private val INPUT_HISTORY_KEY = stringPreferencesKey("chat_input_history")
+        /** Provider IDs permitted to create entries in the encrypted relay key store. */
+        private val SECURE_RELAY_PROVIDER_IDS = setOf(
+            "deepseek", "openai-compatible", "claude", "kimi", "glm", "qwen",
+            "minimax", "grok", "mimo", "hy3", "gemini"
+        )
     }
 
     private var legacyMigrationDone = false
@@ -52,6 +58,9 @@ class ConfigRepository(private val context: Context) {
         if (!legacyMigrationDone) {
             legacyMigrationDone = true
             migrateLegacyPlaintextSecretsIfNeeded()
+            // Phone Agent now shares the active provider credential. Remove the
+            // retired duplicate secret after the one-time configuration migration.
+            secureSecretStore.write(LEGACY_SECRET_PHONE_AGENT_API_KEY, "")
         }
     }
 
@@ -59,6 +68,8 @@ class ConfigRepository(private val context: Context) {
         decodeConfig(prefs[CONFIG_KEY])
             .withLegacyRelayConfigurations()
             .withCurrentAgentBehaviorDefaults()
+            .withGuiAutomationDefaults()
+            .withUnifiedPhoneAgentModelConfig()
             .withSensitiveSecrets(readSensitiveSecrets())
     }
 
@@ -71,6 +82,8 @@ class ConfigRepository(private val context: Context) {
         val migratedConfig = config
             .withLegacyRelayConfigurations()
             .withCurrentAgentBehaviorDefaults()
+            .withGuiAutomationDefaults()
+            .withUnifiedPhoneAgentModelConfig()
         writeSensitiveSecrets(migratedConfig)
         val sanitizedConfig = migratedConfig.withSensitiveSecretsCleared()
         context.dataStore.edit { prefs ->
@@ -82,7 +95,7 @@ class ConfigRepository(private val context: Context) {
     /** Removes only relay secrets created by a failed cross-device credential import. */
     fun clearRelayApiKeysForCredentialRollback(entries: Map<String, Set<String>>) {
         entries.forEach { (providerId, relayIds) ->
-            if (providerId !in setOf("deepseek", "openai-compatible", "claude")) return@forEach
+            if (providerId !in SECURE_RELAY_PROVIDER_IDS) return@forEach
             relayIds.forEach { relayId ->
                 if (relayId.isNotBlank() && relayId.length <= 100 && relayId.none(Char::isISOControl)) {
                     secureSecretStore.write(relaySecretKey(providerId, relayId), "")
@@ -114,6 +127,7 @@ class ConfigRepository(private val context: Context) {
             .withBackupSensitiveDataCleared()
             .withLegacyRelayConfigurations()
             .withCurrentAgentBehaviorDefaults()
+            .withGuiAutomationDefaults()
             .withSensitiveSecrets(readSensitiveSecrets())
             .copy(
                 githubViewerLogin = current.githubViewerLogin,
@@ -242,11 +256,23 @@ class ConfigRepository(private val context: Context) {
         val requiresRelayMigration = rawConfig.deepseekRelays.isEmpty() ||
             rawConfig.openaiRelays.isEmpty() ||
             rawConfig.claudeRelays.isEmpty()
+        val requiresPhoneAgentModelMigration =
+            rawConfig.phoneAgentBaseUrl.isNotBlank() ||
+                rawConfig.phoneAgentApiKey.isNotBlank() ||
+                rawConfig.phoneAgentModel.isNotBlank()
         val config = rawConfig
             .withLegacyRelayConfigurations()
             .withCurrentAgentBehaviorDefaults()
+            .withGuiAutomationDefaults()
+            .withUnifiedPhoneAgentModelConfig()
             .withSensitiveSecrets(readSensitiveSecrets())
-        if (!requiresRelayMigration && !config.hasPlaintextSensitiveSecrets()) return
+        if (
+            !requiresRelayMigration &&
+            !requiresPhoneAgentModelMigration &&
+            !config.hasPlaintextSensitiveSecrets()
+        ) {
+            return
+        }
         writeSensitiveSecrets(config)
         context.dataStore.edit { mutablePrefs ->
             mutablePrefs[CONFIG_KEY] = json.encodeToString(config.withSensitiveSecretsCleared())
@@ -296,7 +322,8 @@ class ConfigRepository(private val context: Context) {
         secureSecretStore.write(SECRET_DEEPSEEK_API_KEY, config.deepseekApiKey)
         secureSecretStore.write(SECRET_OPENAI_API_KEY, config.openaiApiKey)
         secureSecretStore.write(SECRET_CLAUDE_API_KEY, config.claudeApiKey)
-        listOf("deepseek", "openai-compatible", "claude").forEach { providerId ->
+        secureSecretStore.write(LEGACY_SECRET_PHONE_AGENT_API_KEY, "")
+        config.secureRelayProviderIds().forEach { providerId ->
             config.getRelayConfigs(providerId).forEach { relay ->
                 secureSecretStore.write(relaySecretKey(providerId, relay.id), relay.apiKey)
             }
@@ -336,9 +363,17 @@ class ConfigRepository(private val context: Context) {
             deepseekApiKey = restoredDeepseekKey,
             openaiApiKey = restoredOpenaiKey,
             claudeApiKey = restoredClaudeKey,
+            phoneAgentApiKey = "",
             deepseekRelays = restoreRelaySecrets("deepseek", deepseekRelays, "legacy-deepseek", restoredDeepseekKey),
             openaiRelays = restoreRelaySecrets("openai-compatible", openaiRelays, "legacy-openai-compatible", restoredOpenaiKey),
             claudeRelays = restoreRelaySecrets("claude", claudeRelays, "legacy-claude", restoredClaudeKey),
+            externalProviderRelays = externalProviderRelays.mapValues { (providerId, relays) ->
+                if (providerId in SECURE_RELAY_PROVIDER_IDS) {
+                    restoreRelaySecrets(providerId, relays, legacyRelayId = "", legacyApiKey = "")
+                } else {
+                    relays.map { it.copy(apiKey = "") }
+                }
+            },
             githubToken = secrets.githubToken.ifBlank { githubToken },
             githubClientSecret = secrets.githubClientSecret.ifBlank { githubClientSecret },
             githubBackendSessionToken = secrets.githubBackendSessionToken.ifBlank { githubBackendSessionToken },
@@ -352,9 +387,11 @@ class ConfigRepository(private val context: Context) {
             deepseekApiKey = "",
             openaiApiKey = "",
             claudeApiKey = "",
+            phoneAgentApiKey = "",
             deepseekRelays = clearRelaySecrets(deepseekRelays),
             openaiRelays = clearRelaySecrets(openaiRelays),
             claudeRelays = clearRelaySecrets(claudeRelays),
+            externalProviderRelays = externalProviderRelays.mapValues { (_, relays) -> clearRelaySecrets(relays) },
             githubToken = "",
             githubClientSecret = "",
             githubBackendSessionToken = "",
@@ -379,10 +416,22 @@ class ConfigRepository(private val context: Context) {
             deepseekRelays.any { it.apiKey.isNotBlank() } ||
             openaiRelays.any { it.apiKey.isNotBlank() } ||
             claudeRelays.any { it.apiKey.isNotBlank() } ||
+            externalProviderRelays.values.flatten().any { it.apiKey.isNotBlank() } ||
             githubToken.isNotBlank() ||
             githubClientSecret.isNotBlank() ||
             githubBackendSessionToken.isNotBlank() ||
             webSearchBingApiKey.isNotBlank()
+    }
+
+    private fun ProviderConfig.secureRelayProviderIds(): List<String> = buildList {
+        add("deepseek")
+        add("openai-compatible")
+        add("claude")
+        externalProviderRelays.keys
+            .asSequence()
+            .filter { it in SECURE_RELAY_PROVIDER_IDS }
+            .sorted()
+            .forEach(::add)
     }
 
     @Serializable

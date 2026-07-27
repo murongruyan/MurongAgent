@@ -15,12 +15,16 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -42,6 +46,15 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Murong"
         android:networkSecurityConfig="@xml/network_security_config">
+
+        <!-- Official Shizuku/Sui provider. It acquires the Binder; no privilege is granted silently. -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
         <activity
             android:name="com.murong.agent.ui.MainActivity"
@@ -90,6 +103,25 @@
             </intent-filter>
         </activity>
 
+        <!-- Translucent assistant entry isolated from the normal Murong task. -->
+        <activity
+            android:name="com.murong.agent.ui.assistant.MurongAssistActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:finishOnTaskLaunch="true"
+            android:launchMode="singleTask"
+            android:taskAffinity="${applicationId}.assistant"
+            android:theme="@style/Theme.Murong.Assist">
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VOICE_ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <activity
             android:name="com.murong.agent.lan.LanWebAdbBootstrapActivity"
             android:enabled="true"
@@ -110,6 +142,72 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <service
+            android:name="com.murong.agent.core.tool.AndroidGuiAccessibilityService"
+            android:description="@string/gui_accessibility_service_description"
+            android:enabled="true"
+            android:exported="true"
+            android:label="@string/gui_accessibility_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/murong_gui_accessibility_service" />
+        </service>
+
+        <!-- Makes Murong selectable as Android's default assistant. The user must opt in. -->
+        <service
+            android:name="com.murong.agent.ui.assistant.MurongVoiceInteractionService"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.voice_interaction"
+                android:resource="@xml/murong_voice_interaction_service" />
+        </service>
+
+        <service
+            android:name="com.murong.agent.ui.assistant.MurongVoiceInteractionSessionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION" />
+
+        <!-- Required recognition backend for a valid Android VoiceInteractionService. -->
+        <service
+            android:name="com.murong.agent.ui.assistant.MurongSpeechRecognitionService"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data
+                android:name="android.speech"
+                android:resource="@xml/murong_recognition_service" />
+        </service>
+
+        <service
+            android:name="com.murong.agent.ui.assistant.VoiceWakeWordService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <service
+            android:name="com.murong.agent.ui.assistant.AssistantTaskForegroundService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <service
+            android:name="com.murong.agent.ui.tools.BuiltinVisionModelDownloadService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- No intent-filter: callers must target this exported component explicitly. -->
         <receiver

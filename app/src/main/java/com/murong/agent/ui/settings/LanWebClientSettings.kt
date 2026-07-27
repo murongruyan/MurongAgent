@@ -135,13 +135,15 @@ class LanWebSettingsViewModel @Inject constructor(
 
     fun refreshDesktopAgent() = runDesktopAgentCommand { desktopAgentBridge.command("refresh") }
 
-    fun openDesktopSession(sessionId: String) {
+    fun openDesktopSession(sessionId: String): Boolean {
         val selectedFromMirror = desktopAgentBridge.selectCachedSession(sessionId)
-        if (desktopAgentBridge.state.value.connected) {
+        val connected = desktopAgentBridge.state.value.connected
+        if (connected) {
             runDesktopAgentCommand { desktopAgentBridge.command("get_session", sessionId = sessionId) }
         } else if (!selectedFromMirror) {
             mutableDesktopAgentError.value = "这项电脑任务还没有同步到手机，连接 Murong Desktop 后再打开"
         }
+        return selectedFromMirror || connected
     }
 
     fun sendDesktopMessage(sessionId: String, content: String) =

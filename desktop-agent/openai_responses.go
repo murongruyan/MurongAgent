@@ -27,6 +27,9 @@ type openAIResponsesRequest struct {
 }
 
 func shouldUseOpenAIResponses(profile ProviderProfile) bool {
+	if desktopUsesResponses(profile) {
+		return true
+	}
 	if profile.ProviderID != providerOpenAI {
 		return false
 	}
@@ -70,7 +73,7 @@ func (client *modelClient) streamOpenAIResponses(
 	if len(convertedTools) > 0 {
 		body.ToolChoice = "auto"
 	}
-	if effort := strings.TrimSpace(profile.ReasoningEffort); effort != "" {
+	if effort := normalizeDesktopOfficialReasoning(desktopOfficialVendorFor(profile), profile.ReasoningEffort); effort != "" {
 		body.Reasoning = map[string]any{"effort": effort}
 	}
 	data, err := json.Marshal(body)
@@ -83,7 +86,9 @@ func (client *modelClient) streamOpenAIResponses(
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream")
-	request.Header.Set("Authorization", "Bearer "+apiKey)
+	if strings.TrimSpace(apiKey) != "" {
+		request.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 	request.Header.Set("User-Agent", "Murong-Desktop-Agent/0.2")
 	response, err := client.httpClient.Do(request)
 	if err != nil {

@@ -1565,8 +1565,8 @@ class AndroidTool : Tool {
         return try {
             val obj = json.parseToJsonElement(args).jsonObject
             val action = obj.string("action") ?: return "Error: 'action' parameter is required"
-            if (!KeepShellPublic.checkRoot()) {
-                return "Error: Root shell is not available. Please check root permissions."
+            if (!AndroidSystemExecution.isSystemCommandAvailable()) {
+                return "Error: ${AndroidSystemExecution.unavailableReason()}"
             }
             val timeout = obj.int("timeout") ?: DEFAULT_TIMEOUT_SECONDS
             when (action) {
@@ -7110,7 +7110,10 @@ class AndroidTool : Tool {
 
     private fun runCommand(command: String, timeout: Int): String {
         val safeTimeout = timeout.coerceAtLeast(1)
-        val result = KeepShellPublic.doCmdSync(wrapCommandWithTimeout(command, safeTimeout))
+        val result = AndroidSystemExecution.executeSystemCommand(
+            wrapCommandWithTimeout(command, safeTimeout),
+            safeTimeout
+        )
         val timedOut = result.contains(TIMEOUT_MARKER)
         val normalized = result.replace(TIMEOUT_MARKER, "").trim()
         return when {

@@ -641,6 +641,7 @@ data class LanWebDesktopAgentDisconnectRequest(
 data class LanWebDesktopAgentTaskSummary(
     val id: String,
     val title: String,
+    val projectPath: String? = null,
     val updatedAt: Long,
     val messageCount: Int,
     val running: Boolean = false,

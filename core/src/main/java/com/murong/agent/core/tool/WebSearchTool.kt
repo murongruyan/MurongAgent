@@ -63,7 +63,9 @@ class WebSearchTool(
     override suspend fun execute(args: String): String {
         return try {
             val obj = json.parseToJsonElement(args).jsonObject
-            val query = obj["query"]?.jsonPrimitive?.content?.trim().orEmpty()
+            val query = prepareWebSearchKeywords(
+                obj["query"]?.jsonPrimitive?.content.orEmpty(),
+            )
             if (query.isBlank()) return "Error: 'query' parameter required"
             val maxResults = (obj["maxResults"]?.jsonPrimitive?.intOrNull ?: 5).coerceIn(1, 10)
 
@@ -158,7 +160,7 @@ class WebSearchTool(
             if (text.isBlank()) {
                 SearchEngineResponse.fail("返回为空")
             } else {
-                SearchEngineResponse.success(text)
+                SearchEngineResponse.success(formatRawSearchText("自定义后端(AnySearch)", text))
             }
         }
     }
@@ -215,6 +217,9 @@ class WebSearchTool(
             .host("www.bing.com")
             .addPathSegment("search")
             .addQueryParameter("format", "rss")
+            .addQueryParameter("cc", "CN")
+            .addQueryParameter("mkt", "zh-CN")
+            .addQueryParameter("setlang", "zh-Hans")
             .addQueryParameter("q", query)
             .build()
         return runSearch("Bing 抓取") {
@@ -376,6 +381,12 @@ class WebSearchTool(
         }.trim()
     }
 
+    private fun formatRawSearchText(source: String, content: String): String = buildString {
+        appendLine("搜索源: $source")
+        appendLine()
+        append(content.trim())
+    }.trim()
+
     private fun buildUnavailableMessage(query: String, attempts: List<SearchAttempt>): String {
         val detail = attempts.joinToString("；") { "${it.source}: ${it.detail}" }
         return buildString {
@@ -433,4 +444,59 @@ class WebSearchTool(
         const val BROWSER_USER_AGENT =
             "Mozilla/5.0 (Linux; Android 15; MurongAgent) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36"
     }
+}
+
+/**
+ * Removes conversational command prefixes before passing a request to a search engine.  Search
+ * engines handle keywords much better than a whole spoken command such as “搜索一下最新大模型消息”.
+ */
+internal fun normalizeWebSearchQuery(rawQuery: String): String {
+    var normalized = rawQuery.trim()
+    val commandPrefixes = listOf(
+        "请帮我搜索一下",
+        "帮我搜索一下",
+        "请帮我搜一下",
+        "帮我搜一下",
+        "请搜索一下",
+        "请搜一下",
+        "搜索一下",
+        "搜一下",
+        "查询一下",
+        "查一下",
+        "搜索",
+        "搜",
+        "查询",
+        "查",
+    )
+    for (prefix in commandPrefixes) {
+        if (normalized.startsWith(prefix) && normalized.length > prefix.length) {
+            normalized = normalized.removePrefix(prefix)
+            break
+        }
+    }
+    return normalized
+        .trim()
+        .trimStart('：', ':', '，', ',', '。', '！', '!', '？', '?')
+        .trim()
+}
+
+/** Adds an unambiguous AI term to broad “大模型” news queries for better Chinese search recall. */
+internal fun prepareWebSearchKeywords(rawQuery: String): String {
+    val normalized = normalizeWebSearchQuery(rawQuery)
+    return if (
+        "大模型" in normalized &&
+        "人工智能" !in normalized &&
+        !normalized.contains("AI", ignoreCase = true)
+    ) {
+        "人工智能 $normalized"
+    } else {
+        normalized
+    }
+}
+
+/** A result that reaches a summarizer must be actual search evidence, never a transport error. */
+fun isUsableWebSearchResult(content: String?): Boolean {
+    val normalized = content?.trim().orEmpty()
+    return normalized.startsWith("搜索源:") &&
+        normalized.lineSequence().drop(1).any { it.isNotBlank() }
 }

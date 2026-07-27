@@ -60,6 +60,15 @@ const state = {
   workbench: { open: false, tabs: [], activeId: "", terminalDock: "side", defaultTerminalId: "", width: 620, resizing: null, sequence: 0 },
   statusStats: null,
   statusStatsRequest: 0,
+  builtinVision: {
+    models: [],
+    installingTier: "",
+    downloadedBytes: 0,
+    totalBytes: 0,
+    message: "",
+    error: "",
+    deviceRecommendation: "",
+  },
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -67,11 +76,13 @@ const backend = () => window.go?.main?.DesktopAgentApp;
 const composerInputHistoryStorageKey = "murong.chat.inputHistory";
 const composerInputHistoryLimit = 50;
 let workbenchEditorController = null;
+let builtinVisionPollTimer = 0;
 
 const settingsCategories = [
   { key: "project", label: "项目", view: "settings", description: "选择当前任务使用的电脑项目目录。" },
   { key: "model", label: "模型", view: "settings", description: "管理模型连接、API Key、模型与推理强度。" },
   { key: "permissions", label: "审批与工具", view: "settings", description: "设置审批模式、白名单和 Agent 可调用的工具。" },
+  { key: "gui", label: "界面操作", view: "settings", description: "配置 Windows 语义树、截图识别、本地视觉模型与远程隐私边界。" },
   { key: "agent", label: "Agent", view: "settings", description: "调整系统提示词、回答详细度和执行 Profile。" },
   { key: "rules", label: "规则", view: "knowledge", description: "管理每轮都会遵守的全局或项目规则。" },
   { key: "memory", label: "记忆", view: "knowledge", description: "管理按需检索的长期记忆。" },
@@ -100,6 +111,7 @@ async function initialise() {
     bindRuntimeEvents();
     const bootstrap = await backend().Bootstrap();
     applyBootstrap(bootstrap);
+    await refreshBuiltinVisionStatus();
     await restorePendingAsk();
     await refreshComposerCatalog();
     $("#loading").classList.add("hidden");
@@ -298,6 +310,8 @@ function bindEvents() {
   $("#settings-modal").addEventListener("click", (event) => { if (event.target === event.currentTarget) closeSettingsDialog(); });
   document.addEventListener("click", closeSessionContextMenuFromOutside);
   document.addEventListener("contextmenu", closeSessionContextMenuFromOutside);
+  document.addEventListener("click", closeWorkbenchFileContextMenuFromOutside);
+  document.addEventListener("contextmenu", closeWorkbenchFileContextMenuFromOutside);
   $("#project-chip").addEventListener("click", () => openProjectModal());
   $("#choose-project").addEventListener("click", chooseProject);
   $("#manage-projects").addEventListener("click", () => openProjectModal());
@@ -316,6 +330,14 @@ function bindEvents() {
   $("#composer-model-select").addEventListener("change", activateComposerModel);
   $("#composer-reasoning-select").addEventListener("change", setComposerReasoningEffort);
   $("#save-settings").addEventListener("click", saveSettings);
+  $("#refresh-builtin-vision-models").addEventListener("click", refreshBuiltinVisionStatus);
+  $("#cancel-builtin-vision-install").addEventListener("click", cancelBuiltinVisionInstall);
+  $("#builtin-vision-model-list").addEventListener("click", handleBuiltinVisionModelAction);
+  $("#gui-allow-remote-screenshots").addEventListener("change", (event) => {
+    const fullScreen = $("#gui-allow-remote-fullscreen");
+    fullScreen.disabled = !event.target.checked;
+    if (!event.target.checked) fullScreen.checked = false;
+  });
   ["#planner-profile-enabled", "#subagent-profile-enabled"].forEach((selector) => {
     $(selector).addEventListener("change", renderExecutionProfileControls);
   });
@@ -523,6 +545,9 @@ function bindRuntimeEvents() {
     else renderHeaderMeta();
     if (!$("#project-modal").classList.contains("hidden")) renderProjectModal();
   });
+  window.runtime.EventsOn("builtin_vision_status", (status) => {
+    applyBuiltinVisionStatus(status);
+  });
   window.runtime.EventsOn("knowledge:changed", (knowledge) => {
     state.knowledge = knowledge || { rules: [], memories: [], skills: [] };
     renderKnowledge();
@@ -587,7 +612,9 @@ function bindRuntimeEvents() {
     const executionLocked = phoneOwnsActiveSession();
     $("#send-message").disabled = state.running || executionLocked;
     $("#composer-model-select").disabled = state.running || executionLocked;
-    $("#composer-reasoning-select").disabled = state.running || executionLocked;
+    const activeProfile = state.config?.providerProfiles?.find((profile) => profile.id === state.config.activeProviderProfileId);
+    $("#composer-reasoning-select").disabled =
+      state.running || executionLocked || !activeProfile || $("#composer-reasoning-select").options.length <= 1;
 		renderWorkflowPlan();
     if (payload.state === "error") showToast(payload.text, true);
   });
@@ -604,12 +631,37 @@ function bindRuntimeEvents() {
       scrollMessages();
     }
   });
+  window.runtime.EventsOn("agent:reasoning-start", (payload) => {
+    if (state.active?.id !== payload.sessionId) return;
+    const message = document.querySelector(`[data-stream-id="${cssEscape(payload.streamId)}"]`);
+    if (!message || message.querySelector(".message-reasoning")) return;
+    const stack = message.querySelector(".message-content-stack");
+    if (stack) stack.prepend(createReasoningDetails("", true));
+    scrollMessages();
+  });
+  window.runtime.EventsOn("agent:reasoning-delta", (payload) => {
+    if (state.active?.id !== payload.sessionId) return;
+    const body = document.querySelector(`[data-stream-id="${cssEscape(payload.streamId)}"] .message-reasoning-body`);
+    if (!body) return;
+    body.dataset.raw = (body.dataset.raw || "") + (payload.delta || "");
+    body.textContent = body.dataset.raw || "模型正在生成思考过程…";
+    scrollMessages();
+  });
   window.runtime.EventsOn("agent:stream-end", (payload) => {
     const message = document.querySelector(`[data-stream-id="${cssEscape(payload.streamId)}"]`);
     if (!message) return;
     const body = message.querySelector(".message-body");
     body.classList.remove("stream-cursor");
     body.innerHTML = renderMarkdown(body.dataset.raw || "");
+    const reasoning = message.querySelector(".message-reasoning");
+    if (reasoning) {
+      reasoning.classList.remove("active");
+      reasoning.open = false;
+      const summary = reasoning.querySelector("summary");
+      const reasoningBody = reasoning.querySelector(".message-reasoning-body");
+      if (summary) summary.textContent = "思考过程";
+      if (reasoningBody) reasoningBody.innerHTML = renderMarkdown(reasoningBody.dataset.raw || "");
+    }
     refreshStatusBar(true);
   });
   window.runtime.EventsOn("agent:approval", (payload) => {
@@ -1360,7 +1412,9 @@ function renderHeaderMeta() {
   $("#project-chip").disabled = state.running || phoneOwnsActiveSession();
   const profile = state.config?.providerProfiles?.find((item) => item.id === state.config.activeProviderProfileId);
   const plannerActive = Boolean(state.active?.planModeEnabled && state.config?.plannerProfileEnabled);
-  const displayModel = plannerActive && state.config?.plannerModel ? state.config.plannerModel : profile?.model;
+  const displayModel = plannerActive && state.config?.plannerModel
+    ? state.config.plannerModel
+    : providerProfileModelLabel(profile);
   $("#model-chip").textContent = profile
     ? `${profile.name} · ${plannerActive ? "计划 " : ""}${displayModel || "模型自动决定"}`
     : state.config?.model || "未配置模型";
@@ -1399,18 +1453,36 @@ function renderComposerModelSelect() {
     select.append(empty);
   }
   profiles.forEach((profile) => {
+    if (profile.providerId === "murong-local") {
+      const installedModels = (state.builtinVision?.models || [])
+        .filter((model) => model.installed && model.available !== false);
+      const hasActiveModel = installedModels.some((model) => model.active);
+      if (installedModels.length) {
+        installedModels.forEach((model, index) => {
+          const option = document.createElement("option");
+          option.value = `${profile.id}::${model.tier}`;
+          option.dataset.providerProfileId = profile.id;
+          option.dataset.visionTier = model.tier;
+          option.textContent = `${profile.name} · ${model.displayName} · 已安装${model.active ? "（当前）" : ""}`;
+          option.selected = profile.id === selected &&
+            (model.active || (!hasActiveModel && index === 0));
+          select.append(option);
+        });
+        return;
+      }
+    }
     const option = document.createElement("option");
     option.value = profile.id;
-    option.textContent = `${profile.name} · ${profile.model}`;
+    option.dataset.providerProfileId = profile.id;
+    option.textContent = `${profile.name} · ${providerProfileModelLabel(profile)}`;
     option.selected = profile.id === selected;
     select.append(option);
   });
   select.disabled = state.running || phoneOwnsActiveSession() || profiles.length === 0;
   select.title = select.selectedOptions[0]?.textContent || "选择模型连接";
   const activeProfile = profiles.find((profile) => profile.id === selected) || null;
-  const reasoningEffort = activeProfile?.reasoningEffort || "";
-  reasoningSelect.value = ["", "low", "medium", "high", "xhigh", "max"].includes(reasoningEffort) ? reasoningEffort : "";
-  reasoningSelect.disabled = state.running || phoneOwnsActiveSession() || !activeProfile;
+  populateReasoningSelect(reasoningSelect, activeProfile, "默认");
+  reasoningSelect.disabled = state.running || phoneOwnsActiveSession() || !activeProfile || reasoningSelect.options.length <= 1;
   reasoningSelect.title = activeProfile
     ? `当前推理强度：${reasoningSelect.selectedOptions[0]?.textContent || "默认"}`
     : "请先配置模型连接";
@@ -1418,11 +1490,19 @@ function renderComposerModelSelect() {
 
 async function activateComposerModel(event) {
   const target = event.currentTarget;
-  const id = target?.value || "";
-  const selectedLabel = target?.selectedOptions?.[0]?.textContent || id;
+  const selectedOption = target?.selectedOptions?.[0];
+  const id = selectedOption?.dataset.providerProfileId || target?.value || "";
+  const visionTier = selectedOption?.dataset.visionTier || "";
+  const selectedLabel = selectedOption?.textContent || id;
   if (!id || state.running || phoneOwnsActiveSession()) return;
   try {
+    if (visionTier) {
+      await backend().SelectBuiltinVisionModel(visionTier);
+    }
     state.config = await backend().ActivateProviderProfile(id);
+    if (visionTier) {
+      await refreshBuiltinVisionStatus();
+    }
     renderSettings();
     renderHeaderMeta();
     showToast(`已切换模型：${selectedLabel}`);
@@ -1523,8 +1603,31 @@ function appendMessageElement(message) {
     historyActions.append(forkButton, rollbackButton);
     body.append(historyActions);
   }
-  article.append(avatar, body);
+  if (message.role === "assistant") {
+    const stack = document.createElement("div");
+    stack.className = "message-content-stack";
+    if (message.reasoning) stack.append(createReasoningDetails(message.reasoning, false));
+    stack.append(body);
+    article.append(avatar, stack);
+  } else {
+    article.append(avatar, body);
+  }
   container.append(article);
+}
+
+function createReasoningDetails(reasoning, streaming) {
+  const details = document.createElement("details");
+  details.className = `message-reasoning${streaming ? " active" : ""}`;
+  details.open = Boolean(streaming);
+  const summary = document.createElement("summary");
+  summary.textContent = streaming ? "正在思考…" : "思考过程";
+  const body = document.createElement("div");
+  body.className = "message-reasoning-body";
+  body.dataset.raw = reasoning || "";
+  if (streaming) body.textContent = reasoning || "模型正在生成思考过程…";
+  else body.innerHTML = renderMarkdown(reasoning || "");
+  details.append(summary, body);
+  return details;
 }
 
 function renderSubagentJobs() {
@@ -2136,7 +2239,10 @@ function createStreamingMessage(streamId) {
   const body = document.createElement("div");
   body.className = "message-body stream-cursor";
   body.dataset.raw = "";
-  article.append(avatar, body);
+  const stack = document.createElement("div");
+  stack.className = "message-content-stack";
+  stack.append(body);
+  article.append(avatar, stack);
   $("#messages").append(article);
   scrollMessages();
 }
@@ -2744,7 +2850,8 @@ function formatFileSize(size) {
   const bytes = Number(size) || 0;
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
 }
 
 function truncateText(value, limit) {
@@ -2786,6 +2893,12 @@ async function saveSettings() {
       temperature: Number($("#temperature").value),
       maxTokens: Number($("#max-tokens").value),
       enableMultimodalMessages: $("#enable-multimodal-messages").checked,
+      guiInferenceMode: $("#gui-inference-mode").value,
+      guiLocalBaseUrl: $("#gui-local-base-url").value.trim(),
+      guiLocalModel: $("#gui-local-model").value.trim(),
+      guiAllowRemoteSemanticTree: $("#gui-allow-remote-semantic").checked,
+      guiAllowRemoteScreenshots: $("#gui-allow-remote-screenshots").checked,
+      guiAllowRemoteFullScreen: $("#gui-allow-remote-fullscreen").checked,
       plannerProfileEnabled: $("#planner-profile-enabled").checked,
       plannerModel: $("#planner-model").value.trim(),
       plannerReasoningEffort: $("#planner-reasoning-effort").value,
@@ -2839,6 +2952,14 @@ function renderSettings() {
   $("#temperature").value = Number.isFinite(state.config.temperature) ? state.config.temperature : 0.7;
   $("#max-tokens").value = Number.isInteger(state.config.maxTokens) ? state.config.maxTokens : 8192;
   $("#enable-multimodal-messages").checked = state.config.enableMultimodalMessages !== false;
+  $("#gui-inference-mode").value = state.config.guiInferenceMode || "local_first";
+  $("#gui-local-base-url").value = state.config.guiLocalBaseUrl || "";
+  $("#gui-local-model").value = state.config.guiLocalModel || "";
+  $("#gui-allow-remote-semantic").checked = Boolean(state.config.guiAllowRemoteSemanticTree);
+  $("#gui-allow-remote-screenshots").checked = Boolean(state.config.guiAllowRemoteScreenshots);
+  $("#gui-allow-remote-fullscreen").checked = Boolean(state.config.guiAllowRemoteFullScreen);
+  $("#gui-allow-remote-fullscreen").disabled = !$("#gui-allow-remote-screenshots").checked;
+  renderBuiltinVisionModels();
   $("#planner-profile-enabled").checked = Boolean(state.config.plannerProfileEnabled);
   $("#planner-model").value = state.config.plannerModel || "";
   $("#planner-reasoning-effort").value = normalizedExecutionReasoning(state.config.plannerReasoningEffort);
@@ -2861,6 +2982,178 @@ function renderSettings() {
   updateAllowlistVisibility();
   renderBackup();
   renderStatusBar();
+}
+
+async function refreshBuiltinVisionStatus() {
+  const action = $("#refresh-builtin-vision-models");
+  if (!backend()?.GetBuiltinVisionModelStatus) return;
+  if (action) action.disabled = true;
+  try {
+    applyBuiltinVisionStatus(await backend().GetBuiltinVisionModelStatus());
+  } catch (error) {
+    state.builtinVision.error = errorText(error);
+    renderBuiltinVisionModels();
+  } finally {
+    if (action) action.disabled = false;
+  }
+}
+
+function applyBuiltinVisionStatus(status) {
+  state.builtinVision = {
+    models: status?.models || [],
+    installingTier: status?.installingTier || "",
+    downloadedBytes: Number(status?.downloadedBytes) || 0,
+    totalBytes: Number(status?.totalBytes) || 0,
+    message: status?.message || "",
+    error: status?.error || "",
+    deviceRecommendation: status?.deviceRecommendation || "",
+  };
+  renderBuiltinVisionModels();
+  renderComposerModelSelect();
+  if (state.config && activeProviderProfile()?.providerId === "murong-local") {
+    populateReasoningSelect($("#reasoning-effort"), activeProviderProfile(), "由模型决定");
+    updateProviderAPIModeState();
+  }
+  scheduleBuiltinVisionPoll();
+}
+
+function scheduleBuiltinVisionPoll() {
+  if (builtinVisionPollTimer) {
+    clearTimeout(builtinVisionPollTimer);
+    builtinVisionPollTimer = 0;
+  }
+  if (!state.builtinVision.installingTier) return;
+  builtinVisionPollTimer = window.setTimeout(async () => {
+    builtinVisionPollTimer = 0;
+    await refreshBuiltinVisionStatus();
+  }, 1000);
+}
+
+function renderBuiltinVisionModels() {
+  const list = $("#builtin-vision-model-list");
+  if (!list) return;
+  const status = state.builtinVision || {};
+  $("#builtin-vision-recommendation").textContent =
+    status.deviceRecommendation || "可按内存选择 Qwen 或 Gemma；安装后可完全离线运行。";
+  list.replaceChildren();
+  (status.models || []).forEach((model) => {
+    const card = document.createElement("article");
+    card.className = `builtin-vision-model${model.active ? " active" : ""}`;
+
+    const header = document.createElement("header");
+    const title = document.createElement("strong");
+    title.textContent = model.displayName;
+    const engine = document.createElement("span");
+    engine.className = "builtin-vision-model-badge";
+    engine.textContent = model.engine === "litert" ? "LiteRT-LM" : "MNN";
+    header.append(title, engine);
+    const capability = document.createElement("span");
+    capability.className = "builtin-vision-model-badge";
+    capability.textContent = model.supportsVision ? "视觉 + 代码" : "纯文本代码";
+    header.append(capability);
+    if (model.reasoningModes?.length) {
+      const thinking = document.createElement("span");
+      thinking.className = "builtin-vision-model-badge";
+      thinking.textContent = "可切换思考";
+      header.append(thinking);
+    }
+    if (model.active) {
+      const active = document.createElement("span");
+      active.className = "builtin-vision-model-badge";
+      active.textContent = "使用中";
+      header.append(active);
+    }
+
+    const description = document.createElement("p");
+    description.textContent = model.recommendation || "";
+    const footer = document.createElement("footer");
+    const size = document.createElement("span");
+    size.textContent = model.available === false
+      ? (model.unavailableReason || "当前平台不可用")
+      : `约 ${formatFileSize(model.sizeBytes)} · ${model.installed ? "已安装" : "未安装"}`;
+    footer.append(size);
+
+    if (!model.installed) {
+      const install = document.createElement("button");
+      install.type = "button";
+      install.className = "primary";
+      install.dataset.visionAction = "install";
+      install.dataset.visionTier = model.tier;
+      install.textContent = status.installingTier === model.tier ? "下载中" : "安装";
+      install.disabled = Boolean(status.installingTier) || model.available === false;
+      footer.append(install);
+    } else {
+      if (!model.active) {
+        const select = document.createElement("button");
+        select.type = "button";
+        select.className = "primary";
+        select.dataset.visionAction = "select";
+        select.dataset.visionTier = model.tier;
+        select.textContent = "使用";
+        select.disabled = Boolean(status.installingTier);
+        footer.append(select);
+      }
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "ghost danger";
+      remove.dataset.visionAction = "delete";
+      remove.dataset.visionTier = model.tier;
+      remove.dataset.visionName = model.displayName;
+      remove.textContent = "删除";
+      remove.disabled = Boolean(status.installingTier);
+      footer.append(remove);
+    }
+    card.append(header, description, footer);
+    list.append(card);
+  });
+
+  const progress = $("#builtin-vision-progress");
+  progress.classList.toggle("hidden", !status.installingTier);
+  if (status.installingTier) {
+    const total = Math.max(1, Number(status.totalBytes) || 1);
+    const downloaded = Math.min(total, Number(status.downloadedBytes) || 0);
+    $("#builtin-vision-status").textContent = status.message || "正在下载模型…";
+    $("#builtin-vision-progress-label").textContent = `${formatFileSize(downloaded)} / ${formatFileSize(total)}`;
+    $("#builtin-vision-progress-bar").max = total;
+    $("#builtin-vision-progress-bar").value = downloaded;
+  }
+  if (status.error) {
+    $("#builtin-vision-recommendation").textContent = `模型安装失败：${status.error}`;
+  } else if (status.message && !status.installingTier) {
+    $("#builtin-vision-recommendation").textContent =
+      `${status.deviceRecommendation || ""}${status.deviceRecommendation ? " · " : ""}${status.message}`;
+  }
+}
+
+async function handleBuiltinVisionModelAction(event) {
+  const button = event.target.closest("[data-vision-action]");
+  if (!button || button.disabled) return;
+  const tier = button.dataset.visionTier || "";
+  const action = button.dataset.visionAction;
+  if (action === "delete" && !window.confirm(`确定删除 ${button.dataset.visionName || "这个模型"}？之后可重新下载。`)) return;
+  button.disabled = true;
+  try {
+    if (action === "install") await backend().StartBuiltinVisionModelInstall(tier);
+    else if (action === "select") await backend().SelectBuiltinVisionModel(tier);
+    else if (action === "delete") await backend().DeleteBuiltinVisionModel(tier);
+    await refreshBuiltinVisionStatus();
+  } catch (error) {
+    showToast(errorText(error), true);
+    await refreshBuiltinVisionStatus();
+  }
+}
+
+async function cancelBuiltinVisionInstall() {
+  const button = $("#cancel-builtin-vision-install");
+  button.disabled = true;
+  try {
+    await backend().CancelBuiltinVisionModelInstall();
+    window.setTimeout(refreshBuiltinVisionStatus, 120);
+  } catch (error) {
+    showToast(errorText(error), true);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function normalizedExecutionReasoning(value) {
@@ -3024,7 +3317,7 @@ function formatBackupTime(timestamp) {
   }).format(new Date(timestamp));
 }
 
-const defaultBuiltinTools = ["shell", "file", "code_edit", "code_search", "web_fetch", "web_search", "subagent_launch", "explore", "research", "review", "security_review", "github", "mcp"];
+const defaultBuiltinTools = ["shell", "file", "gui", "code_edit", "code_search", "web_fetch", "web_search", "subagent_launch", "explore", "research", "review", "security_review", "github", "mcp"];
 const defaultFileOperations = ["read", "list", "exists", "write", "delete", "chmod"];
 
 function ensureToolPreferences() {
@@ -3254,7 +3547,16 @@ const providerDefaults = {
   "openai-compatible": { name: "OpenAI-compatible", baseUrl: "https://api.openai.com/v1", model: "gpt-5.6-sol", apiMode: "auto" },
   deepseek: { name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-v4-flash", apiMode: "chat-completions" },
   claude: { name: "Claude", baseUrl: "https://api.anthropic.com", model: "claude-fable-5", apiMode: "messages" },
+  kimi: { name: "Kimi", baseUrl: "https://api.moonshot.cn/v1", model: "kimi-k3", apiMode: "chat-completions" },
+  glm: { name: "智谱 GLM", baseUrl: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5.2", apiMode: "chat-completions" },
+  qwen: { name: "通义千问 Qwen", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3.8-max-preview", apiMode: "chat-completions" },
+  minimax: { name: "MiniMax", baseUrl: "https://api.minimaxi.com/v1", model: "MiniMax-M3", apiMode: "chat-completions" },
+  grok: { name: "xAI Grok", baseUrl: "https://api.x.ai/v1", model: "grok-4.5", apiMode: "responses" },
+  mimo: { name: "小米 MiMo", baseUrl: "https://api.xiaomimimo.com/v1", model: "mimo-v2.5-pro", apiMode: "responses" },
+  hy3: { name: "腾讯混元 Hy3", baseUrl: "https://tokenhub.tencentmaas.com/v1", model: "hy3-preview", apiMode: "chat-completions" },
+  gemini: { name: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-3.6-flash", apiMode: "gemini" },
   "codex-chatgpt": { name: "Codex / ChatGPT", baseUrl: "", model: "", apiMode: "app-server" },
+  "murong-local": { name: "内置本地模型", baseUrl: "", model: "builtin-selected", apiMode: "builtin" },
 };
 
 function ensureProviderProfiles() {
@@ -3278,12 +3580,34 @@ function activeProviderProfile() {
   return state.config.providerProfiles.find((profile) => profile.id === state.config.activeProviderProfileId) || state.config.providerProfiles[0];
 }
 
+function isLocalModelBaseUrl(value) {
+  try {
+    const parsed = new URL(String(value || "").includes("://") ? value : `http://${value}`);
+    const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host === "::1") return true;
+    if (host.includes(":") && (/^(fc|fd)/.test(host) || host.startsWith("fe80:"))) return true;
+    const octets = host.split(".").map(Number);
+    if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+    return octets[0] === 10 || octets[0] === 127 ||
+      (octets[0] === 169 && octets[1] === 254) ||
+      (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
+      (octets[0] === 192 && octets[1] === 168);
+  } catch (_) {
+    return false;
+  }
+}
+
 function activeProviderSendProblem() {
   const profile = activeProviderProfile();
   if (!profile) return "请先配置模型连接";
   if (profile.providerId === "codex-chatgpt") return "";
+  if (profile.providerId === "murong-local") {
+    return (state.builtinVision?.models || []).some((model) => model.installed && model.available !== false)
+      ? ""
+      : "请先在“界面操作”的本地模型中心安装一个 Qwen 或 Gemma 模型";
+  }
   if (!String(profile.model || "").trim()) return "当前模型连接尚未选择模型";
-  if (!profile.hasApiKey) return "当前模型连接尚未配置 API Key";
+  if (!profile.hasApiKey && !isLocalModelBaseUrl(profile.baseUrl)) return "当前模型连接尚未配置 API Key";
   return "";
 }
 
@@ -3293,11 +3617,12 @@ function commitProviderProfileForm() {
   if (!profile) return;
   profile.providerId = $("#provider-kind").value;
   profile.name = $("#provider-name").value.trim();
-  profile.baseUrl = $("#base-url").value.trim();
-  profile.model = $("#model-name").value.trim();
+  const builtinLocal = profile.providerId === "murong-local";
+  profile.baseUrl = builtinLocal ? "" : $("#base-url").value.trim();
+  profile.model = builtinLocal ? "builtin-selected" : $("#model-name").value.trim();
   profile.reasoningEffort = $("#reasoning-effort").value;
-  profile.apiMode = profile.providerId === "codex-chatgpt" ? "app-server" : profile.providerId === "claude" ? "messages" : profile.providerId === "deepseek" ? "chat-completions" : $("#provider-api-mode").value;
-  profile.contextWindowTokens = Number($("#context-window-tokens").value) || 0;
+  profile.apiMode = builtinLocal ? "builtin" : profile.providerId === "codex-chatgpt" ? "app-server" : profile.providerId === "claude" ? "messages" : profile.providerId === "gemini" ? "gemini" : ["deepseek", "kimi", "glm", "qwen", "minimax", "hy3"].includes(profile.providerId) ? "chat-completions" : ["grok", "mimo"].includes(profile.providerId) ? "responses" : $("#provider-api-mode").value;
+  profile.contextWindowTokens = builtinLocal ? 4096 : Number($("#context-window-tokens").value) || 0;
   profile.executablePath = $("#codex-executable-path").value.trim();
   profile._apiKey = $("#api-key").value;
   profile._clearApiKey = $("#clear-api-key").checked;
@@ -3311,15 +3636,17 @@ function renderProviderProfileEditor() {
   state.config.providerProfiles.forEach((item) => {
     const option = document.createElement("option");
     option.value = item.id;
-    option.textContent = `${item.name || "未命名连接"} · ${item.model || "未配置模型"}`;
+    option.textContent = `${item.name || "未命名连接"} · ${providerProfileModelLabel(item)}`;
     select.append(option);
   });
   select.value = profile.id;
   $("#provider-kind").value = providerDefaults[profile.providerId] ? profile.providerId : "openai-compatible";
   $("#provider-name").value = profile.name || "";
   $("#base-url").value = profile.baseUrl || "";
-  $("#model-name").value = profile.model || "";
-  $("#reasoning-effort").value = ["", "low", "medium", "high", "xhigh", "max"].includes(profile.reasoningEffort) ? profile.reasoningEffort : "";
+  $("#model-name").value = profile.providerId === "murong-local"
+    ? activeBuiltinVisionModelName()
+    : profile.model || "";
+  populateReasoningSelect($("#reasoning-effort"), profile, "由供应商决定");
   $("#provider-api-mode").value = ["auto", "responses", "chat-completions"].includes(profile.apiMode) ? profile.apiMode : "auto";
   updateProviderAPIModeState();
   $("#context-window-tokens").value = profile.contextWindowTokens || "";
@@ -3329,7 +3656,8 @@ function renderProviderProfileEditor() {
   const keyState = profile._clearApiKey ? "保存后清除" : profile._apiKey ? "待加密保存" : profile.hasApiKey ? "已加密保存" : "未配置";
   $("#api-key-state").textContent = keyState;
   $("#provider-profile-state").textContent = `${state.config.providerProfiles.length} 个连接 · 当前协议 ${providerLabel(profile.providerId)}`;
-  $("#remove-provider-profile").disabled = state.config.providerProfiles.length <= 1;
+  $("#remove-provider-profile").disabled =
+    state.config.providerProfiles.length <= 1 || profile.providerId === "murong-local";
   renderCodexProviderStatus();
 }
 
@@ -3356,6 +3684,10 @@ function addProviderProfile() {
 function removeProviderProfile() {
   if (state.config.providerProfiles.length <= 1) return;
   const profile = activeProviderProfile();
+  if (profile.providerId === "murong-local") {
+    showToast("内置本地模型连接会跟随本地模型中心，不能删除");
+    return;
+  }
   const index = state.config.providerProfiles.indexOf(profile);
   state.config.providerProfiles.splice(index, 1);
   state.config.activeProviderProfileId = state.config.providerProfiles[Math.max(0, index - 1)].id;
@@ -3364,7 +3696,89 @@ function removeProviderProfile() {
 }
 
 function providerLabel(providerId) {
-  return { "openai-compatible": "OpenAI-compatible", deepseek: "DeepSeek", claude: "Claude", "codex-chatgpt": "Codex / ChatGPT" }[providerId] || "OpenAI-compatible";
+  return { "openai-compatible": "OpenAI-compatible", deepseek: "DeepSeek", claude: "Claude", kimi: "Kimi", glm: "智谱 GLM", qwen: "通义千问 Qwen", minimax: "MiniMax", grok: "xAI Grok", mimo: "小米 MiMo", hy3: "腾讯混元 Hy3", gemini: "Google Gemini", "codex-chatgpt": "Codex / ChatGPT", "murong-local": "内置本地模型" }[providerId] || "OpenAI-compatible";
+}
+
+function activeBuiltinVisionModelName() {
+  const models = state.builtinVision?.models || [];
+  return models.find((model) => model.active)?.displayName ||
+    models.find((model) => model.installed && model.available !== false)?.displayName ||
+    "尚未安装本地模型";
+}
+
+function activeBuiltinVisionModel() {
+  const models = state.builtinVision?.models || [];
+  return models.find((model) => model.active) ||
+    models.find((model) => model.installed && model.available !== false) ||
+    null;
+}
+
+function populateReasoningSelect(select, profile, defaultLabel) {
+  if (!select) return;
+  select.replaceChildren();
+  let options;
+  if (profile?.providerId === "murong-local") {
+    const model = activeBuiltinVisionModel();
+    options = (model?.reasoningModes || []).map((mode) => ({
+      value: mode.id,
+      label: mode.displayName,
+    }));
+    if (!options.length) {
+      options = [{ value: "", label: model ? "此模型不支持思考" : "请先安装并选择模型" }];
+    }
+  } else {
+    const defaultOption = { value: "", label: defaultLabel || "由供应商决定" };
+    switch (profile?.providerId) {
+      case "kimi":
+        options = [defaultOption, { value: "on", label: "开启思考" }, { value: "off", label: "关闭思考" }];
+        break;
+      case "glm":
+        options = [defaultOption, { value: "low", label: "低（映射高）" }, { value: "medium", label: "中（映射高）" }, { value: "high", label: "高" }, { value: "max", label: "最大" }];
+        break;
+      case "qwen":
+        options = [defaultOption, { value: "low", label: "低" }, { value: "medium", label: "中" }, { value: "xhigh", label: "超高" }];
+        break;
+      case "grok":
+        options = [defaultOption, { value: "low", label: "低" }, { value: "medium", label: "中" }, { value: "high", label: "高" }];
+        break;
+      case "minimax":
+      case "mimo":
+      case "hy3":
+      case "gemini":
+        options = [defaultOption];
+        break;
+      default:
+        options = [
+          defaultOption,
+          { value: "low", label: "低" },
+          { value: "medium", label: "中" },
+          { value: "high", label: "高" },
+          { value: "xhigh", label: "超高" },
+          { value: "max", label: "最大" },
+        ];
+    }
+  }
+  options.forEach(({ value, label }) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    select.append(option);
+  });
+  const requested = profile?.reasoningEffort || "";
+  const values = options.map((option) => option.value);
+  if (values.includes(requested)) select.value = requested;
+  else if (profile?.providerId === "murong-local") {
+    const fallback = activeBuiltinVisionModel()?.defaultReasoningMode || values[0] || "";
+    select.value = values.includes(fallback) ? fallback : values[0] || "";
+  } else {
+    select.value = "";
+  }
+}
+
+function providerProfileModelLabel(profile) {
+  return profile?.providerId === "murong-local"
+    ? activeBuiltinVisionModelName()
+    : profile?.model || "未配置模型";
 }
 
 function changeProviderKind(event) {
@@ -3375,6 +3789,7 @@ function changeProviderKind(event) {
   profile.name = defaults.name;
   profile.baseUrl = defaults.baseUrl;
   profile.model = defaults.model;
+  profile.reasoningEffort = kind === "murong-local" ? "off" : "high";
   profile.apiMode = defaults.apiMode;
   profile.contextWindowTokens = 0;
   profile._apiKey = "";
@@ -3386,11 +3801,17 @@ function updateProviderAPIModeState() {
   const kind = $("#provider-kind").value;
   const openAI = kind === "openai-compatible";
   const codex = kind === "codex-chatgpt";
+  const builtinLocal = kind === "murong-local";
+  const gemini = kind === "gemini";
+  $("#provider-kind").disabled = builtinLocal;
   $("#provider-api-mode").disabled = !openAI;
   if (!openAI) $("#provider-api-mode").value = "auto";
   ["#provider-base-url-row", "#provider-api-mode-row", "#provider-context-window-row", "#provider-api-key-row", "#provider-clear-api-key-row"].forEach((selector) => {
-    $(selector).classList.toggle("hidden", codex);
+    $(selector).classList.toggle("hidden", codex || builtinLocal);
   });
+  $("#provider-api-mode-row").classList.toggle("hidden", !openAI || gemini);
+  $("#model-name").disabled = builtinLocal;
+  $("#reasoning-effort").disabled = builtinLocal && $("#reasoning-effort").options.length <= 1;
   $("#codex-provider-panel").classList.toggle("hidden", !codex);
   if (codex) $("#model-name").setAttribute("list", "codex-model-options");
   else $("#model-name").removeAttribute("list");
@@ -4665,6 +5086,7 @@ const workbenchToolLabels = {
 };
 const defaultWorkbenchWidth = 620;
 const minimumWorkbenchWidth = 340;
+const minimumChatViewportWidth = 480;
 const defaultContentPadding = 48;
 
 function defaultSidebarWidth() {
@@ -4680,7 +5102,10 @@ function workbenchWidthBounds() {
   const sidebarWidth = state.layout.sidebarWidth || defaultSidebarWidth();
   return {
     minimum: minimumWorkbenchWidth,
-    maximum: Math.max(minimumWorkbenchWidth, Math.min(960, window.innerWidth - sidebarWidth - 320)),
+    // The old 320px reserve was smaller than the chat composer and message
+    // layout.  At the largest allowed editor width the CSS grid therefore
+    // overflowed into column two and appeared to cover the conversation.
+    maximum: Math.max(minimumWorkbenchWidth, Math.min(960, window.innerWidth - sidebarWidth - minimumChatViewportWidth)),
   };
 }
 
@@ -4909,6 +5334,8 @@ function openWorkbenchTab(type) {
     tab.directory = ".";
     tab.entries = [];
     tab.document = null;
+    tab.openFiles = [];
+    tab.activeFilePath = "";
     tab.loading = true;
   } else if (type === "git") {
     tab.loading = true;
@@ -5216,9 +5643,143 @@ function openWorkbenchBrowserExternal() {
   if (tab?.url) window.runtime?.BrowserOpenURL(tab.url);
 }
 
+function syncActiveWorkbenchFile(tab) {
+  if (!tab?.activeFilePath) return;
+  const file = tab.openFiles?.find((candidate) => candidate.path === tab.activeFilePath);
+  if (!file) return;
+  file.document = tab.document || null;
+  file.asset = tab.asset || null;
+  file.dirty = Boolean(tab.dirty);
+  file.markdownMode = tab.markdownMode || "";
+}
+
+function activateWorkbenchFile(tab, path) {
+  if (!tab) return false;
+  syncActiveWorkbenchFile(tab);
+  const file = tab.openFiles?.find((candidate) => candidate.path === path);
+  if (!file) return false;
+  tab.activeFilePath = file.path;
+  tab.document = file.document || null;
+  tab.asset = file.asset || null;
+  tab.dirty = Boolean(file.dirty);
+  tab.markdownMode = file.markdownMode || "";
+  tab.title = file.path.split("/").pop() || "编辑器";
+  renderWorkbenchEditor(tab);
+  if (tab.document) window.MurongWorkbenchVendor?.focusCodeEditor(workbenchEditorController);
+  return true;
+}
+
+function upsertWorkbenchFile(tab, file) {
+  syncActiveWorkbenchFile(tab);
+  tab.openFiles = tab.openFiles || [];
+  const index = tab.openFiles.findIndex((candidate) => candidate.path === file.path);
+  if (index >= 0) tab.openFiles[index] = file;
+  else tab.openFiles.push(file);
+  tab.activeFilePath = file.path;
+  tab.document = file.document || null;
+  tab.asset = file.asset || null;
+  tab.dirty = Boolean(file.dirty);
+  tab.markdownMode = file.markdownMode || "";
+  tab.title = file.path.split("/").pop() || "编辑器";
+}
+
+function renderWorkbenchEditorFileTabs(tab) {
+  const strip = $("#workbench-editor-tabstrip");
+  strip.replaceChildren();
+  (tab.openFiles || []).forEach((file) => {
+    const item = document.createElement("div");
+    item.className = `workbench-editor-file-tab${file.path === tab.activeFilePath ? " active" : ""}${file.dirty ? " dirty" : ""}`;
+    item.setAttribute("role", "tab");
+    item.setAttribute("aria-selected", String(file.path === tab.activeFilePath));
+    item.title = file.path;
+    const label = document.createElement("span");
+    label.textContent = file.path.split("/").pop() || file.path;
+    const close = document.createElement("button");
+    close.type = "button";
+    close.title = "关闭文件";
+    close.setAttribute("aria-label", `关闭 ${label.textContent}`);
+    close.textContent = "×";
+    close.addEventListener("click", (event) => { event.stopPropagation(); closeWorkbenchEditorFile(tab.id, file.path); });
+    item.addEventListener("click", () => activateWorkbenchFile(tab, file.path));
+    item.append(label, close);
+    strip.append(item);
+  });
+}
+
+function closeWorkbenchEditorFile(tabID, path) {
+  const tab = state.workbench.tabs.find((item) => item.id === tabID && item.type === "editor");
+  if (!tab) return;
+  syncActiveWorkbenchFile(tab);
+  const index = (tab.openFiles || []).findIndex((file) => file.path === path);
+  if (index < 0) return;
+  const file = tab.openFiles[index];
+  if (file.dirty && !window.confirm(`${path} 尚未保存，确定关闭吗？`)) return;
+  tab.openFiles.splice(index, 1);
+  if (tab.activeFilePath === path) {
+    const next = tab.openFiles[Math.min(index, tab.openFiles.length - 1)];
+    tab.activeFilePath = "";
+    tab.document = null;
+    tab.asset = null;
+    tab.dirty = false;
+    tab.markdownMode = "";
+    if (next) activateWorkbenchFile(tab, next.path);
+  }
+  renderWorkbenchEditor(tab);
+}
+
+function openWorkbenchFileContextMenu(event, tab, entry) {
+  event.preventDefault();
+  event.stopPropagation();
+  const menu = $("#workbench-file-context-menu");
+  menu.replaceChildren();
+  const addAction = (label, action) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    button.textContent = label;
+    button.addEventListener("click", () => { closeWorkbenchFileContextMenu(); action(); });
+    menu.append(button);
+  };
+  if (entry.directory) addAction("打开目录", () => loadWorkbenchEditorDirectory(tab.id, entry.path));
+  else {
+    addAction("打开文件", () => loadWorkbenchEditorFile(tab.id, entry.path, entry.preview));
+    addAction("在编辑标签中显示", () => loadWorkbenchEditorFile(tab.id, entry.path, entry.preview));
+    if (entry.preview !== "image") {
+      addAction("查看文件对比", () => {
+        state.workspaceTimelineMode = "live";
+        openWorkspaceChanges(entry.path);
+      });
+    }
+  }
+  addAction("在文件管理器中打开", async () => {
+    try { await backend().RevealWorkbenchPath(entry.path); }
+    catch (error) { showToast(errorText(error), true); }
+  });
+  addAction("复制相对路径", async () => {
+    try { await navigator.clipboard?.writeText(entry.path); showToast("已复制文件路径"); }
+    catch (_) { showToast("无法复制文件路径", true); }
+  });
+  menu.classList.remove("hidden");
+  const rect = menu.getBoundingClientRect();
+  const margin = 8;
+  menu.style.left = `${Math.max(margin, Math.min(event.clientX, window.innerWidth - rect.width - margin))}px`;
+  menu.style.top = `${Math.max(38, Math.min(event.clientY, window.innerHeight - rect.height - 32))}px`;
+}
+
+function closeWorkbenchFileContextMenu() {
+  $("#workbench-file-context-menu")?.classList.add("hidden");
+}
+
+function closeWorkbenchFileContextMenuFromOutside(event) {
+  const menu = $("#workbench-file-context-menu");
+  if (!menu || menu.classList.contains("hidden") || menu.contains(event.target)) return;
+  closeWorkbenchFileContextMenu();
+}
+
 function renderWorkbenchEditor(tab) {
   $("#workbench-editor-directory").textContent = tab.directory || ".";
   $("#workbench-editor-up").disabled = !tab.directory || tab.directory === "." || tab.loading;
+  renderWorkbenchEditorFileTabs(tab);
   const list = $("#workbench-file-list");
   list.replaceChildren();
   if (tab.loading) {
@@ -5235,6 +5796,7 @@ function renderWorkbenchEditor(tab) {
       const name = document.createElement("span"); name.textContent = entry.name;
       button.append(icon, name);
       button.addEventListener("click", () => entry.directory ? loadWorkbenchEditorDirectory(tab.id, entry.path) : loadWorkbenchEditorFile(tab.id, entry.path, entry.preview));
+      button.addEventListener("contextmenu", (event) => openWorkbenchFileContextMenu(event, tab, entry));
       list.append(button);
     });
   }
@@ -5315,15 +5877,13 @@ function ensureWorkbenchCodeEditor() {
 
 async function loadWorkbenchEditorDirectory(tabID, directory) {
   const tab = state.workbench.tabs.find((item) => item.id === tabID && item.type === "editor");
-  if (!tab || (tab.dirty && !window.confirm("当前文件尚未保存，确定切换目录吗？"))) return;
+  if (!tab) return;
+  syncActiveWorkbenchFile(tab);
   tab.loading = true;
   tab.directory = directory || ".";
   renderWorkbench();
   try {
     tab.entries = await backend().ListWorkbenchFiles(tab.directory);
-    tab.document = null;
-    tab.asset = null;
-    tab.dirty = false;
   } catch (error) {
     tab.entries = [];
     showToast(errorText(error), true);
@@ -5335,20 +5895,23 @@ async function loadWorkbenchEditorDirectory(tabID, directory) {
 
 async function loadWorkbenchEditorFile(tabID, path, preview = "") {
   const tab = state.workbench.tabs.find((item) => item.id === tabID && item.type === "editor");
-  if (!tab || (tab.dirty && !window.confirm("当前文件尚未保存，确定打开其他文件吗？"))) return;
+  if (!tab) return;
+  if (activateWorkbenchFile(tab, path)) return;
+  syncActiveWorkbenchFile(tab);
   tab.loading = true;
   renderWorkbenchEditor(tab);
   try {
     if (preview === "image") {
-      tab.asset = await backend().ReadWorkbenchAsset(path);
-      tab.document = null;
+      upsertWorkbenchFile(tab, { path, asset: await backend().ReadWorkbenchAsset(path), document: null, dirty: false, markdownMode: "" });
     } else {
-      tab.document = await backend().ReadWorkbenchFile(path);
-      tab.asset = null;
-      if (isMarkdownPath(path) && !tab.markdownMode) tab.markdownMode = "split";
+      upsertWorkbenchFile(tab, {
+        path,
+        document: await backend().ReadWorkbenchFile(path),
+        asset: null,
+        dirty: false,
+        markdownMode: isMarkdownPath(path) ? "split" : "",
+      });
     }
-    tab.dirty = false;
-    tab.title = path.split("/").pop() || "编辑器";
   } catch (error) {
     showToast(errorText(error), true);
   } finally {
@@ -5372,14 +5935,18 @@ function refreshWorkbenchEditor() {
 
 function newWorkbenchEditorFile() {
   const tab = activeWorkbenchTab("editor");
-  if (!tab || (tab.dirty && !window.confirm("当前文件尚未保存，确定新建文件吗？"))) return;
+  if (!tab) return;
   const suggested = tab.directory && tab.directory !== "." ? `${tab.directory}/` : "";
   const path = window.prompt("输入项目内的新文件路径", suggested);
   if (!path) return;
-  tab.document = { path: path.trim().replaceAll("\\", "/"), content: "", sha256: "", size: 0 };
-  tab.asset = null;
-  tab.dirty = true;
-  tab.title = tab.document.path.split("/").pop() || "新文件";
+  const normalizedPath = path.trim().replaceAll("\\", "/");
+  upsertWorkbenchFile(tab, {
+    path: normalizedPath,
+    document: { path: normalizedPath, content: "", sha256: "", size: 0 },
+    asset: null,
+    dirty: true,
+    markdownMode: isMarkdownPath(normalizedPath) ? "split" : "",
+  });
   renderWorkbench();
   window.MurongWorkbenchVendor?.focusCodeEditor(workbenchEditorController);
 }
@@ -5389,6 +5956,7 @@ function markWorkbenchEditorDirty(content) {
   if (!tab?.document) return;
   tab.document.content = content;
   tab.dirty = true;
+  syncActiveWorkbenchFile(tab);
   renderWorkbenchEditor(tab);
 }
 
@@ -5400,6 +5968,7 @@ async function saveWorkbenchEditorFile() {
   try {
     tab.document = await backend().SaveWorkbenchFile({ path: tab.document.path, content: tab.document.content, expectedSha256: tab.document.sha256 || "" });
     tab.dirty = false;
+    syncActiveWorkbenchFile(tab);
     showToast(`已保存 ${tab.document.path}`);
     tab.entries = await backend().ListWorkbenchFiles(tab.directory || ".");
   } catch (error) {
@@ -5556,7 +6125,7 @@ function renderStatusBar() {
   const windowTokens = Number(profile.contextWindowTokens || 0);
   $("#statusbar-project").textContent = project ? `项目 ${projectName(project)}` : "未选择项目";
   $("#statusbar-project").title = project || "";
-  $("#statusbar-model").textContent = usage.lastModel || profile.model || "模型未配置";
+  $("#statusbar-model").textContent = usage.lastModel || providerProfileModelLabel(profile) || "模型未配置";
   $("#statusbar-cache").textContent = `缓存 ${formatCount(cached)}`;
   $("#statusbar-tokens").textContent = `Token ${formatCount(tokens)}`;
   $("#statusbar-context").textContent = windowTokens

@@ -47,7 +47,15 @@ data class ChatMessage(
     val images: List<ChatImageAttachment> = emptyList(),
     val toolCalls: List<ToolCall>? = null,
     val toolCallId: String? = null,
-    val name: String? = null
+    val name: String? = null,
+    /**
+     * Provider-native chain-of-thought payload.
+     *
+     * DeepSeek thinking-mode tool calls require this field to be replayed
+     * verbatim with the assistant tool-call message on every subsequent
+     * request in the same tool loop. It is never used as visible content.
+     */
+    val reasoningContent: String? = null
 )
 
 @Serializable
@@ -105,6 +113,7 @@ data class FunctionDef(
  */
 sealed class StreamDelta {
     data class Content(val text: String) : StreamDelta()
+    data object ReasoningStart : StreamDelta()
     data class Reasoning(val text: String) : StreamDelta()
     data class ToolCallStart(val id: String, val name: String) : StreamDelta()
     data class ToolCallDelta(val id: String, val argumentsDelta: String) : StreamDelta()
@@ -120,7 +129,9 @@ data class ChatResponse(
     val toolCalls: List<ToolCall>?,
     val usage: Usage? = null,
     /** 仅 Responses API 返回；调用方应在下一轮放回 ChatRequest。 */
-    val responsesContinuation: ResponsesContinuation? = null
+    val responsesContinuation: ResponsesContinuation? = null,
+    /** Provider-native reasoning that must be preserved across tool-call turns. */
+    val reasoningContent: String? = null
 )
 
 data class Usage(

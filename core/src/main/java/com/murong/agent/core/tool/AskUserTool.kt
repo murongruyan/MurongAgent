@@ -5,7 +5,10 @@ import com.murong.agent.core.loop.AskOptionUi
 import com.murong.agent.core.loop.AskQuestionUi
 import com.murong.agent.core.loop.PendingAskRequestUi
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -72,16 +75,28 @@ class AskUserTool(
 
     override suspend fun execute(args: String): String {
         val root = json.parseToJsonElement(args).jsonObject
-        val questions = root["questions"]?.jsonArray?.mapIndexed { index, element ->
-            val item = element.jsonObject
+        val questionElements = root["questions"]?.jsonArray.orEmpty()
+        require(questionElements.size in 1..4) { "questions 数量必须在 1-4 之间" }
+        val questions = questionElements.mapIndexed { index, element ->
+            val item = element as? JsonObject
+                ?: error("question ${index + 1}: 必须是 JSON 对象")
             val prompt = item["question"]?.jsonPrimitive?.content?.trim().orEmpty()
             val options = item["options"]?.jsonArray?.mapNotNull { optionElement ->
-                val option = optionElement.jsonObject
-                val label = option["label"]?.jsonPrimitive?.content?.trim().orEmpty()
+                val (label, description) = when (optionElement) {
+                    is JsonObject -> {
+                        optionElement["label"]?.jsonPrimitive?.content?.trim().orEmpty() to
+                            optionElement["description"]?.jsonPrimitive?.contentOrNull
+                                ?.trim()
+                                ?.ifBlank { null }
+                    }
+                    is JsonPrimitive ->
+                        optionElement.contentOrNull?.trim().orEmpty() to null
+                    else -> "" to null
+                }
                 if (label.isBlank()) return@mapNotNull null
                 AskOptionUi(
                     label = label,
-                    description = option["description"]?.jsonPrimitive?.content?.trim()?.ifBlank { null }
+                    description = description
                 )
             }.orEmpty()
             require(prompt.isNotBlank()) { "question ${index + 1}: question 不能为空" }

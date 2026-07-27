@@ -121,7 +121,7 @@ func TestDesktopStoreMigratesLegacyProviderAndProtectsEachProfileKey(t *testing.
 		t.Fatal(err)
 	}
 	config := reloaded.publicConfig()
-	if config.ActiveProviderProfileID != "provider_legacy" || len(config.ProviderProfiles) != 1 || !config.ProviderProfiles[0].HasAPIKey || config.Model != "legacy-model" {
+	if config.ActiveProviderProfileID != "provider_legacy" || len(config.ProviderProfiles) != 2 || !config.ProviderProfiles[0].HasAPIKey || config.ProviderProfiles[1].ProviderID != providerBuiltinLocal || config.Model != "legacy-model" {
 		t.Fatalf("legacy provider was not migrated: %#v", config)
 	}
 	if config.Temperature != 0.7 || config.MaxTokens != 8192 || !config.EnableMultimodalMessages || config.PlannerProfileEnabled || config.SubagentProfileEnabled {
@@ -140,7 +140,7 @@ func TestDesktopStoreMigratesLegacyProviderAndProtectsEachProfileKey(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.ActiveProviderProfileID != "provider_claude" || len(updated.ProviderProfiles) != 2 || !updated.ProviderProfiles[0].HasAPIKey || !updated.ProviderProfiles[1].HasAPIKey || updated.Model != "claude-model" {
+	if updated.ActiveProviderProfileID != "provider_claude" || len(updated.ProviderProfiles) != 3 || !updated.ProviderProfiles[0].HasAPIKey || !updated.ProviderProfiles[1].HasAPIKey || updated.ProviderProfiles[2].ProviderID != providerBuiltinLocal || updated.Model != "claude-model" {
 		t.Fatalf("unexpected provider profiles: %#v", updated)
 	}
 	data, err := os.ReadFile(reloaded.configPath)
@@ -238,6 +238,31 @@ func TestDesktopStoreUpdatesProviderReasoningWithoutTouchingSecretsOrOtherSettin
 	}
 	if _, err := store.setProviderReasoningEffort("provider_one", "ultra"); err == nil {
 		t.Fatal("invalid reasoning effort was accepted")
+	}
+	var localID string
+	for _, profile := range updated.ProviderProfiles {
+		if profile.ProviderID == providerBuiltinLocal {
+			localID = profile.ID
+		}
+	}
+	if localID == "" {
+		t.Fatal("built-in local profile is missing")
+	}
+	localUpdated, err := store.setProviderReasoningEffort(localID, "on")
+	if err != nil {
+		t.Fatal(err)
+	}
+	localEffort := ""
+	for _, profile := range localUpdated.ProviderProfiles {
+		if profile.ID == localID {
+			localEffort = profile.ReasoningEffort
+		}
+	}
+	if localEffort != "on" {
+		t.Fatalf("local thinking toggle was not persisted: %q", localEffort)
+	}
+	if _, err := store.setProviderReasoningEffort(localID, "high"); err == nil {
+		t.Fatal("fake local reasoning depth was accepted")
 	}
 	reloaded, err := newDesktopStore()
 	if err != nil {

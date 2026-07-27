@@ -209,3 +209,28 @@ func TestDesktopAgentSnapshotKeepsPhoneOnLatestExplicitSelectionAndPublishesOthe
 		t.Fatalf("session update lost its authoritative message count: %#v", snapshot.SessionUpdates[0])
 	}
 }
+
+func TestDesktopAgentSnapshotIncludesWorkspaceForPhoneFiltering(t *testing.T) {
+	t.Setenv("MURONG_DESKTOP_DATA_DIR", t.TempDir())
+	store, err := newDesktopStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.createSession("Workspace task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	store.sessions[session.ID].ProjectPath = `C:\work\Murong`
+	store.mu.Unlock()
+	app := &DesktopAgentApp{
+		store: store, runs: map[string]context.CancelFunc{}, approvals: map[string]chan bool{},
+		pendingApprovals: map[string]ApprovalRequest{},
+	}
+
+	snapshot := app.desktopAgentSnapshot()
+
+	if len(snapshot.Sessions) != 1 || snapshot.Sessions[0].ProjectPath != `C:\work\Murong` {
+		t.Fatalf("desktop task workspace was not mirrored: %#v", snapshot.Sessions)
+	}
+}

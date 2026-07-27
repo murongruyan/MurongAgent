@@ -16,6 +16,7 @@
 
 # Keep WorkManager runtime internals used during Startup initialization.
 -keep class androidx.work.** { *; }
+-keep class com.murong.agent.core.tool.OplusAccessibilityGuideRestoreWorker { *; }
 -keep class androidx.startup.** { *; }
 
 # Keep Hilt
@@ -70,3 +71,7 @@
 # source-information helpers that compiled composables still call.
 -keep class androidx.compose.runtime.ComposerKt { *; }
 -keep class androidx.compose.runtime.internal.ComposableLambdaImpl { *; }
+# JNI entry points are resolved by their Kotlin/JVM class and method names.
+-keep class com.murong.agent.core.tool.BuiltinVisionNative { *; }
+-keep class com.murong.agent.core.tool.BuiltinVisionTokenListener { *; }
+-keep class com.google.ai.edge.litertlm.** { *; }

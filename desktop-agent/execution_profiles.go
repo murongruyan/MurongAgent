@@ -9,7 +9,7 @@ func normalizeExecutionProfileModel(value string) string {
 func normalizeExecutionProfileReasoning(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	switch value {
-	case "", "low", "medium", "high", "xhigh", "max":
+	case "", "low", "medium", "high", "xhigh", "max", "off", "on":
 		return value
 	default:
 		return ""

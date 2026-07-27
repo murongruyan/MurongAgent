@@ -18,6 +18,9 @@ desktop-agent/desktop-agent.exe
 desktop-agent/.qa-data/
 desktop-agent/.qa-workspace/
 desktop-agent/frontend/node_modules/
+desktop-agent/generated/vlm/mnn/
+desktop-agent/generated/vlm/litert/
+desktop-agent/generated/vlm/llama/
 /voice-*.png
 
 # IDE
@@ -29,6 +32,7 @@ desktop-agent/frontend/node_modules/
 
 # Android
 local.properties
+.cxx/
 *.jks
 *.jks.b64
 *.keystore
@@ -45,6 +49,12 @@ Thumbs.db
 # Debug artifacts
 .dbg/
 debug-workflow-*.md
+.codex-build-logs/
+desktop-agent/.codex-build-logs/
+hs_err_pid*.log
+replay_pid*.log
+desktop-bridge/.adb-debug-config.json
+desktop-bridge/.adb-e2e-config.json
 
 # Generated
 out/

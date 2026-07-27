@@ -25,7 +25,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,6 +35,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.sqrt
 
 /**
@@ -48,11 +49,14 @@ internal class OfflineSherpaSpeechRecognitionService(
     private val modelManager: OfflineVoiceModelManager,
 ) : VoiceRecognitionService {
     private val appContext = context.applicationContext
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val lifetimeJob = SupervisorJob()
+    private val scope = CoroutineScope(lifetimeJob + Dispatchers.Default)
     private val sessionLock = Any()
     private val streamingRecognizerLock = Any()
     private var activeSession: RecordingSession? = null
     private var cachedStreamingRecognizer: CachedStreamingRecognizer? = null
+    private val retiredStreamingRecognizers = mutableListOf<OnlineRecognizer>()
+    private val lastRecordedAudio = AtomicReference<FloatArray?>(null)
     @Volatile private var closed = false
     private val _state = MutableStateFlow(VoiceRecognitionState.IDLE)
     private val _partialText = MutableStateFlow("")
@@ -66,6 +70,9 @@ internal class OfflineSherpaSpeechRecognitionService(
 
     fun isAvailable(): Boolean = modelManager.installedFiles() != null
 
+    /** Returns and clears the latest memory-only microphone window for local speaker verification. */
+    fun takeLastRecordedAudio(): FloatArray? = lastRecordedAudio.getAndSet(null)
+
     /** Load the streaming graph before the user presses the microphone. */
     fun prepareStreamingModel() {
         val files = modelManager.installedFiles() as? StreamingVoiceModelFiles ?: return
@@ -76,7 +83,9 @@ internal class OfflineSherpaSpeechRecognitionService(
 
     @SuppressLint("MissingPermission")
     override suspend fun start(request: VoiceRecognitionRequest) = withContext(Dispatchers.Default) {
-        cancelInternal()
+        cancelAndAwaitInternal()
+        check(!closed) { "语音识别服务已关闭" }
+        lastRecordedAudio.set(null)
         val files = checkNotNull(modelManager.installedFiles()) { "离线中英模型尚未安装" }
         _state.value = VoiceRecognitionState.PREPARING
         val recorder = createRecorder()
@@ -85,8 +94,11 @@ internal class OfflineSherpaSpeechRecognitionService(
             languageTag = request.languageTag,
             modelFiles = files,
         )
-        synchronized(sessionLock) { activeSession = session }
         try {
+            synchronized(sessionLock) {
+                check(!closed) { "语音识别服务已关闭" }
+                activeSession = session
+            }
             recorder.startRecording()
             check(recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                 "无法启动麦克风录音"
@@ -99,7 +111,7 @@ internal class OfflineSherpaSpeechRecognitionService(
                 session.decoderJob = scope.launch { decodeStreaming(session, files) }
             }
         } catch (error: Throwable) {
-            releaseRecorder(recorder)
+            session.releaseRecorderOnce()
             synchronized(sessionLock) {
                 if (activeSession === session) activeSession = null
             }
@@ -120,7 +132,8 @@ internal class OfflineSherpaSpeechRecognitionService(
         session.recordingJob?.join()
         session.audioChunks.close()
         session.decoderJob?.join()
-        releaseRecorder(session.recorder)
+        session.releaseRecorderOnce()
+        lastRecordedAudio.set(session.speakerSamples.takeAsFloatArrayAndClear())
         if (session.cancelled) return@withContext ""
         if (session.failed) {
             fail(
@@ -165,7 +178,7 @@ internal class OfflineSherpaSpeechRecognitionService(
     }
 
     override suspend fun cancel() = withContext(Dispatchers.Default) {
-        cancelInternal()
+        cancelAndAwaitInternal()
         Unit
     }
 
@@ -187,6 +200,7 @@ internal class OfflineSherpaSpeechRecognitionService(
                 }
                 session.recordedSampleCount += count
                 check(session.recordedSampleCount <= MAX_PCM_SAMPLES) { "单次语音最长支持 90 秒" }
+                session.speakerSamples.append(buffer, count)
                 when (session.modelFiles) {
                     is StreamingVoiceModelFiles -> {
                         val samples = FloatArray(count) { index -> buffer[index] / 32768f }
@@ -232,9 +246,6 @@ internal class OfflineSherpaSpeechRecognitionService(
             }
         } finally {
             stream?.release()
-            // close() avoids releasing a cached recognizer while a native decode call is active;
-            // the owning decoder performs that final release after its stream is gone.
-            if (closed) recognizer?.release()
         }
     }
 
@@ -249,7 +260,10 @@ internal class OfflineSherpaSpeechRecognitionService(
             ).joinToString("\u0000")
             cachedStreamingRecognizer?.takeIf { it.modelKey == key }?.recognizer
                 ?: createStreamingRecognizer(files).also { created ->
-                    cachedStreamingRecognizer?.recognizer?.release()
+                    // A cancelled native decode is not an immediate cancellation point. Retire
+                    // the previous graph and release it only after every service child has
+                    // completed, otherwise sherpa/ONNX may lock a destroyed native mutex.
+                    cachedStreamingRecognizer?.recognizer?.let(retiredStreamingRecognizers::add)
                     cachedStreamingRecognizer = CachedStreamingRecognizer(key, created)
                 }
         }
@@ -345,6 +359,7 @@ internal class OfflineSherpaSpeechRecognitionService(
         }
         session.audioChunks.close()
         session.samples.clear()
+        session.speakerSamples.clear()
         _partialText.value = ""
         _volume.value = 0f
         _events.tryEmit(VoiceRecognitionEvent.Failure(message))
@@ -361,11 +376,19 @@ internal class OfflineSherpaSpeechRecognitionService(
         session?.audioChunks?.close()
         session?.recordingJob?.cancel()
         session?.decoderJob?.cancel()
-        releaseRecorder(session?.recorder)
-        session?.samples?.clear()
+        lastRecordedAudio.set(null)
         _partialText.value = ""
         _volume.value = 0f
         _state.value = VoiceRecognitionState.IDLE
+        return session
+    }
+
+    private suspend fun cancelAndAwaitInternal(): RecordingSession? {
+        val session = cancelInternal() ?: return null
+        session.recordingJob?.join()
+        session.decoderJob?.join()
+        session.releaseRecorderOnce()
+        session.clearBuffers()
         return session
     }
 
@@ -401,24 +424,38 @@ internal class OfflineSherpaSpeechRecognitionService(
             ?: error("设备没有可用的录音输入")
     }
 
-    private fun releaseRecorder(recorder: AudioRecord?) {
-        recorder ?: return
-        runCatching { recorder.stop() }
-        runCatching { recorder.release() }
-    }
-
     private fun isCurrent(session: RecordingSession): Boolean = synchronized(sessionLock) {
         activeSession === session
     }
 
     override fun close() {
+        val shouldClose = synchronized(sessionLock) {
+            if (closed) {
+                false
+            } else {
+                closed = true
+                true
+            }
+        }
+        if (!shouldClose) return
         val session = cancelInternal()
-        scope.cancel()
-        synchronized(streamingRecognizerLock) {
-            closed = true
-            val cached = cachedStreamingRecognizer
-            cachedStreamingRecognizer = null
-            if (session?.decoderJob?.isCompleted != false) cached?.recognizer?.release()
+        lifetimeJob.cancel()
+        // Activity.onDestroy must not destroy a sherpa graph while createStream/decode is still
+        // executing. Native calls are not cooperatively cancellable, so wait for the complete
+        // service job tree before releasing any recognizer.
+        CoroutineScope(Dispatchers.Default).launch {
+            lifetimeJob.join()
+            session?.releaseRecorderOnce()
+            session?.clearBuffers()
+            synchronized(streamingRecognizerLock) {
+                val recognizers = (
+                    listOfNotNull(cachedStreamingRecognizer?.recognizer) +
+                        retiredStreamingRecognizers
+                    ).distinct()
+                cachedStreamingRecognizer = null
+                retiredStreamingRecognizers.clear()
+                recognizers.forEach { recognizer -> runCatching { recognizer.release() } }
+            }
         }
     }
 
@@ -432,6 +469,7 @@ internal class OfflineSherpaSpeechRecognitionService(
         val languageTag: String?,
         val modelFiles: OfflineVoiceModelFiles,
         val samples: ShortSampleAccumulator = ShortSampleAccumulator(),
+        val speakerSamples: ShortRingBuffer = ShortRingBuffer(SPEAKER_PCM_SAMPLES),
         val audioChunks: Channel<FloatArray> = Channel(Channel.UNLIMITED),
         var recordingJob: Job? = null,
         var decoderJob: Job? = null,
@@ -441,8 +479,21 @@ internal class OfflineSherpaSpeechRecognitionService(
         @Volatile var stopping: Boolean = false,
         @Volatile var failed: Boolean = false,
     ) {
+        private val recorderReleased = AtomicBoolean(false)
+
         fun stopRecording() {
             runCatching { recorder.stop() }
+        }
+
+        fun releaseRecorderOnce() {
+            if (!recorderReleased.compareAndSet(false, true)) return
+            runCatching { recorder.stop() }
+            runCatching { recorder.release() }
+        }
+
+        fun clearBuffers() {
+            samples.clear()
+            speakerSamples.clear()
         }
     }
 
@@ -477,11 +528,42 @@ internal class OfflineSherpaSpeechRecognitionService(
         }
     }
 
+    private class ShortRingBuffer(private val capacity: Int) {
+        private val values = ShortArray(capacity)
+        private var writeIndex = 0
+        private var size = 0
+
+        fun append(source: ShortArray, count: Int) {
+            val boundedCount = count.coerceIn(0, source.size)
+            repeat(boundedCount) { sourceIndex ->
+                values[writeIndex] = source[sourceIndex]
+                writeIndex = (writeIndex + 1) % capacity
+                if (size < capacity) size++
+            }
+        }
+
+        fun takeAsFloatArrayAndClear(): FloatArray {
+            val start = if (size == capacity) writeIndex else 0
+            val result = FloatArray(size) { index ->
+                values[(start + index) % capacity] / 32768f
+            }
+            clear()
+            return result
+        }
+
+        fun clear() {
+            values.fill(0)
+            writeIndex = 0
+            size = 0
+        }
+    }
+
     private companion object {
         const val SAMPLE_RATE = 16_000
         const val PCM_BUFFER_SAMPLES = 1_024
         const val INITIAL_PCM_CAPACITY = SAMPLE_RATE * 2
         const val MAX_PCM_SAMPLES = SAMPLE_RATE * 90
+        const val SPEAKER_PCM_SAMPLES = SAMPLE_RATE * 12
 
         fun sherpaLanguage(languageTag: String?): String = when (
             languageTag?.let(Locale::forLanguageTag)?.language?.lowercase(Locale.ROOT)

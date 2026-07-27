@@ -65,11 +65,9 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -150,7 +148,6 @@ import com.murong.agent.ui.RuleDraftImportCard
 import com.murong.agent.ui.SkillDraftImportCard
 import com.murong.agent.ui.normalizeSkillAllowedTools
 import com.murong.agent.ui.rememberMurongAccentColor
-import com.murong.agent.ui.rememberMurongBottomBarScrollPadding
 import com.murong.agent.ui.rememberMurongChromeColor
 import com.murong.agent.ui.rememberMurongMutedTextColor
 import com.murong.agent.ui.rememberMurongSurfaceColor
@@ -344,6 +341,8 @@ internal fun ProjectScreen(
     config: ProviderConfig,
     currentProjectPath: String?,
     currentProjectScopePath: String?,
+    requestedPrimaryTab: ProjectPrimaryTab = ProjectPrimaryTab.EDITOR,
+    primaryTabRequestSignal: Int = 0,
     projectKnowledgeDraftPaths: List<String>,
     projectKnowledgeSnapshots: List<ProjectKnowledgeSnapshotUi>,
     projectRules: List<GlobalRule>,
@@ -365,6 +364,7 @@ internal fun ProjectScreen(
     onRenameProjectKnowledgeSnapshot: (String, String) -> Unit,
     onApplyProjectKnowledgeSnapshot: (String) -> Unit,
     onDeleteProjectKnowledgeSnapshot: (String) -> Unit,
+    onPrimaryTabChanged: (ProjectPrimaryTab) -> Unit = {},
     onProjectSecondaryHostBridgeStateChanged: (ProjectSecondaryHostBridgeState) -> Unit = {},
     projectSecondaryHostBackProgress: Float = 0f,
     editorMenuActionSignal: Int = 0,
@@ -462,7 +462,15 @@ internal fun ProjectScreen(
         )
     }
 
-    val bottomBarScrollPadding = rememberMurongBottomBarScrollPadding()
+    LaunchedEffect(primaryTabRequestSignal, requestedPrimaryTab) {
+        if (primaryTabRequestSignal > 0) {
+            dispatchPrimaryNavigationAction(
+                ProjectPrimaryNavigationAction.SelectTab(requestedPrimaryTab)
+            )
+        }
+    }
+
+    val bottomBarScrollPadding = 24.dp
     val chromeColor = rememberMurongChromeColor()
     val mutedTextColor = rememberMurongMutedTextColor()
     val activeConfigScopePath = selectedRepoRoot ?: currentProjectPath
@@ -498,6 +506,9 @@ internal fun ProjectScreen(
                 ProjectPrimaryNavigationAction.SyncSettledTab(settledTab)
             )
         }
+    }
+    LaunchedEffect(settledProjectTab) {
+        onPrimaryTabChanged(settledProjectTab)
     }
     LaunchedEffect(secondaryHostRuntimeState.bridgeState) {
         onProjectSecondaryHostBridgeStateChanged(secondaryHostRuntimeState.bridgeState)
@@ -549,23 +560,17 @@ internal fun ProjectScreen(
     MurongPrimaryPageSurface(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        contentPadding = PaddingValues(vertical = 6.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        contentPadding = PaddingValues(vertical = 2.dp)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             if (primaryNavigationHostState.showPrimaryChrome) {
-                ProjectPrimaryChrome(
+                CompactProjectPrimaryChrome(
                     currentProjectPath = currentProjectPath,
                     selectedTaskRepository = selectedViewerTaskRepository,
                     detectedRepos = detectedRepos,
                     mutedTextColor = mutedTextColor,
                     chromeColor = chromeColor,
-                    selectedTab = selectedTab,
-                    onSelectTab = { tab ->
-                        dispatchPrimaryNavigationAction(
-                            ProjectPrimaryNavigationAction.SelectTab(tab)
-                        )
-                    },
                     onPrimaryAction = onNewTask
                 )
             }
@@ -574,7 +579,7 @@ internal fun ProjectScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                userScrollEnabled = primaryNavigationHostState.userScrollEnabled
+                userScrollEnabled = false
             ) { page ->
                 when (ProjectPrimaryTab.entries[page]) {
                     ProjectPrimaryTab.EDITOR -> ProjectEditorSection(
@@ -687,85 +692,54 @@ internal fun ProjectScreen(
 }
 
 @Composable
-private fun ProjectPrimaryChrome(
+private fun CompactProjectPrimaryChrome(
     currentProjectPath: String?,
     selectedTaskRepository: ProjectGitHubRepoRef? = null,
     detectedRepos: List<ProjectDetectedRepoUi>,
     mutedTextColor: Color,
     chromeColor: Color,
-    selectedTab: ProjectPrimaryTab,
-    onSelectTab: (ProjectPrimaryTab) -> Unit,
     onPrimaryAction: (() -> Unit)? = null
 ) {
-    MurongGlassSurface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(bottom = 8.dp),
-        shape = RoundedCornerShape(24.dp),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically
+    val projectContext = currentProjectPath?.takeIf { it.isNotBlank() }
+        ?: selectedTaskRepository?.let { "${it.owner}/${it.repo}" }
+    if (projectContext != null) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+            shape = RoundedCornerShape(14.dp),
+            color = chromeColor.copy(alpha = 0.44f)
         ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "项目工作区",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = mutedTextColor
-                )
-                Text(
-                    text = currentProjectPath?.takeIf { it.isNotBlank() } ?: "还没选择项目文件夹",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (currentProjectPath.isNullOrBlank()) {
-                    selectedTaskRepository?.let { repo ->
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = projectContext,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (detectedRepos.isNotEmpty()) {
                         Text(
-                            text = "当前任务仓库: ${repo.owner}/${repo.repo}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
+                            text = "${detectedRepos.size} 个项目根目录",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = mutedTextColor
                         )
                     }
                 }
-                if (detectedRepos.isNotEmpty()) {
-                    val gitRepoCount = detectedRepos.count { it.hasGitMetadata }
-                    Text(
-                        text = "已识别 ${detectedRepos.size} 个项目根目录，其中 $gitRepoCount 个是 Git 仓库",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                onPrimaryAction?.let { action ->
+                    TextButton(onClick = action) {
+                        Text("更改")
+                    }
                 }
             }
-            onPrimaryAction?.let { action ->
-                OutlinedButton(onClick = action) {
-                    Text("选择文件夹")
-                }
-            }
-        }
-    }
-    PrimaryScrollableTabRow(
-        selectedTabIndex = selectedTab.ordinal,
-        containerColor = chromeColor.copy(alpha = 0.32f),
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        divider = {}
-    ) {
-        ProjectPrimaryTab.entries.forEach { tab ->
-            Tab(
-                selected = selectedTab == tab,
-                onClick = { onSelectTab(tab) },
-                selectedContentColor = MaterialTheme.colorScheme.onSurface,
-                unselectedContentColor = mutedTextColor,
-                text = { Text(tab.label) }
-            )
         }
     }
 }
@@ -794,7 +768,7 @@ private fun ProjectEditorSection(
     editorMenuAction: ProjectEditorMenuAction?
 ) {
     val scope = rememberCoroutineScope()
-    val bottomBarScrollPadding = rememberMurongBottomBarScrollPadding()
+    val bottomBarScrollPadding = 24.dp
     val editorSurfaceColor = rememberMurongSurfaceColor()
     val editorChromeColor = rememberMurongChromeColor()
     val editorMutedTextColor = rememberMurongMutedTextColor()
@@ -1341,8 +1315,8 @@ private fun ProjectEditorSection(
             return
         }
         val apiKey = config.getActiveApiKey().trim()
-        if (apiKey.isBlank()) {
-            editorError = "请先在设置中配置当前 Provider 的 API Key"
+        if (!config.hasUsableActiveProviderCredentials()) {
+            editorError = "请先配置 API Key，或选择本机模型地址和模型名称"
             return
         }
         val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
@@ -2033,14 +2007,12 @@ private fun ProjectEditorSection(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 if (!showOuterPrimaryChrome && (selectedFilePath != null || projectSecondaryBackProgress > 0f)) {
-                    ProjectPrimaryChrome(
+                    CompactProjectPrimaryChrome(
                         currentProjectPath = currentProjectPath,
                         selectedTaskRepository = selectedTaskRepository,
                         detectedRepos = detectedRepos,
                         mutedTextColor = primaryMutedTextColor,
                         chromeColor = primaryChromeColor,
-                        selectedTab = selectedPrimaryTab,
-                        onSelectTab = onSelectPrimaryTab,
                         onPrimaryAction = onNewTask
                     )
                 }
@@ -4149,7 +4121,7 @@ private fun ProjectGitSectionColumn(
     onRefresh: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val bottomBarScrollPadding = rememberMurongBottomBarScrollPadding()
+    val bottomBarScrollPadding = 24.dp
     val columnModifier = if (fillAvailableHeight) {
         Modifier.fillMaxSize()
     } else {

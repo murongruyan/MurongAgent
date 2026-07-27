@@ -60,9 +60,10 @@ class LanWebCredentialSyncBridge @Inject constructor(
             activeProviderId = if (config.activeAgentBackend == AgentBackendKind.CODEX_CHATGPT) {
                 "codex"
             } else {
-                config.activeProviderId
+                config.activeProviderId.takeUnless { it == "murong-local" }
             },
-            activeProfileId = config.getActiveRelayId(config.activeProviderId),
+            activeProfileId = config.getActiveRelayId(config.activeProviderId)
+                .takeUnless { config.activeProviderId == "murong-local" },
             providers = providers,
             codexAuthJson = auth,
             github = if (options.includeGitHubCredentials) {
@@ -106,9 +107,10 @@ class LanWebCredentialSyncBridge @Inject constructor(
             activeProviderId = if (config.activeAgentBackend == AgentBackendKind.CODEX_CHATGPT) {
                 "codex"
             } else {
-                config.activeProviderId
+                config.activeProviderId.takeUnless { it == "murong-local" }
             },
-            activeProfileId = config.getActiveRelayId(config.activeProviderId),
+            activeProfileId = config.getActiveRelayId(config.activeProviderId)
+                .takeUnless { config.activeProviderId == "murong-local" },
             providers = exportProviders(config).map { it.copy(apiKey = null) },
             codexAuthJson = null,
             github = LanWebSyncedGitHubCredential(
@@ -190,7 +192,9 @@ class LanWebCredentialSyncBridge @Inject constructor(
                             baseUrl = profile.baseUrl,
                             apiKey = profile.apiKey?.takeIf { it.isNotBlank() } ?: previous?.apiKey.orEmpty(),
                             model = profile.model,
-                            reasoningEffort = profile.reasoningEffort.ifBlank { previous?.reasoningEffort ?: "high" },
+                            reasoningEffort = profile.reasoningEffort.ifBlank {
+                                previous?.reasoningEffort ?: defaultRelayReasoningEffort(providerId)
+                            },
                             modelPreset = previous?.modelPreset ?: "custom",
                             autoModelSelection = previous?.autoModelSelection ?: false,
                             autoReasoningEffort = previous?.autoReasoningEffort ?: false,
@@ -589,7 +593,7 @@ class LanWebCredentialSyncBridge @Inject constructor(
                 "模型连接 ID 无效"
             }
             require(profile.name.length <= 100 && profile.model.length <= 200) { "模型连接名称或模型过长" }
-            require(profile.reasoningEffort in setOf("", "low", "medium", "high", "xhigh", "max")) { "推理强度无效" }
+            require(profile.reasoningEffort in setOf("", "low", "medium", "high", "xhigh", "max", "on", "off")) { "推理强度无效" }
             require(profile.apiKey == null || profile.apiKey.length <= MAX_API_KEY_CHARS) { "API Key 过长" }
             profile.contextWindowTokens?.let { require(it in 4_096..2_000_000) { "上下文窗口无效" } }
             validateBaseUrl(profile.baseUrl)
@@ -748,11 +752,30 @@ class LanWebCredentialSyncBridge @Inject constructor(
         "openai", "openai-compatible" -> "openai-compatible"
         "anthropic", "claude" -> "claude"
         "deepseek" -> "deepseek"
+        "kimi", "moonshot" -> "kimi"
+        "glm", "zhipu", "bigmodel" -> "glm"
+        "qwen", "dashscope" -> "qwen"
+        "minimax" -> "minimax"
+        "grok", "xai" -> "grok"
+        "mimo", "xiaomimimo" -> "mimo"
+        "hy3", "hunyuan" -> "hy3"
+        "gemini", "google" -> "gemini"
         else -> value.trim().lowercase()
     }
 
+    private fun defaultRelayReasoningEffort(providerId: String): String = when (providerId) {
+        "kimi" -> "on"
+        "glm" -> "high"
+        "qwen", "grok" -> "medium"
+        "deepseek", "openai-compatible", "claude" -> "high"
+        else -> ""
+    }
+
     private companion object {
-        val SUPPORTED_PROVIDERS = listOf("deepseek", "openai-compatible", "claude")
+        val SUPPORTED_PROVIDERS = listOf(
+            "deepseek", "openai-compatible", "claude", "kimi", "glm", "qwen",
+            "minimax", "grok", "mimo", "hy3", "gemini"
+        )
         val PATH_BOUND_WORKFLOW_TEMPLATES = setOf(
             SavedWorkflowTemplate.PROJECT_READ_DIAGNOSTIC,
             SavedWorkflowTemplate.DIRECTORY_CHANGE_SUMMARY,

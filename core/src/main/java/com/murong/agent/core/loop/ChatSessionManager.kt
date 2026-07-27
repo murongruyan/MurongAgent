@@ -4321,7 +4321,33 @@ class ChatSessionManager(
         mentionedFiles: List<FileMentionUi> = emptyList(),
         pendingImages: List<PendingImageAttachmentUi> = emptyList(),
         selectedSkills: List<GlobalSkill> = emptyList(),
-        onUserMessageAccepted: ((ChatMessageUi) -> Unit)? = null
+        onUserMessageAccepted: ((ChatMessageUi) -> Unit)? = null,
+    ): String? = sendMessageUsingConfig(
+        text = text,
+        mentionedFiles = mentionedFiles,
+        pendingImages = pendingImages,
+        selectedSkills = selectedSkills,
+        onUserMessageAccepted = onUserMessageAccepted,
+        forcedExecutionConfig = null,
+    )
+
+    suspend fun sendMessageWithExecutionConfig(
+        text: String,
+        pendingImages: List<PendingImageAttachmentUi> = emptyList(),
+        forcedExecutionConfig: ProviderConfig,
+    ): String? = sendMessageUsingConfig(
+        text = text,
+        pendingImages = pendingImages,
+        forcedExecutionConfig = forcedExecutionConfig,
+    )
+
+    private suspend fun sendMessageUsingConfig(
+        text: String,
+        mentionedFiles: List<FileMentionUi> = emptyList(),
+        pendingImages: List<PendingImageAttachmentUi> = emptyList(),
+        selectedSkills: List<GlobalSkill> = emptyList(),
+        onUserMessageAccepted: ((ChatMessageUi) -> Unit)? = null,
+        forcedExecutionConfig: ProviderConfig? = null,
     ): String? {
         val normalizedText = text.trim()
         if ((normalizedText.isBlank() && pendingImages.isEmpty()) || _state.value.isProcessing) return null
@@ -4335,7 +4361,8 @@ class ChatSessionManager(
         val effectiveText = resolvedCommand?.expandedText ?: normalizedText
 
         val globalConfig = configRepository.getConfig()
-        val config = resolveEffectiveSessionConfig(globalConfig = globalConfig)
+        val config = forcedExecutionConfig
+            ?: resolveEffectiveSessionConfig(globalConfig = globalConfig)
         if (normalizedText.isBlank() && pendingImages.isNotEmpty() && !config.isMultimodalEnabled()) {
             appendSystemMessage(
                 content = "⚠️ 当前已关闭多模态，图片消息未发送。请到设置里开启多模态后再试。",
@@ -4349,14 +4376,14 @@ class ChatSessionManager(
         val autoCompressionToast = if (usesCodex) null else {
             maybeAutoCompressContext(config = config, allowCreateSnapshot = false)
         }
-        val executionConfig = if (usesCodex) config else {
+        val executionConfig = if (usesCodex || forcedExecutionConfig != null) config else {
             resolveExecutionConfig(
                 baseConfig = config,
                 goal = effectiveText,
                 mentionedFiles = mentionedFiles
             )
         }
-        val executionToast = if (usesCodex) null else {
+        val executionToast = if (usesCodex || forcedExecutionConfig != null) null else {
             buildExecutionProfileToast(baseConfig = config, executionConfig = executionConfig)
         }
         sendMessageInternal(
@@ -4402,10 +4429,9 @@ class ChatSessionManager(
             mentionedFiles = mentionedFiles
         )
         lastSessionConfig = plannerConfig
-        val apiKey = plannerConfig.getActiveApiKey().trim()
-        if (apiKey.isBlank()) {
+        if (!plannerConfig.hasUsableActiveProviderCredentials()) {
             _state.value = _state.value.copy(
-                error = "⚠️ 未配置 API Key。请先到设置页完成模型配置。"
+                error = "⚠️ 未配置可用模型。请填写 API Key，或选择本机模型地址和模型名称。"
             )
             return null
         }
@@ -4536,10 +4562,9 @@ class ChatSessionManager(
         val plannerConfig = config.getPlannerResolvedConfig()
         maybeAutoCompressContext(plannerConfig)
         lastSessionConfig = plannerConfig
-        val apiKey = plannerConfig.getActiveApiKey().trim()
-        if (apiKey.isBlank()) {
+        if (!plannerConfig.hasUsableActiveProviderCredentials()) {
             _state.value = _state.value.copy(
-                error = "⚠️ 未配置 API Key。请先到设置页完成模型配置。"
+                error = "⚠️ 未配置可用模型。请填写 API Key，或选择本机模型地址和模型名称。"
             )
             return
         }
@@ -4677,10 +4702,9 @@ class ChatSessionManager(
         }
         val plannerConfig = config.getPlannerResolvedConfig()
         lastSessionConfig = plannerConfig
-        val apiKey = plannerConfig.getActiveApiKey().trim()
-        if (apiKey.isBlank()) {
+        if (!plannerConfig.hasUsableActiveProviderCredentials()) {
             _state.value = _state.value.copy(
-                error = "⚠️ 未配置 API Key。请先到设置页完成模型配置。"
+                error = "⚠️ 未配置可用模型。请填写 API Key，或选择本机模型地址和模型名称。"
             )
             return
         }
@@ -4832,11 +4856,10 @@ class ChatSessionManager(
         val config = resolveEffectiveSessionConfig(globalConfig = globalConfig)
         val plannerConfig = config.getPlannerResolvedConfig()
         lastSessionConfig = plannerConfig
-        val apiKey = plannerConfig.getActiveApiKey().trim()
-        if (apiKey.isBlank()) {
+        if (!plannerConfig.hasUsableActiveProviderCredentials()) {
             _state.value = applyClarificationAnswerSubmitFailureTransition(
                 state = _state.value,
-                errorMessage = "⚠️ 未配置 API Key。请先到设置页完成模型配置。"
+                errorMessage = "⚠️ 未配置可用模型。请填写 API Key，或选择本机模型地址和模型名称。"
             )
             return
         }
@@ -5016,10 +5039,9 @@ class ChatSessionManager(
         // exactly one connected server exports the raw tool name; ambiguous legacy entries stay
         // disabled rather than accidentally granting a second server the same permission.
         lastSessionConfig = resolveLegacyMcpToolAllowList(config)
-        val apiKey = config.getActiveApiKey()
-        if (apiKey.isBlank()) {
+        if (!config.hasUsableActiveProviderCredentials()) {
             appendSystemMessage(
-                content = "⚠️ 未配置 API Key。请点击底部「设置」→ 选择 AI 提供商 → 填入你的 API Key。",
+                content = "⚠️ 未配置可用模型。请在设置中填写 API Key，或配置本机模型地址和模型名称。",
                 source = "send_message:missing_api_key"
             )
             _state.value = _state.value.copy(
@@ -5190,6 +5212,7 @@ class ChatSessionManager(
                 onEvent = { event ->
                     when (event) {
                         is AgentEvent.ContentDelta -> appendToStreaming(event.text)
+                        AgentEvent.ReasoningStart -> startStreamingReasoning()
                         is AgentEvent.ReasoningDelta -> appendToStreamingReasoning(event.text)
                         is AgentEvent.ToolExecution -> {
                             if (event.isPartial) {
@@ -6647,6 +6670,7 @@ class ChatSessionManager(
         val hasActiveProcessing = _state.value.isProcessing || pendingApprovalDecision != null || pendingAskDecision != null
         if (!hasActiveProcessing) return false
         processingCancelledByUser = true
+        BuiltinVisionRuntime.cancelActiveGeneration()
         agentLoop = null
         val codexTurn = activeCodexTurn
         if (codexTurn != null) {
@@ -6731,6 +6755,13 @@ class ChatSessionManager(
 
     private fun appendToStreamingReasoning(text: String) {
         enqueueStreamingUpdate(reasoningDelta = text)
+    }
+
+    private fun startStreamingReasoning() {
+        val id = ensureStreamingAssistantMessage()
+        updateMessageById(id) { message ->
+            if (message.reasoning == null) message.copy(reasoning = "") else message
+        }
     }
 
     private fun ensureStreamingAssistantMessage(): Long {
@@ -7588,6 +7619,14 @@ class ChatSessionManager(
             registry.register(
                 AndroidTool(),
                 isEnabled = { allowWriteTools && shouldExposeLocalShellTool() }
+            )
+        }
+        if (config.isBuiltinToolEnabled("gui")) {
+            registry.register(
+                GuiAutomationTool {
+                    runBlocking { configRepository.getConfig() }
+                },
+                isEnabled = { allowWriteTools }
             )
         }
         if (config.isBuiltinToolEnabled("file")) {
@@ -9269,9 +9308,10 @@ class ChatSessionManager(
         val globalConfig = configRepository.getConfig()
         val config = resolveEffectiveSessionConfig(globalConfig = globalConfig)
         lastSessionConfig = config
-        val apiKey = config.getActiveApiKey().trim()
-        if (apiKey.isBlank()) {
-            _state.value = _state.value.copy(error = "⚠️ 未配置 API Key。请先到设置页完成模型配置。")
+        if (!config.hasUsableActiveProviderCredentials()) {
+            _state.value = _state.value.copy(
+                error = "⚠️ 未配置可用模型。请填写 API Key，或选择本机模型地址和模型名称。"
+            )
             return false
         }
         val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
@@ -10415,6 +10455,7 @@ class ChatSessionManager(
             appendLine()
             appendLine("Do not include markdown, bullet points, code fences, or any extra text when using that structure.")
             appendLine("Do not use it for minor uncertainty; only use it when execution should pause and ask the user.")
+            appendLine("An explicit request to open or operate a named Android app is already actionable: use the gui tool and never ask the user how to launch it.")
             if (existingClarificationAnswers.isNotEmpty()) {
                 appendLine()
                 appendLine("Already confirmed clarification answers for this task:")
@@ -11777,8 +11818,7 @@ class ChatSessionManager(
         )
         val config = runCatching { configRepository.getConfig() }
             .getOrElse { lastSessionConfig }
-        val apiKey = config.getActiveApiKey().trim()
-        if (apiKey.isBlank()) return localSummary
+        if (!config.hasUsableActiveProviderCredentials()) return localSummary
 
         val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
         val response = runCatching {

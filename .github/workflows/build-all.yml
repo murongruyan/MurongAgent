@@ -488,6 +488,13 @@ jobs:
           node --check frontend/dist/app.js
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Build Verified Windows Vision Runtimes
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          ./scripts/build-vlm-runtimes.ps1 -Architecture "${{ matrix.goarch }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Install Linux WebView Dependencies
         if: matrix.goos == 'linux'
         shell: bash
@@ -505,14 +512,14 @@ jobs:
         run: |
           $testTags = if ("${{ matrix.goos }}" -eq "linux") { "webkit2_41" } else { "" }
           if ($testTags) {
-            go test -count=1 -tags $testTags ./...
+            go test -count=1 -tags $testTags .
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            go vet -tags $testTags ./...
+            go vet -tags $testTags .
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           } else {
-            go test -count=1 ./...
+            go test -count=1 .
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            go vet ./...
+            go vet .
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           Push-Location ../desktop-bridge

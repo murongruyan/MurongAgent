@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -192,6 +193,66 @@ func (app *DesktopAgentApp) SaveWorkbenchFile(request WorkbenchSaveFileRequest) 
 		return WorkbenchFileDocument{}, err
 	}
 	return WorkbenchFileDocument(written), nil
+}
+
+// RevealWorkbenchPath opens a project directory in the native file manager, or
+// selects a project file in it. Path resolution deliberately reuses the
+// workbench's symlink boundary checks before launching an external process.
+func (app *DesktopAgentApp) RevealWorkbenchPath(relative string) error {
+	workspace, err := app.workbenchWorkspace()
+	if err != nil {
+		return err
+	}
+	target, err := workspace.resolveExisting(strings.TrimSpace(relative), true)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() && !info.Mode().IsRegular() {
+		return errors.New("文件管理器只能打开普通文件或目录")
+	}
+	executable, arguments, err := fileManagerRevealCommand(runtime.GOOS, target, info.IsDir())
+	if err != nil {
+		return err
+	}
+	command := exec.Command(executable, arguments...)
+	prepareHiddenCommand(command)
+	if err := command.Start(); err != nil {
+		return fmt.Errorf("无法打开系统文件管理器：%w", err)
+	}
+	if err := command.Process.Release(); err != nil {
+		return fmt.Errorf("无法释放文件管理器进程：%w", err)
+	}
+	return nil
+}
+
+func fileManagerRevealCommand(goos, target string, directory bool) (string, []string, error) {
+	target = filepath.Clean(strings.TrimSpace(target))
+	if target == "." || target == "" {
+		return "", nil, errors.New("文件管理器目标路径无效")
+	}
+	switch goos {
+	case "windows":
+		if directory {
+			return "explorer.exe", []string{target}, nil
+		}
+		return "explorer.exe", []string{"/select," + target}, nil
+	case "darwin":
+		if directory {
+			return "open", []string{target}, nil
+		}
+		return "open", []string{"-R", target}, nil
+	case "linux":
+		if !directory {
+			target = filepath.Dir(target)
+		}
+		return "xdg-open", []string{target}, nil
+	default:
+		return "", nil, fmt.Errorf("当前系统暂不支持打开文件管理器：%s", goos)
+	}
 }
 
 func (app *DesktopAgentApp) GetWorkbenchGit() (WorkbenchGitSnapshot, error) {

@@ -66,15 +66,20 @@ func buildDesktopCrossPlatformBackupState(
 		},
 	}
 	if active := findProviderProfile(config.ProviderProfiles, config.ActiveProviderProfileID); active != nil {
-		providerID := active.ProviderID
-		if providerID == providerCodex {
-			providerID = "codex"
+		if active.ProviderID == providerBuiltinLocal {
+			active = nil
 		}
-		bundle.ActiveProviderID = stringPointer(providerID)
-		bundle.ActiveProfileID = stringPointer(active.ID)
+		if active != nil {
+			providerID := active.ProviderID
+			if providerID == providerCodex {
+				providerID = "codex"
+			}
+			bundle.ActiveProviderID = stringPointer(providerID)
+			bundle.ActiveProfileID = stringPointer(active.ID)
+		}
 	}
 	for _, profile := range config.ProviderProfiles {
-		if profile.ProviderID == providerCodex {
+		if profile.ProviderID == providerCodex || profile.ProviderID == providerBuiltinLocal {
 			continue
 		}
 		portable := desktopbridge.SyncedProviderCredential{

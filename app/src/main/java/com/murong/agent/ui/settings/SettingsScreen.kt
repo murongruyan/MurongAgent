@@ -61,9 +61,7 @@ import com.murong.agent.ui.MurongInfoCard
 import com.murong.agent.ui.MurongOutlinedActionButton
 import com.murong.agent.ui.MurongInteractionPerformanceHint
 import com.murong.agent.ui.MurongPrimaryPageSurface
-import com.murong.agent.ui.MurongSectionCard
 import com.murong.agent.ui.RuleDraftImportCard
-import com.murong.agent.ui.rememberMurongBottomBarScrollPadding
 import com.murong.agent.ui.normalizeSkillAllowedTools
 import com.murong.agent.ui.sanitizeSkillAllowedTools
 import com.murong.agent.ui.SkillAllowedToolsBudgetView
@@ -71,9 +69,12 @@ import com.murong.agent.ui.SkillDraftImportCard
 import com.murong.agent.ui.voice.OfflineVoiceModelSetting
 import com.murong.agent.ui.voice.VoiceRecognitionProviderSetting
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun SettingsScreen(
@@ -128,24 +129,14 @@ fun SettingsScreen(
     onStartGitHubOAuthLogin: () -> Unit = {},
     onClearGitHubToken: () -> Unit = {},
     onOpenThemePage: () -> Unit = {},
-    onOpenAboutPage: () -> Unit = {}
+    onOpenAboutPage: () -> Unit = {},
+    focus: SettingsFocus = SettingsFocus.ALL
 ) {
-    val bottomBarScrollPadding = rememberMurongBottomBarScrollPadding()
+    val contentBottomPadding = 24.dp
     val settingsScrollState = rememberScrollState()
     val context = LocalContext.current
-    var hasExternalStorageAccess by remember {
-        mutableStateOf(MurongExternalStorageAccess.hasAccess(context))
-    }
-    val allFilesAccessLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) {
-        hasExternalStorageAccess = MurongExternalStorageAccess.hasAccess(context)
-    }
-    val legacyStoragePermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) {
-        hasExternalStorageAccess = MurongExternalStorageAccess.hasAccess(context)
-    }
+    fun shows(target: SettingsFocus): Boolean =
+        focus == SettingsFocus.ALL || focus == target
     MurongInteractionPerformanceHint(active = settingsScrollState.isScrollInProgress)
     val providers = remember { ProviderRegistry.getAllProviders() }
     var showApiKey by remember { mutableStateOf(false) }
@@ -155,18 +146,20 @@ fun SettingsScreen(
     // saveable state, Android recreation can immediately launch the same browser
     // page again before the user has a chance to read the result.
     var lastOpenedCodexAuthAttempt by rememberSaveable { mutableStateOf<String?>(null) }
-    var providerSectionExpanded by rememberSaveable { mutableStateOf(false) }
-    var chatAndSearchExpanded by rememberSaveable { mutableStateOf(false) }
-    var voiceSettingsExpanded by rememberSaveable { mutableStateOf(false) }
-    var systemPromptExpanded by rememberSaveable { mutableStateOf(false) }
-    var rulesExpanded by rememberSaveable { mutableStateOf(false) }
-    var memoriesExpanded by rememberSaveable { mutableStateOf(false) }
-    var skillsExpanded by rememberSaveable { mutableStateOf(false) }
-    var backupRestoreExpanded by rememberSaveable { mutableStateOf(false) }
-    var remoteWebExpanded by rememberSaveable { mutableStateOf(false) }
-    var gitHubExpanded by rememberSaveable { mutableStateOf(false) }
-    var runtimeBackendExpanded by rememberSaveable { mutableStateOf(false) }
-    var mcpExpanded by rememberSaveable { mutableStateOf(false) }
+    var providerSectionExpanded by rememberSaveable(focus) { mutableStateOf(false) }
+    var chatAndSearchExpanded by rememberSaveable(focus) { mutableStateOf(false) }
+    var voiceSettingsExpanded by rememberSaveable(focus) {
+        mutableStateOf(focus == SettingsFocus.VOICE)
+    }
+    var systemPromptExpanded by rememberSaveable(focus) { mutableStateOf(false) }
+    var rulesExpanded by rememberSaveable(focus) { mutableStateOf(false) }
+    var memoriesExpanded by rememberSaveable(focus) { mutableStateOf(false) }
+    var skillsExpanded by rememberSaveable(focus) { mutableStateOf(false) }
+    var backupRestoreExpanded by rememberSaveable(focus) { mutableStateOf(false) }
+    var remoteWebExpanded by rememberSaveable(focus) { mutableStateOf(false) }
+    var gitHubExpanded by rememberSaveable(focus) { mutableStateOf(false) }
+    var runtimeBackendExpanded by rememberSaveable(focus) { mutableStateOf(false) }
+    var mcpExpanded by rememberSaveable(focus) { mutableStateOf(false) }
 
     LaunchedEffect(gitHubAuthState.authorizationUrl) {
         val uri = gitHubAuthState.authorizationUrl?.trim().orEmpty()
@@ -212,17 +205,18 @@ fun SettingsScreen(
         modifier = Modifier
             .fillMaxSize()
             .imePadding()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 2.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(settingsScrollState)
-                .padding(start = 12.dp, top = 10.dp, end = 12.dp, bottom = bottomBarScrollPadding),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(start = 8.dp, top = 6.dp, end = 8.dp, bottom = contentBottomPadding),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
 
+            if (focus == SettingsFocus.ALL) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -238,126 +232,35 @@ fun SettingsScreen(
                         modifier = Modifier.weight(1f)
                     )
                 }
-
-            // ═══════════════════════════════════════
-            // Root 权限检测
-            // ═══════════════════════════════════════
-            Text(
-                text = "设备权限",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-
-            MurongGlassSurface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                contentPadding = PaddingValues(16.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = "Root 权限",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = when {
-                                isCheckingRoot -> "检测中…"
-                                rootStatus == true -> "✅ Root 可用"
-                                rootStatus == false -> "❌ Root 不可用"
-                                else -> "自动检测中…"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = when {
-                                rootStatus == true -> Color(0xFF4CAF50)
-                                rootStatus == false -> MaterialTheme.colorScheme.error
-                                else -> MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                        )
-                    }
-                    if (isCheckingRoot) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp
-                        )
-                    }
-                }
             }
 
-            MurongGlassSurface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                contentPadding = PaddingValues(16.dp)
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text(
-                        text = "文件访问",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = if (hasExternalStorageAccess) {
-                            "✅ 已可读取共享存储中的普通文件"
-                        } else {
-                            "⚠️ 未授予全部文件访问；终端和 Agent 只能看到部分目录"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (hasExternalStorageAccess) {
-                            Color(0xFF4CAF50)
-                        } else {
-                            MaterialTheme.colorScheme.error
-                        }
-                    )
-                    if (!hasExternalStorageAccess) {
-                        Text(
-                            text = MurongExternalStorageAccess.missingAccessSummary(),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    FilledTonalButton(
-                        onClick = {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                                allFilesAccessLauncher.launch(
-                                    MurongExternalStorageAccess.settingsIntent(context)
-                                )
-                            } else {
-                                MurongExternalStorageAccess.permissionToRequest()?.let(
-                                    legacyStoragePermissionLauncher::launch
-                                )
-                            }
-                        },
-                        enabled = !hasExternalStorageAccess,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(if (hasExternalStorageAccess) "全部文件访问已授权" else "授权全部文件访问")
-                    }
-                }
+            if (shows(SettingsFocus.DEVICE)) {
+                DevicePermissionCenter(
+                    rootStatus = rootStatus,
+                    isCheckingRoot = isCheckingRoot,
+                    onCheckRoot = onCheckRoot
+                )
             }
 
-            BackupRestoreSettingsSection(
-                state = backupRestoreState,
-                suggestedFileName = suggestedBackupFileName,
-                onRefresh = onRefreshBackupStatus,
-                onSettingsChanged = onUpdateBackupSettings,
-                onExport = onExportManualBackup,
-                onRestore = onRestoreBackup,
-                expanded = backupRestoreExpanded,
-                onExpandedChange = { backupRestoreExpanded = it }
-            )
+            if (shows(SettingsFocus.DATA)) {
+                BackupRestoreSettingsSection(
+                    state = backupRestoreState,
+                    suggestedFileName = suggestedBackupFileName,
+                    onRefresh = onRefreshBackupStatus,
+                    onSettingsChanged = onUpdateBackupSettings,
+                    onExport = onExportManualBackup,
+                    onRestore = onRestoreBackup,
+                    expanded = backupRestoreExpanded,
+                    onExpandedChange = { backupRestoreExpanded = it }
+                )
 
-            LanWebClientSettingsSection(
-                expanded = remoteWebExpanded,
-                onExpandedChange = { remoteWebExpanded = it }
-            )
+                LanWebClientSettingsSection(
+                    expanded = remoteWebExpanded,
+                    onExpandedChange = { remoteWebExpanded = it }
+                )
+            }
 
+        if (shows(SettingsFocus.DATA)) {
         SettingsExpandableSectionCard(
             title = "GitHub 联动",
             subtitle = when {
@@ -478,6 +381,9 @@ fun SettingsScreen(
                 }
             }
 
+        }
+
+        if (shows(SettingsFocus.MODELS)) {
         val activeSessions = sessions.filter { it.providerId == config.activeProviderId }
         val totalPromptTokens = activeSessions.sumOf { it.usageSummary.promptTokens }
         val totalCompletionTokens = activeSessions.sumOf { it.usageSummary.completionTokens }
@@ -489,54 +395,42 @@ fun SettingsScreen(
 
         Text(
             text = "用量与成本",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onBackground
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary
         )
 
         Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                    .padding(horizontal = 14.dp, vertical = 11.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
                 Text(
-                    text = "当前 Provider: ${ProviderRegistry.getActiveProvider(config.activeProviderId).name}",
-                    style = MaterialTheme.typography.bodyLarge,
+                    text = "${ProviderRegistry.getActiveProvider(config.activeProviderId).name} · ${activeSessions.size} 个会话",
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "累计会话 ${activeSessions.size} 个 · 总 Token $totalTokens",
-                    style = MaterialTheme.typography.bodySmall,
+                    text = "Token $totalTokens（输入 $totalPromptTokens · 输出 $totalCompletionTokens）",
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = "输入 $totalPromptTokens · 输出 $totalCompletionTokens",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "累计预估成本 ${formatCurrencyAmount(totalEstimatedCost, estimatedCostCurrency)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = "当前余额 ${formatBalance(config.getBalanceAmount(), activeBalanceCurrency)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "剩余额度估算 ${formatCurrencyAmount(remainingBalance, activeBalanceCurrency)}",
-                    style = MaterialTheme.typography.bodySmall,
+                    text = "成本 ${formatCurrencyAmount(totalEstimatedCost, estimatedCostCurrency)} · 余额 ${formatBalance(config.getBalanceAmount(), activeBalanceCurrency)} · 剩余 ${formatCurrencyAmount(remainingBalance, activeBalanceCurrency)}",
+                    style = MaterialTheme.typography.labelSmall,
                     color = if (remainingBalance < 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                 )
             }
         }
 
+        }
+
+        if (shows(SettingsFocus.AGENT)) {
         ChatAndSearchSection(
             config = config,
             showApiKey = showApiKey,
@@ -545,10 +439,12 @@ fun SettingsScreen(
             onExpandedChange = { chatAndSearchExpanded = it },
             onConfigChanged = onConfigChanged
         )
+        }
 
         // ═══════════════════════════════════════
         // AI 模型提供商
         // ═══════════════════════════════════════
+        if (shows(SettingsFocus.MODELS)) {
         CodexChatGptBackendCard(
             config = config,
             state = codexChatGptState,
@@ -560,7 +456,9 @@ fun SettingsScreen(
             expanded = runtimeBackendExpanded,
             onExpandedChange = { runtimeBackendExpanded = it }
         )
+        }
 
+        if (shows(SettingsFocus.VOICE)) {
         SettingsExpandableSectionCard(
             title = "语音",
             subtitle = if (voiceSettings.inputEnabled) {
@@ -574,12 +472,16 @@ fun SettingsScreen(
             VoiceSettingsSection(
                 settings = voiceSettings,
                 onUpdateSettings = onUpdateVoiceSettings,
+                config = config,
+                onConfigChanged = onConfigChanged,
                 offlineModelState = offlineVoiceModelState,
                 onInstallOfflineModel = onInstallOfflineVoiceModel,
                 onDeleteOfflineModel = onDeleteOfflineVoiceModel,
             )
         }
+        }
 
+        if (shows(SettingsFocus.MODELS)) {
             SettingsExpandableSectionCard(
                 title = "AI 连接配置",
                 subtitle = if (config.usesCodexChatGptBackend()) {
@@ -598,7 +500,9 @@ fun SettingsScreen(
                     onConfigChanged = onConfigChanged
                 )
             }
+        }
 
+        if (shows(SettingsFocus.AGENT)) {
         SettingsExpandableSectionCard(
             title = "系统提示词",
             subtitle = "控制所有会话的默认系统行为、回答风格和基础约束。",
@@ -624,8 +528,8 @@ fun SettingsScreen(
                         onClick = { onConfigChanged(config.copy(responseVerbosity = verbosity)) },
                         label = { Text(label, fontSize = 12.sp) }
                     )
-                }
-            }
+        }
+        }
             Text(
                 text = when (config.responseVerbosity) {
                     ResponseVerbosity.CONCISE -> "更像命令式助手，默认少说废话，工具执行后只做简短总结。"
@@ -689,6 +593,9 @@ fun SettingsScreen(
             )
         }
 
+        }
+
+        if (shows(SettingsFocus.AUTOMATION)) {
         SettingsExpandableSectionCard(
             title = "全局 Skills",
             subtitle = "保存可复用模板和工作流能力，按需展开编辑。",
@@ -711,7 +618,9 @@ fun SettingsScreen(
                 showDivider = false
             )
         }
+        }
 
+        if (shows(SettingsFocus.AUTOMATION)) {
         McpSettingsSection(
             mcpServers = mcpServers,
             mcpStatuses = mcpStatuses,
@@ -724,8 +633,10 @@ fun SettingsScreen(
             expanded = mcpExpanded,
             onExpandedChange = { mcpExpanded = it }
         )
+        }
 
         // 温度和最大 Token
+        if (shows(SettingsFocus.MODELS)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -761,6 +672,7 @@ fun SettingsScreen(
                 )
             )
         }
+        }
 
         Spacer(modifier = Modifier.height(32.dp))
         }
@@ -771,13 +683,16 @@ fun SettingsScreen(
 private fun VoiceSettingsSection(
     settings: VoiceSettings,
     onUpdateSettings: ((VoiceSettings) -> VoiceSettings) -> Unit,
+    config: ProviderConfig,
+    onConfigChanged: (ProviderConfig) -> Unit,
     offlineModelState: OfflineVoiceModelUiState,
     onInstallOfflineModel: () -> Unit,
     onDeleteOfflineModel: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
-            "按住聊天输入框旁的麦克风即可转写；转写只回填文本，不会自动发送。可使用系统服务，也可主动下载离线模型；不保存原始音频。",
+            "聊天输入框的语音只回填文本；系统助手弹窗会在说完后约 1 秒自动停录并发送。" +
+                "可使用系统服务，也可主动下载离线模型；不保存原始音频。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -801,6 +716,11 @@ private fun VoiceSettingsSection(
             state = offlineModelState,
             onInstall = onInstallOfflineModel,
             onDelete = onDeleteOfflineModel,
+        )
+        AssistantInvocationSettings(
+            offlineModelState = offlineModelState,
+            config = config,
+            onConfigChanged = onConfigChanged,
         )
         Text("语言", style = MaterialTheme.typography.labelLarge)
         FlowRow(
@@ -1058,38 +978,63 @@ internal fun SettingsExpandableSectionCard(
     onExpandedChange: (Boolean) -> Unit,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    MurongSectionCard(
-        title = title,
-        modifier = Modifier.fillMaxWidth()
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onExpandedChange(!expanded) },
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f)
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Icon(
-                imageVector = if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
-                contentDescription = if (expanded) "收起$title" else "展开$title",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        AnimatedVisibility(visible = expanded) {
-            Column(
+        Column {
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .clickable { onExpandedChange(!expanded) }
+                    .padding(horizontal = 14.dp, vertical = 11.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                content()
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Icon(
+                    imageVector = if (expanded) {
+                        Icons.Outlined.KeyboardArrowUp
+                    } else {
+                        Icons.Outlined.KeyboardArrowDown
+                    },
+                    contentDescription = if (expanded) "收起$title" else "展开$title",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            AnimatedVisibility(visible = expanded) {
+                Column {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        content()
+                    }
+                }
             }
         }
     }
@@ -1202,7 +1147,9 @@ private fun hasConfiguredProvider(config: ProviderConfig): Boolean {
         config.deepseekModel.trim(),
         config.openaiModel.trim(),
         config.claudeModel.trim()
-    ).any { it.isNotBlank() }
+    ).any { it.isNotBlank() } || config.externalProviderRelays.values.flatten().any { relay ->
+        relay.apiKey.isNotBlank() || relay.baseUrl.isNotBlank() || relay.model.isNotBlank()
+    }
 }
 
 @Composable
@@ -1478,8 +1425,15 @@ private fun ProviderConfigurationSection(
             title = { Text("选择官方 API") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("deepseek" to "官方 DeepSeek", "openai-compatible" to "官方 OpenAI", "claude" to "官方 Claude").forEach { (id, label) ->
-                        TextButton(onClick = { showOfficialProviderPicker = false; creationKind = RelayKind.OFFICIAL; creationProviderId = id }, modifier = Modifier.fillMaxWidth()) { Text(label) }
+                    providers.forEach { provider ->
+                        TextButton(
+                            onClick = {
+                                showOfficialProviderPicker = false
+                                creationKind = RelayKind.OFFICIAL
+                                creationProviderId = provider.id
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("官方 ${provider.name}") }
                     }
                 }
             },
@@ -1564,7 +1518,9 @@ private fun NewRelayConfigurationDialog(
                             onSave(
                                 RelayConfig(
                                     id = "relay-${UUID.randomUUID()}",
-                                    name = name.trim(),
+                                    name = name.trim().ifBlank {
+                                        if (kind == RelayKind.OFFICIAL) "官方 ${provider.name}" else ""
+                                    },
                                     baseUrl = if (kind == RelayKind.OFFICIAL) "" else baseUrl.trim(),
                                     apiKey = apiKey,
                                     model = model.trim().ifBlank { provider.defaultModel },
@@ -1590,6 +1546,18 @@ private fun RelayConfigurationDialog(
     onConfigChanged: (ProviderConfig) -> Unit
 ) {
     var showApiKey by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    var modelCatalogState by remember(provider.id, config.getActiveRelayId(provider.id)) {
+        mutableStateOf(
+            ProviderModelCatalogUiState(
+                providerId = provider.id,
+                models = mergeProviderModelCandidates(
+                    providerId = provider.id,
+                    currentModel = config.getResolvedModel(provider.id)
+                )
+            )
+        )
+    }
     MurongDialog(onDismissRequest = onDismiss) {
         Surface(
             shape = RoundedCornerShape(20.dp),
@@ -1615,7 +1583,7 @@ private fun RelayConfigurationDialog(
                     providerSectionExpanded = true,
                     onProviderSectionExpandedChange = {},
                     balanceSyncStates = emptyMap(),
-                    providerModelCatalogs = emptyMap(),
+                    providerModelCatalogs = mapOf(provider.id to modelCatalogState),
                     onConfigChanged = onConfigChanged,
                     onUpdateApiKey = { providerId, value -> onConfigChanged(config.updateActiveRelay(providerId) { it.copy(apiKey = value) }) },
                     onUpdateBaseUrl = { providerId, value -> onConfigChanged(config.updateActiveRelay(providerId) { it.copy(baseUrl = value) }) },
@@ -1625,7 +1593,38 @@ private fun RelayConfigurationDialog(
                     showRelayManagement = false,
                     onSetActiveProvider = { providerId -> onConfigChanged(config.copy(activeProviderId = providerId)) },
                     onRefreshProviderBalance = {},
-                    onRefreshProviderModels = {},
+                    onRefreshProviderModels = { providerId ->
+                        if (providerId == provider.id && !modelCatalogState.isLoading) {
+                            modelCatalogState = modelCatalogState.copy(isLoading = true, message = null, error = null)
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) {
+                                    fetchProviderModelCatalog(config, provider)
+                                }
+                                modelCatalogState = result.fold(
+                                    onSuccess = { catalog ->
+                                        modelCatalogState.copy(
+                                            models = mergeProviderModelCandidates(
+                                                provider.id,
+                                                config.getResolvedModel(provider.id),
+                                                catalog.models
+                                            ),
+                                            sourceLabel = catalog.sourceLabel,
+                                            isLoading = false,
+                                            message = "已同步 ${catalog.models.size} 个模型",
+                                            error = null,
+                                            syncedAt = catalog.syncedAt
+                                        )
+                                    },
+                                    onFailure = { error ->
+                                        modelCatalogState.copy(
+                                            isLoading = false,
+                                            error = error.message ?: "读取模型列表失败"
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                    },
                     supportsBalanceFetch = { false }
                 )
             }
@@ -2224,12 +2223,8 @@ private fun LegacyProviderSettingsSection(
                                                         selected = !reasoningAutoSelectionEnabled && reasoningEffort == effort,
                                                         onClick = {
                                                             onConfigChanged(
-                                                                when (provider.id) {
-                                                                    "deepseek" -> config.copy(deepseekReasoningEffort = effort)
-                                                                    "openai-compatible" -> config.copy(openaiReasoningEffort = effort)
-                                                                    "claude" -> config.copy(claudeReasoningEffort = effort)
-                                                                    else -> config
-                                                                }.withReasoningAutoSelection(provider.id, false)
+                                                                config.withProviderReasoningEffort(provider.id, effort)
+                                                                    .withReasoningAutoSelection(provider.id, false)
                                                             )
                                                         },
                                                         label = {

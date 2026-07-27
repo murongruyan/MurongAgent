@@ -9,20 +9,20 @@ import kotlinx.serialization.json.*
 import java.io.File
 
 /**
- * Shell 执行工具——按调用参数选择 Root 系统环境或应用 UID 扩展环境。
+ * Shell 执行工具——按调用参数选择系统执行通道（Root/Shizuku）或应用 UID 扩展环境。
  */
 class ShellTool(
     private val scheduleBackgroundExecution: (suspend (BackgroundJobRequest, suspend () -> BackgroundJobCompletion) -> String)? = null,
     private val workingDirectoryProvider: () -> String? = { null },
-    private val rootAvailableProvider: () -> Boolean = KeepShellPublic::checkRoot,
-    private val systemCommandExecutor: (String, Int) -> String = ::executeSystemCommand,
+    private val rootAvailableProvider: () -> Boolean = AndroidSystemExecution::isSystemCommandAvailable,
+    private val systemCommandExecutor: (String, Int) -> String = AndroidSystemExecution::executeSystemCommand,
     private val extensionAvailableProvider: () -> Boolean = ExtensionShellExecutor::isAvailable,
     private val extensionCommandExecutor: (String, Int, File?) -> ExtensionShellExecutor.Result =
         ExtensionShellExecutor::execute
 ) : Tool {
 
     override val name = "shell"
-    override val description = "在 Android 设备上执行 shell 命令。environment=system（默认）使用 Root 系统 shell，适合 pm、dumpsys、settings、进程和系统文件操作；environment=extension 使用应用 UID 下的终端扩展包 PRoot/Termux 环境，适合 pkg、apt、dpkg、python、pip、clang 等开发命令。访问 /storage/emulated/0（或 /sdcard）中的普通文件需要在应用设置中授予“全部文件访问”；未授权时目录可能可见，但 ZIP、IMG、SH 等文件会被 Android 隐藏。返回标准输出和错误输出。做代码库定位时，如果你已知类名或文件名但还不知道路径，可先用 find/ls 在 src/main、src/test、app/src、core/src、common/src 等源码目录里找精确文件，再用 file.read 或 code_search 看局部内容；不要把 build、intermediates、mapping 产物当成首选证据。"
+    override val description = "在 Android 设备上执行 shell 命令。environment=system（默认）按“设备权限 > 执行通道”选择 Root 或已授权的 Shizuku，适合 pm、dumpsys、settings、进程和系统文件操作；environment=extension 使用应用 UID 下的终端扩展包 PRoot/Termux 环境，适合 pkg、apt、dpkg、python、pip、clang 等开发命令。标准应用或无障碍模式不会伪装成系统 Shell，但聊天、文件和无障碍 GUI 自动化仍可正常使用。访问 /storage/emulated/0（或 /sdcard）中的普通文件需要在应用设置中授予“全部文件访问”；未授权时目录可能可见，但 ZIP、IMG、SH 等文件会被 Android 隐藏。返回标准输出和错误输出。做代码库定位时，如果你已知类名或文件名但还不知道路径，可先用 find/ls 在 src/main、src/test、app/src、core/src、common/src 等源码目录里找精确文件，再用 file.read 或 code_search 看局部内容；不要把 build、intermediates、mapping 产物当成首选证据。"
     override val parameters: Map<String, Any> = mapOf(
         "type" to "object",
         "properties" to mapOf(
@@ -64,7 +64,7 @@ class ShellTool(
                 jsonObj["environment"]?.jsonPrimitive?.content?.trim()?.lowercase()
             ) {
                 "extension" -> "终端扩展环境"
-                else -> "Root 系统环境"
+                else -> "系统执行通道"
             }
             ToolApprovalRequest(
                 toolName = name,
@@ -112,7 +112,7 @@ class ShellTool(
                 jsonObj["background"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false
 
             if (environment == ShellEnvironment.SYSTEM && !rootAvailableProvider()) {
-                return failureResult("Error: Root shell is not available. Please check root permissions.")
+                return failureResult("Error: ${AndroidSystemExecution.unavailableReason()}")
             }
             if (environment == ShellEnvironment.EXTENSION && !extensionAvailableProvider()) {
                 return failureResult(
@@ -267,7 +267,7 @@ class ShellTool(
     }
 
     private enum class ShellEnvironment(val label: String) {
-        SYSTEM("系统 Root 环境"),
+        SYSTEM("系统执行通道"),
         EXTENSION("终端扩展环境")
     }
 
@@ -275,10 +275,6 @@ class ShellTool(
         const val TIMEOUT_MARKER = "__RSNX_TIMEOUT__"
         const val EXIT_CODE_MARKER = "__RSNX_EXIT_CODE__"
         val EXIT_CODE_PATTERN = Regex("(?m)^${EXIT_CODE_MARKER}(-?\\d+)\\s*$")
-
-        fun executeSystemCommand(command: String, timeout: Int): String {
-            return KeepShellPublic.doCmdSync(wrapCommandWithTimeout(command, timeout))
-        }
 
         fun wrapCommandWithTimeout(command: String, timeoutSeconds: Int): String {
             val safeTimeout = timeoutSeconds.coerceAtLeast(1)

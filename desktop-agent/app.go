@@ -25,6 +25,8 @@ type DesktopAgentApp struct {
 	workbenchTerminals         *workbenchTerminalManager
 	audit                      *projectAuditStore
 	codex                      *codexAppServer
+	vision                     *builtinVisionManager
+	visionRuntime              *desktopVisionRuntime
 	mu                         sync.Mutex
 	runs                       map[string]context.CancelFunc
 	activeSubagentJobs         map[string]activeSubagentJob
@@ -97,6 +99,12 @@ func newDesktopAgentApp() (*DesktopAgentApp, error) {
 	}
 	app.workbenchTerminals = newWorkbenchTerminalManager(app.emit)
 	app.codex = newCodexAppServer(codexRuntimeRootFromStore(store))
+	app.visionRuntime = newDesktopVisionRuntime(filepath.Dir(store.configPath))
+	app.vision = newBuiltinVisionManager(store.configPath, func() {
+		if app.ctx != nil {
+			app.emit("builtin_vision_status", app.vision.Status())
+		}
+	})
 	return app, nil
 }
 
@@ -220,6 +228,12 @@ func (app *DesktopAgentApp) shutdown(context.Context) {
 	}
 	app.remote.Close(5 * time.Second)
 	app.codex.Close()
+	if app.visionRuntime != nil {
+		app.visionRuntime.Close()
+	}
+	if app.vision != nil {
+		app.vision.Close()
+	}
 }
 
 // HideMainWindow keeps the desktop Agent and its schedulers alive in the

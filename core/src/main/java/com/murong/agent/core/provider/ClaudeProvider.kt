@@ -105,7 +105,11 @@ class ClaudeProvider : ModelProvider {
         return withContext(Dispatchers.IO) {
             val httpRequest = Request.Builder()
                 .url(url)
-                .addHeader("x-api-key", apiKey)
+                .apply {
+                    apiKey.trim().takeIf { it.isNotEmpty() }?.let {
+                        addHeader("x-api-key", it)
+                    }
+                }
                 .addHeader("anthropic-version", "2023-06-01")
                 .addHeader("Content-Type", "application/json")
                 .post(body)
@@ -172,7 +176,11 @@ class ClaudeProvider : ModelProvider {
         return withContext(Dispatchers.IO) {
             val httpRequest = Request.Builder()
                 .url(url)
-                .addHeader("x-api-key", apiKey)
+                .apply {
+                    apiKey.trim().takeIf { it.isNotEmpty() }?.let {
+                        addHeader("x-api-key", it)
+                    }
+                }
                 .addHeader("anthropic-version", "2023-06-01")
                 .post(body)
                 .build()

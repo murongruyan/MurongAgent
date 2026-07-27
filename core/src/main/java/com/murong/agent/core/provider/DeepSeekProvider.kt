@@ -13,8 +13,8 @@ import kotlinx.coroutines.withContext
  * DeepSeek Provider
  *
  * 支持：
- * - extra_body.thinking（DeepSeek 专有）
- * - reasoning_content 字段解析
+ * - thinking（DeepSeek 专有线上字段）
+ * - reasoning_content 字段解析与工具调用轮次回传
  * - prompt_cache_hit_tokens / prompt_cache_miss_tokens 缓存统计
  * - 中转站兼容（通过 baseUrl 指向任何兼容端点）
  */
@@ -58,6 +58,21 @@ class DeepSeekProvider : ModelProvider {
         return endpoint.contains(".openai.azure.com", ignoreCase = true)
     }
 
+    /**
+     * DeepSeek-compatible endpoints accept a switch in `thinking.type`, not a
+     * reasoning depth.  Accept the legacy value emitted by older app versions
+     * so existing relays cannot send an invalid `reasoning/low` request.
+     */
+    private fun normalizeThinkingType(thinkingMode: String?): String? {
+        val mode = thinkingMode?.trim()?.lowercase().orEmpty()
+        return when (mode) {
+            "enabled", "disabled", "adaptive" -> mode
+            "reasoning/off", "reasoning/disabled" -> "disabled"
+            "reasoning/low", "reasoning/medium", "reasoning/high", "reasoning/max" -> "enabled"
+            else -> null
+        }
+    }
+
     override suspend fun chatStream(
         request: ChatRequest,
         apiKey: String,
@@ -67,15 +82,22 @@ class DeepSeekProvider : ModelProvider {
         val safeRequest = normalizeChatRequestForProvider(request)
         val endpoint = (baseUrl ?: defaultBaseUrl).trimEnd('/')
         val url = "$endpoint/chat/completions"
+        val thinkingType = normalizeThinkingType(safeRequest.thinkingMode)
 
         val messagesJson = buildJsonArray {
-            request.messages.forEach { msg ->
+            safeRequest.messages.forEach { msg ->
                 addJsonObject {
                     put("role", msg.role)
                     if (msg.images.isNotEmpty()) {
                         put("content", buildOpenAiContent(msg))
                     } else if (msg.content != null) {
                         put("content", msg.content)
+                    } else if (msg.role == "assistant" && !msg.toolCalls.isNullOrEmpty()) {
+                        // DeepSeek requires assistant tool-call messages to carry content.
+                        put("content", "")
+                    }
+                    if (msg.reasoningContent != null) {
+                        put("reasoning_content", msg.reasoningContent)
                     }
                     if (msg.toolCalls != null) {
                         putJsonArray("tool_calls") {
@@ -99,19 +121,19 @@ class DeepSeekProvider : ModelProvider {
         }
 
         val bodyJson = buildJsonObject {
-            put("model", request.model)
+            put("model", safeRequest.model)
             put("messages", messagesJson)
-            put("temperature", request.temperature)
-            put("max_tokens", request.maxTokens)
+            put("temperature", safeRequest.temperature)
+            put("max_tokens", safeRequest.maxTokens)
             put("stream", true)
             if (!safeRequest.reasoningEffort.isNullOrBlank()) {
                 put("reasoning_effort", safeRequest.reasoningEffort)
             }
-            if (!safeRequest.thinkingMode.isNullOrBlank() && !isAzureEndpoint(endpoint)) {
-                putJsonObject("extra_body") {
-                    putJsonObject("thinking") {
-                        put("type", safeRequest.thinkingMode)
-                    }
+            if (thinkingType != null && !isAzureEndpoint(endpoint)) {
+                // `extra_body` is an OpenAI SDK argument. On the wire DeepSeek
+                // expects `thinking` itself at the top level.
+                putJsonObject("thinking") {
+                    put("type", thinkingType)
                 }
             }
             if (safeRequest.tools != null) {
@@ -125,7 +147,11 @@ class DeepSeekProvider : ModelProvider {
         return withContext(Dispatchers.IO) {
             val httpRequest = Request.Builder()
                 .url(url)
-                .addHeader("Authorization", "Bearer $apiKey")
+                .apply {
+                    apiKey.trim().takeIf { it.isNotEmpty() }?.let {
+                        addHeader("Authorization", "Bearer $it")
+                    }
+                }
                 .addHeader("Accept", "text/event-stream")
                 .addHeader("Content-Type", "application/json")
                 .post(requestBody)
@@ -157,6 +183,7 @@ class DeepSeekProvider : ModelProvider {
         val safeRequest = normalizeChatRequestForProvider(request)
         val endpoint = (baseUrl ?: defaultBaseUrl).trimEnd('/')
         val url = "$endpoint/chat/completions"
+        val thinkingType = normalizeThinkingType(safeRequest.thinkingMode)
 
         val bodyJson = buildJsonObject {
             put("model", request.model)
@@ -168,6 +195,11 @@ class DeepSeekProvider : ModelProvider {
                             put("content", buildOpenAiContent(msg))
                         } else if (msg.content != null) {
                             put("content", msg.content)
+                        } else if (msg.role == "assistant" && !msg.toolCalls.isNullOrEmpty()) {
+                            put("content", "")
+                        }
+                        if (msg.reasoningContent != null) {
+                            put("reasoning_content", msg.reasoningContent)
                         }
                         if (msg.toolCalls != null) {
                             putJsonArray("tool_calls") {
@@ -195,11 +227,9 @@ class DeepSeekProvider : ModelProvider {
             if (!safeRequest.reasoningEffort.isNullOrBlank()) {
                 put("reasoning_effort", safeRequest.reasoningEffort)
             }
-            if (!safeRequest.thinkingMode.isNullOrBlank() && !isAzureEndpoint(endpoint)) {
-                putJsonObject("extra_body") {
-                    putJsonObject("thinking") {
-                        put("type", safeRequest.thinkingMode)
-                    }
+            if (thinkingType != null && !isAzureEndpoint(endpoint)) {
+                putJsonObject("thinking") {
+                    put("type", thinkingType)
                 }
             }
             if (safeRequest.tools != null) {
@@ -211,7 +241,11 @@ class DeepSeekProvider : ModelProvider {
         return withContext(Dispatchers.IO) {
             val httpRequest = Request.Builder()
                 .url(url)
-                .addHeader("Authorization", "Bearer $apiKey")
+                .apply {
+                    apiKey.trim().takeIf { it.isNotEmpty() }?.let {
+                        addHeader("Authorization", "Bearer $it")
+                    }
+                }
                 .post(body)
                 .build()
 
@@ -235,7 +269,8 @@ class DeepSeekProvider : ModelProvider {
             ChatResponse(
                 content = content,
                 toolCalls = parseToolCalls(message?.get("tool_calls")),
-                usage = usage?.let { parseUsage(it) }
+                usage = usage?.let { parseUsage(it) },
+                reasoningContent = message?.get("reasoning_content")?.jsonPrimitive?.contentOrNull
             )
         } catch (e: Exception) {
             ChatResponse(content = "Parse error: ${e.message}", toolCalls = null)
@@ -383,23 +418,22 @@ class DeepSeekProvider : ModelProvider {
             }
             onDelta(StreamDelta.Error("Stream ended before [DONE]; tool calls were not executed."))
             return ChatResponse(
-                content = fullContent.toString().ifBlank { fullReasoning.toString().ifBlank { null } },
+                content = fullContent.toString().ifBlank { null },
                 toolCalls = null,
-                usage = usage
+                usage = usage,
+                reasoningContent = fullReasoning.toString().ifBlank { null }
             )
         }
         commitPendingToolCalls()
 
-        val contentText = fullContent.toString()
-        val reasoningText = fullReasoning.toString()
-        val content = contentText.ifBlank {
-            reasoningText.ifBlank { null }
-        }
+        val content = fullContent.toString().ifBlank { null }
+        val reasoningContent = fullReasoning.toString().ifBlank { null }
 
         return ChatResponse(
             content = content,
             toolCalls = toolCalls.ifEmpty { null },
-            usage = usage
+            usage = usage,
+            reasoningContent = reasoningContent
         )
     }
 

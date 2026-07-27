@@ -125,6 +125,34 @@ class OpenAIProtocolTest {
     }
 
     @Test
+    fun officialCompatiblePayload_usesOnlyEachProvidersDocumentedThinkingFields() {
+        val message = ChatMessage(
+            role = "assistant",
+            content = "answer",
+            reasoningContent = "private reasoning"
+        )
+        val request = ChatRequest(
+            model = "qwen3.8-max-preview",
+            messages = listOf(ChatMessage("user", "hello"), message),
+            reasoningEffort = "high"
+        )
+
+        val qwen = buildChatCompletionsPayload(request, stream = true, baseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        assertEquals("xhigh", qwen["reasoning_effort"]?.jsonPrimitive?.content)
+        assertEquals("true", qwen["enable_thinking"]?.jsonPrimitive?.content)
+        assertEquals("true", qwen["preserve_thinking"]?.jsonPrimitive?.content)
+        assertEquals("private reasoning", qwen["messages"]!!.jsonArray[1].jsonObject["reasoning_content"]?.jsonPrimitive?.content)
+
+        val glm = buildChatCompletionsPayload(request.copy(model = "glm-5.2"), stream = false, baseUrl = "https://open.bigmodel.cn/api/paas/v4")
+        assertEquals("high", glm["reasoning_effort"]?.jsonPrimitive?.content)
+        assertEquals("enabled", glm["thinking"]?.jsonObject?.get("type")?.jsonPrimitive?.content)
+
+        val kimi = buildChatCompletionsPayload(request.copy(model = "kimi-k3"), stream = false, baseUrl = "https://api.moonshot.cn/v1")
+        assertFalse(kimi.containsKey("reasoning_effort"))
+        assertEquals("enabled", kimi["thinking"]?.jsonObject?.get("type")?.jsonPrimitive?.content)
+    }
+
+    @Test
     fun responsesResponse_parsesTextFunctionsUsageAndContinuation() {
         val root = json.parseToJsonElement(
             """{

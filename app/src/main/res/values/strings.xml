@@ -13,4 +13,6 @@
     <string name="send">发送</string>
     <string name="clear_chat">清空对话</string>
     <string name="no_provider_configured">请先在设置中配置 API</string>
+    <string name="gui_accessibility_service_label">Murong Agent 界面操作</string>
+    <string name="gui_accessibility_service_description">仅在用户启用后读取精简界面语义并执行点击、输入、滚动和手势；密码字段不会进入语义快照。</string>
 </resources>

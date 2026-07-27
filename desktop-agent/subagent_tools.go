@@ -131,7 +131,10 @@ func (app *DesktopAgentApp) runSubagentPolicy(
 	childConfig.EnabledBuiltinTools = policy.EnabledBuiltins
 	childConfig.EnabledFileOperations = policy.EnabledFileOps
 	profilePointer := findProviderProfile(childConfig.ProviderProfiles, childConfig.ActiveProviderProfileID)
-	if profilePointer == nil || profilePointer.ProtectedAPIKey == "" {
+	if profilePointer == nil ||
+		(profilePointer.ProviderID != providerBuiltinLocal &&
+			profilePointer.ProtectedAPIKey == "" &&
+			!isLocalModelBaseURL(profilePointer.BaseURL)) {
 		return "", errors.New("子代理无法读取当前模型连接")
 	}
 	profile := *profilePointer
@@ -141,9 +144,21 @@ func (app *DesktopAgentApp) runSubagentPolicy(
 	if policy.ReasoningEffort != "" {
 		profile.ReasoningEffort = policy.ReasoningEffort
 	}
-	plainKey, err := unprotectSecret(profile.ProtectedAPIKey)
-	if err != nil {
-		return "", fmt.Errorf("子代理无法解密 API Key：%w", err)
+	if profile.ProviderID == providerBuiltinLocal {
+		descriptor, _, err := app.vision.ActiveDescriptor()
+		if err != nil {
+			return "", errors.New("子代理找不到已安装的内置本地模型")
+		}
+		profile.Model = descriptor.DisplayName
+		profile.ReasoningEffort = descriptor.resolveReasoningMode(profile.ReasoningEffort)
+	}
+	plainKey := []byte{}
+	if profile.ProtectedAPIKey != "" {
+		var err error
+		plainKey, err = unprotectSecret(profile.ProtectedAPIKey)
+		if err != nil {
+			return "", fmt.Errorf("子代理无法解密 API Key：%w", err)
+		}
 	}
 	defer clearBytes(plainKey)
 	allTools := app.toolDefinitions(childConfig)
@@ -187,7 +202,16 @@ Runtime child model: %s; reasoning effort: %s.`, policy.Label, profile.Model, pr
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		result, err := client.streamChat(ctx, profile, string(plainKey), messages, tools, nil)
+		result, err := app.streamConfiguredChat(
+			ctx,
+			client,
+			profile,
+			string(plainKey),
+			messages,
+			tools,
+			nil,
+			nil,
+		)
 		if err != nil {
 			return "", err
 		}

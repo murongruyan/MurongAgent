@@ -18,16 +18,17 @@ Murong Desktop 是可独立工作的跨平台 Agent。手机控制电脑的能�
 
 1. 解压并启动当前系统对应的 Murong Desktop 包。
 2. 在聊天页打开已有项目文件夹，或选择父目录新建项目；最近项目可随时切换。
-3. 新建或选择模型连接，填写供应商协议、Base URL、模型和 API Key；也可使用内置 Codex 完成 ChatGPT 登录。
-4. 选择审批模式并保存：只读、全审批、白名单或全自动。
-5. 返回“桌面 Agent”创建任务并发送要求。
+3. 新建或选择 API 模型连接；也可使用内置 Codex 完成 ChatGPT 登录。
+4. 如需完全离线使用，在“界面操作”模型中心安装 Qwen3.5-9B/4B/2B、Qwen2.5-Coder-7B、Gemma 4 E4B/E2B，或在高内存电脑上尝试 Gemma 4 12B，再在聊天模型列表选择“内置本地模型”。模型支持真实思考开关、可折叠思考过程与逐 token 流式显示；纯文本模型不会被用于截图定位。
+5. 选择审批模式并保存：只读、全审批、白名单或全自动。
+6. 返回“桌面 Agent”创建任务并发送要求。
 
 配置与会话默认写入系统用户配置目录下的 `Murong` 文件夹，也可用 `MURONG_DESKTOP_DATA_DIR` 指定独立数据目录。Windows 凭据使用当前用户 DPAPI；macOS/Linux 使用应用生成的 AES-256-GCM 私钥并依赖用户配置目录的系统文件权限。普通备份仍排除 API Key 和登录令牌；同一 Murong 的已配对设备可以在用户逐项确认后通过端到端加密同步这些凭据。
 
 ## 主要能力
 
 - 会话持久化、重命名、删除、分叉、消息回退、上下文摘要、真实 Token 用量，以及完整 JSON、跨端 JSON 和 Markdown 导入导出；每个任务独立绑定项目，切回任务会恢复它自己的工作目录。
-- DeepSeek、OpenAI-compatible、OpenAI Responses、Anthropic Messages 与内置 Codex；支持模型、推理强度、Temperature、最大输出 Token 和图片输入。
+- DeepSeek、OpenAI-compatible、OpenAI Responses、Anthropic Messages、内置 Codex，以及不需要 API Key 的 Qwen/Gemma 本地 Provider；支持聊天、代码、图片和 Agent 工具调用。
 - 四档审批、全局/项目工具权限、规则、记忆、Skills、MCP、保存的工作流、GitHub 工具、版本化备份恢复和跨端设备同步；普通 API 与内置 Codex 都能查询记忆并调用 `run_skill`，不再只有 UI 能选择 Skill。
 - 打开/新建/最近项目；文件读取、搜索、原子编辑、补丁、删除、权限和目录工具；最大工具迭代默认并上限为 999。
 - 当前系统原生 Shell：Windows 可发现 PowerShell 7、Windows PowerShell、CMD 和 WSL；macOS/Linux 可发现登录 Shell、bash、zsh、fish、sh 和可选 PowerShell 7。

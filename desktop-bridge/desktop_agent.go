@@ -5,6 +5,7 @@ const DesktopAgentProtocolVersion = 3
 type DesktopAgentTaskSummary struct {
 	ID               string `json:"id"`
 	Title            string `json:"title"`
+	ProjectPath      string `json:"projectPath,omitempty"`
 	UpdatedAt        int64  `json:"updatedAt"`
 	MessageCount     int    `json:"messageCount"`
 	Running          bool   `json:"running"`

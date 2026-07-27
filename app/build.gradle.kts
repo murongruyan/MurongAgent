@@ -3,6 +3,7 @@ import java.net.URI
 import java.util.Base64
 import java.security.MessageDigest
 import java.util.Properties
+import java.util.zip.ZipFile
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -22,10 +23,10 @@ val localProperties = Properties().apply {
 
 val appVersionName = (findProperty("APP_VERSION_NAME") as String?)
     ?.takeIf { it.isNotBlank() }
-    ?: "1.31"
+    ?: "1.32"
 val appVersionCode = (findProperty("APP_VERSION_CODE") as String?)
     ?.toIntOrNull()
-    ?: 26072301
+    ?: 26072701
 val defaultNdkVersion = "30.0.14904198"
 val localNdkPath = localProperties.getProperty("murong.ndk.dir")?.replace('\\', '/')
 val resolvedNdkVersion = run {
@@ -62,6 +63,33 @@ val sherpaOnnxAarUrl =
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$sherpaOnnxVersion/sherpa-onnx-$sherpaOnnxVersion.aar"
 val sherpaOnnxAarSha256 = "aa5505c0ec4f8bdaee5f214a64ba3012be64f2aecc022e82a64f33392b8dd245"
 val sherpaOnnxAar = layout.buildDirectory.file("generated/offline-stt/sherpa-onnx-$sherpaOnnxVersion.aar")
+val mnnVersion = "3.5.0"
+val mnnAndroidUrl =
+    "https://github.com/alibaba/MNN/releases/download/$mnnVersion/" +
+        "mnn_${mnnVersion}_android_armv7_armv8_cpu_opencl_vulkan.zip"
+val mnnAndroidSha256 = "b5513459ee5d70dec98e7a0763ce2d09a9824897c150069e65b2b1a04570c573"
+val mnnSourceUrl = "https://github.com/alibaba/MNN/archive/refs/tags/$mnnVersion.zip"
+val mnnSourceSha256 = "a31f4d46417f6af64e9af079435e088690423eb2e282de5da61f7d082325446c"
+val mnnAndroidArchive =
+    layout.buildDirectory.file("generated/mnn/downloads/mnn-$mnnVersion-android.zip")
+val mnnSourceArchive =
+    layout.buildDirectory.file("generated/mnn/downloads/mnn-$mnnVersion-source.zip")
+val generatedMnnRuntimeDir = layout.buildDirectory.dir("generated/mnn/runtime")
+val generatedMnnSourceDir = layout.buildDirectory.dir("generated/mnn/source")
+val generatedMnnRuntimeDirFile = generatedMnnRuntimeDir.get().asFile
+val generatedMnnSourceDirFile = generatedMnnSourceDir.get().asFile
+val llamaCppAndroidBuild = "b10092"
+val llamaCppAndroidUrl =
+    "https://github.com/ggml-org/llama.cpp/releases/download/$llamaCppAndroidBuild/" +
+        "llama-$llamaCppAndroidBuild-bin-android-arm64.tar.gz"
+val llamaCppAndroidSha256 =
+    "4f23b4a91b7043db43789fd248142a739d7a1f632d403f756e8be920c45c8076"
+val llamaCppAndroidArchive = layout.buildDirectory.file(
+    "generated/llama.cpp/downloads/llama-$llamaCppAndroidBuild-bin-android-arm64.tar.gz"
+)
+val generatedLlamaCppRuntimeDir =
+    layout.buildDirectory.dir("generated/llama.cpp/runtime")
+val generatedLlamaCppRuntimeDirFile = generatedLlamaCppRuntimeDir.get().asFile
 
 fun sha256(file: File): String = MessageDigest.getInstance("SHA-256").also { digest ->
     file.inputStream().use { input ->
@@ -110,6 +138,132 @@ val prepareSherpaOnnxRuntime = tasks.register("prepareSherpaOnnxRuntime") {
             output = output,
             expectedSha256 = sherpaOnnxAarSha256,
         )
+    }
+}
+
+val downloadMnnAndroidRuntime = tasks.register("downloadMnnAndroidRuntime") {
+    val output = mnnAndroidArchive.get().asFile
+    notCompatibleWithConfigurationCache("Downloads and verifies the pinned MNN Android runtime.")
+    inputs.property("url", mnnAndroidUrl)
+    inputs.property("sha256", mnnAndroidSha256)
+    outputs.file(output)
+    doLast {
+        downloadPinnedArtifact(mnnAndroidUrl, output, mnnAndroidSha256)
+    }
+}
+
+val downloadMnnSource = tasks.register("downloadMnnSource") {
+    val output = mnnSourceArchive.get().asFile
+    notCompatibleWithConfigurationCache("Downloads and verifies pinned MNN public headers.")
+    inputs.property("url", mnnSourceUrl)
+    inputs.property("sha256", mnnSourceSha256)
+    outputs.file(output)
+    doLast {
+        downloadPinnedArtifact(mnnSourceUrl, output, mnnSourceSha256)
+    }
+}
+
+val downloadLlamaCppAndroidRuntime = tasks.register("downloadLlamaCppAndroidRuntime") {
+    val output = llamaCppAndroidArchive.get().asFile
+    notCompatibleWithConfigurationCache("Downloads and verifies the pinned llama.cpp Android runtime.")
+    inputs.property("url", llamaCppAndroidUrl)
+    inputs.property("sha256", llamaCppAndroidSha256)
+    outputs.file(output)
+    doLast {
+        downloadPinnedArtifact(llamaCppAndroidUrl, output, llamaCppAndroidSha256)
+    }
+}
+
+val prepareLlamaCppAndroidRuntime =
+    tasks.register<org.gradle.api.tasks.Sync>("prepareLlamaCppAndroidRuntime") {
+        dependsOn(downloadLlamaCppAndroidRuntime)
+        inputs.file(llamaCppAndroidArchive)
+        outputs.dir(generatedLlamaCppRuntimeDir)
+        from({
+            tarTree(resources.gzip(llamaCppAndroidArchive.get().asFile))
+        }) {
+            include(
+                "llama-$llamaCppAndroidBuild/llama-server",
+                "llama-$llamaCppAndroidBuild/libllama-server-impl.so",
+                "llama-$llamaCppAndroidBuild/libllama-common.so",
+                "llama-$llamaCppAndroidBuild/libllama.so",
+                "llama-$llamaCppAndroidBuild/libmtmd.so",
+                "llama-$llamaCppAndroidBuild/libggml.so",
+                "llama-$llamaCppAndroidBuild/libggml-base.so",
+                "llama-$llamaCppAndroidBuild/libggml-rpc.so",
+                "llama-$llamaCppAndroidBuild/libggml-cpu-android_*.so"
+            )
+            eachFile {
+                // The release archive has a versioned top-level directory. Native libraries
+                // must be placed directly in the ABI directory for AGP to package them.
+                path = if (name == "llama-server") "libmurong_llama_server.so" else name
+            }
+            includeEmptyDirs = false
+        }
+        into(File(generatedLlamaCppRuntimeDir.get().asFile, "arm64-v8a"))
+    }
+
+val prepareMnnVisionRuntime = tasks.register("prepareMnnVisionRuntime") {
+    dependsOn(downloadMnnAndroidRuntime, downloadMnnSource)
+    val runtimeOutput = generatedMnnRuntimeDir.get().asFile
+    val sourceOutput = generatedMnnSourceDir.get().asFile
+    inputs.files(mnnAndroidArchive, mnnSourceArchive)
+    outputs.dirs(runtimeOutput, sourceOutput)
+    doLast {
+        runtimeOutput.deleteRecursively()
+        sourceOutput.deleteRecursively()
+        File(runtimeOutput, "arm64-v8a").mkdirs()
+        sourceOutput.mkdirs()
+
+        ZipFile(mnnAndroidArchive.get().asFile).use { archive ->
+            val arm64Marker = "/arm64-v8a/"
+            archive.entries().asSequence()
+                .filter { entry ->
+                    !entry.isDirectory &&
+                        entry.name.contains(arm64Marker) &&
+                        entry.name.endsWith(".so")
+                }
+                .forEach { entry ->
+                    val libraryName = entry.name.substringAfter(arm64Marker)
+                    check('/' !in libraryName && '\\' !in libraryName) {
+                        "Unexpected MNN Android library path: ${entry.name}"
+                    }
+                    val target = File(runtimeOutput, "arm64-v8a/$libraryName")
+                    target.parentFile?.mkdirs()
+                    archive.getInputStream(entry).use { input ->
+                        target.outputStream().use { output -> input.copyTo(output) }
+                    }
+                }
+        }
+
+        val sourcePrefix = "MNN-$mnnVersion/"
+        ZipFile(mnnSourceArchive.get().asFile).use { archive ->
+            archive.entries().asSequence()
+                .filter { entry ->
+                    !entry.isDirectory &&
+                        entry.name.startsWith(sourcePrefix) &&
+                        (
+                            entry.name.startsWith("${sourcePrefix}include/") ||
+                                entry.name.startsWith(
+                                    "${sourcePrefix}transformers/llm/engine/include/"
+                                )
+                            )
+                }
+                .forEach { entry ->
+                    val relative = entry.name.removePrefix(sourcePrefix)
+                    val target = File(sourceOutput, relative)
+                    target.parentFile?.mkdirs()
+                    archive.getInputStream(entry).use { input ->
+                        target.outputStream().use { output -> input.copyTo(output) }
+                    }
+                }
+        }
+        check(File(runtimeOutput, "arm64-v8a/libllm.so").isFile) {
+            "Pinned MNN Android archive does not contain libllm.so"
+        }
+        check(File(sourceOutput, "transformers/llm/engine/include/llm/llm.hpp").isFile) {
+            "Pinned MNN source archive does not contain llm.hpp"
+        }
     }
 }
 
@@ -256,6 +410,14 @@ android {
         ndk {
             abiFilters += "arm64-v8a"
         }
+        externalNativeBuild {
+            cmake {
+                arguments += listOf(
+                    "-DMNN_RUNTIME_ROOT=${generatedMnnRuntimeDirFile.absolutePath.replace('\\', '/')}",
+                    "-DMNN_SOURCE_ROOT=${generatedMnnSourceDirFile.absolutePath.replace('\\', '/')}"
+                )
+            }
+        }
     }
 
     signingConfigs {
@@ -348,6 +510,7 @@ android {
 
     buildFeatures {
         compose = true
+        aidl = true
     }
 
     packaging {
@@ -356,7 +519,18 @@ android {
         }
     }
 
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+        }
+    }
 
+    sourceSets.getByName("main").jniLibs.directories.add(
+        generatedMnnRuntimeDirFile.absolutePath
+    )
+    sourceSets.getByName("main").jniLibs.directories.add(
+        generatedLlamaCppRuntimeDirFile.absolutePath
+    )
     if (bundledToolchainEnabled) {
         sourceSets.getByName("main").assets.directories.add(generatedToolchainAssetsDirFile.absolutePath)
         sourceSets.getByName("main").jniLibs.directories.add(generatedToolchainJniLibsDirFile.absolutePath)
@@ -389,6 +563,18 @@ if (bundledToolchainEnabled) {
 // explicitly materialize the verified runtime first. This also works in GitHub Actions.
 tasks.named("preBuild").configure {
     dependsOn(prepareSherpaOnnxRuntime)
+    dependsOn(prepareMnnVisionRuntime)
+    dependsOn(prepareLlamaCppAndroidRuntime)
+}
+
+tasks.matching {
+    it.name.contains("CMake", ignoreCase = true) ||
+        it.name.contains("ExternalNativeBuild", ignoreCase = true) ||
+        (it.name.startsWith("merge") && it.name.endsWith("NativeLibs")) ||
+        (it.name.startsWith("merge") && it.name.endsWith("JniLibFolders"))
+}.configureEach {
+    dependsOn(prepareMnnVisionRuntime)
+    dependsOn(prepareLlamaCppAndroidRuntime)
 }
 
 kotlin {
@@ -429,6 +615,8 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.nanohttpd)
     implementation(libs.commons.compress)
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
     implementation(files(sherpaOnnxAar))
 
     // DI

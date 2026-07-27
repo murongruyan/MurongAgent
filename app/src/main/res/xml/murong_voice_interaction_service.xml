@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<voice-interaction-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="com.murong.agent.ui.assistant.MurongVoiceInteractionSessionService"
+    android:recognitionService="com.murong.agent.ui.assistant.MurongSpeechRecognitionService"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="true"
+    android:supportsLocalInteraction="true"
+    android:settingsActivity="com.murong.agent.ui.MainActivity" />

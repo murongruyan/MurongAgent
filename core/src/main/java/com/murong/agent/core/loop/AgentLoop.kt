@@ -16,6 +16,7 @@ import kotlinx.coroutines.delay
  */
 sealed class AgentEvent {
     data class ContentDelta(val text: String) : AgentEvent()
+    data object ReasoningStart : AgentEvent()
     data class ReasoningDelta(val text: String) : AgentEvent()
     data class ToolExecution(
         val toolName: String,
@@ -144,6 +145,10 @@ class AgentLoop(
                             streamedContentReceived = true
                             onEvent(AgentEvent.ContentDelta(delta.text))
                         }
+                        StreamDelta.ReasoningStart -> {
+                            streamedReasoningReceived = true
+                            onEvent(AgentEvent.ReasoningStart)
+                        }
                         is StreamDelta.Reasoning -> {
                             streamedReasoningReceived = true
                             onEvent(AgentEvent.ReasoningDelta(delta.text))
@@ -182,7 +187,8 @@ class AgentLoop(
                     ChatMessage(
                         role = "assistant",
                         content = response.content,
-                        toolCalls = toolCalls
+                        toolCalls = toolCalls,
+                        reasoningContent = response.reasoningContent
                     )
                 )
             }
@@ -537,6 +543,10 @@ class AgentLoop(
                 // 兜底：捕获所有其他异常（JSON 解析错误、空指针等）
                 val msg = e.message ?: e.javaClass.simpleName
                 lastError = "⚠️ 请求异常：$msg"
+                if (provider.id == "murong-local") {
+                    onEvent(AgentEvent.Error(lastError))
+                    return null
+                }
                 onEvent(AgentEvent.Error("⚠️ $lastError (重试 $attempt/$MAX_PROVIDER_RETRIES)"))
             }
 

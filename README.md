@@ -23,6 +23,7 @@ MurongAgent 不是单纯的聊天壳。Android 端强调随身使用、语音、
 | 代码编辑 | 支持搜索/替换、行操作、冲突处理、AI 补全与语法高亮 |
 | GitHub 集成 | 支持登录 GitHub、查看仓库、Issue、PR、Actions、Release 等能力 |
 | Root 能力 | 通过持久化 Shell 与 Root 文件访问支撑系统级操作 |
+| 内置本地模型 | Android 与 Windows 可选 Qwen3.5-9B/4B/2B、Qwen2.5-Coder-7B 或 Gemma 4 E4B/E2B；Windows 另有 Gemma 4 12B 实验档。支持真实思考开关、思考过程与逐 token 流式显示，模型私有落盘并做 SHA-256 校验 |
 | 数据本地化 | 配置、会话、缓存与项目状态保存在本地设备 |
 | 跨平台桌面端 | 原生支持 Windows、macOS、Linux 的 amd64 与 arm64，不依赖手机在线 |
 | 跨端协作 | 手机可通过稳定本机 ID、同网自动发现、ADB 或局域网地址连接电脑，异网链路端到端加密，并可显式同步配置与所选凭据 |

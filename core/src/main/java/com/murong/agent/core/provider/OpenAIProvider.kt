@@ -127,7 +127,7 @@ class OpenAIProvider : ModelProvider {
         url: String,
         onDelta: (StreamDelta) -> Unit
     ): ChatResponse {
-        val body = buildResponsesPayload(request, stream = true)
+        val body = buildResponsesPayload(request, stream = true, baseUrl = url)
             .toString()
             .toRequestBody(JSON_MEDIA_TYPE)
         return withContext(Dispatchers.IO) {
@@ -151,7 +151,7 @@ class OpenAIProvider : ModelProvider {
         apiKey: String,
         url: String
     ): ChatResponse {
-        val body = buildResponsesPayload(request, stream = false)
+        val body = buildResponsesPayload(request, stream = false, baseUrl = url)
             .toString()
             .toRequestBody(JSON_MEDIA_TYPE)
         return withContext(Dispatchers.IO) {
@@ -177,7 +177,7 @@ class OpenAIProvider : ModelProvider {
         url: String,
         onDelta: (StreamDelta) -> Unit
     ): ChatResponse {
-        val body = buildChatCompletionsPayload(request, stream = true)
+        val body = buildChatCompletionsPayload(request, stream = true, baseUrl = url)
             .toString()
             .toRequestBody(JSON_MEDIA_TYPE)
         return withContext(Dispatchers.IO) {
@@ -201,7 +201,7 @@ class OpenAIProvider : ModelProvider {
         apiKey: String,
         url: String
     ): ChatResponse {
-        val body = buildChatCompletionsPayload(request, stream = false)
+        val body = buildChatCompletionsPayload(request, stream = false, baseUrl = url)
             .toString()
             .toRequestBody(JSON_MEDIA_TYPE)
         return withContext(Dispatchers.IO) {
@@ -223,7 +223,8 @@ class OpenAIProvider : ModelProvider {
                 ChatResponse(
                     content = message?.get("content")?.jsonPrimitive?.contentOrNull,
                     toolCalls = parseChatCompletionsToolCalls(message?.get("tool_calls")),
-                    usage = root["usage"]?.jsonObject?.let(::parseChatCompletionsUsage)
+                    usage = root["usage"]?.jsonObject?.let(::parseChatCompletionsUsage),
+                    reasoningContent = message?.get("reasoning_content")?.jsonPrimitive?.contentOrNull
                 )
             }
         }
@@ -232,7 +233,11 @@ class OpenAIProvider : ModelProvider {
     private fun authorizedRequest(url: String, apiKey: String, acceptSse: Boolean = false): Request.Builder {
         return Request.Builder()
             .url(url)
-            .addHeader("Authorization", "Bearer $apiKey")
+            .apply {
+                apiKey.trim().takeIf { it.isNotEmpty() }?.let {
+                    addHeader("Authorization", "Bearer $it")
+                }
+            }
             .apply { if (acceptSse) addHeader("Accept", "text/event-stream") }
     }
 
@@ -242,6 +247,7 @@ class OpenAIProvider : ModelProvider {
     ): ChatResponse {
         val reader = BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8))
         val fullContent = StringBuilder()
+        val fullReasoning = StringBuilder()
         val toolCalls = mutableListOf<ToolCall>()
         val partialToolCalls = linkedMapOf<Int, PartialToolCall>()
         val committedToolIndexes = mutableSetOf<Int>()
@@ -287,6 +293,11 @@ class OpenAIProvider : ModelProvider {
                 }
                 val choice = event["choices"]?.jsonArray?.firstOrNull()?.jsonObject ?: continue
                 val delta = choice["delta"] as? JsonObject
+                val reasoning = delta?.get("reasoning_content")?.jsonPrimitive?.contentOrNull
+                if (!reasoning.isNullOrEmpty()) {
+                    fullReasoning.append(reasoning)
+                    onDelta(StreamDelta.Reasoning(reasoning))
+                }
                 val content = delta?.get("content")?.jsonPrimitive?.contentOrNull
                 if (!content.isNullOrEmpty()) {
                     fullContent.append(content)
@@ -324,14 +335,20 @@ class OpenAIProvider : ModelProvider {
                 throw IncompleteSseException("OpenAI-compatible stream ended before a completion marker")
             }
             onDelta(StreamDelta.Error("Stream ended before [DONE]; tool calls were not executed."))
-            return ChatResponse(content = fullContent.toString().ifBlank { null }, toolCalls = null, usage = usage)
+            return ChatResponse(
+                content = fullContent.toString().ifBlank { null },
+                toolCalls = null,
+                usage = usage,
+                reasoningContent = fullReasoning.toString().ifBlank { null }
+            )
         }
 
         commitPendingToolCalls()
         return ChatResponse(
             content = fullContent.toString().ifBlank { null },
             toolCalls = toolCalls.ifEmpty { null },
-            usage = usage
+            usage = usage,
+            reasoningContent = fullReasoning.toString().ifBlank { null }
         )
     }
 

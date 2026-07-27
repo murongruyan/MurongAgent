@@ -41,6 +41,9 @@ function Assert-CodexArchive([string]$Path) {
 
 Push-Location $root
 try {
+    & (Join-Path $root "scripts\build-vlm-runtimes.ps1") -Architecture $Architecture
+    if ($LASTEXITCODE -ne 0) { throw "Desktop built-in vision runtimes failed" }
+
     npm ci --prefix frontend --no-audit --no-fund
     if ($LASTEXITCODE -ne 0) { throw "Desktop workbench dependencies failed" }
     npm run build --prefix frontend
@@ -48,9 +51,9 @@ try {
     node --check frontend/dist/app.js
     if ($LASTEXITCODE -ne 0) { throw "Desktop frontend syntax check failed" }
 
-    go test -count=1 ./...
+    go test -count=1 .
     if ($LASTEXITCODE -ne 0) { throw "Desktop Agent tests failed" }
-    go vet ./...
+    go vet .
     if ($LASTEXITCODE -ne 0) { throw "Desktop Agent vet failed" }
 
     New-Item -ItemType Directory -Force $dist | Out-Null

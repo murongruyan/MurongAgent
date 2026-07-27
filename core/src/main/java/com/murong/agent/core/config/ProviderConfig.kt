@@ -1,8 +1,12 @@
 package com.murong.agent.core.config
 
 import com.murong.agent.core.tool.ApprovalRiskLevel
+import java.net.URI
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
+import com.murong.agent.core.provider.BuiltinLocalProvider
+import com.murong.agent.core.tool.BuiltinVisionRuntime
 
 internal const val MIN_CUSTOM_CONTEXT_WINDOW_TOKENS = 4_096
 internal const val MAX_CUSTOM_CONTEXT_WINDOW_TOKENS = 2_000_000
@@ -66,6 +70,9 @@ enum class ToolApprovalMode { READ_ONLY, ALL_APPROVAL, WHITELIST_AUTO, ALL_AUTO 
 
 @Serializable
 enum class ResponseVerbosity { CONCISE, BALANCED, DETAILED }
+
+@Serializable
+enum class GuiInferenceMode { LOCAL_ONLY, LOCAL_FIRST, USER_API }
 
 @Serializable
 enum class WorkflowExecutionMode { SINGLE_PASS }
@@ -145,6 +152,9 @@ data class ProviderConfig(
     val codexReasoningEffort: String = "high",
     val codexServiceTier: String = "",
     val activeProviderId: String = "deepseek",
+    @Transient
+    val builtinLocalModelOverride: String = "",
+    val builtinLocalReasoningMode: String = "off",
     val deepseekApiKey: String = "", val deepseekBaseUrl: String = "",
     val deepseekModelPreset: String = "custom", val deepseekModel: String = "deepseek-v4-flash",
     val deepseekReasoningEffort: String = "high",
@@ -164,12 +174,59 @@ data class ProviderConfig(
     val deepseekRelays: List<RelayConfig> = emptyList(), val activeDeepseekRelayId: String? = null,
     val openaiRelays: List<RelayConfig> = emptyList(), val activeOpenaiRelayId: String? = null,
     val claudeRelays: List<RelayConfig> = emptyList(), val activeClaudeRelayId: String? = null,
+    /**
+     * Official providers added after the original DeepSeek/OpenAI/Claude trio.
+     * Keeping them in keyed relay collections avoids duplicating API keys and
+     * endpoint fields for every vendor while retaining independent connections.
+     */
+    val externalProviderRelays: Map<String, List<RelayConfig>> = emptyMap(),
+    val activeExternalProviderRelayIds: Map<String, String> = emptyMap(),
     val githubToken: String = "", val githubApiBaseUrl: String = "https://api.github.com",
     val githubClientId: String = "", val githubClientSecret: String = "",
     val githubBackendSessionToken: String = "", val githubViewerLogin: String = "",
     val githubViewerName: String = "", val githubViewerAvatarUrl: String = "",
     val skippedAppUpdateVersionCode: Int? = null,
     val ignoredExtensionUpdateVersionCode: Int? = null,
+    val guiInferenceMode: GuiInferenceMode = GuiInferenceMode.LOCAL_FIRST,
+    val guiLocalBaseUrl: String = "",
+    val guiLocalModel: String = "",
+    val guiAllowRemoteSemanticTree: Boolean = false,
+    val guiAllowRemoteScreenshots: Boolean = false,
+    val guiAllowRemoteFullScreen: Boolean = false,
+    val guiAutomationDefaultsInitialized: Boolean = false,
+    val phoneAgentEnabled: Boolean = true,
+    /**
+     * Empty means that Phone Agent follows the model selected for the chat.
+     * Otherwise this stores one of the already configured provider IDs; API
+     * keys and endpoints continue to live only in the shared provider config.
+     */
+    val phoneAgentProviderId: String = "",
+    val phoneAgentRelayId: String = "",
+    /**
+     * Kept only so older configuration/backup payloads remain readable.
+     * Phone Agent now uses one of the shared provider configurations.
+     */
+    @Deprecated("Phone Agent reuses a shared provider configuration")
+    val phoneAgentBaseUrl: String = "",
+    @Deprecated("Phone Agent reuses shared provider credentials")
+    val phoneAgentApiKey: String = "",
+    @Deprecated("Phone Agent reuses a shared provider model")
+    val phoneAgentModel: String = "",
+    val phoneAgentMaxSteps: Int = 60,
+    val phoneAgentAllowRemoteScreenshots: Boolean = false,
+    val phoneAgentSafeMode: Boolean = true,
+    /**
+     * Model used by code/system tasks launched from the voice assistant. Empty follows the current
+     * chat model. Credentials and endpoints are shared with the selected provider configuration.
+     */
+    val assistantCodeProviderId: String = "",
+    val assistantCodeRelayId: String = "",
+    val phoneAgentFoodPlatforms: List<String> = listOf(
+        "美团",
+        "饿了么",
+        "京东秒送",
+        "淘宝闪购"
+    ),
     val systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
     val globalRules: List<GlobalRule> = emptyList(),
     val globalMemories: List<GlobalMemory> = emptyList(),
@@ -217,14 +274,14 @@ data class ProviderConfig(
         "deepseek" -> deepseekRelays
         "openai-compatible" -> openaiRelays
         "claude" -> claudeRelays
-        else -> emptyList()
+        else -> externalProviderRelays[providerId].orEmpty()
     }
 
     fun getActiveRelayId(providerId: String = activeProviderId): String? = when (providerId) {
         "deepseek" -> activeDeepseekRelayId
         "openai-compatible" -> activeOpenaiRelayId
         "claude" -> activeClaudeRelayId
-        else -> null
+        else -> activeExternalProviderRelayIds[providerId]
     }
 
     fun getActiveRelay(providerId: String = activeProviderId): RelayConfig? {
@@ -256,10 +313,130 @@ data class ProviderConfig(
     )
     fun getActiveBaseUrl(): String? = getBaseUrl(activeProviderId)
     fun getResolvedModel(providerId: String): String = getActiveRelay(providerId)?.model?.takeIf { it.isNotBlank() } ?: when (providerId) {
-        "deepseek" -> deepseekModel; "openai-compatible" -> openaiModel; "claude" -> claudeModel; else -> ""
+        "deepseek" -> deepseekModel
+        "openai-compatible" -> openaiModel
+        "claude" -> claudeModel
+        BuiltinLocalProvider.ID ->
+            BuiltinVisionRuntime.model(builtinLocalModelOverride)?.id
+                ?: BuiltinVisionRuntime.activeModel()?.id
+                ?: "builtin-selected"
+        else -> ""
     }
     fun getActiveModel(): String = getResolvedModel(activeProviderId)
+    fun isActiveProviderLocal(): Boolean =
+        activeProviderId == BuiltinLocalProvider.ID || isLocalModelBaseUrl(getActiveBaseUrl())
+    fun hasUsableActiveProviderCredentials(): Boolean =
+        usesCodexChatGptBackend() ||
+            (
+                activeProviderId == BuiltinLocalProvider.ID &&
+                    BuiltinVisionRuntime.isReady(builtinLocalModelOverride)
+                ) ||
+            getActiveApiKey().isNotBlank() ||
+            (
+                activeProviderId != BuiltinLocalProvider.ID &&
+                    isLocalModelBaseUrl(getActiveBaseUrl()) &&
+                    getActiveModel().isNotBlank()
+                )
+
+    /**
+     * Removes the retired, duplicated Phone Agent endpoint/model/key fields.
+     *
+     * The fields remain in the serializable constructor for backwards-compatible
+     * decoding, but they are never used at runtime or written back with values.
+     */
+    fun withUnifiedPhoneAgentModelConfig(): ProviderConfig {
+        if (
+            phoneAgentBaseUrl.isBlank() &&
+            phoneAgentApiKey.isBlank() &&
+            phoneAgentModel.isBlank()
+        ) {
+            return this
+        }
+        return copy(
+            phoneAgentBaseUrl = "",
+            phoneAgentApiKey = "",
+            phoneAgentModel = ""
+        )
+    }
+
+    /**
+     * Resolves the Phone Agent model without duplicating endpoint, API key, or
+     * model fields. Old installations keep following the current chat model.
+     * If a saved relay was removed, falling back to the chat configuration is
+     * safer than silently selecting another credential.
+     */
+    fun getPhoneAgentResolvedConfig(): ProviderConfig {
+        val selectedProviderId = phoneAgentProviderId.trim()
+        if (selectedProviderId.isBlank()) return this
+        if (
+            selectedProviderId != BuiltinLocalProvider.ID &&
+            selectedProviderId !in setOf(
+                "deepseek", "openai-compatible", "claude", "kimi", "glm", "qwen",
+                "minimax", "grok", "mimo", "hy3", "gemini"
+            )
+        ) {
+            return this
+        }
+
+        val selectedRelayId = phoneAgentRelayId.trim()
+        if (selectedProviderId == BuiltinLocalProvider.ID) {
+            val selectedModel = BuiltinVisionRuntime.model(selectedRelayId)
+                ?: return this
+            return copy(
+                activeAgentBackend = AgentBackendKind.PROVIDER_API,
+                activeProviderId = BuiltinLocalProvider.ID,
+                builtinLocalModelOverride = selectedModel.id
+            )
+        }
+        val selected = if (selectedRelayId.isNotBlank()) {
+            if (getRelayConfigs(selectedProviderId).none { it.id == selectedRelayId }) {
+                return this
+            }
+            selectConfiguration(selectedProviderId, selectedRelayId)
+        } else {
+            copy(activeProviderId = selectedProviderId)
+        }
+        return selected.copy(activeAgentBackend = AgentBackendKind.PROVIDER_API)
+    }
+
+    fun getAssistantCodeResolvedConfig(): ProviderConfig {
+        val selectedProviderId = assistantCodeProviderId.trim()
+        if (selectedProviderId.isBlank()) return this
+        if (
+            selectedProviderId != BuiltinLocalProvider.ID &&
+            selectedProviderId !in setOf(
+                "deepseek", "openai-compatible", "claude", "kimi", "glm", "qwen",
+                "minimax", "grok", "mimo", "hy3", "gemini"
+            )
+        ) {
+            return this
+        }
+
+        val selectedRelayId = assistantCodeRelayId.trim()
+        if (selectedProviderId == BuiltinLocalProvider.ID) {
+            val selectedModel = BuiltinVisionRuntime.model(selectedRelayId)
+                ?: return this
+            return copy(
+                activeAgentBackend = AgentBackendKind.PROVIDER_API,
+                activeProviderId = BuiltinLocalProvider.ID,
+                builtinLocalModelOverride = selectedModel.id,
+            )
+        }
+        val selected = if (selectedRelayId.isNotBlank()) {
+            if (getRelayConfigs(selectedProviderId).none { it.id == selectedRelayId }) {
+                return this
+            }
+            selectConfiguration(selectedProviderId, selectedRelayId)
+        } else {
+            copy(activeProviderId = selectedProviderId)
+        }
+        return selected.copy(activeAgentBackend = AgentBackendKind.PROVIDER_API)
+    }
+
     fun getActiveReasoningEffort(): String? = getActiveRelay()?.reasoningEffort?.takeIf { it.isNotBlank() } ?: when (activeProviderId) {
+        BuiltinLocalProvider.ID -> BuiltinVisionRuntime.model(builtinLocalModelOverride)
+            ?.resolveReasoningMode(builtinLocalReasoningMode)
+            ?.takeIf { it.isNotBlank() }
         "deepseek" -> deepseekReasoningEffort
         "openai-compatible" -> openaiReasoningEffort
         "claude" -> claudeReasoningEffort
@@ -318,6 +495,41 @@ data class ProviderConfig(
         )
     }
 
+    fun withGuiAutomationDefaults(): ProviderConfig {
+        val migratedLocalBaseUrl = if (
+            guiLocalBaseUrl == "http://127.0.0.1:11434/v1" &&
+            guiLocalModel.isBlank()
+        ) {
+            ""
+        } else {
+            guiLocalBaseUrl
+        }
+        if (guiAutomationDefaultsInitialized) {
+            return if (
+                (!guiAllowRemoteScreenshots && guiAllowRemoteFullScreen) ||
+                migratedLocalBaseUrl != guiLocalBaseUrl
+            ) {
+                copy(
+                    guiLocalBaseUrl = migratedLocalBaseUrl,
+                    guiAllowRemoteFullScreen =
+                        guiAllowRemoteFullScreen && guiAllowRemoteScreenshots
+                )
+            } else {
+                this
+            }
+        }
+        val legacyDefaults = DEFAULT_ENABLED_BUILTIN_TOOLS.filterNot { it == "gui" }
+        return copy(
+            guiAutomationDefaultsInitialized = true,
+            guiLocalBaseUrl = migratedLocalBaseUrl,
+            enabledBuiltinTools = if (enabledBuiltinTools == legacyDefaults) {
+                DEFAULT_ENABLED_BUILTIN_TOOLS
+            } else {
+                enabledBuiltinTools
+            }
+        )
+    }
+
     fun selectConfiguration(providerId: String, relayId: String): ProviderConfig {
         val target = getRelayConfigs(providerId).firstOrNull { it.id == relayId } ?: return this
         return withRelayConfigs(providerId, getRelayConfigs(providerId), target.id)
@@ -326,7 +538,12 @@ data class ProviderConfig(
 
     fun isRelayConfigured(providerId: String, relay: RelayConfig): Boolean {
         return relay.apiKey.isNotBlank() ||
-            (relay.id.startsWith("legacy-") && getApiKey(providerId).isNotBlank())
+            (relay.id.startsWith("legacy-") && getApiKey(providerId).isNotBlank()) ||
+            (
+                relay.kind == RelayKind.CUSTOM &&
+                    relay.model.isNotBlank() &&
+                    isLocalModelBaseUrl(relay.baseUrl)
+                )
     }
 
     fun removeRelay(providerId: String, relayId: String): ProviderConfig {
@@ -368,6 +585,7 @@ data class ProviderConfig(
     fun isStreamingResponsesEnabled(): Boolean = enableStreamingResponses
     fun isMultimodalEnabled(): Boolean = enableMultimodalMessages
     fun isModelAutoSelectionEnabled(providerId: String = activeProviderId): Boolean {
+        if (providerId == BuiltinLocalProvider.ID) return false
         getActiveRelay(providerId)?.let { return it.autoModelSelection }
         if (!executionProfileAutoControlsInitialized) return autoUpgradeExecutionProfile
         return when (providerId) {
@@ -378,6 +596,7 @@ data class ProviderConfig(
         }
     }
     fun isReasoningAutoSelectionEnabled(providerId: String = activeProviderId): Boolean {
+        if (providerId == BuiltinLocalProvider.ID) return false
         getActiveRelay(providerId)?.let { return it.autoReasoningEffort }
         if (!executionProfileAutoControlsInitialized) return autoUpgradeExecutionProfile
         return when (providerId) {
@@ -395,8 +614,14 @@ data class ProviderConfig(
         it.copy(autoReasoningEffort = enabled)
     }.copy(executionProfileAutoControlsInitialized = true)
 
-    fun withProviderReasoningEffort(providerId: String, effort: String): ProviderConfig = updateActiveRelay(providerId) {
-        it.copy(reasoningEffort = effort)
+    fun withProviderReasoningEffort(providerId: String, effort: String): ProviderConfig {
+        if (providerId == BuiltinLocalProvider.ID) {
+            val resolved = BuiltinVisionRuntime.activeModel()?.resolveReasoningMode(effort).orEmpty()
+            return copy(builtinLocalReasoningMode = resolved)
+        }
+        return updateActiveRelay(providerId) {
+            it.copy(reasoningEffort = effort)
+        }
     }
 
     fun updateActiveRelay(providerId: String, transform: (RelayConfig) -> RelayConfig): ProviderConfig {
@@ -409,10 +634,31 @@ data class ProviderConfig(
         "deepseek" -> copy(deepseekRelays = relays, activeDeepseekRelayId = activeRelayId)
         "openai-compatible" -> copy(openaiRelays = relays, activeOpenaiRelayId = activeRelayId)
         "claude" -> copy(claudeRelays = relays, activeClaudeRelayId = activeRelayId)
-        else -> this
+        else -> {
+            val updatedRelays = externalProviderRelays.toMutableMap().apply {
+                if (relays.isEmpty()) remove(providerId) else put(providerId, relays)
+            }
+            val updatedActiveIds = activeExternalProviderRelayIds.toMutableMap().apply {
+                if (activeRelayId.isBlank()) remove(providerId) else put(providerId, activeRelayId)
+            }
+            copy(
+                externalProviderRelays = updatedRelays,
+                activeExternalProviderRelayIds = updatedActiveIds
+            )
+        }
     }
-    fun getActiveThinkingMode(): String? {
-        val effort = getActiveReasoningEffort(); return if (effort.isNullOrBlank()) null else "reasoning/$effort"
+    /**
+     * Maps the user-facing reasoning depth to the wire-level thinking switch.
+     *
+     * `reasoning_effort` and `thinking.type` are separate API fields: the former
+     * carries values such as `low` and `high`, while the latter only accepts a
+     * switch value.  Never turn an effort into `reasoning/<effort>` here.
+     */
+    fun getActiveThinkingMode(): String? = when (getActiveReasoningEffort()?.trim()?.lowercase()) {
+        null, "" -> null
+        "off", "disabled" -> "disabled"
+        "adaptive" -> "adaptive"
+        else -> "enabled"
     }
     fun getConfiguredPromptPricePer1M(providerId: String = activeProviderId): Double = getActiveRelay(providerId)?.promptPricePer1M ?: when (providerId) {
         "deepseek" -> deepseekPromptPricePer1M; "openai-compatible" -> openaiPromptPricePer1M
@@ -564,6 +810,11 @@ data class ProviderConfig(
             "claude" -> copy(
                 claudeModel = normalizedModel ?: claudeModel,
                 claudeReasoningEffort = normalizedReasoning ?: claudeReasoningEffort
+            )
+            BuiltinLocalProvider.ID -> copy(
+                builtinLocalReasoningMode = BuiltinVisionRuntime.activeModel()
+                    ?.resolveReasoningMode(normalizedReasoning ?: builtinLocalReasoningMode)
+                    .orEmpty()
             )
             else -> this
         }
@@ -878,6 +1129,38 @@ private fun normalizeApprovalPathPrefix(value: String?): String {
     return value.orEmpty().trim().replace('\\', '/').removeSuffix("/")
 }
 
+fun isLocalModelBaseUrl(value: String?): Boolean {
+    val raw = value.orEmpty().trim()
+    if (raw.isBlank()) return false
+    val normalized = if ("://" in raw) raw else "http://$raw"
+    val host = runCatching { URI(normalized).host }
+        .getOrNull()
+        ?.trim()
+        ?.lowercase()
+        ?.removeSurrounding("[", "]")
+        ?: return false
+    if (
+        host == "localhost" ||
+        host == "::1" ||
+        host.endsWith(".localhost") ||
+        host.endsWith(".local")
+    ) {
+        return true
+    }
+    val octets = host.split('.').map { it.toIntOrNull() }
+    if (octets.size == 4 && octets.all { it != null && it in 0..255 }) {
+        val first = octets[0]!!
+        val second = octets[1]!!
+        return first == 10 ||
+            first == 127 ||
+            (first == 169 && second == 254) ||
+            (first == 172 && second in 16..31) ||
+            (first == 192 && second == 168)
+    }
+    return ':' in host &&
+        (host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:"))
+}
+
 fun isFreshApprovalToolName(toolName: String): Boolean {
     return toolName.trim().lowercase() in FRESH_APPROVAL_TOOL_NAMES
 }
@@ -892,6 +1175,7 @@ fun ProjectToolPreferences?.isUsingGlobalToolPreferences(): Boolean {
 val DEFAULT_ENABLED_BUILTIN_TOOLS = listOf(
     "shell",
     "android",
+    "gui",
     "file",
     "code_edit",
     "code_search",

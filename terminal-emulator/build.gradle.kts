@@ -44,7 +44,11 @@ android {
         minSdk = 33
         externalNativeBuild {
             ndkBuild {
-                arguments += listOf()
+                if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) {
+                    // NDK r30-beta1 may lose the Windows OS environment when AGP
+                    // invokes ndk-build, so pass the make variable explicitly.
+                    arguments += "HOST_OS=windows"
+                }
             }
         }
         ndk {

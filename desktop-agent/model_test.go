@@ -196,3 +196,56 @@ func TestProviderEndpoints(t *testing.T) {
 		t.Fatal("DeepSeek supports streamed usage and should request it")
 	}
 }
+
+func TestOfficialCompatibleProfilesUseDocumentedWireFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		var body chatCompletionRequest
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.ReasoningEffort != "xhigh" || body.EnableThinking == nil || !*body.EnableThinking || !body.PreserveThinking {
+			t.Fatalf("Qwen request did not use its native thinking fields: %#v", body)
+		}
+		response.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintln(response, `data: {"choices":[{"delta":{"content":"ok","reasoning_content":"work"}}]}`)
+		fmt.Fprintln(response, "data: [DONE]")
+	}))
+	defer server.Close()
+
+	client := newModelClient()
+	client.httpClient = server.Client()
+	profile := ProviderProfile{ProviderID: providerQwen, BaseURL: server.URL + "/v1", Model: "qwen3.8-max-preview", ReasoningEffort: "high"}
+	result, err := client.streamChat(context.Background(), profile, "key", []modelMessage{{Role: "user", Content: "hello"}}, nil, nil)
+	if err != nil || result.Content != "ok" || result.Reasoning != "work" {
+		t.Fatalf("unexpected Qwen result=%#v err=%v", result, err)
+	}
+}
+
+func TestGeminiUsesNativeGenerateContentTransport(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1beta/models/gemini-test:streamGenerateContent" || request.URL.Query().Get("alt") != "sse" {
+			t.Fatalf("unexpected Gemini endpoint: %s", request.URL.String())
+		}
+		if request.Header.Get("x-goog-api-key") != "gemini-key" || request.Header.Get("Authorization") != "" {
+			t.Fatalf("Gemini must use x-goog-api-key only: %#v", request.Header)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := body["generationConfig"]; !ok {
+			t.Fatalf("missing native Gemini generation config: %#v", body)
+		}
+		response.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintln(response, `data: {"candidates":[{"content":{"parts":[{"thought":true,"text":"plan"},{"text":"done"}]}}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}`)
+	}))
+	defer server.Close()
+
+	client := newModelClient()
+	client.httpClient = server.Client()
+	profile := ProviderProfile{ProviderID: providerGemini, BaseURL: server.URL + "/v1beta", Model: "gemini-test"}
+	result, err := client.streamChat(context.Background(), profile, "gemini-key", []modelMessage{{Role: "system", Content: "be helpful"}, {Role: "user", Content: "hello"}}, nil, nil)
+	if err != nil || result.Content != "done" || result.Reasoning != "plan" || result.Usage == nil || result.Usage.TotalTokens != 5 {
+		t.Fatalf("unexpected Gemini result=%#v err=%v", result, err)
+	}
+}

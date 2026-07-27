@@ -1,6 +1,7 @@
 package com.murong.agent.ui.settings
 
 import com.murong.agent.core.config.ProviderConfig
+import com.murong.agent.core.config.isLocalModelBaseUrl
 import com.murong.agent.core.provider.ModelProvider
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -45,6 +46,14 @@ internal fun builtinProviderModels(providerId: String): List<String> = when (pro
     "deepseek" -> listOf("deepseek-v4-flash", "deepseek-v4-pro")
     "openai-compatible" -> listOf("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5")
     "claude" -> listOf("claude-fable-5", "claude-opus-4-8")
+    "kimi" -> listOf("kimi-k3")
+    "glm" -> listOf("glm-5.2")
+    "qwen" -> listOf("qwen3.8-max-preview")
+    "minimax" -> listOf("MiniMax-M3")
+    "grok" -> listOf("grok-4.5")
+    "mimo" -> listOf("mimo-v2.5", "mimo-v2.5-pro")
+    "hy3" -> listOf("hy3-preview")
+    "gemini" -> listOf("gemini-3.6-flash")
     else -> emptyList()
 }
 
@@ -55,7 +64,10 @@ internal fun mergeProviderModelCandidates(
 ): List<String> {
     return linkedSetOf<String>().apply {
         currentModel.trim().takeIf { it.isNotBlank() }?.let(::add)
-        addAll(builtinProviderModels(providerId))
+        // Once the provider has answered, its catalog is authoritative.  The
+        // older implementation always merged static examples here, which made
+        // OpenAI and Claude look as if they were returning hard-coded models.
+        if (fetchedModels.isEmpty()) addAll(builtinProviderModels(providerId))
         fetchedModels
             .asSequence()
             .map(String::trim)
@@ -88,7 +100,9 @@ internal fun ProviderConfig.withProviderModelSelection(providerId: String, model
             claudeModel = normalizedModel
         ).withModelAutoSelection(providerId, false)
 
-        else -> this
+        else -> updateActiveRelay(providerId) {
+            it.copy(model = normalizedModel)
+        }.withModelAutoSelection(providerId, false)
     }
 }
 
@@ -97,12 +111,13 @@ internal fun fetchProviderModelCatalog(
     provider: ModelProvider
 ): Result<ProviderModelCatalogFetchResult> {
     val apiKey = config.getApiKey(provider.id).trim()
-    if (apiKey.isBlank()) {
+    val baseUrl = config.getBaseUrl(provider.id) ?: provider.defaultBaseUrl
+    if (apiKey.isBlank() && !isLocalModelBaseUrl(baseUrl)) {
         return Result.failure(IllegalStateException("请先填写 ${provider.name} 的 API Key。"))
     }
     val endpointCandidates = buildProviderModelEndpointCandidates(
         providerId = provider.id,
-        baseUrl = config.getBaseUrl(provider.id) ?: provider.defaultBaseUrl
+        baseUrl = baseUrl
     )
     var lastError: String? = null
     endpointCandidates.forEach { endpoint ->
@@ -112,16 +127,27 @@ internal fun fetchProviderModelCatalog(
             .addHeader("Accept", "application/json")
         when (provider.id) {
             "claude" -> {
-                requestBuilder
-                    .addHeader("x-api-key", apiKey)
-                    .addHeader("anthropic-version", "2023-06-01")
+                apiKey.takeIf { it.isNotBlank() }?.let {
+                    requestBuilder.addHeader("x-api-key", it)
+                }
+                requestBuilder.addHeader("anthropic-version", "2023-06-01")
                 config.getBaseUrl(provider.id)?.takeIf { it.isNotBlank() }?.let { customBaseUrl ->
                     requestBuilder.addHeader("anthropic-dangerous-direct-browser-access", "true")
                 }
             }
 
+            "gemini" -> {
+                // Gemini is a native GenerateContent API, not an OpenAI
+                // endpoint: model discovery uses its own API-key header.
+                apiKey.takeIf { it.isNotBlank() }?.let {
+                    requestBuilder.addHeader("x-goog-api-key", it)
+                }
+            }
+
             else -> {
-                requestBuilder.addHeader("Authorization", "Bearer $apiKey")
+                apiKey.takeIf { it.isNotBlank() }?.let {
+                    requestBuilder.addHeader("Authorization", "Bearer $it")
+                }
             }
         }
         runCatching {
@@ -134,8 +160,17 @@ internal fun fetchProviderModelCatalog(
                 if (models.isEmpty()) {
                     throw IllegalStateException("接口返回成功，但没有解析到模型列表。")
                 }
+                val normalizedModels = if (provider.id == "gemini") {
+                    models.map { it.removePrefix("models/") }
+                } else {
+                    models
+                }
                 ProviderModelCatalogFetchResult(
-                    models = mergeProviderModelCandidates(provider.id, config.getResolvedModel(provider.id), models),
+                    models = mergeProviderModelCandidates(
+                        provider.id,
+                        config.getResolvedModel(provider.id),
+                        normalizedModels
+                    ),
                     sourceLabel = "上游接口"
                 )
             }
@@ -155,6 +190,13 @@ private fun buildProviderModelEndpointCandidates(providerId: String, baseUrl: St
         "claude" -> {
             candidates += "$normalizedBaseUrl/v1/models"
             candidates += "$normalizedBaseUrl/models"
+        }
+
+        "gemini" -> {
+            candidates += "$normalizedBaseUrl/models"
+            if (!normalizedBaseUrl.endsWith("/v1beta", ignoreCase = true)) {
+                candidates += "$normalizedBaseUrl/v1beta/models"
+            }
         }
 
         else -> {

@@ -15,6 +15,38 @@ import (
 	"time"
 )
 
+func TestFileManagerRevealCommandUsesNativePlatformSemantics(t *testing.T) {
+	file := filepath.Join("C:", "project", "main.go")
+	directory := filepath.Dir(file)
+	tests := []struct {
+		name       string
+		goos       string
+		target     string
+		directory  bool
+		executable string
+		arguments  []string
+	}{
+		{name: "windows file", goos: "windows", target: file, executable: "explorer.exe", arguments: []string{"/select," + filepath.Clean(file)}},
+		{name: "windows directory", goos: "windows", target: directory, directory: true, executable: "explorer.exe", arguments: []string{filepath.Clean(directory)}},
+		{name: "mac file", goos: "darwin", target: file, executable: "open", arguments: []string{"-R", filepath.Clean(file)}},
+		{name: "linux file", goos: "linux", target: file, executable: "xdg-open", arguments: []string{filepath.Dir(filepath.Clean(file))}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			executable, arguments, err := fileManagerRevealCommand(test.goos, test.target, test.directory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if executable != test.executable || strings.Join(arguments, "\x00") != strings.Join(test.arguments, "\x00") {
+				t.Fatalf("unexpected command: %q %#v", executable, arguments)
+			}
+		})
+	}
+	if _, _, err := fileManagerRevealCommand("plan9", file, false); err == nil {
+		t.Fatal("unsupported operating system was accepted")
+	}
+}
+
 func TestWorkbenchEditorScopesFilesAndPreventsStaleOverwrite(t *testing.T) {
 	t.Setenv("MURONG_DESKTOP_DATA_DIR", t.TempDir())
 	project := t.TempDir()

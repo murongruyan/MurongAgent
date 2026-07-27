@@ -73,6 +73,48 @@ class AgentLoopTest {
     }
 
     @Test
+    fun processMessage_replaysProviderReasoningWithAssistantToolCall() = runBlocking {
+        val provider = FakeModelProvider(
+            responses = ArrayDeque(
+                listOf(
+                    ChatResponse(
+                        content = "先检查文件。",
+                        toolCalls = listOf(
+                            ToolCall(
+                                id = "call-1",
+                                function = ToolCallFunction("fake_tool", """{"path":"service.sh"}""")
+                            )
+                        ),
+                        reasoningContent = "I need to inspect service.sh before editing it."
+                    ),
+                    ChatResponse(content = "done", toolCalls = null)
+                )
+            )
+        )
+        val loop = AgentLoop(
+            provider = provider,
+            toolRegistry = ToolRegistry().apply { register(FakeTool()) },
+            config = ProviderConfig(activeProviderId = "deepseek", deepseekModel = "fake-model")
+        )
+
+        loop.processMessage(
+            userMessage = ChatMessage(role = "user", content = "修改 service.sh"),
+            history = emptyList(),
+            onEvent = {}
+        )
+
+        val replayedAssistant = provider.requests[1].messages.single {
+            it.role == "assistant" && !it.toolCalls.isNullOrEmpty()
+        }
+        assertEquals("先检查文件。", replayedAssistant.content)
+        assertEquals(
+            "I need to inspect service.sh before editing it.",
+            replayedAssistant.reasoningContent
+        )
+        assertEquals("call-1", replayedAssistant.toolCalls?.single()?.id)
+    }
+
+    @Test
     fun processMessage_preservesPreparedHistoryOlderThanThirtyTwoMessages() = runBlocking {
         val provider = FakeModelProvider(
             responses = ArrayDeque(listOf(ChatResponse(content = "done", toolCalls = null)))

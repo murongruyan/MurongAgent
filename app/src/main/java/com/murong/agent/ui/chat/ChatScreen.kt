@@ -142,6 +142,12 @@ import com.murong.agent.core.voice.VoiceSettings
 import com.murong.agent.voice.OfflineVoiceModelUiState
 import com.murong.agent.voice.VoiceInputUiState
 import com.murong.agent.core.provider.ProviderRegistry
+import com.murong.agent.core.provider.BuiltinLocalProvider
+import com.murong.agent.core.tool.BuiltinVisionModelDescriptor
+import com.murong.agent.core.tool.BuiltinVisionModelManager
+import com.murong.agent.core.tool.BuiltinVisionModels
+import com.murong.agent.core.tool.BuiltinVisionRuntime
+import com.murong.agent.core.tool.BuiltinVisionTier
 import com.murong.agent.ui.MurongDialog
 import com.murong.agent.ui.MurongChoiceDialogItem
 import com.murong.agent.ui.MurongCompactChoiceDialog
@@ -442,18 +448,49 @@ internal fun ChatScreen(
             .filter { it.enabled && (it.title.isNotBlank() || it.content.isNotBlank()) }
             .distinctBy { listOf(it.title.trim(), it.description.trim(), it.content.trim(), it.runAs.name).joinToString("|") }
     }
+    val chatContext = LocalContext.current
+    val builtinVisionModelManager = remember(chatContext) {
+        BuiltinVisionModelManager.shared(chatContext.applicationContext)
+    }
+    val builtinVisionModelState by builtinVisionModelManager.state.collectAsState()
+    LaunchedEffect(builtinVisionModelManager, isScreenActive) {
+        if (isScreenActive) builtinVisionModelManager.refresh()
+    }
+    val installedBuiltinLocalModels = remember(builtinVisionModelState.installedTiers) {
+        BuiltinVisionModels.all.filter { descriptor ->
+            descriptor.androidSupported &&
+                descriptor.tier in builtinVisionModelState.installedTiers
+        }
+    }
+    val activeBuiltinLocalModel = remember(
+        installedBuiltinLocalModels,
+        builtinVisionModelState.activeTier
+    ) {
+        installedBuiltinLocalModels.firstOrNull {
+            it.tier == builtinVisionModelState.activeTier
+        } ?: installedBuiltinLocalModels.firstOrNull()
+    }
     val usesCodexChatGpt = globalConfig.usesCodexChatGptBackend()
     val activeProvider = remember(executionProfileConfig.activeProviderId) {
         ProviderRegistry.getActiveProvider(executionProfileConfig.activeProviderId)
     }
     val activeRelay = executionProfileConfig.getActiveRelay(executionProfileConfig.activeProviderId)
+    val builtinLocalReady = activeBuiltinLocalModel != null && BuiltinVisionRuntime.isReady()
+    val builtinLocalModelLabel = activeBuiltinLocalModel?.displayName ?: "尚未安装本地模型"
     val currentConfigurationLabel = if (usesCodexChatGpt) {
         "官方 ChatGPT / Codex"
+    } else if (activeProvider.id == BuiltinLocalProvider.ID) {
+        "本机离线 · $builtinLocalModelLabel"
     } else {
         activeRelay?.let { executionProfileConfig.configuredConnectionLabel(activeProvider.id, it) }
             .orEmpty()
     }
-    val configurationChoiceItems = remember(globalConfig) {
+    val configurationChoiceItems = remember(
+        globalConfig,
+        builtinLocalReady,
+        builtinLocalModelLabel,
+        installedBuiltinLocalModels
+    ) {
         buildList {
             add(
                 MurongChoiceDialogItem(
@@ -461,6 +498,24 @@ internal fun ChatScreen(
                     title = if (usesCodexChatGpt) "✓ ChatGPT / Codex" else "ChatGPT / Codex",
                     subtitle = "官方登录 · ${globalConfig.codexModel.trim().ifBlank { "默认模型" }}",
                 ),
+            )
+            add(
+                MurongChoiceDialogItem(
+                    key = "__builtin_local_provider__",
+                    title = if (
+                        !usesCodexChatGpt &&
+                        activeProvider.id == BuiltinLocalProvider.ID
+                    ) {
+                        "✓ 内置本地模型"
+                    } else {
+                        "内置本地模型"
+                    },
+                    subtitle = if (builtinLocalReady) {
+                        "$builtinLocalModelLabel · 已安装 ${installedBuiltinLocalModels.size} 个 · 离线运行"
+                    } else {
+                        "尚未安装 · 请先到工具页的本地模型中心安装 Qwen、Gemma、智谱或 DeepSeek"
+                    }
+                )
             )
             addAll(ProviderRegistry.getAllProviders().flatMap { provider ->
                 globalConfig.getRelayConfigs(provider.id)
@@ -504,6 +559,8 @@ internal fun ChatScreen(
         globalConfig.codexModel,
         codexModelCatalog.models,
         codexModelCatalog.isLoading,
+        installedBuiltinLocalModels,
+        builtinVisionModelState.activeTier,
     ) {
         if (usesCodexChatGpt) {
             buildList {
@@ -544,6 +601,11 @@ internal fun ChatScreen(
                     )
                 }
             }
+        } else if (activeProvider.id == BuiltinLocalProvider.ID) {
+            buildBuiltinLocalModelChoiceItems(
+                installedModels = installedBuiltinLocalModels,
+                activeTier = builtinVisionModelState.activeTier
+            )
         } else {
             buildChatModelChoiceItems(
                 provider = activeProvider,
@@ -575,6 +637,18 @@ internal fun ChatScreen(
                     key = effort,
                     title = if (effort == currentReasoningEffort) "✓ ${formatCodexEffortLabel(effort)}" else formatCodexEffortLabel(effort),
                     subtitle = null,
+                )
+            }
+        } else if (
+            activeProvider.id == BuiltinLocalProvider.ID &&
+            activeProvider.supportsReasoning
+        ) {
+            activeProvider.supportedReasoningEfforts.map { effort ->
+                val label = activeProvider.formatReasoningDisplayName(effort) ?: effort
+                MurongChoiceDialogItem(
+                    key = effort,
+                    title = if (effort == currentReasoningEffort) "✓ $label" else label,
+                    subtitle = activeProvider.buildReasoningHint(activeResolvedModel, effort)
                 )
             }
         } else if (activeProvider.supportsReasoning) {
@@ -1602,6 +1676,15 @@ internal fun ChatScreen(
                             )
                         }
 
+                        key == "__builtin_local_provider__" -> {
+                            onUpdateGlobalConfig(
+                                globalConfig.copy(
+                                    activeAgentBackend = AgentBackendKind.PROVIDER_API,
+                                    activeProviderId = BuiltinLocalProvider.ID
+                                )
+                            )
+                        }
+
                         key.indexOf('|') > 0 -> {
                             val separator = key.indexOf('|')
                             // Selecting an API relay must explicitly leave the
@@ -1643,6 +1726,8 @@ internal fun ChatScreen(
                 modelChoiceTitle = if (usesCodexChatGpt) "ChatGPT / Codex 模型" else "${activeProvider.name} 模型",
                 modelChoiceSubtitle = if (usesCodexChatGpt) {
                     "仅列出该 ChatGPT 账户当前可用的官方模型"
+                } else if (activeProvider.id == BuiltinLocalProvider.ID) {
+                    "当前模型完全在本机运行；可到工具页切换或安装其他模型"
                 } else {
                     "切换后会写回当前 API 连接的默认模型配置"
                 },
@@ -1659,13 +1744,26 @@ internal fun ChatScreen(
                             else -> onUpdateGlobalConfig(globalConfig.copy(codexModel = modelId))
                         }
                     } else {
-                        onUpdateGlobalConfig(
-                            if (modelId == AUTO_PROFILE_SELECTION_KEY) {
-                                globalConfig.withModelAutoSelection(globalConfig.activeProviderId, true)
-                            } else {
-                                globalConfig.withProviderModelSelection(globalConfig.activeProviderId, modelId)
-                            },
-                        )
+                        if (activeProvider.id == BuiltinLocalProvider.ID) {
+                            builtinLocalTierFromChoiceKey(modelId)?.let { tier ->
+                                val descriptor = BuiltinVisionModels.descriptor(tier)
+                                builtinVisionModelManager.select(tier)
+                                onUpdateGlobalConfig(
+                                    globalConfig.copy(
+                                        builtinLocalReasoningMode =
+                                            descriptor.defaultReasoningMode
+                                    )
+                                )
+                            }
+                        } else {
+                            onUpdateGlobalConfig(
+                                if (modelId == AUTO_PROFILE_SELECTION_KEY) {
+                                    globalConfig.withModelAutoSelection(globalConfig.activeProviderId, true)
+                                } else {
+                                    globalConfig.withProviderModelSelection(globalConfig.activeProviderId, modelId)
+                                },
+                            )
+                        }
                     }
                 },
                 onPlanModeChange = { enabled ->
@@ -1804,12 +1902,17 @@ internal fun ChatScreen(
                 onInstallOfflineVoiceModel = onInstallOfflineVoiceModel,
                 currentReasoningEffort = if (isReasoningAutoSelectionEnabled) {
                     "自动 · $currentReasoningEffort"
+                } else if (activeProvider.id == BuiltinLocalProvider.ID) {
+                    activeProvider.formatReasoningDisplayName(currentReasoningEffort)
+                        ?: currentReasoningEffort
                 } else {
                     formatCodexEffortLabel(currentReasoningEffort)
                 },
                 reasoningEffortItems = reasoningEffortItems,
                 reasoningChoiceSubtitle = if (usesCodexChatGpt) {
                     "仅显示当前官方模型支持的推理深度"
+                } else if (activeProvider.id == BuiltinLocalProvider.ID) {
+                    "仅显示当前本地模型真实支持的思考选项"
                 } else {
                     "切换后会写回当前 API 连接的默认配置"
                 },
@@ -4719,7 +4822,7 @@ private fun MessageBubble(
                     }
                 }
 
-                if (reasoningContent != null && reasoningContent.isNotBlank()) {
+                if (reasoningContent != null && (reasoningContent.isNotBlank() || msg.isStreaming)) {
                     ReasoningCard(
                         content = reasoningContent,
                         expanded = expanded,
@@ -4730,7 +4833,7 @@ private fun MessageBubble(
                 }
 
                 if (shouldShowAssistantBubble) {
-                    if (reasoningContent != null && reasoningContent.isNotBlank()) {
+                    if (reasoningContent != null && (reasoningContent.isNotBlank() || msg.isStreaming)) {
                         Spacer(modifier = Modifier.height(8.dp))
                     }
                     MurongGlassSurface(
@@ -6530,6 +6633,45 @@ internal fun buildChatModelChoiceItems(
     }
 }
 
+private const val BUILTIN_LOCAL_MODEL_CHOICE_PREFIX = "__builtin_local_model__:"
+
+internal fun builtinLocalModelChoiceKey(tier: BuiltinVisionTier): String =
+    "$BUILTIN_LOCAL_MODEL_CHOICE_PREFIX${tier.name}"
+
+internal fun builtinLocalTierFromChoiceKey(key: String): BuiltinVisionTier? =
+    key.takeIf { it.startsWith(BUILTIN_LOCAL_MODEL_CHOICE_PREFIX) }
+        ?.removePrefix(BUILTIN_LOCAL_MODEL_CHOICE_PREFIX)
+        ?.let { stored -> BuiltinVisionTier.entries.firstOrNull { it.name == stored } }
+
+internal fun buildBuiltinLocalModelChoiceItems(
+    installedModels: List<BuiltinVisionModelDescriptor>,
+    activeTier: BuiltinVisionTier?
+): List<MurongChoiceDialogItem> {
+    if (installedModels.isEmpty()) {
+        return listOf(
+            MurongChoiceDialogItem(
+                key = "__builtin_local_models_empty__",
+                title = "尚未安装本地模型",
+                subtitle = "请先到工具页下载 Qwen、Gemma、智谱或 DeepSeek"
+            )
+        )
+    }
+    return installedModels.map { descriptor ->
+        val active = descriptor.tier == activeTier ||
+            (activeTier == null && descriptor == installedModels.first())
+        MurongChoiceDialogItem(
+            key = builtinLocalModelChoiceKey(descriptor.tier),
+            title = if (active) "✓ ${descriptor.displayName}" else descriptor.displayName,
+            subtitle = buildString {
+                append("已安装")
+                if (active) append(" · 当前使用")
+                append(if (descriptor.supportsVision) " · 文本 / 图片 / GUI" else " · 纯文本 / 代码")
+                if (descriptor.reasoningModes.isNotEmpty()) append(" · 可开关思考")
+            }
+        )
+    }
+}
+
 private fun composerPlaceholder(
     planModeEnabled: Boolean,
     goalModeEnabled: Boolean,
@@ -6962,7 +7104,7 @@ private fun WelcomeView(
                         text = if (usesCodexChatGpt) {
                             "请先在设置中完成 ChatGPT / Codex 设备码登录。"
                         } else {
-                            "请先配置 AI 提供商和 API Key，\n支持 DeepSeek、OpenAI 兼容中转站、Claude"
+                            "请先配置 API Key，或填写本机模型地址和模型名称。\n支持 DeepSeek、OpenAI-compatible、Claude"
                         },
                         fontSize = 13.sp,
                         color = mutedTextColor,
@@ -7434,7 +7576,7 @@ private fun ReasoningCard(
                         tint = mutedTextColor
                     )
                     Text(
-                        text = "思考过程",
+                        text = if (isStreaming) "正在思考" else "思考过程",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurface
                     )
@@ -7461,12 +7603,21 @@ private fun ReasoningCard(
                     val normalizedContent = remember(content) {
                         normalizeReasoningMarkdown(content)
                     }
-                    SelectableMarkdownContent(
-                        text = normalizedContent,
-                        fontSize = 12,
-                        modifier = Modifier.padding(10.dp),
-                        maxHeight = 320.dp
-                    )
+                    if (normalizedContent.isBlank()) {
+                        Text(
+                            text = "模型正在生成思考内容…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedTextColor,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    } else {
+                        SelectableMarkdownContent(
+                            text = normalizedContent,
+                            fontSize = 12,
+                            modifier = Modifier.padding(10.dp),
+                            maxHeight = 320.dp
+                        )
+                    }
                 }
             }
         }
@@ -8742,6 +8893,66 @@ private fun formatDurationMillis(durationMs: Long): String {
     }
 }
 
+internal const val ALL_DRAWER_WORKSPACES = "__all_workspaces__"
+internal const val UNBOUND_DRAWER_WORKSPACE = "__unbound_workspace__"
+
+internal data class DrawerWorkspaceOption(
+    val key: String,
+    val path: String?,
+    val sessionCount: Int
+) {
+    val label: String
+        get() = when (key) {
+            ALL_DRAWER_WORKSPACES -> "全部工作区"
+            UNBOUND_DRAWER_WORKSPACE -> "未绑定工作区"
+            else -> path
+                ?.trim()
+                ?.trimEnd('/', '\\')
+                ?.substringAfterLast('/')
+                ?.substringAfterLast('\\')
+                ?.takeIf { it.isNotBlank() }
+                ?: "工作区"
+        }
+}
+
+internal fun drawerWorkspaceKey(projectPath: String?): String =
+    projectPath
+        ?.trim()
+        ?.replace('\\', '/')
+        ?.trimEnd('/')
+        ?.takeIf { it.isNotBlank() }
+        ?: UNBOUND_DRAWER_WORKSPACE
+
+internal fun buildDrawerWorkspaceOptions(
+    sessions: List<SessionSummary>,
+    desktopSessions: List<LanWebDesktopAgentTaskSummary>
+): List<DrawerWorkspaceOption> {
+    val paths = linkedMapOf<String, String?>()
+    val counts = linkedMapOf<String, Int>()
+    (sessions.map { it.projectPath } + desktopSessions.map { it.projectPath }).forEach { path ->
+        val key = drawerWorkspaceKey(path)
+        paths.putIfAbsent(key, path?.trim()?.takeIf { it.isNotBlank() })
+        counts[key] = counts.getOrDefault(key, 0) + 1
+    }
+    return buildList {
+        add(
+            DrawerWorkspaceOption(
+                key = ALL_DRAWER_WORKSPACES,
+                path = null,
+                sessionCount = sessions.size + desktopSessions.size
+            )
+        )
+        counts.entries
+            .sortedWith(
+                compareBy<Map.Entry<String, Int>> { it.key == UNBOUND_DRAWER_WORKSPACE }
+                    .thenBy { paths[it.key].orEmpty().lowercase() }
+            )
+            .forEach { (key, count) ->
+                add(DrawerWorkspaceOption(key = key, path = paths[key], sessionCount = count))
+            }
+    }
+}
+
 @Composable
 fun SessionDrawerContent(
     currentSessionId: String,
@@ -8758,6 +8969,46 @@ fun SessionDrawerContent(
 ) {
     val surfaceColor = rememberMurongSurfaceColor()
     val mutedTextColor = rememberMurongMutedTextColor()
+    val workspaceOptions = remember(sessions, desktopSessions) {
+        buildDrawerWorkspaceOptions(sessions, desktopSessions)
+    }
+    val currentWorkspaceKey = remember(currentSessionId, sessions) {
+        sessions.firstOrNull { it.id == currentSessionId }
+            ?.projectPath
+            ?.let(::drawerWorkspaceKey)
+            ?: ALL_DRAWER_WORKSPACES
+    }
+    var selectedWorkspaceKey by rememberSaveable {
+        mutableStateOf(currentWorkspaceKey)
+    }
+    var workspaceMenuExpanded by remember { mutableStateOf(false) }
+    var desktopSessionsExpanded by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(workspaceOptions) {
+        if (workspaceOptions.none { it.key == selectedWorkspaceKey }) {
+            selectedWorkspaceKey = ALL_DRAWER_WORKSPACES
+        }
+    }
+    val selectedWorkspace = workspaceOptions.firstOrNull {
+        it.key == selectedWorkspaceKey
+    } ?: workspaceOptions.first()
+    val visibleSessions = remember(sessions, selectedWorkspaceKey) {
+        if (selectedWorkspaceKey == ALL_DRAWER_WORKSPACES) {
+            sessions
+        } else {
+            sessions.filter {
+                drawerWorkspaceKey(it.projectPath) == selectedWorkspaceKey
+            }
+        }
+    }
+    val visibleDesktopSessions = remember(desktopSessions, selectedWorkspaceKey) {
+        if (selectedWorkspaceKey == ALL_DRAWER_WORKSPACES) {
+            desktopSessions
+        } else {
+            desktopSessions.filter {
+                drawerWorkspaceKey(it.projectPath) == selectedWorkspaceKey
+            }
+        }
+    }
     Column(
         modifier = modifier
             .background(MaterialTheme.colorScheme.surface)
@@ -8814,7 +9065,60 @@ fun SessionDrawerContent(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        if (sessions.isEmpty() && desktopSessions.isEmpty()) {
+        ExposedDropdownMenuBox(
+            expanded = workspaceMenuExpanded,
+            onExpandedChange = { workspaceMenuExpanded = !workspaceMenuExpanded }
+        ) {
+            OutlinedTextField(
+                value = buildString {
+                    append(selectedWorkspace.label)
+                    append(" · ")
+                    append(selectedWorkspace.sessionCount)
+                    append(" 个会话")
+                },
+                onValueChange = {},
+                readOnly = true,
+                singleLine = true,
+                label = { Text("工作区") },
+                trailingIcon = {
+                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = workspaceMenuExpanded)
+                },
+                modifier = Modifier
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                    .fillMaxWidth()
+            )
+            ExposedDropdownMenu(
+                expanded = workspaceMenuExpanded,
+                onDismissRequest = { workspaceMenuExpanded = false }
+            ) {
+                workspaceOptions.forEach { option ->
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text("${option.label} · ${option.sessionCount}")
+                                option.path?.takeIf { it.isNotBlank() }?.let { path ->
+                                    Text(
+                                        path,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = mutedTextColor,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        },
+                        onClick = {
+                            selectedWorkspaceKey = option.key
+                            workspaceMenuExpanded = false
+                        }
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        if (visibleSessions.isEmpty() && visibleDesktopSessions.isEmpty()) {
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = surfaceColor.copy(alpha = 0.58f),
@@ -8822,13 +9126,21 @@ fun SessionDrawerContent(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "还没有保存的历史对话",
+                        text = if (sessions.isEmpty() && desktopSessions.isEmpty()) {
+                            "还没有保存的历史对话"
+                        } else {
+                            "这个工作区还没有会话"
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "发送第一条消息后，这里会自动出现会话记录。",
+                        text = if (sessions.isEmpty() && desktopSessions.isEmpty()) {
+                            "发送第一条消息后，这里会自动出现会话记录。"
+                        } else {
+                            "可切换到“全部工作区”，或在当前工作区新建任务。"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = mutedTextColor
                     )
@@ -8837,34 +9149,74 @@ fun SessionDrawerContent(
         } else {
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxSize()
+                // A fillMaxSize child after the fixed drawer header is measured
+                // beyond the Column's remaining height.  It then loses the
+                // scroll gesture to the drawer overlay on pointer-up.  Giving
+                // the list the remaining height keeps its drag recognizer in
+                // the visible panel for the whole gesture.
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
             ) {
-                if (desktopSessions.isNotEmpty()) {
+                if (visibleDesktopSessions.isNotEmpty()) {
                     item(key = "desktop-session-header") {
-                        Column(modifier = Modifier.padding(horizontal = 2.dp, vertical = 2.dp)) {
-                            Text(
-                                text = "电脑任务",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = if (desktopConnected) "Windows 实时同步" else "Windows 离线副本",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (desktopConnected) MaterialTheme.colorScheme.primary else mutedTextColor
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    desktopSessionsExpanded = !desktopSessionsExpanded
+                                }
+                                .padding(horizontal = 2.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "电脑任务 · ${visibleDesktopSessions.size}",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = if (desktopConnected) {
+                                        "Windows 实时同步"
+                                    } else {
+                                        "Windows 离线副本"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (desktopConnected) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        mutedTextColor
+                                    }
+                                )
+                            }
+                            Icon(
+                                imageVector = if (desktopSessionsExpanded) {
+                                    Icons.Outlined.KeyboardArrowUp
+                                } else {
+                                    Icons.Outlined.KeyboardArrowDown
+                                },
+                                contentDescription = if (desktopSessionsExpanded) {
+                                    "折叠电脑任务"
+                                } else {
+                                    "展开电脑任务"
+                                },
+                                tint = mutedTextColor
                             )
                         }
                     }
-                    items(desktopSessions, key = { "desktop:${it.id}" }) { session ->
-                        DesktopSessionDrawerItem(
-                            session = session,
-                            connected = desktopConnected,
-                            onClick = { onLoadDesktopSession(session.id) }
-                        )
+                    if (desktopSessionsExpanded) {
+                        items(visibleDesktopSessions, key = { "desktop:${it.id}" }) { session ->
+                            DesktopSessionDrawerItem(
+                                session = session,
+                                connected = desktopConnected,
+                                onClick = { onLoadDesktopSession(session.id) }
+                            )
+                        }
                     }
-                    if (sessions.isNotEmpty()) {
+                    if (visibleSessions.isNotEmpty()) {
                         item(key = "local-session-header") {
                             Text(
-                                text = "本机会话",
+                                text = "本机会话 · ${visibleSessions.size}",
                                 modifier = Modifier.padding(start = 2.dp, top = 8.dp, bottom = 2.dp),
                                 style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.onSurface
@@ -8872,11 +9224,15 @@ fun SessionDrawerContent(
                         }
                     }
                 }
-                items(sessions, key = { it.id }) { session ->
+                items(visibleSessions, key = { it.id }) { session ->
                     SessionDrawerItem(
                         session = session,
                         selected = session.id == currentSessionId,
-                        onClick = { onLoadSession(session.id) },
+                        onClick = {
+                            if (session.id != currentSessionId) {
+                                onLoadSession(session.id)
+                            }
+                        },
                         onRename = { onRenameSession(session.id) },
                         onDelete = { onDeleteSession(session.id) }
                     )
@@ -8930,6 +9286,15 @@ private fun DesktopSessionDrawerItem(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+            session.projectPath?.takeIf { it.isNotBlank() }?.let { projectPath ->
+                Text(
+                    text = projectPath,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
     }
 }

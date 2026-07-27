@@ -29,6 +29,7 @@ import com.murong.agent.core.voice.selectAvailableVoiceRecognitionProvider
 import com.murong.agent.core.voice.VoiceSettings
 import com.murong.agent.core.voice.splitVoicePlaybackText
 import com.murong.agent.core.voice.voicePlaybackTextChunk
+import com.murong.agent.ui.assistant.VoiceWakeWordService
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -137,7 +138,10 @@ class VoiceSettingsRepository(context: Context) : Closeable {
     }
 }
 
-class VoiceChatController(context: Context) : Closeable {
+class VoiceChatController(
+    context: Context,
+    private val manageWakeWordMicrophone: Boolean = true,
+) : Closeable {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val settingsRepository = VoiceSettingsRepository(appContext)
@@ -149,9 +153,12 @@ class VoiceChatController(context: Context) : Closeable {
     /** The engine currently visible in the composer; late callbacks from a previous engine are ignored. */
     private var displayedRecognition: VoiceRecognitionService? = null
     private var activeRecognition: VoiceRecognitionService? = null
+    private var inputGeneration = 0L
+    private var wakeWordPausedForInput = false
     /** Continuations become visible only after a whole bounded batch finishes naturally. */
     private val playbackContinuationOffsets = mutableMapOf<Long, Int>()
     private val pendingPlaybackContinuationOffsets = mutableMapOf<Long, Int?>()
+    private val playbackCompletionWaiters = mutableMapOf<Long, CompletableDeferred<Boolean>>()
     private val _continuablePlaybackMessageIds = MutableStateFlow<Set<Long>>(emptySet())
 
     val inputState: StateFlow<VoiceInputUiState> = _inputState.asStateFlow()
@@ -179,6 +186,7 @@ class VoiceChatController(context: Context) : Closeable {
             playback.events.collect { event ->
                 when (event) {
                     is VoicePlaybackEvent.Completed -> {
+                        playbackCompletionWaiters.remove(event.messageId)?.complete(true)
                         val nextOffset = pendingPlaybackContinuationOffsets.remove(event.messageId)
                         if (nextOffset != null) {
                             playbackContinuationOffsets[event.messageId] = nextOffset
@@ -189,6 +197,7 @@ class VoiceChatController(context: Context) : Closeable {
                         }
                     }
                     is VoicePlaybackEvent.Failure -> {
+                        playbackCompletionWaiters.remove(event.messageId)?.complete(false)
                         pendingPlaybackContinuationOffsets.remove(event.messageId)
                         playbackContinuationOffsets.remove(event.messageId)
                         _continuablePlaybackMessageIds.value = playbackContinuationOffsets.keys.toSet()
@@ -216,10 +225,19 @@ class VoiceChatController(context: Context) : Closeable {
             showRecognitionUnavailable(settings.value)
             return
         }
+        val generation = ++inputGeneration
         activeRecognition = selected
         displayedRecognition = selected
         scope.launch {
             runCatching {
+                if (manageWakeWordMicrophone) {
+                    VoiceWakeWordService.pauseAndAwaitMicrophoneRelease(appContext)
+                    if (generation != inputGeneration || activeRecognition !== selected) {
+                        VoiceWakeWordService.resumeAfterAssistant(appContext)
+                        return@runCatching
+                    }
+                    wakeWordPausedForInput = true
+                }
                 selected.start(VoiceRecognitionRequest(settings.value.languageTag))
             }.onFailure {
                 if (displayedRecognition === selected) {
@@ -234,6 +252,7 @@ class VoiceChatController(context: Context) : Closeable {
                     )
                 }
                 if (activeRecognition === selected) activeRecognition = null
+                releaseWakeWordMicrophone()
             }
         }
     }
@@ -250,16 +269,19 @@ class VoiceChatController(context: Context) : Closeable {
                             errorMessage = "语音识别处理失败，请重试",
                         )
                     }
-                }
+            }
             if (activeRecognition === selected) activeRecognition = null
+            releaseWakeWordMicrophone()
         }
     }
 
     fun cancelInput() {
         val selected = activeRecognition
+        inputGeneration += 1
         scope.launch {
             selected?.cancel()
             if (activeRecognition === selected) activeRecognition = null
+            releaseWakeWordMicrophone()
             _inputState.value = _inputState.value.copy(
                 finalText = null,
                 partialText = "",
@@ -313,28 +335,10 @@ class VoiceChatController(context: Context) : Closeable {
     }
 
     fun speak(messageId: Long, messageText: String) {
-        val continuationOffset = playbackContinuationOffsets.remove(messageId) ?: 0
-        val chunk = voicePlaybackTextChunk(messageText, startCharacterOffset = continuationOffset)
-        if (chunk.text.isBlank()) {
-            _inputState.value = _inputState.value.copy(errorMessage = "这条回复没有可朗读的自然语言内容")
-            return
-        }
-        // A new target replaces every previous queue; only a completed queue earns a continue
-        // action, so tapping stop cannot skip the remainder of an answer.
-        pendingPlaybackContinuationOffsets.clear()
-        pendingPlaybackContinuationOffsets[messageId] = chunk.nextCharacterOffset
-        _continuablePlaybackMessageIds.value = playbackContinuationOffsets.keys.toSet()
+        val request = preparePlaybackRequest(messageId, messageText) ?: return
         scope.launch {
             runCatching {
-                playback.speak(
-                    VoicePlaybackRequest(
-                        messageId = messageId,
-                        text = chunk.text,
-                        languageTag = settings.value.languageTag,
-                        rate = settings.value.speechRate,
-                        pitch = settings.value.pitch
-                    )
-                )
+                playback.speak(request)
             }.onFailure {
                 pendingPlaybackContinuationOffsets.remove(messageId)
                 _inputState.value = _inputState.value.copy(errorMessage = "当前设备没有可用的文字朗读服务")
@@ -342,8 +346,39 @@ class VoiceChatController(context: Context) : Closeable {
         }
     }
 
+    /**
+     * Speaks a short assistant acknowledgement and waits until Android reports that it actually
+     * finished. Background execution uses this to avoid dismissing the assistant or taking over
+     * the foreground while the acknowledgement is still being read.
+     */
+    suspend fun speakAndAwait(
+        messageId: Long,
+        messageText: String,
+        timeoutMillis: Long = 20_000L,
+    ): Boolean {
+        val request = preparePlaybackRequest(messageId, messageText) ?: return true
+        val waiter = CompletableDeferred<Boolean>()
+        playbackCompletionWaiters.remove(messageId)?.complete(false)
+        playbackCompletionWaiters[messageId] = waiter
+        return try {
+            playback.speak(request)
+            withTimeoutOrNull(timeoutMillis.coerceIn(2_000L, 60_000L)) {
+                waiter.await()
+            } ?: false
+        } catch (_: Throwable) {
+            pendingPlaybackContinuationOffsets.remove(messageId)
+            false
+        } finally {
+            if (playbackCompletionWaiters[messageId] === waiter) {
+                playbackCompletionWaiters.remove(messageId)
+            }
+        }
+    }
+
     fun stopSpeaking() {
         pendingPlaybackContinuationOffsets.clear()
+        playbackCompletionWaiters.values.forEach { it.complete(false) }
+        playbackCompletionWaiters.clear()
         scope.launch { playback.stop() }
     }
 
@@ -356,12 +391,41 @@ class VoiceChatController(context: Context) : Closeable {
     }
 
     override fun close() {
+        inputGeneration += 1
+        releaseWakeWordMicrophone()
+        playbackCompletionWaiters.values.forEach { it.complete(false) }
+        playbackCompletionWaiters.clear()
         scope.cancel()
         systemRecognition.close()
         offlineRecognition.close()
         offlineModelManager.close()
         playback.close()
         settingsRepository.close()
+    }
+
+    private fun preparePlaybackRequest(
+        messageId: Long,
+        messageText: String,
+    ): VoicePlaybackRequest? {
+        val continuationOffset = playbackContinuationOffsets.remove(messageId) ?: 0
+        val chunk = voicePlaybackTextChunk(messageText, startCharacterOffset = continuationOffset)
+        if (chunk.text.isBlank()) {
+            // Tool-only or protocol-only replies are valid. Keep them visible and skip TTS
+            // instead of presenting a false request error.
+            return null
+        }
+        // A new target replaces every previous queue; only a completed queue earns a continue
+        // action, so tapping stop cannot skip the remainder of an answer.
+        pendingPlaybackContinuationOffsets.clear()
+        pendingPlaybackContinuationOffsets[messageId] = chunk.nextCharacterOffset
+        _continuablePlaybackMessageIds.value = playbackContinuationOffsets.keys.toSet()
+        return VoicePlaybackRequest(
+            messageId = messageId,
+            text = chunk.text,
+            languageTag = settings.value.languageTag,
+            rate = settings.value.speechRate,
+            pitch = settings.value.pitch,
+        )
     }
 
     private fun bindRecognition(recognition: VoiceRecognitionService) {
@@ -392,6 +456,7 @@ class VoiceChatController(context: Context) : Closeable {
                             offlineModelUnavailable = false,
                         )
                         if (activeRecognition === recognition) activeRecognition = null
+                        releaseWakeWordMicrophone()
                     }
                     is VoiceRecognitionEvent.Failure -> {
                         _inputState.value = _inputState.value.copy(
@@ -401,6 +466,7 @@ class VoiceChatController(context: Context) : Closeable {
                             offlineModelUnavailable = false,
                         )
                         if (activeRecognition === recognition) activeRecognition = null
+                        releaseWakeWordMicrophone()
                     }
                 }
             }
@@ -437,6 +503,12 @@ class VoiceChatController(context: Context) : Closeable {
             recognitionServiceUnavailable = !systemAvailable && settings.recognitionProvider != VoiceRecognitionProvider.OFFLINE,
             offlineModelUnavailable = !offlineAvailable && settings.recognitionProvider != VoiceRecognitionProvider.SYSTEM,
         )
+    }
+
+    private fun releaseWakeWordMicrophone() {
+        if (!manageWakeWordMicrophone || !wakeWordPausedForInput) return
+        wakeWordPausedForInput = false
+        VoiceWakeWordService.resumeAfterAssistant(appContext)
     }
 }
 
@@ -504,6 +576,8 @@ private class AndroidSpeechRecognitionService(context: Context) : VoiceRecogniti
             val message = when (error) {
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "需要麦克风权限才能语音输入"
                 SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "语音识别网络不可用"
+                SpeechRecognizer.ERROR_RECOGNIZER_BUSY ->
+                    "麦克风正在被其他语音会话占用，请稍后重试"
                 SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "没有识别到清晰语音，请重试"
                 else -> "语音识别暂时不可用，请重试"
             }

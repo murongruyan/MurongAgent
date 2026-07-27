@@ -107,6 +107,59 @@ func TestDesktopChatComposerKeepsPrimaryControlsVisible(t *testing.T) {
 	}
 }
 
+func TestDesktopChatOffersInstalledBuiltinModelAsAProvider(t *testing.T) {
+	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		`<option value="murong-local">`,
+		`"murong-local": { name: "内置本地模型"`,
+		`function activeBuiltinVisionModelName()`,
+		`profile.providerId === "murong-local"`,
+		`option.dataset.visionTier = model.tier`,
+		`await backend().SelectBuiltinVisionModel(visionTier)`,
+		`· 已安装${model.active ? "（当前）" : ""}`,
+		`请先在“界面操作”的本地模型中心安装一个 Qwen 或 Gemma 模型`,
+	} {
+		if !strings.Contains(string(index)+"\n"+string(script), marker) {
+			t.Fatalf("built-in local chat provider UI is missing %q", marker)
+		}
+	}
+}
+
+func TestDesktopOfficialProvidersAndWorkbenchFilesAreNativeAndUsable(t *testing.T) {
+	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := frontendAssets.ReadFile("frontend/dist/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := string(index) + "\n" + string(script) + "\n" + string(styles)
+	for _, marker := range []string{
+		`<option value="kimi">`, `<option value="glm">`, `<option value="qwen">`, `<option value="minimax">`,
+		`<option value="grok">`, `<option value="mimo">`, `<option value="hy3">`, `<option value="gemini">`,
+		`id="workbench-editor-tabstrip"`, `id="workbench-file-context-menu"`, `function openWorkbenchFileContextMenu`,
+		`function upsertWorkbenchFile`, `.workbench-editor-file-tab`, `minmax(480px,1fr)`, `.nav-label`,
+		`查看文件对比`, `openWorkspaceChanges(entry.path)`, `在文件管理器中打开`,
+		`RevealWorkbenchPath(entry.path)`, `.settings-modal-backdrop`, `inset: 0`,
+	} {
+		if !strings.Contains(all, marker) {
+			t.Fatalf("official provider or workbench UI is missing %q", marker)
+		}
+	}
+}
+
 func TestDesktopChatComposerRecallsPersistentInputHistory(t *testing.T) {
 	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
 	if err != nil {
@@ -820,6 +873,50 @@ func TestDesktopSessionProjectBindingIsVisibleAndDrivesSelection(t *testing.T) {
 	for _, marker := range []string{`.session-project-binding`, `.meta-chip.error`} {
 		if !strings.Contains(css, marker) {
 			t.Fatalf("session project styling is missing %q", marker)
+		}
+	}
+}
+
+func TestDesktopGUIAutomationPrivacySettingsAreWired(t *testing.T) {
+	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, js := string(index), string(script)
+	for _, marker := range []string{
+		`data-builtin-tool="gui"`, `data-settings-section="gui"`,
+		`id="gui-inference-mode"`, `id="gui-local-base-url"`, `id="gui-local-model"`,
+		`id="gui-allow-remote-semantic"`, `id="gui-allow-remote-screenshots"`,
+		`id="gui-allow-remote-fullscreen"`,
+		`id="builtin-vision-model-list"`, `id="builtin-vision-progress-bar"`,
+		`id="cancel-builtin-vision-install"`,
+	} {
+		if !strings.Contains(html, marker) {
+			t.Fatalf("desktop GUI automation settings are missing %q", marker)
+		}
+	}
+	for _, marker := range []string{
+		`guiInferenceMode: $("#gui-inference-mode").value`,
+		`guiLocalBaseUrl: $("#gui-local-base-url").value.trim()`,
+		`guiAllowRemoteScreenshots: $("#gui-allow-remote-screenshots").checked`,
+		`function isLocalModelBaseUrl(value)`,
+		`!profile.hasApiKey && !isLocalModelBaseUrl(profile.baseUrl)`,
+		`backend().StartBuiltinVisionModelInstall(tier)`,
+		`backend().SelectBuiltinVisionModel(tier)`,
+		`backend().DeleteBuiltinVisionModel(tier)`,
+		`window.runtime.EventsOn("builtin_vision_status"`,
+		`window.runtime.EventsOn("agent:reasoning-start"`,
+		`window.runtime.EventsOn("agent:reasoning-delta"`,
+		`function populateReasoningSelect(select, profile, defaultLabel)`,
+		`model?.reasoningModes || []`,
+		`function createReasoningDetails(reasoning, streaming)`,
+	} {
+		if !strings.Contains(js, marker) {
+			t.Fatalf("desktop GUI automation wiring is missing %q", marker)
 		}
 	}
 }

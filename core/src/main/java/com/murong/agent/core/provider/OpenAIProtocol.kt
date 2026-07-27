@@ -32,6 +32,32 @@ internal data class OpenAIEndpoint(
     val chatCompletionsFallbackUrl: String? = null
 )
 
+/** Official OpenAI-compatible services do not share identical thinking fields. */
+internal enum class OpenAICompatibleVendor {
+    STANDARD,
+    KIMI,
+    GLM,
+    QWEN,
+    MINIMAX,
+    GROK,
+    MIMO,
+    HY3
+}
+
+internal fun detectOpenAICompatibleVendor(baseUrl: String): OpenAICompatibleVendor {
+    val normalized = baseUrl.lowercase()
+    return when {
+        "moonshot" in normalized || "kimi.com" in normalized -> OpenAICompatibleVendor.KIMI
+        "bigmodel.cn" in normalized || "api.z.ai" in normalized -> OpenAICompatibleVendor.GLM
+        "dashscope" in normalized || "qwen" in normalized -> OpenAICompatibleVendor.QWEN
+        "minimaxi.com" in normalized || "minimax.io" in normalized -> OpenAICompatibleVendor.MINIMAX
+        "api.x.ai" in normalized -> OpenAICompatibleVendor.GROK
+        "xiaomimimo.com" in normalized -> OpenAICompatibleVendor.MIMO
+        "tencentmaas.com" in normalized || "hunyuan" in normalized -> OpenAICompatibleVendor.HY3
+        else -> OpenAICompatibleVendor.STANDARD
+    }
+}
+
 private val protocolJson = Json {
     ignoreUnknownKeys = true
     isLenient = true
@@ -77,17 +103,41 @@ internal fun resolveOpenAIEndpoint(baseUrl: String): OpenAIEndpoint {
     )
 }
 
-internal fun buildChatCompletionsPayload(request: ChatRequest, stream: Boolean): JsonObject {
+internal fun buildChatCompletionsPayload(
+    request: ChatRequest,
+    stream: Boolean,
+    baseUrl: String = ""
+): JsonObject {
+    val vendor = detectOpenAICompatibleVendor(baseUrl)
+    val normalizedEffort = normalizeCompatibleReasoningEffort(vendor, request.reasoningEffort)
+    val thinkingEnabled = request.thinkingMode?.trim()?.lowercase() !in setOf("off", "disabled")
     return buildJsonObject {
         put("model", request.model)
         put("messages", buildJsonArray {
-            request.messages.forEach { message -> add(buildChatCompletionsMessage(message)) }
+            request.messages.forEach { message ->
+                add(buildChatCompletionsMessage(message, preserveReasoning = vendor == OpenAICompatibleVendor.QWEN || vendor == OpenAICompatibleVendor.GLM))
+            }
         })
         put("temperature", request.temperature)
         put("max_tokens", request.maxTokens)
         put("stream", stream)
-        if (!request.reasoningEffort.isNullOrBlank()) {
-            put("reasoning_effort", request.reasoningEffort)
+        if (normalizedEffort != null) {
+            put("reasoning_effort", normalizedEffort)
+        }
+        when (vendor) {
+            OpenAICompatibleVendor.KIMI,
+            OpenAICompatibleVendor.GLM -> putJsonObject("thinking") {
+                put("type", if (thinkingEnabled) "enabled" else "disabled")
+            }
+            OpenAICompatibleVendor.QWEN -> {
+                put("enable_thinking", thinkingEnabled)
+                if (request.model.contains("qwen3.8", ignoreCase = true)) {
+                    // Qwen3.8 requires historical reasoning_content to be replayed
+                    // in its own field rather than appended to visible content.
+                    put("preserve_thinking", true)
+                }
+            }
+            else -> Unit
         }
         if (stream) {
             putJsonObject("stream_options") { put("include_usage", true) }
@@ -96,7 +146,12 @@ internal fun buildChatCompletionsPayload(request: ChatRequest, stream: Boolean):
     }
 }
 
-internal fun buildResponsesPayload(request: ChatRequest, stream: Boolean): JsonObject {
+internal fun buildResponsesPayload(
+    request: ChatRequest,
+    stream: Boolean,
+    baseUrl: String = ""
+): JsonObject {
+    val vendor = detectOpenAICompatibleVendor(baseUrl)
     val continuation = request.responsesContinuation
     val instructions = request.messages
         .filter { it.role == "system" || it.role == "developer" }
@@ -113,9 +168,9 @@ internal fun buildResponsesPayload(request: ChatRequest, stream: Boolean): JsonO
         continuation?.previousResponseId?.takeIf(String::isNotBlank)?.let {
             put("previous_response_id", it)
         }
-        if (!request.reasoningEffort.isNullOrBlank()) {
+        normalizeCompatibleReasoningEffort(vendor, request.reasoningEffort)?.let { effort ->
             putJsonObject("reasoning") {
-                put("effort", request.reasoningEffort)
+                put("effort", effort)
                 put("summary", "auto")
             }
             putJsonArray("include") { add("reasoning.encrypted_content") }
@@ -230,7 +285,10 @@ private fun flattenResponsesTools(element: JsonElement): JsonArray = buildJsonAr
     }
 }
 
-private fun buildChatCompletionsMessage(message: ChatMessage): JsonObject = buildJsonObject {
+private fun buildChatCompletionsMessage(
+    message: ChatMessage,
+    preserveReasoning: Boolean = false
+): JsonObject = buildJsonObject {
     put("role", message.role)
     if (message.images.isNotEmpty()) {
         put("content", buildJsonArray {
@@ -267,6 +325,40 @@ private fun buildChatCompletionsMessage(message: ChatMessage): JsonObject = buil
         }
     }
     message.toolCallId?.let { put("tool_call_id", it) }
+    if (preserveReasoning) {
+        message.reasoningContent?.takeIf(String::isNotBlank)?.let { put("reasoning_content", it) }
+    }
+}
+
+private fun normalizeCompatibleReasoningEffort(
+    vendor: OpenAICompatibleVendor,
+    rawEffort: String?
+): String? {
+    val effort = rawEffort?.trim()?.lowercase()?.takeIf { it.isNotBlank() } ?: return null
+    if (effort in setOf("off", "disabled", "none")) return null
+    return when (vendor) {
+        OpenAICompatibleVendor.GLM -> when (effort) {
+            "low", "medium", "high" -> "high"
+            else -> "max"
+        }
+        OpenAICompatibleVendor.QWEN -> when (effort) {
+            "low", "medium", "xhigh" -> effort
+            "high", "max" -> "xhigh"
+            else -> "medium"
+        }
+        OpenAICompatibleVendor.GROK -> when (effort) {
+            "low", "medium", "high" -> effort
+            else -> "high"
+        }
+        // These official endpoints accept OpenAI-shaped requests but do not
+        // document a shared reasoning_effort argument.  Omit it instead of
+        // leaking an OpenAI-only field into a vendor-native request.
+        OpenAICompatibleVendor.KIMI,
+        OpenAICompatibleVendor.MINIMAX,
+        OpenAICompatibleVendor.MIMO,
+        OpenAICompatibleVendor.HY3 -> null
+        OpenAICompatibleVendor.STANDARD -> effort
+    }
 }
 
 internal fun parseResponsesResponse(root: JsonObject): ChatResponse {

@@ -71,6 +71,9 @@ func buildDesktopBackupPayloads(store *desktopStore, workflows *savedWorkflowSto
 	temperature := storeSnapshot.Config.Temperature
 	maxTokens := storeSnapshot.Config.MaxTokens
 	enableMultimodal := storeSnapshot.Config.EnableMultimodalMessages
+	guiAllowRemoteSemantic := storeSnapshot.Config.GuiAllowRemoteSemantic
+	guiAllowRemoteScreenshots := storeSnapshot.Config.GuiAllowRemoteScreenshots
+	guiAllowRemoteFullScreen := storeSnapshot.Config.GuiAllowRemoteFullScreen
 	states := []struct {
 		path     string
 		category string
@@ -82,8 +85,12 @@ func buildDesktopBackupPayloads(store *desktopStore, workflows *savedWorkflowSto
 			MaxToolIterations: storeSnapshot.Config.MaxToolIterations, SystemPrompt: storeSnapshot.Config.SystemPrompt,
 			ResponseVerbosity: storeSnapshot.Config.ResponseVerbosity, ActiveProviderProfileID: storeSnapshot.Config.ActiveProviderProfileID,
 			Temperature: &temperature, MaxTokens: &maxTokens, EnableMultimodalMessages: &enableMultimodal,
-			PlannerProfileEnabled: storeSnapshot.Config.PlannerProfileEnabled,
-			PlannerModel:          storeSnapshot.Config.PlannerModel, PlannerReasoningEffort: storeSnapshot.Config.PlannerReasoningEffort,
+			GuiInferenceMode: storeSnapshot.Config.GuiInferenceMode,
+			GuiLocalBaseURL:  storeSnapshot.Config.GuiLocalBaseURL, GuiLocalModel: storeSnapshot.Config.GuiLocalModel,
+			GuiAllowRemoteSemantic: &guiAllowRemoteSemantic, GuiAllowRemoteScreenshots: &guiAllowRemoteScreenshots,
+			GuiAllowRemoteFullScreen: &guiAllowRemoteFullScreen,
+			PlannerProfileEnabled:    storeSnapshot.Config.PlannerProfileEnabled,
+			PlannerModel:             storeSnapshot.Config.PlannerModel, PlannerReasoningEffort: storeSnapshot.Config.PlannerReasoningEffort,
 			SubagentProfileEnabled: storeSnapshot.Config.SubagentProfileEnabled,
 			SubagentModel:          storeSnapshot.Config.SubagentModel, SubagentReasoningEffort: storeSnapshot.Config.SubagentReasoningEffort,
 			ProviderProfiles: providerProfiles, EnabledBuiltinTools: append([]string{}, storeSnapshot.Config.EnabledBuiltinTools...),
@@ -262,7 +269,7 @@ func validateDesktopPortableState(state desktopPortableBackupState) error {
 		}
 		seenProviders[profile.ID] = true
 		activeFound = activeFound || profile.ID == provider.ActiveProviderProfileID
-		if profile.ProviderID != providerOpenAI && profile.ProviderID != providerDeepSeek && profile.ProviderID != providerClaude && profile.ProviderID != providerCodex {
+		if profile.ProviderID != providerOpenAI && profile.ProviderID != providerDeepSeek && profile.ProviderID != providerClaude && profile.ProviderID != providerCodex && profile.ProviderID != providerBuiltinLocal {
 			return fmt.Errorf("备份模型连接 %q 的供应商无效", profile.Name)
 		}
 		if strings.TrimSpace(profile.Name) == "" || len([]rune(profile.Name)) > 80 || (profile.ProviderID != providerCodex && strings.TrimSpace(profile.Model) == "") {
@@ -271,6 +278,10 @@ func validateDesktopPortableState(state desktopPortableBackupState) error {
 		if profile.ProviderID == providerCodex {
 			if strings.TrimSpace(profile.BaseURL) != "" || profile.APIMode != "app-server" {
 				return fmt.Errorf("备份模型连接 %q 的 Codex 配置无效", profile.Name)
+			}
+		} else if profile.ProviderID == providerBuiltinLocal {
+			if strings.TrimSpace(profile.BaseURL) != "" || profile.APIMode != "builtin" {
+				return fmt.Errorf("备份模型连接 %q 的内置本地模型配置无效", profile.Name)
 			}
 		} else if err := validateBaseURL(profile.BaseURL); err != nil {
 			return fmt.Errorf("备份模型连接 %q：%w", profile.Name, err)
@@ -412,7 +423,8 @@ func validateDesktopSessions(sessions []*ChatSession) error {
 			if message.Role != "user" && message.Role != "assistant" && message.Role != "tool" {
 				return fmt.Errorf("备份会话 %s 包含未知消息角色", session.ID)
 			}
-			if len(message.Content) > 4*1024*1024 || len(message.Context) > maxComposerContextItems || normalizeComposerMode(message.Mode) != message.Mode {
+			if len(message.Content) > 4*1024*1024 || len(message.Reasoning) > 4*1024*1024 ||
+				len(message.Context) > maxComposerContextItems || normalizeComposerMode(message.Mode) != message.Mode {
 				return fmt.Errorf("备份会话 %s 包含过大或无效消息", session.ID)
 			}
 			if len([]rune(message.ToolCallID)) > 1_000 || len([]rune(message.ToolArguments)) > 64*1024 ||
@@ -459,6 +471,23 @@ func buildRestoredDesktopStoreSnapshot(current desktopStoreBackupSnapshot, porta
 	if provider.EnableMultimodalMessages != nil {
 		enableMultimodal = *provider.EnableMultimodalMessages
 	}
+	guiAllowRemoteSemantic := false
+	if provider.GuiAllowRemoteSemantic != nil {
+		guiAllowRemoteSemantic = *provider.GuiAllowRemoteSemantic
+	}
+	guiAllowRemoteScreenshots := false
+	if provider.GuiAllowRemoteScreenshots != nil {
+		guiAllowRemoteScreenshots = *provider.GuiAllowRemoteScreenshots
+	}
+	guiAllowRemoteFullScreen := false
+	if provider.GuiAllowRemoteFullScreen != nil {
+		guiAllowRemoteFullScreen = *provider.GuiAllowRemoteFullScreen
+	}
+	guiLocalBaseURL := strings.TrimSpace(provider.GuiLocalBaseURL)
+	if guiLocalBaseURL == "http://127.0.0.1:11434/v1" &&
+		strings.TrimSpace(provider.GuiLocalModel) == "" {
+		guiLocalBaseURL = ""
+	}
 	profiles := make([]ProviderProfile, 0, len(provider.ProviderProfiles))
 	for _, saved := range provider.ProviderProfiles {
 		profile := ProviderProfile{
@@ -490,21 +519,27 @@ func buildRestoredDesktopStoreSnapshot(current desktopStoreBackupSnapshot, porta
 		SchemaVersion: desktopConfigSchemaVersion, ProjectPath: strings.TrimSpace(provider.ProjectPath),
 		ApprovalMode: provider.ApprovalMode, Allowlist: append([]string{}, provider.Allowlist...),
 		MaxToolIterations: provider.MaxToolIterations, SystemPrompt: provider.SystemPrompt,
-		ResponseVerbosity:        provider.ResponseVerbosity,
-		Temperature:              temperature,
-		MaxTokens:                maxTokens,
-		EnableMultimodalMessages: enableMultimodal,
-		PlannerProfileEnabled:    provider.PlannerProfileEnabled,
-		PlannerModel:             provider.PlannerModel,
-		PlannerReasoningEffort:   provider.PlannerReasoningEffort,
-		SubagentProfileEnabled:   provider.SubagentProfileEnabled,
-		SubagentModel:            provider.SubagentModel,
-		SubagentReasoningEffort:  provider.SubagentReasoningEffort,
-		GlobalRules:              append([]GlobalRule{}, portable.Knowledge.GlobalRules...),
-		GlobalMemories:           append([]GlobalMemory{}, portable.Knowledge.GlobalMemories...),
-		GlobalSkills:             cloneSkills(portable.Knowledge.GlobalSkills),
-		ProjectKnowledge:         cloneProjectKnowledge(portable.Knowledge.ProjectKnowledge),
-		ActiveProviderProfileID:  provider.ActiveProviderProfileID, ProviderProfiles: profiles,
+		ResponseVerbosity:         provider.ResponseVerbosity,
+		Temperature:               temperature,
+		MaxTokens:                 maxTokens,
+		EnableMultimodalMessages:  enableMultimodal,
+		GuiInferenceMode:          normalizeGUIInferenceMode(provider.GuiInferenceMode),
+		GuiLocalBaseURL:           guiLocalBaseURL,
+		GuiLocalModel:             provider.GuiLocalModel,
+		GuiAllowRemoteSemantic:    guiAllowRemoteSemantic,
+		GuiAllowRemoteScreenshots: guiAllowRemoteScreenshots,
+		GuiAllowRemoteFullScreen:  guiAllowRemoteFullScreen,
+		PlannerProfileEnabled:     provider.PlannerProfileEnabled,
+		PlannerModel:              provider.PlannerModel,
+		PlannerReasoningEffort:    provider.PlannerReasoningEffort,
+		SubagentProfileEnabled:    provider.SubagentProfileEnabled,
+		SubagentModel:             provider.SubagentModel,
+		SubagentReasoningEffort:   provider.SubagentReasoningEffort,
+		GlobalRules:               append([]GlobalRule{}, portable.Knowledge.GlobalRules...),
+		GlobalMemories:            append([]GlobalMemory{}, portable.Knowledge.GlobalMemories...),
+		GlobalSkills:              cloneSkills(portable.Knowledge.GlobalSkills),
+		ProjectKnowledge:          cloneProjectKnowledge(portable.Knowledge.ProjectKnowledge),
+		ActiveProviderProfileID:   provider.ActiveProviderProfileID, ProviderProfiles: profiles,
 		EnabledBuiltinTools:    append([]string{}, provider.EnabledBuiltinTools...),
 		EnabledFileOperations:  append([]string{}, provider.EnabledFileOperations...),
 		ProjectToolPreferences: cloneProjectToolPreferences(provider.ProjectToolPreferences),
@@ -520,7 +555,7 @@ func buildRestoredDesktopStoreSnapshot(current desktopStoreBackupSnapshot, porta
 	}
 	config = normalizeDesktopConfig(config)
 	for _, profile := range config.ProviderProfiles {
-		if profile.ProviderID != providerCodex {
+		if profile.ProviderID != providerCodex && profile.ProviderID != providerBuiltinLocal {
 			if err := validateBaseURL(profile.BaseURL); err != nil {
 				return desktopStoreBackupSnapshot{}, err
 			}

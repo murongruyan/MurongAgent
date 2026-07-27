@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const desktopConfigSchemaVersion = 10
+const desktopConfigSchemaVersion = 11
 
 const (
 	maxProjectSubagentTemplates = 24
@@ -22,19 +22,28 @@ const (
 )
 
 const (
-	providerDeepSeek = "deepseek"
-	providerOpenAI   = "openai-compatible"
-	providerClaude   = "claude"
-	providerCodex    = "codex-chatgpt"
+	providerDeepSeek     = "deepseek"
+	providerOpenAI       = "openai-compatible"
+	providerClaude       = "claude"
+	providerKimi         = "kimi"
+	providerGLM          = "glm"
+	providerQwen         = "qwen"
+	providerMiniMax      = "minimax"
+	providerGrok         = "grok"
+	providerMiMo         = "mimo"
+	providerHy3          = "hy3"
+	providerGemini       = "gemini"
+	providerCodex        = "codex-chatgpt"
+	providerBuiltinLocal = "murong-local"
 )
 
 var defaultEnabledBuiltinTools = []string{
-	"shell", "file", "code_edit", "code_search", "web_fetch", "web_search",
+	"shell", "file", "gui", "code_edit", "code_search", "web_fetch", "web_search",
 	"subagent_launch", "explore", "research", "review", "security_review", "github", "mcp",
 }
 
 var supportedBuiltinTools = []string{
-	"shell", "file", "code_edit", "code_search", "web_fetch", "web_search",
+	"shell", "file", "gui", "code_edit", "code_search", "web_fetch", "web_search",
 	"subagent_launch", "explore", "research", "review", "security_review", "github", "mcp", "android", "windows",
 }
 
@@ -87,6 +96,8 @@ func newDesktopStore() (*desktopStore, error) {
 
 func defaultDesktopConfig() desktopConfig {
 	profile := defaultProviderProfile(providerOpenAI)
+	localProfile := defaultProviderProfile(providerBuiltinLocal)
+	localProfile.ID = "provider_builtin_local"
 	return desktopConfig{
 		SchemaVersion:            desktopConfigSchemaVersion,
 		BaseURL:                  "https://api.openai.com/v1",
@@ -98,12 +109,15 @@ func defaultDesktopConfig() desktopConfig {
 		Temperature:              0.7,
 		MaxTokens:                8192,
 		EnableMultimodalMessages: true,
+		GuiInferenceMode:         guiInferenceLocalFirst,
+		GuiLocalBaseURL:          "",
+		GuiAllowRemoteSemantic:   false,
 		GlobalRules:              []GlobalRule{},
 		GlobalMemories:           []GlobalMemory{},
 		GlobalSkills:             []GlobalSkill{},
 		ProjectKnowledge:         map[string]KnowledgeLibrary{},
 		ActiveProviderProfileID:  profile.ID,
-		ProviderProfiles:         []ProviderProfile{profile},
+		ProviderProfiles:         []ProviderProfile{profile, localProfile},
 		EnabledBuiltinTools:      append([]string{}, defaultEnabledBuiltinTools...),
 		EnabledFileOperations:    append([]string{}, defaultEnabledFileOperations...),
 		ProjectToolPreferences:   map[string]ToolPreferences{},
@@ -189,6 +203,25 @@ func normalizeDesktopConfig(config desktopConfig) desktopConfig {
 	if sourceSchemaVersion < 8 {
 		config.EnableMultimodalMessages = true
 	}
+	if sourceSchemaVersion < 11 {
+		config.GuiInferenceMode = guiInferenceLocalFirst
+		config.GuiLocalBaseURL = ""
+		config.GuiAllowRemoteSemantic = false
+		config.GuiAllowRemoteScreenshots = false
+		config.GuiAllowRemoteFullScreen = false
+		if isLegacyDefaultBuiltinTools(config.EnabledBuiltinTools) {
+			config.EnabledBuiltinTools = append(config.EnabledBuiltinTools, "gui")
+		}
+	}
+	config.GuiInferenceMode = normalizeGUIInferenceMode(config.GuiInferenceMode)
+	config.GuiLocalBaseURL = strings.TrimRight(strings.TrimSpace(config.GuiLocalBaseURL), "/")
+	config.GuiLocalModel = strings.TrimSpace(config.GuiLocalModel)
+	if config.GuiLocalBaseURL == "http://127.0.0.1:11434/v1" && config.GuiLocalModel == "" {
+		config.GuiLocalBaseURL = ""
+	}
+	if !config.GuiAllowRemoteScreenshots {
+		config.GuiAllowRemoteFullScreen = false
+	}
 	if math.IsNaN(config.Temperature) || math.IsInf(config.Temperature, 0) || config.Temperature < 0 || config.Temperature > 2 {
 		config.Temperature = 0.7
 	}
@@ -220,14 +253,52 @@ func normalizeDesktopConfig(config desktopConfig) desktopConfig {
 	return config
 }
 
+func isLegacyDefaultBuiltinTools(values []string) bool {
+	legacy := []string{
+		"shell", "file", "code_edit", "code_search", "web_fetch", "web_search",
+		"subagent_launch", "explore", "research", "review", "security_review", "github", "mcp",
+	}
+	if len(values) != len(legacy) {
+		return false
+	}
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		seen[value] = true
+	}
+	for _, value := range legacy {
+		if !seen[value] {
+			return false
+		}
+	}
+	return true
+}
+
 func defaultProviderProfile(providerID string) ProviderProfile {
 	switch providerID {
 	case providerDeepSeek:
 		return ProviderProfile{ID: newID("provider"), ProviderID: providerDeepSeek, Name: "DeepSeek", BaseURL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash", ReasoningEffort: "high", APIMode: "chat-completions"}
 	case providerClaude:
 		return ProviderProfile{ID: newID("provider"), ProviderID: providerClaude, Name: "Claude", BaseURL: "https://api.anthropic.com", Model: "claude-fable-5", ReasoningEffort: "high", APIMode: "messages"}
+	case providerKimi:
+		return ProviderProfile{ID: newID("provider"), ProviderID: providerKimi, Name: "Kimi", BaseURL: "https://api.moonshot.cn/v1", Model: "kimi-k3", ReasoningEffort: "", APIMode: "chat-completions"}
+	case providerGLM:
+		return ProviderProfile{ID: newID("provider"), ProviderID: providerGLM, Name: "智谱 GLM", BaseURL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-5.2", ReasoningEffort: "high", APIMode: "chat-completions"}
+	case providerQwen:
+		return ProviderProfile{ID: newID("provider"), ProviderID: providerQwen, Name: "通义千问 Qwen", BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen3.8-max-preview", ReasoningEffort: "medium", APIMode: "chat-completions"}
+	case providerMiniMax:
+		return ProviderProfile{ID: newID("provider"), ProviderID: providerMiniMax, Name: "MiniMax", BaseURL: "https://api.minimaxi.com/v1", Model: "MiniMax-M3", ReasoningEffort: "", APIMode: "chat-completions"}
+	case providerGrok:
+		return ProviderProfile{ID: newID("provider"), ProviderID: providerGrok, Name: "xAI Grok", BaseURL: "https://api.x.ai/v1", Model: "grok-4.5", ReasoningEffort: "medium", APIMode: "responses"}
+	case providerMiMo:
+		return ProviderProfile{ID: newID("provider"), ProviderID: providerMiMo, Name: "小米 MiMo", BaseURL: "https://api.xiaomimimo.com/v1", Model: "mimo-v2.5-pro", ReasoningEffort: "", APIMode: "responses"}
+	case providerHy3:
+		return ProviderProfile{ID: newID("provider"), ProviderID: providerHy3, Name: "腾讯混元 Hy3", BaseURL: "https://tokenhub.tencentmaas.com/v1", Model: "hy3-preview", ReasoningEffort: "", APIMode: "chat-completions"}
+	case providerGemini:
+		return ProviderProfile{ID: newID("provider"), ProviderID: providerGemini, Name: "Google Gemini", BaseURL: "https://generativelanguage.googleapis.com/v1beta", Model: "gemini-3.6-flash", ReasoningEffort: "", APIMode: "gemini"}
 	case providerCodex:
 		return ProviderProfile{ID: newID("provider"), ProviderID: providerCodex, Name: "Codex / ChatGPT", ReasoningEffort: "high", APIMode: "app-server"}
+	case providerBuiltinLocal:
+		return ProviderProfile{ID: newID("provider"), ProviderID: providerBuiltinLocal, Name: "内置本地模型", Model: "builtin-selected", ReasoningEffort: "off", APIMode: "builtin", ContextWindowTokens: 4096}
 	default:
 		return ProviderProfile{ID: newID("provider"), ProviderID: providerOpenAI, Name: "OpenAI-compatible", BaseURL: "https://api.openai.com/v1", Model: "gpt-5.6-sol", ReasoningEffort: "high", APIMode: "auto"}
 	}
@@ -245,6 +316,7 @@ func normalizeProviderProfiles(values []ProviderProfile, legacyBaseURL, legacyMo
 	}
 	result := make([]ProviderProfile, 0, len(values))
 	seen := map[string]bool{}
+	builtinLocalSeen := false
 	for _, value := range values {
 		value.ID = strings.TrimSpace(value.ID)
 		if value.ID == "" {
@@ -255,9 +327,16 @@ func normalizeProviderProfiles(values []ProviderProfile, legacyBaseURL, legacyMo
 		}
 		seen[value.ID] = true
 		switch value.ProviderID {
-		case providerDeepSeek, providerOpenAI, providerClaude, providerCodex:
+		case providerDeepSeek, providerOpenAI, providerClaude, providerKimi, providerGLM, providerQwen,
+			providerMiniMax, providerGrok, providerMiMo, providerHy3, providerGemini, providerCodex, providerBuiltinLocal:
 		default:
 			value.ProviderID = providerOpenAI
+		}
+		if value.ProviderID == providerBuiltinLocal {
+			if builtinLocalSeen {
+				continue
+			}
+			builtinLocalSeen = true
 		}
 		defaults := defaultProviderProfile(value.ProviderID)
 		value.Name = truncateRunes(strings.TrimSpace(value.Name), 80)
@@ -265,7 +344,7 @@ func normalizeProviderProfiles(values []ProviderProfile, legacyBaseURL, legacyMo
 			value.Name = defaults.Name
 		}
 		value.BaseURL = strings.TrimRight(strings.TrimSpace(value.BaseURL), "/")
-		if value.ProviderID == providerCodex {
+		if value.ProviderID == providerCodex || value.ProviderID == providerBuiltinLocal {
 			value.BaseURL = ""
 			value.ProtectedAPIKey = ""
 		} else if value.BaseURL == "" {
@@ -278,7 +357,7 @@ func normalizeProviderProfiles(values []ProviderProfile, legacyBaseURL, legacyMo
 		value.ExecutablePath = strings.TrimSpace(value.ExecutablePath)
 		value.ReasoningEffort = strings.ToLower(strings.TrimSpace(value.ReasoningEffort))
 		switch value.ReasoningEffort {
-		case "", "low", "medium", "high", "xhigh", "max":
+		case "", "low", "medium", "high", "xhigh", "max", "off", "on":
 		default:
 			value.ReasoningEffort = defaults.ReasoningEffort
 		}
@@ -286,10 +365,22 @@ func normalizeProviderProfiles(values []ProviderProfile, legacyBaseURL, legacyMo
 		switch value.ProviderID {
 		case providerCodex:
 			value.APIMode = "app-server"
+		case providerBuiltinLocal:
+			value.APIMode = "builtin"
+			if value.ReasoningEffort != "off" && value.ReasoningEffort != "on" {
+				value.ReasoningEffort = "off"
+			}
+			value.ContextWindowTokens = 4096
 		case providerClaude:
 			value.APIMode = "messages"
 		case providerDeepSeek:
 			value.APIMode = "chat-completions"
+		case providerGemini:
+			value.APIMode = "gemini"
+		case providerKimi, providerGLM, providerQwen, providerMiniMax, providerHy3:
+			value.APIMode = "chat-completions"
+		case providerGrok, providerMiMo:
+			value.APIMode = "responses"
 		default:
 			switch value.APIMode {
 			case "auto", "chat-completions", "responses":
@@ -307,6 +398,14 @@ func normalizeProviderProfiles(values []ProviderProfile, legacyBaseURL, legacyMo
 	}
 	if len(result) == 0 {
 		result = []ProviderProfile{defaultProviderProfile(providerOpenAI)}
+	}
+	if !builtinLocalSeen {
+		localProfile := defaultProviderProfile(providerBuiltinLocal)
+		localProfile.ID = "provider_builtin_local"
+		if seen[localProfile.ID] {
+			localProfile.ID = newID("provider")
+		}
+		result = append(result, localProfile)
 	}
 	return result
 }
@@ -464,29 +563,35 @@ func publicConfig(config desktopConfig) PublicDesktopConfig {
 		})
 	}
 	return PublicDesktopConfig{
-		ProjectPath:              config.ProjectPath,
-		BaseURL:                  config.BaseURL,
-		Model:                    config.Model,
-		HasAPIKey:                config.ProtectedAPIKey != "",
-		ApprovalMode:             config.ApprovalMode,
-		Allowlist:                append([]string(nil), config.Allowlist...),
-		MaxToolIterations:        config.MaxToolIterations,
-		SystemPrompt:             config.SystemPrompt,
-		ResponseVerbosity:        config.ResponseVerbosity,
-		Temperature:              config.Temperature,
-		MaxTokens:                config.MaxTokens,
-		EnableMultimodalMessages: config.EnableMultimodalMessages,
-		PlannerProfileEnabled:    config.PlannerProfileEnabled,
-		PlannerModel:             config.PlannerModel,
-		PlannerReasoningEffort:   config.PlannerReasoningEffort,
-		SubagentProfileEnabled:   config.SubagentProfileEnabled,
-		SubagentModel:            config.SubagentModel,
-		SubagentReasoningEffort:  config.SubagentReasoningEffort,
-		ActiveProviderProfileID:  config.ActiveProviderProfileID,
-		ProviderProfiles:         profiles,
-		EnabledBuiltinTools:      append([]string{}, config.EnabledBuiltinTools...),
-		EnabledFileOperations:    append([]string{}, config.EnabledFileOperations...),
-		RecentProjects:           publicRecentProjects(config.RecentProjects),
+		ProjectPath:               config.ProjectPath,
+		BaseURL:                   config.BaseURL,
+		Model:                     config.Model,
+		HasAPIKey:                 config.ProtectedAPIKey != "",
+		ApprovalMode:              config.ApprovalMode,
+		Allowlist:                 append([]string(nil), config.Allowlist...),
+		MaxToolIterations:         config.MaxToolIterations,
+		SystemPrompt:              config.SystemPrompt,
+		ResponseVerbosity:         config.ResponseVerbosity,
+		Temperature:               config.Temperature,
+		MaxTokens:                 config.MaxTokens,
+		EnableMultimodalMessages:  config.EnableMultimodalMessages,
+		GuiInferenceMode:          config.GuiInferenceMode,
+		GuiLocalBaseURL:           config.GuiLocalBaseURL,
+		GuiLocalModel:             config.GuiLocalModel,
+		GuiAllowRemoteSemantic:    config.GuiAllowRemoteSemantic,
+		GuiAllowRemoteScreenshots: config.GuiAllowRemoteScreenshots,
+		GuiAllowRemoteFullScreen:  config.GuiAllowRemoteFullScreen,
+		PlannerProfileEnabled:     config.PlannerProfileEnabled,
+		PlannerModel:              config.PlannerModel,
+		PlannerReasoningEffort:    config.PlannerReasoningEffort,
+		SubagentProfileEnabled:    config.SubagentProfileEnabled,
+		SubagentModel:             config.SubagentModel,
+		SubagentReasoningEffort:   config.SubagentReasoningEffort,
+		ActiveProviderProfileID:   config.ActiveProviderProfileID,
+		ProviderProfiles:          profiles,
+		EnabledBuiltinTools:       append([]string{}, config.EnabledBuiltinTools...),
+		EnabledFileOperations:     append([]string{}, config.EnabledFileOperations...),
+		RecentProjects:            publicRecentProjects(config.RecentProjects),
 	}
 }
 
@@ -521,6 +626,24 @@ func (store *desktopStore) saveSettings(request SaveSettingsRequest) (PublicDesk
 	updated.Temperature = request.Temperature
 	updated.MaxTokens = request.MaxTokens
 	updated.EnableMultimodalMessages = request.EnableMultimodalMessages
+	if request.GuiInferenceMode != nil {
+		updated.GuiInferenceMode = *request.GuiInferenceMode
+	}
+	if request.GuiLocalBaseURL != nil {
+		updated.GuiLocalBaseURL = *request.GuiLocalBaseURL
+	}
+	if request.GuiLocalModel != nil {
+		updated.GuiLocalModel = *request.GuiLocalModel
+	}
+	if request.GuiAllowRemoteSemantic != nil {
+		updated.GuiAllowRemoteSemantic = *request.GuiAllowRemoteSemantic
+	}
+	if request.GuiAllowRemoteScreenshots != nil {
+		updated.GuiAllowRemoteScreenshots = *request.GuiAllowRemoteScreenshots
+	}
+	if request.GuiAllowRemoteFullScreen != nil {
+		updated.GuiAllowRemoteFullScreen = *request.GuiAllowRemoteFullScreen
+	}
 	updated.PlannerProfileEnabled = request.PlannerProfileEnabled
 	updated.PlannerModel = request.PlannerModel
 	updated.PlannerReasoningEffort = request.PlannerReasoningEffort
@@ -557,11 +680,14 @@ func (store *desktopStore) saveSettings(request SaveSettingsRequest) (PublicDesk
 	}
 	updated = normalizeDesktopConfig(updated)
 	for _, profile := range updated.ProviderProfiles {
-		if profile.ProviderID != providerCodex {
+		if profile.ProviderID != providerCodex && profile.ProviderID != providerBuiltinLocal {
 			if err := validateBaseURL(profile.BaseURL); err != nil {
 				return PublicDesktopConfig{}, fmt.Errorf("模型连接 %q：%w", profile.Name, err)
 			}
 		}
+	}
+	if updated.GuiLocalBaseURL != "" && !isLocalModelBaseURL(updated.GuiLocalBaseURL) {
+		return PublicDesktopConfig{}, errors.New("本地 GUI 模型地址必须是 loopback、局域网或 .local 地址")
 	}
 	if updated.ProjectPath != "" {
 		projectPath, err := normalizeExistingProjectPath(updated.ProjectPath)
@@ -993,16 +1119,22 @@ func (store *desktopStore) setProviderReasoningEffort(id, effort string) (Public
 	defer store.mu.Unlock()
 	id = strings.TrimSpace(id)
 	effort = strings.ToLower(strings.TrimSpace(effort))
-	switch effort {
-	case "", "low", "medium", "high", "xhigh", "max":
-	default:
-		return PublicDesktopConfig{}, errors.New("推理强度无效")
-	}
 	updated := store.config
 	updated.ProviderProfiles = append([]ProviderProfile{}, store.config.ProviderProfiles...)
 	profile := findProviderProfile(updated.ProviderProfiles, id)
 	if profile == nil {
 		return PublicDesktopConfig{}, errors.New("模型连接不存在")
+	}
+	if profile.ProviderID == providerBuiltinLocal {
+		if effort != "off" && effort != "on" {
+			return PublicDesktopConfig{}, errors.New("当前本地模型只支持关闭或开启思考")
+		}
+	} else {
+		switch effort {
+		case "", "low", "medium", "high", "xhigh", "max":
+		default:
+			return PublicDesktopConfig{}, errors.New("推理强度无效")
+		}
 	}
 	profile.ReasoningEffort = effort
 	if err := writeJSONAtomic(store.configPath, updated); err != nil {
@@ -1168,6 +1300,7 @@ func (store *desktopStore) appendMessage(sessionID string, message ChatMessage) 
 		return nil, err
 	}
 	message.Content = strings.TrimSpace(message.Content)
+	message.Reasoning = strings.TrimSpace(message.Reasoning)
 	message.ImageAttachments = cloneImageAttachments(validatedImages)
 	message.Context = cloneComposerContext(message.Context)
 	message.Mode = normalizeComposerMode(message.Mode)

@@ -28,13 +28,17 @@ func TestApprovalModes(t *testing.T) {
 func TestDesktopAgentExposesExpectedTools(t *testing.T) {
 	app := &DesktopAgentApp{terminals: []TerminalBackend{{ID: terminalCMD, Label: "CMD"}}}
 	tools := app.toolDefinitions(defaultDesktopConfig())
-	if len(tools) != 43 {
-		t.Fatalf("expected 43 tools, got %d", len(tools))
+	expectedToolCount := 43
+	if guiPlatformSupported() {
+		expectedToolCount++
+	}
+	if len(tools) != expectedToolCount {
+		t.Fatalf("expected %d tools, got %d", expectedToolCount, len(tools))
 	}
 	want := map[string]bool{
 		"session_history_search": true,
 		"ask_user":               true,
-		"complete_step":           true,
+		"complete_step":          true,
 		"list_files":             true, "read_file": true, "write_file": true, "create_directory": true, "run_terminal": true,
 		"file_exists": true, "delete_path": true, "chmod_path": true,
 		"code_search": true, "workspace_diff": true, "code_edit": true, "web_search": true, "web_fetch": true,
@@ -44,6 +48,9 @@ func TestDesktopAgentExposesExpectedTools(t *testing.T) {
 		"memory_list": true, "memory_search": true, "memory_read": true, "remember_memory": true,
 		"forget_memory": true, "read_skill": true, "run_skill": true, "create_global_rule": true, "create_global_memory": true, "create_global_skill": true,
 		"create_project_rule": true, "create_project_memory": true, "create_project_skill": true,
+	}
+	if guiPlatformSupported() {
+		want["gui"] = true
 	}
 	for _, raw := range tools {
 		definition := raw.(map[string]any)["function"].(map[string]any)

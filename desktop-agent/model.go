@@ -16,12 +16,13 @@ import (
 )
 
 type modelMessage struct {
-	Role       string `json:"role"`
-	Content    string `json:"content,omitempty"`
-	Images     []modelImageAttachment
-	ToolCalls  []modelToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
-	Name       string          `json:"name,omitempty"`
+	Role             string `json:"role"`
+	Content          string `json:"content,omitempty"`
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+	Images           []modelImageAttachment
+	ToolCalls        []modelToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
+	Name             string          `json:"name,omitempty"`
 }
 
 type modelToolCall struct {
@@ -36,15 +37,22 @@ type modelToolFunction struct {
 }
 
 type chatCompletionRequest struct {
-	Model           string             `json:"model"`
-	Messages        []any              `json:"messages"`
-	Tools           []any              `json:"tools,omitempty"`
-	ToolChoice      string             `json:"tool_choice,omitempty"`
-	ReasoningEffort string             `json:"reasoning_effort,omitempty"`
-	Temperature     float64            `json:"temperature"`
-	MaxTokens       int                `json:"max_tokens"`
-	StreamOptions   *chatStreamOptions `json:"stream_options,omitempty"`
-	Stream          bool               `json:"stream"`
+	Model            string              `json:"model"`
+	Messages         []any               `json:"messages"`
+	Tools            []any               `json:"tools,omitempty"`
+	ToolChoice       string              `json:"tool_choice,omitempty"`
+	ReasoningEffort  string              `json:"reasoning_effort,omitempty"`
+	Thinking         *chatThinkingConfig `json:"thinking,omitempty"`
+	EnableThinking   *bool               `json:"enable_thinking,omitempty"`
+	PreserveThinking bool                `json:"preserve_thinking,omitempty"`
+	Temperature      float64             `json:"temperature"`
+	MaxTokens        int                 `json:"max_tokens"`
+	StreamOptions    *chatStreamOptions  `json:"stream_options,omitempty"`
+	Stream           bool                `json:"stream"`
+}
+
+type chatThinkingConfig struct {
+	Type string `json:"type"`
 }
 
 type chatStreamOptions struct {
@@ -85,8 +93,9 @@ type streamToolCallDelta struct {
 type streamResponseChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   string                `json:"content"`
-			ToolCalls []streamToolCallDelta `json:"tool_calls"`
+			Content          string                `json:"content"`
+			ReasoningContent string                `json:"reasoning_content"`
+			ToolCalls        []streamToolCallDelta `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -98,6 +107,7 @@ type streamResponseChunk struct {
 
 type modelStreamResult struct {
 	Content   string
+	Reasoning string
 	ToolCalls []modelToolCall
 	Usage     *modelTokenUsage
 }
@@ -147,6 +157,9 @@ func (client *modelClient) streamChat(
 	tools []any,
 	onDelta func(string),
 ) (modelStreamResult, error) {
+	if profile.ProviderID == providerGemini {
+		return client.streamGemini(ctx, profile, apiKey, messages, tools, onDelta)
+	}
 	if profile.ProviderID == providerClaude {
 		return client.streamAnthropicMessages(ctx, profile, apiKey, messages, tools, onDelta)
 	}
@@ -166,10 +179,10 @@ func (client *modelClient) streamOpenAIChat(
 ) (modelStreamResult, error) {
 	temperature, maxTokens := normalizeGenerationSettings(client.temperature, client.maxTokens)
 	requestBody := chatCompletionRequest{
-		Model: profile.Model, Messages: convertChatCompletionMessages(messages), Tools: tools,
-		ReasoningEffort: profile.ReasoningEffort,
-		Temperature:     temperature, MaxTokens: maxTokens, Stream: true,
+		Model: profile.Model, Messages: convertChatCompletionMessagesForProfile(messages, desktopPreservesReasoning(profile)), Tools: tools,
+		Temperature: temperature, MaxTokens: maxTokens, Stream: true,
 	}
+	applyDesktopOfficialChatOptions(profile, &requestBody)
 	if len(tools) > 0 {
 		requestBody.ToolChoice = "auto"
 	}
@@ -186,7 +199,9 @@ func (client *modelClient) streamOpenAIChat(
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream")
-	request.Header.Set("Authorization", "Bearer "+apiKey)
+	if strings.TrimSpace(apiKey) != "" {
+		request.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 	request.Header.Set("User-Agent", "Murong-Desktop-Agent/0.1")
 	response, err := client.httpClient.Do(request)
 	if err != nil {
@@ -199,6 +214,7 @@ func (client *modelClient) streamOpenAIChat(
 	}
 
 	var content strings.Builder
+	var reasoning strings.Builder
 	toolCalls := map[int]*modelToolCall{}
 	order := make([]int, 0)
 	var usage *modelTokenUsage
@@ -224,6 +240,9 @@ func (client *modelClient) streamOpenAIChat(
 			usage = modelUsageFromOpenAI(chunk.Usage)
 		}
 		for _, choice := range chunk.Choices {
+			if choice.Delta.ReasoningContent != "" {
+				reasoning.WriteString(choice.Delta.ReasoningContent)
+			}
 			if choice.Delta.Content != "" {
 				content.WriteString(choice.Delta.Content)
 				if onDelta != nil {
@@ -251,7 +270,7 @@ func (client *modelClient) streamOpenAIChat(
 	if err := scanner.Err(); err != nil {
 		return modelStreamResult{}, err
 	}
-	result := modelStreamResult{Content: content.String(), Usage: usage}
+	result := modelStreamResult{Content: content.String(), Reasoning: reasoning.String(), Usage: usage}
 	for _, index := range order {
 		call := toolCalls[index]
 		if call == nil {
@@ -269,6 +288,10 @@ func (client *modelClient) streamOpenAIChat(
 }
 
 func convertChatCompletionMessages(messages []modelMessage) []any {
+	return convertChatCompletionMessagesForProfile(messages, false)
+}
+
+func convertChatCompletionMessagesForProfile(messages []modelMessage, preserveReasoning bool) []any {
 	result := make([]any, 0, len(messages))
 	for _, message := range messages {
 		converted := map[string]any{"role": message.Role}
@@ -295,6 +318,9 @@ func convertChatCompletionMessages(messages []modelMessage) []any {
 		}
 		if message.Name != "" {
 			converted["name"] = message.Name
+		}
+		if preserveReasoning && message.ReasoningContent != "" {
+			converted["reasoning_content"] = message.ReasoningContent
 		}
 		result = append(result, converted)
 	}

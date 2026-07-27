@@ -163,11 +163,11 @@ func TestCompleteStepToolExposureAndWorkflowPlanUIContract(t *testing.T) {
 		t.Fatal("plan-generation mode exposed complete_step")
 	}
 	regularCodex := map[string]bool{}
-	for _, raw := range app.codexDynamicTools(false) {
+	for _, raw := range app.codexDynamicTools(defaultDesktopConfig(), false) {
 		regularCodex[raw.(map[string]any)["name"].(string)] = true
 	}
 	planCodex := map[string]bool{}
-	for _, raw := range app.codexDynamicTools(true) {
+	for _, raw := range app.codexDynamicTools(defaultDesktopConfig(), true) {
 		planCodex[raw.(map[string]any)["name"].(string)] = true
 	}
 	if !regularCodex[completeStepToolName] || planCodex[completeStepToolName] {

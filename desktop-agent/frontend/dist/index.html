@@ -40,7 +40,7 @@
 
       <nav class="sidebar-nav" aria-label="功能面板">
         <button id="open-settings" class="nav-item" type="button" title="设置" aria-label="打开设置">
-          <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.97 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.97 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08a1.7 1.7 0 0 0 1.03 1.52 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9 1.7 1.7 0 0 0 20.92 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"/></svg></span><span class="visually-hidden">设置</span>
+          <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.97 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.97 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08a1.7 1.7 0 0 0 1.03 1.52 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9 1.7 1.7 0 0 0 20.92 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"/></svg></span><span class="nav-label">设置</span>
           <span id="workflow-dot" class="nav-dot hidden"></span><span id="node-dot" class="nav-dot hidden"></span>
         </button>
       </nav>
@@ -357,7 +357,16 @@
                 <option value="openai-compatible">OpenAI-compatible</option>
                 <option value="deepseek">DeepSeek</option>
                 <option value="claude">Claude / Anthropic</option>
+                <option value="kimi">Kimi 官方 API</option>
+                <option value="glm">智谱 GLM 官方 API</option>
+                <option value="qwen">通义千问 Qwen 官方 API</option>
+                <option value="minimax">MiniMax 官方 API</option>
+                <option value="grok">xAI Grok 官方 API</option>
+                <option value="mimo">小米 MiMo 官方 API</option>
+                <option value="hy3">腾讯混元 Hy3 官方 API</option>
+                <option value="gemini">Google Gemini 官方 API</option>
                 <option value="codex-chatgpt">Codex / ChatGPT 登录</option>
+                <option value="murong-local">内置本地模型（Qwen / Gemma）</option>
               </select>
             </label>
             <label>连接名称
@@ -448,6 +457,7 @@
               <div class="tool-toggle-grid">
                 <label><input type="checkbox" data-builtin-tool="file"> 文件工具</label>
                 <label><input type="checkbox" data-builtin-tool="shell"> 终端 / Shell</label>
+                <label><input type="checkbox" data-builtin-tool="gui"> Windows 界面操作</label>
                 <label><input type="checkbox" data-builtin-tool="code_edit"> 代码补丁</label>
                 <label><input type="checkbox" data-builtin-tool="code_search"> 代码搜索</label>
                 <label><input type="checkbox" data-builtin-tool="web_fetch"> 网页抓取</label>
@@ -481,6 +491,54 @@
             </div>
             <div id="project-subagent-template-list" class="subagent-template-list"></div>
             <p class="field-note">模板不会绕过父 Agent 的工具开关和四档审批。即使当前项目沿用全局审批设置，模板仍会单独保存。</p>
+          </div>
+        </section>
+
+        <section class="settings-card wide" data-settings-section="gui">
+          <div class="card-heading">
+            <div><h3>电脑界面操作</h3><p>优先使用 Windows UI Automation 语义树；只有自绘界面识别不到时才截图。截图只在内存中存在，不默认写盘。</p></div>
+          </div>
+          <div class="provider-form-grid">
+            <label>视觉推理策略
+              <select id="gui-inference-mode">
+                <option value="local_first">内置优先，失败后按权限回退用户 API</option>
+                <option value="local_only">仅内置，不允许 API 回退</option>
+                <option value="user_api">直接使用用户 API 模型</option>
+              </select>
+            </label>
+          </div>
+          <div class="builtin-vision-panel">
+            <div class="builtin-vision-heading">
+              <div>
+                <strong>内置本地多模态模型</strong>
+                <span id="builtin-vision-recommendation">正在检测电脑内存与磁盘空间…</span>
+              </div>
+              <button id="refresh-builtin-vision-models" class="ghost" type="button">刷新</button>
+            </div>
+            <div id="builtin-vision-model-list" class="builtin-vision-model-list"></div>
+            <div id="builtin-vision-progress" class="builtin-vision-progress hidden">
+              <div><span id="builtin-vision-status">正在准备下载…</span><span id="builtin-vision-progress-label"></span></div>
+              <progress id="builtin-vision-progress-bar" max="1" value="0"></progress>
+              <button id="cancel-builtin-vision-install" class="secondary" type="button">暂停下载</button>
+            </div>
+            <p class="builtin-vision-privacy">安装后可作为聊天模型直接使用，也能看图、写代码和操作 GUI。模型保存在当前用户的私有应用目录并逐文件校验 SHA-256；截图在内存中缩放，不写入临时图片。</p>
+          </div>
+          <details class="builtin-vision-advanced">
+            <summary>高级：连接已有的本地 OpenAI-compatible 视觉服务</summary>
+            <div class="provider-form-grid">
+              <label>外部本地视觉模型
+                <input id="gui-local-model" maxlength="200" placeholder="例如 qwen3.5:4b">
+              </label>
+              <label>本地服务 Base URL
+                <input id="gui-local-base-url" maxlength="500" placeholder="例如 http://127.0.0.1:11434/v1">
+                <small>只接受 localhost、局域网、链路本地或 .local 地址；本地服务可以不填写 API Key。</small>
+              </label>
+            </div>
+          </details>
+          <div class="permission-stack">
+            <label class="permission-toggle"><input id="gui-allow-remote-semantic" type="checkbox"><span><strong>允许远程主模型读取精简语义树</strong><small>只含可访问控件、边界与非密码文本；关闭后远程模型只能看到去文本结构。</small></span></label>
+            <label class="permission-toggle"><input id="gui-allow-remote-screenshots" type="checkbox"><span><strong>允许用户 API 接收截图</strong><small>仅在 vision_query 且本地失败或选择“用户 API”时生效。</small></span></label>
+            <label class="permission-toggle"><input id="gui-allow-remote-fullscreen" type="checkbox"><span><strong>允许上传完整屏幕</strong><small>高隐私风险；关闭时远程视觉只能处理明确裁剪的区域。</small></span></label>
           </div>
         </section>
 
@@ -533,7 +591,7 @@
               </section>
             </div>
           </details>
-          <label class="permission-toggle"><input id="enable-multimodal-messages" type="checkbox" checked><span><strong>允许图片消息</strong><small>在聊天中选择图片，并发送给支持视觉输入的 OpenAI、DeepSeek、Claude 或 Codex 模型</small></span></label>
+          <label class="permission-toggle"><input id="enable-multimodal-messages" type="checkbox" checked><span><strong>允许图片消息</strong><small>在聊天中选择图片，并发送给内置本地模型或支持视觉输入的 OpenAI、DeepSeek、Claude、Codex 模型</small></span></label>
         </section>
 
         <details id="backup-panel" class="settings-card wide backup-card" data-settings-section="backup">
@@ -593,7 +651,7 @@
         </section>
       </div>
 
-      <footer class="page-footer" data-settings-visible-for="project,model,permissions,agent,backup,terminal,appearance">
+      <footer class="page-footer" data-settings-visible-for="project,model,permissions,gui,agent,backup,terminal,appearance">
         <span id="settings-status"></span>
         <button id="save-settings" class="primary">保存设置</button>
       </footer>
@@ -719,6 +777,7 @@
     </div>
 
     <div id="session-context-menu" class="session-context-menu hidden" role="menu" aria-label="任务操作"></div>
+    <div id="workbench-file-context-menu" class="session-context-menu hidden" role="menu" aria-label="文件操作"></div>
 
     <aside id="workbench-panel" class="workbench-panel hidden" aria-label="电脑侧栏">
       <div id="workbench-resizer" class="workbench-resizer" role="separator" aria-label="调整电脑侧栏宽度" aria-orientation="vertical" tabindex="0" title="拖动调整宽度，双击恢复默认"></div>
@@ -781,6 +840,7 @@
           </div>
           <div class="workbench-editor-layout">
             <section class="workbench-editor-main">
+              <nav id="workbench-editor-tabstrip" class="workbench-editor-tabstrip" role="tablist" aria-label="已打开文件"></nav>
               <header>
                 <strong id="workbench-editor-path">选择文件</strong><span id="workbench-editor-state"></span>
                 <div id="workbench-markdown-modes" class="workbench-editor-modes hidden" role="group" aria-label="Markdown 显示方式">

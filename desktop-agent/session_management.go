@@ -440,6 +440,11 @@ func exportSessionMarkdown(session *ChatSession) ([]byte, error) {
 			}
 			output.WriteString("\n")
 		}
+		if message.Role == "assistant" && strings.TrimSpace(message.Reasoning) != "" {
+			output.WriteString("### 思考过程\n\n")
+			output.WriteString(message.Reasoning)
+			output.WriteString("\n\n")
+		}
 		if message.Role == "tool" {
 			fence := markdownCodeFence(message.Content)
 			output.WriteString(fence)

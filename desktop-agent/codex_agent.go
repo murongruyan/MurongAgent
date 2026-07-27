@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const codexDynamicToolsVersion = 4
+const codexDynamicToolsVersion = 5
 
 type codexDynamicToolCallParams struct {
 	Arguments json.RawMessage `json:"arguments"`
@@ -98,7 +98,7 @@ func (app *DesktopAgentApp) runCodexAgent(ctx context.Context, sessionID string,
 	threadParams := map[string]any{
 		"cwd": cwd, "approvalPolicy": approvalPolicy, "approvalsReviewer": "user", "sandbox": sandbox,
 		"baseInstructions": baseInstructions, "serviceName": "Murong", "ephemeral": false,
-		"dynamicTools": app.codexDynamicTools(planMode),
+		"dynamicTools": app.codexDynamicTools(config, planMode),
 	}
 	if model != "" {
 		threadParams["model"] = model
@@ -456,10 +456,15 @@ func codexAskUserDynamicTool() map[string]any {
 	}
 }
 
-func (app *DesktopAgentApp) codexDynamicTools(planMode bool) []any {
+func (app *DesktopAgentApp) codexDynamicTools(config desktopConfig, planMode bool) []any {
 	tools := []any{codexSessionHistoryDynamicTool(), codexAskUserDynamicTool()}
 	if !planMode {
 		if tool, ok := codexDynamicToolFromFunction(completeStepToolDefinition()); ok {
+			tools = append(tools, tool)
+		}
+	}
+	if isBuiltinToolEnabled(config, "gui") && guiPlatformSupported() {
+		if tool, ok := codexDynamicToolFromFunction(guiToolDefinition()); ok {
 			tools = append(tools, tool)
 		}
 	}
@@ -718,6 +723,19 @@ func (app *DesktopAgentApp) executeCodexDynamicToolRequestForMode(ctx context.Co
 		if err == nil {
 			app.emitSessionsChanged(app.store.getSession(sessionID))
 		}
+	case "gui":
+		resolved := resolvedToolConfig(config)
+		if planMode {
+			resolved = planModeToolConfig(resolved)
+		}
+		if !isBuiltinToolEnabled(resolved, "gui") || !guiPlatformSupported() {
+			return failure(errors.New("Windows GUI 工具未启用或当前平台不支持"))
+		}
+		guiArguments := map[string]json.RawMessage{}
+		if err := json.Unmarshal([]byte(arguments), &guiArguments); err != nil {
+			return failure(fmt.Errorf("GUI 工具参数无效：%w", err))
+		}
+		result, err = app.executeGUITool(ctx, sessionID, resolved, call, guiArguments)
 	default:
 		definitions := app.knowledgeToolDefinitions()
 		if planMode {

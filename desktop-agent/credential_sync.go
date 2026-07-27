@@ -155,6 +155,11 @@ func (app *DesktopAgentApp) exportCredentialBundle(request SyncCredentialsReques
 	}
 	active := findProviderProfile(config.ProviderProfiles, config.ActiveProviderProfileID)
 	if active != nil {
+		if active.ProviderID == providerBuiltinLocal {
+			active = nil
+		}
+	}
+	if active != nil {
 		providerID := active.ProviderID
 		if providerID == providerCodex {
 			providerID = "codex"
@@ -164,7 +169,7 @@ func (app *DesktopAgentApp) exportCredentialBundle(request SyncCredentialsReques
 	}
 	if request.IncludeProviderCredentials {
 		for _, profile := range config.ProviderProfiles {
-			if profile.ProviderID == providerCodex {
+			if profile.ProviderID == providerCodex || profile.ProviderID == providerBuiltinLocal {
 				continue
 			}
 			credential := desktopbridge.SyncedProviderCredential{
@@ -436,7 +441,7 @@ func (store *desktopStore) importSyncedProviders(bundle desktopbridge.Credential
 	}
 	updated = normalizeDesktopConfig(updated)
 	for _, profile := range updated.ProviderProfiles {
-		if profile.ProviderID != providerCodex {
+		if profile.ProviderID != providerCodex && profile.ProviderID != providerBuiltinLocal {
 			if err := validateBaseURL(profile.BaseURL); err != nil {
 				return 0, 0, fmt.Errorf("模型连接 %q：%w", profile.Name, err)
 			}
@@ -910,7 +915,7 @@ func validateCredentialBundle(bundle desktopbridge.CredentialSyncBundle) error {
 	}
 	for _, profile := range bundle.Providers {
 		providerID := normalizeSyncedProviderID(profile.ProviderID)
-		if providerID != providerDeepSeek && providerID != providerOpenAI && providerID != providerClaude {
+		if !isSupportedSyncedProviderID(providerID) {
 			return errors.New("凭据同步包含不支持的模型连接")
 		}
 		if strings.TrimSpace(profile.ProfileID) == "" || len(profile.ProfileID) > 100 || len(profile.Name) > 100 || len(profile.Model) > 200 {
@@ -1058,7 +1063,7 @@ func validSyncedID(value string) bool {
 
 func isSyncedReasoningEffort(value string) bool {
 	switch value {
-	case "", "low", "medium", "high", "xhigh", "max":
+	case "", "low", "medium", "high", "xhigh", "max", "off", "on":
 		return true
 	default:
 		return false
@@ -1073,8 +1078,34 @@ func normalizeSyncedProviderID(value string) string {
 		return providerOpenAI
 	case "anthropic", "claude":
 		return providerClaude
+	case "kimi", "moonshot":
+		return providerKimi
+	case "glm", "zhipu", "bigmodel":
+		return providerGLM
+	case "qwen", "dashscope":
+		return providerQwen
+	case "minimax":
+		return providerMiniMax
+	case "grok", "xai":
+		return providerGrok
+	case "mimo", "xiaomimimo":
+		return providerMiMo
+	case "hy3", "hunyuan":
+		return providerHy3
+	case "gemini", "google":
+		return providerGemini
 	default:
 		return strings.ToLower(strings.TrimSpace(value))
+	}
+}
+
+func isSupportedSyncedProviderID(value string) bool {
+	switch value {
+	case providerDeepSeek, providerOpenAI, providerClaude, providerKimi, providerGLM, providerQwen,
+		providerMiniMax, providerGrok, providerMiMo, providerHy3, providerGemini:
+		return true
+	default:
+		return false
 	}
 }
 

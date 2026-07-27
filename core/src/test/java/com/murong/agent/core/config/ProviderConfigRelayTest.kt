@@ -177,7 +177,7 @@ class ProviderConfigRelayTest {
         assertEquals("key-b", switched.getApiKey("openai-compatible"))
         assertEquals("https://relay-b.example.com/v1", switched.getBaseUrl("openai-compatible"))
         assertEquals("model-b", switched.getResolvedModel("openai-compatible"))
-        assertEquals("reasoning/high", switched.getActiveThinkingMode())
+        assertEquals("enabled", switched.getActiveThinkingMode())
         assertEquals(2.4, switched.getConfiguredPromptPricePer1M("openai-compatible"))
         assertEquals(75.0, switched.getBalanceAmount("openai-compatible"))
     }

@@ -14,6 +14,10 @@ import com.murong.agent.core.loop.ApprovalScopeTelemetrySummary
 import com.murong.agent.core.loop.ProjectApprovalCardTelemetry
 import com.murong.agent.core.loop.RuntimeStatusKind
 import com.murong.agent.core.loop.RuntimeStatusSnapshot
+import com.murong.agent.core.loop.SessionSummary
+import com.murong.agent.core.tool.BuiltinVisionModels
+import com.murong.agent.core.tool.BuiltinVisionTier
+import com.murong.agent.lan.LanWebDesktopAgentTaskSummary
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -40,6 +44,71 @@ class ChatRuntimeHostPresentationTest {
         assertEquals(AUTO_PROFILE_SELECTION_KEY, automatic.first().key)
         assertEquals("✓ 自动", automatic.first().title)
         assertEquals("自动", fixed.first().title)
+    }
+
+    @Test
+    fun builtinLocalModelChoices_includeEveryInstalledModelAndMarkActiveOne() {
+        val choices = buildBuiltinLocalModelChoiceItems(
+            installedModels = listOf(
+                BuiltinVisionModels.PRO_4B,
+                BuiltinVisionModels.ULTRA_9B
+            ),
+            activeTier = BuiltinVisionTier.ULTRA_9B
+        )
+
+        assertEquals(2, choices.size)
+        assertEquals("Qwen3.5-4B Pro", choices[0].title)
+        assertEquals("✓ Qwen3.5-9B Ultra", choices[1].title)
+        assertTrue(choices.all { it.subtitle?.contains("已安装") == true })
+        assertEquals(
+            BuiltinVisionTier.ULTRA_9B,
+            builtinLocalTierFromChoiceKey(choices[1].key)
+        )
+    }
+
+    @Test
+    fun builtinLocalModelChoices_showInstallHintWhenNothingIsInstalled() {
+        val choices = buildBuiltinLocalModelChoiceItems(
+            installedModels = emptyList(),
+            activeTier = null
+        )
+
+        assertEquals(1, choices.size)
+        assertEquals("尚未安装本地模型", choices.single().title)
+        assertEquals(null, builtinLocalTierFromChoiceKey(choices.single().key))
+    }
+
+    @Test
+    fun drawerWorkspaceOptions_mergePhoneAndDesktopSessionsByNormalizedPath() {
+        val local = SessionSummary(
+            id = "phone-1",
+            title = "Android",
+            createdAt = 1L,
+            updatedAt = 2L,
+            messageCount = 3,
+            providerId = "deepseek",
+            modelName = "deepseek-v4",
+            projectPath = "C:\\work\\Murong\\"
+        )
+        val desktop = LanWebDesktopAgentTaskSummary(
+            id = "desktop-1",
+            title = "Windows",
+            projectPath = "C:/work/Murong",
+            updatedAt = 3L,
+            messageCount = 4
+        )
+
+        val options = buildDrawerWorkspaceOptions(listOf(local), listOf(desktop))
+
+        assertEquals(2, options.size)
+        assertEquals(ALL_DRAWER_WORKSPACES, options[0].key)
+        assertEquals(2, options[0].sessionCount)
+        assertEquals("Murong", options[1].label)
+        assertEquals(2, options[1].sessionCount)
+        assertEquals(
+            drawerWorkspaceKey(local.projectPath),
+            drawerWorkspaceKey(desktop.projectPath)
+        )
     }
 
     @Test
