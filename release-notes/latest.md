@@ -1,4 +1,30 @@
-# MurongAgent 1.32
+# MurongAgent 1.33
+
+## 1.33 / 26072801 — 2026-07-28
+
+本节记录 MurongAgent 1.32 之后的桌面端、Android、Windows ARM64 视觉运行时及发布流程更新。
+
+### Added
+- Desktop 与 Android 新增按执行轮次展示的文件审核卡片：汇总已编辑文件数和总 `+/-` 行数，逐文件显示增删统计，支持展开全部文件、撤销本轮改动和进入审核。
+- Desktop 的文件审核可直接点击文件名，在侧边栏打开修改前后的 Diff；审核数据与执行轮次绑定，任务终止或正常总结后都可继续查看。
+- Android 对齐桌面端的文件审核体验，复用会话检查点和现有 Diff 查看器，支持从聊天时间线直接检查或回退本轮文件改动。
+
+### Changed
+- Desktop 与 Android 的执行时间线改为按实际顺序保留“模型思考 → 模型说明 → 工具活动 → 后续说明”；模型文字保持正常字号和可读状态，不再随工具卡一起折叠。
+- 仅将相邻工具活动收为“已运行 N 条命令”“已编辑 N 个文件”等紧凑分组；执行中、终止后和最终总结后使用相同展示规则，并可按需展开详情。
+- `list_files`、`code_search`、`run_terminal` 等内部工具名转换为人类可读说明，默认隐藏调用 ID 和内部协议参数，展开后仍保留排查所需的命令、目录、输出与结果。
+- 主应用与 Desktop 默认版本升级到 `1.33`，Android `versionCode` 升级到 `26072801`。
+- 完整发布工作流新增主 APK 与终端扩展的 `versionName` / `versionCode` 手动输入及严格校验；未填写时继续使用各项目默认版本，并将实际版本贯穿文件名、元数据和 Release。
+
+### Fixed
+- 修复 Windows ARM64 VLM 构建仍会把 MNN 的 AArch64 `.S` 汇编作为 C++ 编译、导致 `MNNTransform.vcxproj` 失败的问题；现在由 ClangCL 显式生成 ARM64 COFF 对象并链接进 MNN。
+- ARM64 构建明确使用 `ARCHS=ARM64`，关闭当前 Windows 路径未验证的 ARM82、KleidiAI 与 SME2 内核，避免 Linux/ELF 专用汇编进入 Windows 构建。
+- Windows 视觉运行时构建可检测 Visual Studio 2022 / 2026，并为 LiteRT 构建准备兼容的 JDK 21，降低 GitHub Actions 与本地工具链差异造成的失败。
+
+### Verification
+- Desktop 工作区审核、时间线及发布工作流契约测试通过。
+- Android 应用单元测试共 362 项通过，并已成功生成 `app-debug.apk`。
+- GitHub Actions 将从本提交重新构建并校验 Android 主程序、终端扩展及六个平台的 Desktop 正式安装包。
 
 ## 1.32 / 26072701 — 2026-07-27
 
