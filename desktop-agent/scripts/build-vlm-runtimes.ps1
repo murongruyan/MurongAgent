@@ -252,7 +252,7 @@ if (Test-Path -LiteralPath $javaClasses) {
 New-Item -ItemType Directory -Force -Path $javaClasses | Out-Null
 $classpath = $artifactPaths -join [IO.Path]::PathSeparator
 $javaSource = Join-Path $sourceRoot "java\com\murong\agent\vlm\LiteRtVisionMain.java"
-& javac --release 17 -encoding UTF-8 -cp $classpath -d $javaClasses $javaSource
+& javac --release 21 -encoding UTF-8 -cp $classpath -d $javaClasses $javaSource
 if ($LASTEXITCODE -ne 0) { throw "LiteRT-LM Java helper compilation failed" }
 $helperJar = Join-Path $buildRoot "murong-litert-vlm.jar"
 & jar --create --file $helperJar -C $javaClasses .

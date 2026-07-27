@@ -26,6 +26,21 @@ set(MNN_SUPPORT_TRANSFORMER_FUSE ON CACHE BOOL "" FORCE)
 
 add_subdirectory("${MNN_SOURCE_DIR}" mnn EXCLUDE_FROM_ALL)
 
+# CMake's Visual Studio generator classifies MNN's GNU-style .S files as
+# non-buildable items. ClangCL can compile them, so make the generated project
+# pass the ARM64 assembly sources through its normal compiler item.
+if(MSVC AND TARGET MNNARM64)
+    get_target_property(MURONG_MNN_ARM64_SOURCES MNNARM64 SOURCES)
+    list(FILTER MURONG_MNN_ARM64_SOURCES INCLUDE REGEX "\\.[sS]$")
+    if(MURONG_MNN_ARM64_SOURCES)
+        set_source_files_properties(
+            ${MURONG_MNN_ARM64_SOURCES}
+            TARGET_DIRECTORY MNNARM64
+            PROPERTIES VS_TOOL_OVERRIDE "ClCompile"
+        )
+    endif()
+endif()
+
 add_executable(murong-mnn-vlm murong_mnn_vlm.cpp)
 target_include_directories(
     murong-mnn-vlm

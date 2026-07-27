@@ -28,6 +28,26 @@ on:
       release_tag:
         description: "统一 Release 标签；为空时使用 murong-suite-v<run number>"
         required: false
+      main_version_name:
+        description: "主 APK versionName；留空时使用 app/build.gradle.kts 默认值"
+        type: string
+        required: false
+        default: ""
+      main_version_code:
+        description: "主 APK versionCode；留空时使用 app/build.gradle.kts 默认值"
+        type: string
+        required: false
+        default: ""
+      extension_version_name:
+        description: "终端扩展 versionName；留空时使用扩展仓库默认值"
+        type: string
+        required: false
+        default: ""
+      extension_version_code:
+        description: "终端扩展 versionCode；留空时使用扩展仓库默认值"
+        type: string
+        required: false
+        default: ""
       sync_mobile_to_server:
         description: "是否把主 APK 与扩展 APK 同步到 Murong 下载后端"
         type: boolean
@@ -44,6 +64,7 @@ env:
   WAILS_VERSION: "2.13.0"
   CODEX_VERSION: "0.144.6"
   JAVA_VERSION: "26"
+  LITERT_JAVA_VERSION: "21"
   GRADLE_VERSION: "9.6.1"
   ANDROID_PLATFORM_PACKAGE: "platforms;android-37.0"
   ANDROID_BUILD_TOOLS_VERSION: "37.0.0"
@@ -106,6 +127,9 @@ jobs:
       - name: Prepare Main APK Metadata
         id: metadata
         shell: bash
+        env:
+          INPUT_VERSION_NAME: ${{ inputs.main_version_name }}
+          INPUT_VERSION_CODE: ${{ inputs.main_version_code }}
         run: |
           set -euo pipefail
           read_gradle_default() {
@@ -123,8 +147,17 @@ jobs:
           print(match.group(1))
           PY
           }
-          version_name="$(read_gradle_default versionName)"
-          version_code="$(read_gradle_default versionCode)"
+          version_name="${INPUT_VERSION_NAME:-$(read_gradle_default versionName)}"
+          version_code="${INPUT_VERSION_CODE:-$(read_gradle_default versionCode)}"
+          [[ "${version_name}" =~ ^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$ ]] || {
+            echo "Invalid main versionName: ${version_name}" >&2
+            exit 1
+          }
+          [[ "${version_code}" =~ ^[1-9][0-9]*$ ]] &&
+            (( version_code <= 2100000000 )) || {
+              echo "Invalid main versionCode: ${version_code}; expected 1..2100000000" >&2
+              exit 1
+            }
           apk_file="murongagent-${version_name}-${version_code}.apk"
           {
             echo "version_name=${version_name}"
@@ -247,6 +280,9 @@ jobs:
       - name: Prepare Extension APK Metadata
         id: metadata
         shell: bash
+        env:
+          INPUT_VERSION_NAME: ${{ inputs.extension_version_name }}
+          INPUT_VERSION_CODE: ${{ inputs.extension_version_code }}
         run: |
           set -euo pipefail
           read_gradle_default() {
@@ -265,8 +301,17 @@ jobs:
           print(match.group(1))
           PY
           }
-          version_name="$(read_gradle_default versionName)"
-          version_code="$(read_gradle_default versionCode)"
+          version_name="${INPUT_VERSION_NAME:-$(read_gradle_default versionName)}"
+          version_code="${INPUT_VERSION_CODE:-$(read_gradle_default versionCode)}"
+          [[ "${version_name}" =~ ^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$ ]] || {
+            echo "Invalid extension versionName: ${version_name}" >&2
+            exit 1
+          }
+          [[ "${version_code}" =~ ^[1-9][0-9]*$ ]] &&
+            (( version_code <= 2100000000 )) || {
+              echo "Invalid extension versionCode: ${version_code}; expected 1..2100000000" >&2
+              exit 1
+            }
           toolchain_version="$(read_gradle_default toolchainVersion)"
           apk_file="murong-terminal-extension-${version_name}-${version_code}-arm64-v8a.apk"
           {
@@ -487,6 +532,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --check frontend/dist/app.js
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Set Up JDK ${{ env.LITERT_JAVA_VERSION }}
+        if: matrix.goos == 'windows' && matrix.goarch == 'amd64'
+        uses: actions/setup-java@v5
+        with:
+          java-version: ${{ env.LITERT_JAVA_VERSION }}
+          distribution: temurin
+          check-latest: true
 
       - name: Build Verified Windows Vision Runtimes
         if: matrix.goos == 'windows'
