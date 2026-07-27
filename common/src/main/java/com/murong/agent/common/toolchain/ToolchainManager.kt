@@ -129,7 +129,11 @@ object ToolchainManager {
             val binDir = File(rootDir, "bin")
             val libDir = File(rootDir, "lib")
             val versionFile = File(rootDir, ".version")
-            val installFingerprint = "${host.packageName}:${manifest.version}:relocatable-v2"
+            val installFingerprint = buildInstallFingerprint(
+                packageName = host.packageName,
+                toolchainVersion = manifest.version,
+                packageVersionCode = host.packageVersionCode
+            )
             val nativeLibraryDir = host.nativeLibraryDir
                 ?: File("/system/lib64")
             val commandTargetPaths = manifest.commands
@@ -471,7 +475,8 @@ object ToolchainManager {
             packageName = context.packageName,
             sourceType = ToolchainSourceType.BUNDLED.id,
             manifestText = manifestText,
-            nativeLibraryDir = nativeLibraryDir
+            nativeLibraryDir = nativeLibraryDir,
+            packageVersionCode = packageVersionCode(context, context.packageName)
         )
     }
 
@@ -496,9 +501,22 @@ object ToolchainManager {
             packageName = EXTENSION_PACKAGE_NAME,
             sourceType = ToolchainSourceType.EXTENSION.id,
             manifestText = manifestText,
-            nativeLibraryDir = nativeLibraryDir
+            nativeLibraryDir = nativeLibraryDir,
+            packageVersionCode = packageVersionCode(extensionContext, EXTENSION_PACKAGE_NAME)
         )
     }
+
+    private fun packageVersionCode(context: Context, packageName: String): Long {
+        return runCatching {
+            context.packageManager.getPackageInfo(packageName, 0).longVersionCode
+        }.getOrDefault(0L)
+    }
+
+    internal fun buildInstallFingerprint(
+        packageName: String,
+        toolchainVersion: String,
+        packageVersionCode: Long
+    ): String = "$packageName:$toolchainVersion:apk-$packageVersionCode:relocatable-v2"
 
     private fun isPackageInstalled(packageManager: PackageManager, packageName: String): Boolean {
         return runCatching {
@@ -824,7 +842,8 @@ object ToolchainManager {
         val packageName: String,
         val sourceType: String,
         val manifestText: String,
-        val nativeLibraryDir: File?
+        val nativeLibraryDir: File?,
+        val packageVersionCode: Long
     )
 
     private enum class ToolchainSourceType(val id: String) {

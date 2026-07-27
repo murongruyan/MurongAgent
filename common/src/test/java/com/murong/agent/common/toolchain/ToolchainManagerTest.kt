@@ -2,11 +2,29 @@ package com.murong.agent.common.toolchain
 
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
 class ToolchainManagerTest {
+
+    @Test
+    fun installFingerprint_changesWhenExtensionApkVersionChanges() {
+        val previous = ToolchainManager.buildInstallFingerprint(
+            packageName = "cc.rl1.murong.terminalextension",
+            toolchainVersion = "termux-curated-v7",
+            packageVersionCode = 26072801
+        )
+        val updated = ToolchainManager.buildInstallFingerprint(
+            packageName = "cc.rl1.murong.terminalextension",
+            toolchainVersion = "termux-curated-v7",
+            packageVersionCode = 26072802
+        )
+
+        assertNotEquals(previous, updated)
+        assertTrue(updated.contains("apk-26072802"))
+    }
 
     @Test
     fun mutablePackageManagerScaffold_isNotARuntimeRequirement() {

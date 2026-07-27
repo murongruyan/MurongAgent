@@ -3,7 +3,7 @@ package main
 import desktopbridge "github.com/murong-agent/desktop-bridge"
 
 const (
-	desktopAgentVersion = "1.33"
+	desktopAgentVersion = "1.34"
 	approvalReadOnly    = "readonly"
 	approvalAskAll      = "ask"
 	approvalAllowlist   = "allowlist"

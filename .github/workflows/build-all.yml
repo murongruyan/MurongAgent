@@ -21,38 +21,43 @@ on:
         required: false
         default: false
       publish_release:
-        description: "完整门禁通过后是否发布包含全部产物的 GitHub Release"
+        description: "手动运行时是否发布 Release；推送 main 后会自动发布"
         type: boolean
         required: false
-        default: false
+        default: true
       release_tag:
-        description: "统一 Release 标签；为空时使用 murong-suite-v<run number>"
+        description: "统一 Release 标签；为空时使用 murong-suite-v<主程序对外版本号>"
         required: false
-      main_version_name:
-        description: "主 APK versionName；留空时使用 app/build.gradle.kts 默认值"
+      suite_version_name:
+        description: "主程序对外版本号（主版本.次版本，例如 1.34；Android 与 Desktop 共用）"
         type: string
         required: false
         default: ""
-      main_version_code:
-        description: "主 APK versionCode；留空时使用 app/build.gradle.kts 默认值"
+      suite_build_number:
+        description: "主程序内部构建号（Android versionCode，例如 26072802；不是次版本号）"
         type: string
         required: false
         default: ""
       extension_version_name:
-        description: "终端扩展 versionName；留空时使用扩展仓库默认值"
+        description: "终端扩展对外版本号（主版本.次版本，例如 1.12）"
         type: string
         required: false
         default: ""
       extension_version_code:
-        description: "终端扩展 versionCode；留空时使用扩展仓库默认值"
+        description: "终端扩展内部构建号（versionCode，例如 26072802；不是次版本号）"
+        type: string
+        required: false
+        default: ""
+      extension_toolchain_version:
+        description: "扩展内置工具链内容版本；修改后强制刷新工具（例如 termux-curated-v7-codex-app-server-0.144.5）"
         type: string
         required: false
         default: ""
       sync_mobile_to_server:
-        description: "是否把主 APK 与扩展 APK 同步到 Murong 下载后端"
+        description: "手动运行时是否同步 APK 和 latest.md 到后端；推送 main 后会自动同步"
         type: boolean
         required: false
-        default: false
+        default: true
 
 concurrency:
   group: murong-complete-build-${{ github.ref }}
@@ -128,8 +133,8 @@ jobs:
         id: metadata
         shell: bash
         env:
-          INPUT_VERSION_NAME: ${{ inputs.main_version_name }}
-          INPUT_VERSION_CODE: ${{ inputs.main_version_code }}
+          INPUT_VERSION_NAME: ${{ inputs.suite_version_name }}
+          INPUT_VERSION_CODE: ${{ inputs.suite_build_number }}
         run: |
           set -euo pipefail
           read_gradle_default() {
@@ -149,8 +154,8 @@ jobs:
           }
           version_name="${INPUT_VERSION_NAME:-$(read_gradle_default versionName)}"
           version_code="${INPUT_VERSION_CODE:-$(read_gradle_default versionCode)}"
-          [[ "${version_name}" =~ ^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$ ]] || {
-            echo "Invalid main versionName: ${version_name}" >&2
+          [[ "${version_name}" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] || {
+            echo "Invalid suite version: ${version_name}; expected major.minor, for example 1.34" >&2
             exit 1
           }
           [[ "${version_code}" =~ ^[1-9][0-9]*$ ]] &&
@@ -230,6 +235,7 @@ jobs:
       apk_file: ${{ steps.metadata.outputs.apk_file }}
       version_name: ${{ steps.metadata.outputs.version_name }}
       version_code: ${{ steps.metadata.outputs.version_code }}
+      toolchain_version: ${{ steps.metadata.outputs.toolchain_version }}
       source_commit: ${{ steps.source.outputs.commit }}
     defaults:
       run:
@@ -241,6 +247,14 @@ jobs:
           repository: murongruyan/murong-terminal-extension
           ref: ${{ inputs.extension_ref || 'main' }}
           path: terminal-extension
+
+      - name: Checkout Release Notes
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: release-source
+          persist-credentials: false
+          sparse-checkout: release-notes
 
       - name: Record Extension Source Commit
         id: source
@@ -283,6 +297,7 @@ jobs:
         env:
           INPUT_VERSION_NAME: ${{ inputs.extension_version_name }}
           INPUT_VERSION_CODE: ${{ inputs.extension_version_code }}
+          INPUT_TOOLCHAIN_VERSION: ${{ inputs.extension_toolchain_version }}
         run: |
           set -euo pipefail
           read_gradle_default() {
@@ -303,8 +318,8 @@ jobs:
           }
           version_name="${INPUT_VERSION_NAME:-$(read_gradle_default versionName)}"
           version_code="${INPUT_VERSION_CODE:-$(read_gradle_default versionCode)}"
-          [[ "${version_name}" =~ ^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$ ]] || {
-            echo "Invalid extension versionName: ${version_name}" >&2
+          [[ "${version_name}" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] || {
+            echo "Invalid extension version: ${version_name}; expected major.minor, for example 1.12" >&2
             exit 1
           }
           [[ "${version_code}" =~ ^[1-9][0-9]*$ ]] &&
@@ -312,11 +327,16 @@ jobs:
               echo "Invalid extension versionCode: ${version_code}; expected 1..2100000000" >&2
               exit 1
             }
-          toolchain_version="$(read_gradle_default toolchainVersion)"
+          toolchain_version="${INPUT_TOOLCHAIN_VERSION:-$(read_gradle_default toolchainVersion)}"
+          [[ "${toolchain_version}" =~ ^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$ ]] || {
+            echo "Invalid extension toolchain version: ${toolchain_version}" >&2
+            exit 1
+          }
           apk_file="murong-terminal-extension-${version_name}-${version_code}-arm64-v8a.apk"
           {
             echo "version_name=${version_name}"
             echo "version_code=${version_code}"
+            echo "toolchain_version=${toolchain_version}"
             echo "apk_file=${apk_file}"
           } >> "${GITHUB_OUTPUT}"
           {
@@ -427,13 +447,16 @@ jobs:
           python3 - <<'PY'
           import json, os
           from pathlib import Path
+          notes_path = Path("../release-source/release-notes/latest.md")
+          changelog = notes_path.read_text(encoding="utf-8").strip()
           payload = {
               "artifactKey": "murong-terminal-extension",
               "channel": "stable",
               "versionName": os.environ["EXTENSION_VERSION_NAME"],
               "versionCode": int(os.environ["EXTENSION_VERSION_CODE"]),
+              "toolchainVersion": os.environ["TOOLCHAIN_VERSION"],
               "fileName": os.environ["EXTENSION_APK_FILE"],
-              "changelog": "内置完整 Termux 工具链与已校验的 Codex app-server。",
+              "changelog": changelog,
               "updateMessage": f"终端扩展 {os.environ['EXTENSION_VERSION_NAME']} 已可安装。",
               "sourceCommit": os.environ["EXTENSION_SOURCE_COMMIT"],
           }
@@ -506,6 +529,35 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Prepare Shared Desktop Version
+        shell: pwsh
+        env:
+          INPUT_VERSION_NAME: ${{ inputs.suite_version_name }}
+        run: |
+          $version = "${env:INPUT_VERSION_NAME}".Trim()
+          $modelsPath = "models.go"
+          $models = Get-Content -Raw -LiteralPath $modelsPath
+          if (-not $version) {
+            $match = [regex]::Match($models, 'desktopAgentVersion\s*=\s*"([^"]+)"')
+            if (-not $match.Success) { throw "Cannot read desktopAgentVersion from models.go" }
+            $version = $match.Groups[1].Value
+          }
+          if ($version -notmatch '^[0-9]+(\.[0-9]+){1,3}$') {
+            throw "Invalid desktop version: $version"
+          }
+          $models = [regex]::Replace(
+            $models,
+            'desktopAgentVersion\s*=\s*"[^"]+"',
+            "desktopAgentVersion = `"$version`"",
+            1
+          )
+          Set-Content -Encoding utf8NoBOM -NoNewline -LiteralPath $modelsPath -Value $models
+          $wailsPath = "wails.json"
+          $wails = Get-Content -Raw -LiteralPath $wailsPath | ConvertFrom-Json
+          $wails.info.productVersion = $version
+          $wails | ConvertTo-Json -Depth 20 | Set-Content -Encoding utf8NoBOM -LiteralPath $wailsPath
+          "DESKTOP_VERSION_NAME=$version" >> $env:GITHUB_ENV
 
       - name: Set Up Go
         uses: actions/setup-go@v6
@@ -696,11 +748,11 @@ jobs:
           MAIN_VERSION_CODE: ${{ needs.android_app.outputs.version_code }}
           EXTENSION_VERSION_NAME: ${{ needs.terminal_extension.outputs.version_name }}
           EXTENSION_VERSION_CODE: ${{ needs.terminal_extension.outputs.version_code }}
+          EXTENSION_TOOLCHAIN_VERSION: ${{ needs.terminal_extension.outputs.toolchain_version }}
           EXTENSION_SOURCE_COMMIT: ${{ needs.terminal_extension.outputs.source_commit }}
         run: |
           set -euo pipefail
-          DESKTOP_VERSION_NAME="$(sed -nE 's/^[[:space:]]*desktopAgentVersion = "([^"]+)".*/\1/p' desktop-agent/models.go | head -n1)"
-          [[ "$DESKTOP_VERSION_NAME" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] || { echo "Invalid desktop version: $DESKTOP_VERSION_NAME" >&2; exit 1; }
+          DESKTOP_VERSION_NAME="${MAIN_VERSION_NAME}"
           export DESKTOP_VERSION_NAME
           mobile_expected=(
             "android-app/${MAIN_APK_FILE}"
@@ -773,7 +825,11 @@ jobs:
               "extensionSourceCommit": os.environ["EXTENSION_SOURCE_COMMIT"],
               "versions": {
                   "androidApp": {"name": os.environ["MAIN_VERSION_NAME"], "code": int(os.environ["MAIN_VERSION_CODE"])},
-                  "terminalExtension": {"name": os.environ["EXTENSION_VERSION_NAME"], "code": int(os.environ["EXTENSION_VERSION_CODE"])},
+                  "terminalExtension": {
+                      "name": os.environ["EXTENSION_VERSION_NAME"],
+                      "code": int(os.environ["EXTENSION_VERSION_CODE"]),
+                      "toolchainVersion": os.environ["EXTENSION_TOOLCHAIN_VERSION"],
+                  },
                   "desktopAgent": {"name": os.environ["DESKTOP_VERSION_NAME"]},
               },
               "packages": [
@@ -804,7 +860,7 @@ jobs:
   publish:
     name: Publish Complete GitHub Release
     needs: verify
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
     runs-on: ubuntu-24.04
     steps:
       - name: Download Main APK Artifact
@@ -843,19 +899,21 @@ jobs:
           find release -maxdepth 1 -type f \( -name '*.sha256' -o -name 'android-app.json' -o -name 'terminal-extension.json' \) -delete
           mapfile -t packages < <(find release -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' ! -name 'release-manifest.json' ! -name 'RELEASE_NOTES.md' -printf '%p\n' | sort)
           [[ ${#packages[@]} -eq 8 ]] || { echo "Expected 8 release packages, found ${#packages[@]}" >&2; exit 1; }
-          tag="${INPUT_RELEASE_TAG:-murong-suite-v${GITHUB_RUN_NUMBER}}"
-          assets=("${packages[@]}" release/SHA256SUMS.txt release/release-manifest.json)
+          suite_version="$(python3 -c 'import json; print(json.load(open("release/release-manifest.json", encoding="utf-8"))["versions"]["androidApp"]["name"])')"
+          tag="${INPUT_RELEASE_TAG:-murong-suite-v${suite_version}}"
+          title="MurongAgent ${suite_version}"
+          assets=("${packages[@]}" release/SHA256SUMS.txt release/release-manifest.json release/RELEASE_NOTES.md)
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "${assets[@]}" --clobber
-            gh release edit "$tag" --title "Murong Complete Suite ${tag}" --notes-file release/RELEASE_NOTES.md --latest
+            gh release edit "$tag" --title "$title" --notes-file release/RELEASE_NOTES.md --latest
           else
-            gh release create "$tag" "${assets[@]}" --notes-file release/RELEASE_NOTES.md --latest --title "Murong Complete Suite ${tag}"
+            gh release create "$tag" "${assets[@]}" --notes-file release/RELEASE_NOTES.md --latest --title "$title"
           fi
 
   sync_mobile:
     name: Sync Mobile Packages To Murong Backend
     needs: [android_app, terminal_extension, verify]
-    if: github.event_name == 'workflow_dispatch' && inputs.sync_mobile_to_server
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.sync_mobile_to_server)
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:

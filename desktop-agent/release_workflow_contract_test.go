@@ -17,7 +17,8 @@ func TestUnifiedReleasePublishesLatestReleaseNotes(t *testing.T) {
 		"ref: ${{ github.sha }}",
 		"cp release-notes/latest.md dist/release/RELEASE_NOTES.md",
 		"dist/release/RELEASE_NOTES.md",
-		"gh release edit \"$tag\" --title \"Murong Complete Suite ${tag}\" --notes-file release/RELEASE_NOTES.md",
+		"release/release-manifest.json release/RELEASE_NOTES.md",
+		"gh release edit \"$tag\" --title \"$title\" --notes-file release/RELEASE_NOTES.md",
 		"gh release create \"$tag\" \"${assets[@]}\" --notes-file release/RELEASE_NOTES.md",
 	} {
 		if !strings.Contains(text, marker) {
@@ -116,16 +117,21 @@ func TestUnifiedReleaseWorkflowAcceptsVersionOverrides(t *testing.T) {
 	}
 	text := string(workflow)
 	for _, marker := range []string{
-		"main_version_name:",
-		"main_version_code:",
+		"suite_version_name:",
+		"suite_build_number:",
 		"extension_version_name:",
 		"extension_version_code:",
-		"INPUT_VERSION_NAME: ${{ inputs.main_version_name }}",
-		"INPUT_VERSION_CODE: ${{ inputs.main_version_code }}",
+		"extension_toolchain_version:",
+		"INPUT_VERSION_NAME: ${{ inputs.suite_version_name }}",
+		"INPUT_VERSION_CODE: ${{ inputs.suite_build_number }}",
 		"INPUT_VERSION_NAME: ${{ inputs.extension_version_name }}",
 		"INPUT_VERSION_CODE: ${{ inputs.extension_version_code }}",
+		"INPUT_TOOLCHAIN_VERSION: ${{ inputs.extension_toolchain_version }}",
+		"- name: Prepare Shared Desktop Version",
+		"DESKTOP_VERSION_NAME=$version",
 		`version_name="${INPUT_VERSION_NAME:-$(read_gradle_default versionName)}"`,
 		`version_code="${INPUT_VERSION_CODE:-$(read_gradle_default versionCode)}"`,
+		`toolchain_version="${INPUT_TOOLCHAIN_VERSION:-$(read_gradle_default toolchainVersion)}"`,
 		"version_code <= 2100000000",
 	} {
 		if !strings.Contains(text, marker) {
@@ -141,12 +147,36 @@ func TestUnifiedReleaseManifestDeclaresDesktopVersion(t *testing.T) {
 	}
 	text := string(workflow)
 	for _, marker := range []string{
-		`DESKTOP_VERSION_NAME="$(sed -nE`,
+		`DESKTOP_VERSION_NAME="${MAIN_VERSION_NAME}"`,
 		`export DESKTOP_VERSION_NAME`,
 		`"desktopAgent": {"name": os.environ["DESKTOP_VERSION_NAME"]}`,
+		`"toolchainVersion": os.environ["EXTENSION_TOOLCHAIN_VERSION"]`,
 	} {
 		if !strings.Contains(text, marker) {
 			t.Fatalf("unified release manifest is missing desktop version marker %q", marker)
 		}
+	}
+}
+
+func TestMainPushPublishesAndSyncsCuratedReleaseNotes(t *testing.T) {
+	workflow, err := os.ReadFile("../.github/workflows/build-all.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(workflow)
+	for _, marker := range []string{
+		"if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_release)",
+		"if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.sync_mobile_to_server)",
+		`notes_path = Path("../release-source/release-notes/latest.md")`,
+		`"changelog": changelog`,
+		`tag="${INPUT_RELEASE_TAG:-murong-suite-v${suite_version}}"`,
+		`assets=("${packages[@]}" release/SHA256SUMS.txt release/release-manifest.json release/RELEASE_NOTES.md)`,
+	} {
+		if !strings.Contains(text, marker) {
+			t.Fatalf("main push release synchronization is missing %q", marker)
+		}
+	}
+	if strings.Contains(text, `"changelog": "内置完整 Termux 工具链`) {
+		t.Fatal("terminal extension metadata still uses a hard-coded changelog")
 	}
 }

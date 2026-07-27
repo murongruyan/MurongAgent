@@ -1,8 +1,8 @@
-# MurongAgent 1.33
+# MurongAgent 1.34
 
-## 1.33 / 26072801 — 2026-07-28
+## 1.34 / 26072802 — 2026-07-28
 
-本节记录 MurongAgent 1.32 之后的桌面端、Android、Windows ARM64 视觉运行时及发布流程更新。
+本节记录 MurongAgent 1.32 之后的桌面端、Android、终端扩展、Windows ARM64 视觉运行时及发布流程更新。
 
 ### Added
 - Desktop 与 Android 新增按执行轮次展示的文件审核卡片：汇总已编辑文件数和总 `+/-` 行数，逐文件显示增删统计，支持展开全部文件、撤销本轮改动和进入审核。
@@ -14,15 +14,18 @@
 - Desktop 与 Android 的执行时间线改为按实际顺序保留“模型思考 → 模型说明 → 工具活动 → 后续说明”；模型文字保持正常字号和可读状态，不再随工具卡一起折叠。
 - 仅将相邻工具活动收为“已运行 N 条命令”“已编辑 N 个文件”等紧凑分组；执行中、终止后和最终总结后使用相同展示规则，并可按需展开详情。
 - `list_files`、`code_search`、`run_terminal` 等内部工具名转换为人类可读说明，默认隐藏调用 ID 和内部协议参数，展开后仍保留排查所需的命令、目录、输出与结果。
-- 主应用与 Desktop 默认版本升级到 `1.33`，Android `versionCode` 升级到 `26072801`。
-- 终端扩展升级到 `1.11 / 26072801`；完整发布清单新增 Desktop 版本字段，Android、扩展和电脑版版本均可由客户端与 Release 审核。
-- 完整发布工作流新增主 APK 与终端扩展的 `versionName` / `versionCode` 手动输入及严格校验；未填写时继续使用各项目默认版本，并将实际版本贯穿文件名、元数据和 Release。
+- 主应用与 Desktop 默认版本升级到 `1.34`，Android `versionCode` 升级到 `26072802`。
+- 终端扩展升级到 `1.12 / 26072802`，内置工具链内容版本升级到 `termux-curated-v7-codex-app-server-0.144.5`；扩展元数据现在会分别公开安装版本、内部构建号、工具链版本与 ABI。
+- 完整发布工作流把主程序“对外版本号（主版本.次版本）”、内部构建号、扩展安装版本和内置工具链内容版本分开标注；主程序版本覆盖会同时作用于 Android 与 Desktop，不再出现同一次构建版本不一致。
+- 推送 `main` 并通过全部门禁后，工作流会自动创建或更新按主程序版本命名的 GitHub Release，并自动把主 APK、终端扩展 APK 和 `release-notes/latest.md` 同步到下载后端。
 
 ### Fixed
 - 修复 Windows ARM64 VLM 构建仍会把 MNN 的 AArch64 `.S` 汇编作为 C++ 编译、导致 `MNNTransform.vcxproj` 失败的问题；现在由 ClangCL 显式生成 ARM64 COFF 对象并链接进 MNN。
 - ARM64 构建明确使用 `ARCHS=ARM64`，关闭当前 Windows 路径未验证的 ARM82、KleidiAI 与 SME2 内核，避免 Linux/ELF 专用汇编进入 Windows 构建。
 - Windows 视觉运行时构建可检测 Visual Studio 2022 / 2026，并为 LiteRT 构建准备兼容的 JDK 21，降低 GitHub Actions 与本地工具链差异造成的失败。
 - 修复 Android 管理端 GitHub 登录回调未被服务端允许的问题；管理端 APK 同步升级到 0.2.0，并改用与用户端一致的主题、圆角卡片、悬浮导航和深色模式。
+- 修复只升级终端扩展 APK 的 `versionCode` 时主应用仍复用旧工具目录的问题；工具链安装指纹现在同时包含扩展 APK 构建号，扩展更新后会重新覆盖基础工具文件，同时保留用户通过 apt / pkg 安装的数据。
+- 修复终端扩展的后端更新日志仍是写死的一句话、推送构建又跳过 Release 与后端同步的问题；Android 和扩展的发布元数据现在都直接读取同一份 `release-notes/latest.md`，Release 正文和附件也使用该文件。
 
 ### Verification
 - Desktop 工作区审核、时间线及发布工作流契约测试通过。
