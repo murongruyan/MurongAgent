@@ -39,7 +39,10 @@ func TestWindowsVLMBuildSelectsInstalledVisualStudioAndARM64ClangCL(t *testing.T
 		"Get-CMakeVisualStudioArguments $Architecture",
 		"18 { \"Visual Studio 18 2026\" }",
 		"$arguments += @(\"-T\", \"ClangCL\")",
-		"\"-DMNN_KLEIDIAI=OFF\", \"-DMNN_SME2=OFF\"",
+		"\"-DARCHS=ARM64\"",
+		"\"-DMNN_ARM82=OFF\"",
+		"\"-DMNN_KLEIDIAI=OFF\"",
+		"\"-DMNN_SME2=OFF\"",
 		"Assert-ChildPath $buildRoot $mnnBuild",
 		"& cmake -S $sourceRoot -B $mnnBuild @cmakeVisualStudioArguments",
 	} {
@@ -52,7 +55,7 @@ func TestWindowsVLMBuildSelectsInstalledVisualStudioAndARM64ClangCL(t *testing.T
 	}
 }
 
-func TestWindowsVLMBuildCompilesARM64AssemblyAndUsesCompatibleJDK(t *testing.T) {
+func TestWindowsVLMBuildCompilesARM64AssemblyWithoutVisualStudioTPAndUsesCompatibleJDK(t *testing.T) {
 	cmakeConfig, err := os.ReadFile("vlm-runtime/CMakeLists.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -60,12 +63,17 @@ func TestWindowsVLMBuildCompilesARM64AssemblyAndUsesCompatibleJDK(t *testing.T) 
 	for _, marker := range []string{
 		"TARGET MNNARM64",
 		`REGEX "\\.[sS]$"`,
-		"TARGET_DIRECTORY MNNARM64",
-		`VS_TOOL_OVERRIDE "ClCompile"`,
+		"--target=arm64-pc-windows-msvc",
+		"murong-mnn-arm64-assembly",
+		"target_sources(MNN PRIVATE",
+		"EXTERNAL_OBJECT TRUE",
 	} {
 		if !strings.Contains(string(cmakeConfig), marker) {
 			t.Fatalf("Windows ARM64 MNN assembly regression guard is missing %q", marker)
 		}
+	}
+	if strings.Contains(string(cmakeConfig), `VS_TOOL_OVERRIDE "ClCompile"`) {
+		t.Fatal("Windows ARM64 MNN assembly still uses ClCompile, which adds /TP")
 	}
 
 	script, err := os.ReadFile("scripts/build-vlm-runtimes.ps1")

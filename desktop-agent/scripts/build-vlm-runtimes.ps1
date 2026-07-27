@@ -156,7 +156,8 @@ function Get-CMakeVisualStudioArguments([string]$TargetArchitecture) {
 
     $arguments = @("-G", $generator, "-A", $(if ($TargetArchitecture -eq "arm64") { "ARM64" } else { "x64" }))
     if ($TargetArchitecture -eq "arm64") {
-        # MNN's ARM NEON implementation requires ClangCL; MSVC rejects its vector types.
+        # The wrapper CMake project compiles MNN's preprocessed AArch64 assembly
+        # directly with clang-cl because Visual Studio otherwise adds /TP.
         $arguments += @("-T", "ClangCL")
     }
     return $arguments
@@ -183,8 +184,14 @@ $mnnBuild = Join-Path $buildRoot "mnn-build"
 $cmakeVisualStudioArguments = Get-CMakeVisualStudioArguments $Architecture
 $mnnOptions = @()
 if ($Architecture -eq "arm64") {
-    # These optional ARM kernels currently assume Linux/ELF toolchains and fail under ClangCL.
-    $mnnOptions += @("-DMNN_KLEIDIAI=OFF", "-DMNN_SME2=OFF")
+    # ARM82 and the optional KleidiAI/SME2 targets contain additional assembly
+    # families which are outside the wrapper's verified Windows ARM64 path.
+    $mnnOptions += @(
+        "-DARCHS=ARM64",
+        "-DMNN_ARM82=OFF",
+        "-DMNN_KLEIDIAI=OFF",
+        "-DMNN_SME2=OFF"
+    )
 }
 Assert-ChildPath $buildRoot $mnnBuild
 if (Test-Path -LiteralPath $mnnBuild) {

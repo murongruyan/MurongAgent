@@ -185,7 +185,16 @@ button { border: 0; cursor: pointer; }
 .message-body pre { overflow: auto; margin: 12px 0; padding: 13px 15px; border-radius: 12px; color: #dfe6f6; background: #171d2a; font: 12px/1.65 "Cascadia Mono", Consolas, monospace; }
 .message-body code { padding: 2px 5px; border-radius: 5px; background: #eff1f6; font-family: "Cascadia Mono", Consolas, monospace; font-size: .88em; }
 .message.user code { color: #fff; background: rgba(255,255,255,.16); }
-.tool-execution-row { width: min(860px,calc(100% - 56px)); margin: 0 auto 12px; }
+.tool-execution-row, .tool-execution-group-row { width: min(860px,calc(100% - 56px)); margin: 0 auto 12px; }
+.tool-execution-group { overflow: hidden; border: 1px solid #d9dee7; border-radius: 12px; color: #586274; background: rgba(247,248,250,.96); box-shadow: 0 5px 18px rgba(40,46,69,.04); }
+.tool-execution-group.failed { border-color: #edc7cf; background: #fff8f9; }
+.tool-execution-group > summary { min-height: 48px; display: grid; grid-template-columns: minmax(145px,auto) minmax(0,1fr) auto; align-items: center; gap: 12px; padding: 10px 13px; cursor: pointer; list-style: none; }
+.tool-execution-group > summary::-webkit-details-marker { display: none; }
+.tool-execution-group > summary:hover { background: #f0f2f6; }
+.tool-execution-group-title { color: #3d4759; font-size: 12px; font-weight: 780; }
+.tool-execution-group-summary { min-width: 0; overflow: hidden; color: #70798a; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.tool-execution-group-action { color: #9a6884; font-size: 10px; font-weight: 750; }
+.tool-execution-group-content { display: grid; gap: 8px; padding: 10px; border-top: 1px solid #e0e4eb; background: rgba(255,255,255,.78); }
 .tool-execution { overflow: hidden; border: 1px solid #dfe3ea; border-radius: 8px; color: #586274; background: #f7f8fa; font-size: 11px; }
 .tool-execution.failed { border-color: #edc7cf; background: #fff8f9; }
 .tool-execution summary { min-height: 40px; display: grid; grid-template-columns: minmax(100px,auto) minmax(0,1fr) auto; align-items: center; gap: 10px; padding: 8px 11px; cursor: pointer; list-style-position: inside; }
@@ -198,6 +207,9 @@ button { border: 0; cursor: pointer; }
 .tool-execution-content section { min-width: 0; }
 .tool-execution-content strong { display: block; margin-bottom: 4px; color: #717a8a; font-size: 10px; }
 .tool-execution-content pre { max-height: 420px; overflow: auto; margin: 0; padding: 9px 10px; border: 1px solid #e4e7ec; border-radius: 6px; color: #303947; background: #f5f6f8; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.55 "Cascadia Mono",Consolas,monospace; }
+.tool-protocol-details { padding-top: 2px; border-top: 1px dashed #e0e4ea; }
+.tool-protocol-details > summary { min-height: auto; display: block; padding: 7px 0 0; color: #8a92a0; cursor: pointer; font-size: 10px; font-weight: 700; list-style-position: inside; }
+.tool-protocol-details > pre { margin-top: 7px; color: #657080; background: #f8f9fb; font-size: 10px; }
 .message-history-actions { display: flex; justify-content: flex-end; gap: 5px; max-height: 0; margin-top: 0; overflow: hidden; opacity: 0; transition: .16s ease; }
 .message:hover .message-history-actions { max-height: 34px; margin-top: 10px; padding-top: 8px; border-top: 1px solid #edf0f5; opacity: 1; }
 .message-history-actions button { padding: 3px 7px; border-radius: 7px; color: #7d8597; background: transparent; font-size: 10px; font-weight: 650; }

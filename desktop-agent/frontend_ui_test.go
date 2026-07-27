@@ -130,8 +130,9 @@ func TestDesktopChatRunControlsSteeringToolDetailsAndScrollFollow(t *testing.T) 
 		"if (!content && !state.composerImages.length) return;", "await backend().SendMessage({",
 		"function updateMessageAutoFollow()", "if (!force && !state.autoFollowMessages) return;",
 		"article.className = \"tool-execution-row\"", "createToolExecutionDetails(message)",
-		"appendToolField(content, \"命令\", command)", "appendToolField(content, \"标准输出\", result?.stdout)",
-		"appendToolField(content, \"错误输出\", firstToolValue(result?.stderr, payload?.error))",
+		"describeToolExecution(message, args, payload, result, command)",
+		"presentation.fields.forEach(([label, value]) => appendToolField(content, label, value))",
+		"fields.push([\"错误输出\", failure])",
 	} {
 		if !strings.Contains(js, marker) {
 			t.Fatalf("desktop chat workflow regression guard is missing %q", marker)
@@ -144,6 +145,44 @@ func TestDesktopChatRunControlsSteeringToolDetailsAndScrollFollow(t *testing.T) 
 	}
 	if strings.Contains(css, ".message.tool .message-body") {
 		t.Fatal("tool executions are still styled as ordinary chat bubbles")
+	}
+}
+
+func TestDesktopChatCollapsesToolRunsIntoReadableProcessSummary(t *testing.T) {
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := frontendAssets.ReadFile("frontend/dist/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, css := string(script), string(styles)
+	for _, marker := range []string{
+		"appendMessageTimeline(state.active.messages)",
+		`message.kind === "progress"`,
+		"function createToolExecutionGroup(messages)",
+		"function summarizeToolExecutions(messages)",
+		"function createProcessNarrationDetails(message)",
+		"`已运行 ${commandCount} 个命令`",
+		"`已修改 ${changedCount} 个文件`",
+		"list_files: \"查看目录\"",
+		"code_search: \"搜索代码\"",
+		"run_terminal: \"运行命令\"",
+		"summary.textContent = \"技术详情\"",
+	} {
+		if !strings.Contains(js, marker) {
+			t.Fatalf("desktop tool process presentation is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{
+		".tool-execution-group",
+		".tool-execution-group-summary",
+		".tool-protocol-details",
+	} {
+		if !strings.Contains(css, marker) {
+			t.Fatalf("desktop collapsed tool process styling is missing %q", marker)
+		}
 	}
 }
 

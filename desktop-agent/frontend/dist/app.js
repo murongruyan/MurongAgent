@@ -1090,7 +1090,7 @@ function renderActiveSession() {
     renderConversationSummaryRail();
     return;
   }
-  state.active.messages.forEach((message) => appendMessageElement(message));
+  appendMessageTimeline(state.active.messages);
   renderConversationSummaryRail();
   if (preserveScroll) {
     requestAnimationFrame(() => {
@@ -1584,6 +1584,134 @@ async function setComposerReasoningEffort(event) {
   }
 }
 
+function appendMessageTimeline(messages) {
+  let pendingProcess = [];
+  const flushProcess = () => {
+    if (!pendingProcess.length) return;
+    const article = document.createElement("article");
+    article.className = "tool-execution-group-row";
+    article.append(createToolExecutionGroup(pendingProcess));
+    $("#messages").append(article);
+    pendingProcess = [];
+  };
+  messages.forEach((message) => {
+    if (isProcessTimelineMessage(message)) {
+      pendingProcess.push(message);
+      return;
+    }
+    flushProcess();
+    appendMessageElement(message);
+  });
+  flushProcess();
+}
+
+function isProcessTimelineMessage(message) {
+  return message.role === "tool" ||
+    (message.role === "assistant" && (message.kind === "progress" || (!message.content?.trim() && message.reasoning?.trim())));
+}
+
+function createToolExecutionGroup(messages) {
+  const details = document.createElement("details");
+  const stats = summarizeToolExecutions(messages);
+  details.className = `tool-execution-group${stats.failed ? " failed" : ""}`;
+  const summary = document.createElement("summary");
+  const heading = document.createElement("span");
+  heading.className = "tool-execution-group-title";
+  heading.textContent = stats.failed ? "执行过程有失败" : "已完成执行过程";
+  const labels = document.createElement("span");
+  labels.className = "tool-execution-group-summary";
+  labels.textContent = stats.labels.join(" · ");
+  const action = document.createElement("span");
+  action.className = "tool-execution-group-action";
+  action.textContent = "展开";
+  summary.append(heading, labels, action);
+  details.addEventListener("toggle", () => {
+    action.textContent = details.open ? "收起" : "展开";
+  });
+  const content = document.createElement("div");
+  content.className = "tool-execution-group-content";
+  messages.forEach((message) => content.append(
+    message.role === "tool" ? createToolExecutionDetails(message) : createProcessNarrationDetails(message),
+  ));
+  details.append(summary, content);
+  return details;
+}
+
+function summarizeToolExecutions(messages) {
+  const toolMessages = messages.filter((message) => message.role === "tool");
+  const changedFiles = new Set();
+  const readFiles = new Set();
+  let changedWithoutPath = 0;
+  let readWithoutPath = 0;
+  let commandCount = 0;
+  let searchCount = 0;
+  let directoryCount = 0;
+  let failed = false;
+  toolMessages.forEach((message) => {
+    const args = parseToolJSON(message.toolArguments);
+    const payload = parseToolJSON(message.content);
+    const kind = toolExecutionKind(message.toolName, args);
+    const paths = collectToolPaths(args, payload);
+    if (kind === "command") commandCount += 1;
+    if (kind === "search") searchCount += 1;
+    if (kind === "directory") directoryCount += 1;
+    if (kind === "edit") {
+      if (paths.length) paths.forEach((path) => changedFiles.add(path));
+      else changedWithoutPath += 1;
+    }
+    if (kind === "read") {
+      if (paths.length) paths.forEach((path) => readFiles.add(path));
+      else readWithoutPath += 1;
+    }
+    if (message.toolStatus === "failed") failed = true;
+  });
+  const labels = [];
+  const changedCount = changedFiles.size + changedWithoutPath;
+  const readCount = readFiles.size + readWithoutPath;
+  if (messages.some((message) => message.reasoning?.trim())) labels.push("思考过程");
+  if (commandCount) labels.push(`已运行 ${commandCount} 个命令`);
+  if (changedCount) labels.push(`已修改 ${changedCount} 个文件`);
+  if (readCount) labels.push(`已读取 ${readCount} 个文件`);
+  if (searchCount) labels.push(`已搜索 ${searchCount} 次`);
+  if (directoryCount) labels.push(`已查看 ${directoryCount} 个目录`);
+  if (!labels.length && toolMessages.length) labels.push(`已执行 ${toolMessages.length} 个工具`);
+  if (!labels.length) labels.push("执行过程");
+  if (failed) labels.push("存在失败");
+  return { labels, failed };
+}
+
+function toolExecutionKind(name, args) {
+  const normalized = String(name || "").toLowerCase();
+  if (normalized === "code_edit" && String(args?.operation || "").toLowerCase() === "view") return "read";
+  if (["run_terminal", "computer_terminal", "shell", "command", "commandexecution"].includes(normalized)) return "command";
+  if (["write_file", "code_edit", "computer_workspace", "apply_patch", "delete_path", "chmod_path"].includes(normalized)) return "edit";
+  if (["read_file", "github_read_file", "image_view"].includes(normalized)) return "read";
+  if (["code_search", "web_search", "web_fetch", "github_repository"].includes(normalized)) return "search";
+  if (["list_files", "github_list_branches", "github_list_issues"].includes(normalized)) return "directory";
+  return "other";
+}
+
+function collectToolPaths(...values) {
+  const paths = new Set();
+  const visit = (value) => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    Object.entries(value).forEach(([key, item]) => {
+      const normalized = key.replace(/[_-]/g, "").toLowerCase();
+      if (["path", "filepath", "uri"].includes(normalized) && typeof item === "string" && item.trim()) {
+        paths.add(item.trim());
+      } else if (typeof item === "object") {
+        visit(item);
+      }
+    });
+  };
+  values.forEach(visit);
+  return [...paths];
+}
+
 function appendMessageElement(message) {
   const container = $("#messages");
   const article = document.createElement("article");
@@ -1674,28 +1802,172 @@ function createToolExecutionDetails(message) {
   const payload = parseToolJSON(message.content);
   const result = payload && typeof payload.result === "object" ? payload.result : payload;
   const command = firstToolValue(args?.command, args?.cmd, result?.command, result?.cmd);
+  const presentation = describeToolExecution(message, args, payload, result, command);
   const summary = document.createElement("summary");
   const title = document.createElement("span");
   title.className = "tool-execution-title";
-  title.textContent = message.toolName || "工具执行";
+  title.textContent = presentation.title;
   const preview = document.createElement("code");
-  preview.textContent = command || toolResultPreview(result, message.content);
+  preview.textContent = presentation.preview;
   const status = document.createElement("span");
   status.className = "tool-execution-status";
   status.textContent = message.toolStatus === "failed" ? "失败" : "完成";
   summary.append(title, preview, status);
   const content = document.createElement("div");
   content.className = "tool-execution-content";
-  appendToolField(content, "命令", command);
-  appendToolField(content, "工作目录", firstToolValue(args?.workingDirectory, args?.cwd, result?.workingDirectory, result?.cwd));
-  appendToolField(content, "终端", firstToolValue(result?.terminal, args?.terminal));
-  const exitCode = result?.exitCode;
-  if (exitCode !== undefined && exitCode !== null) appendToolField(content, "退出码", String(exitCode));
-  appendToolField(content, "标准输出", result?.stdout);
-  appendToolField(content, "错误输出", firstToolValue(result?.stderr, payload?.error));
-  if (!content.childElementCount) appendToolField(content, "完整结果", prettyToolValue(payload ?? message.content));
-  else appendToolField(content, "原始参数", message.toolArguments && prettyToolValue(args ?? message.toolArguments));
+  presentation.fields.forEach(([label, value]) => appendToolField(content, label, value));
+  if (!content.childElementCount) appendToolField(content, "结果", message.toolStatus === "failed" ? "执行失败" : "执行完成");
+  content.append(createToolProtocolDetails(message, args, payload));
   details.append(summary, content);
+  return details;
+}
+
+function createProcessNarrationDetails(message) {
+  const details = document.createElement("details");
+  details.className = "tool-execution process-narration";
+  const summary = document.createElement("summary");
+  const title = document.createElement("span");
+  title.className = "tool-execution-title";
+  title.textContent = message.reasoning?.trim() ? "思考过程" : "执行说明";
+  const preview = document.createElement("code");
+  preview.textContent = truncateText(firstToolValue(message.content, message.reasoning, "处理中"), 110);
+  const status = document.createElement("span");
+  status.className = "tool-execution-status";
+  status.textContent = "过程";
+  summary.append(title, preview, status);
+  const content = document.createElement("div");
+  content.className = "tool-execution-content";
+  appendToolField(content, "说明", message.content);
+  appendToolField(content, "思考", message.reasoning);
+  details.append(summary, content);
+  return details;
+}
+
+function describeToolExecution(message, args, payload, result, command) {
+  const name = String(message.toolName || "");
+  const normalized = name.toLowerCase();
+  const paths = collectToolPaths(args, payload);
+  const path = firstToolValue(args?.path, args?.file_path, result?.path, result?.file?.path, paths[0]);
+  const failure = firstToolValue(payload?.error, result?.stderr);
+  const fields = [];
+  const finish = (title, preview) => ({
+    title,
+    preview: truncateText(preview || (message.toolStatus === "failed" ? "执行失败" : "执行完成"), 110),
+    fields,
+  });
+  if (["run_terminal", "computer_terminal", "shell", "command"].includes(normalized)) {
+    fields.push(["命令", command], ["工作目录", firstToolValue(args?.workingDirectory, args?.cwd, args?.path, result?.workingDirectory, result?.cwd)]);
+    fields.push(["终端", firstToolValue(result?.terminal, args?.terminal)]);
+    if (result?.exitCode !== undefined && result?.exitCode !== null) fields.push(["退出码", String(result.exitCode)]);
+    fields.push(["输出", firstToolValue(result?.stdout, typeof result === "string" ? result : "")]);
+    fields.push(["错误输出", failure]);
+    return finish("运行命令", command);
+  }
+  if (normalized === "list_files") {
+    const entries = Array.isArray(payload?.entries) ? payload.entries : [];
+    fields.push(["目录", path || "."], ["内容", formatDirectoryEntries(entries)], ["错误", failure]);
+    return finish("查看目录", `${path || "."} · ${entries.length} 项`);
+  }
+  if (normalized === "code_search") {
+    const matches = Array.isArray(payload?.matches) ? payload.matches : [];
+    const pattern = firstToolValue(args?.pattern, args?.query, "");
+    fields.push(["搜索内容", pattern], ["搜索范围", args?.path || "."], ["匹配结果", formatCodeSearchMatches(matches)], ["错误", failure]);
+    return finish("搜索代码", `${pattern || "代码搜索"} · ${payload?.count ?? matches.length} 处结果`);
+  }
+  if (normalized === "read_file" || (normalized === "code_edit" && args?.operation === "view")) {
+    const file = payload?.file || result?.file || {};
+    fields.push(["文件", path], ["范围", args?.startLine ? `${args.startLine}-${args?.endLine || "末尾"} 行` : ""], ["文件内容", firstToolValue(file?.content, payload?.content)], ["错误", failure]);
+    return finish("读取文件", path);
+  }
+  if (["write_file", "code_edit", "computer_workspace", "apply_patch", "delete_path", "chmod_path"].includes(normalized)) {
+    const operationLabels = {
+      create: "创建文件",
+      search_replace: "替换代码",
+      apply_patch: "应用补丁",
+      view: "读取文件",
+    };
+    fields.push(["文件", paths.length ? paths.join("\n") : path]);
+    if (args?.operation) fields.push(["操作", operationLabels[args.operation] || args.operation]);
+    if (payload?.hunkCount) fields.push(["修改块", `${payload.hunkCount} 处`]);
+    fields.push(["结果", message.toolStatus === "failed" ? failure || "修改失败" : paths.length > 1 ? `已更新 ${paths.length} 个文件` : "修改完成"]);
+    return finish(toolDisplayName(name), paths.length > 1 ? `${paths.length} 个文件` : path || "项目文件");
+  }
+  if (normalized === "file_exists") {
+    fields.push(["路径", path], ["结果", payload?.exists ? "存在" : "不存在"]);
+    return finish("检查路径", `${path || "目标路径"} · ${payload?.exists ? "存在" : "不存在"}`);
+  }
+  if (normalized === "workspace_diff") {
+    fields.push(["范围", path || "整个项目"], ["文件差异", payload?.diff], ["错误", failure]);
+    return finish("查看文件变更", path || "整个项目");
+  }
+  if (normalized === "web_search") {
+    const query = firstToolValue(args?.query, args?.q, args?.search_query);
+    fields.push(["搜索内容", query], ["结果", toolResultPreview(result, message.content)]);
+    return finish("联网搜索", query);
+  }
+  if (normalized === "web_fetch") {
+    const url = firstToolValue(args?.url, result?.url);
+    fields.push(["网页", url], ["结果", firstToolValue(result?.content, result?.excerpt, typeof result === "string" ? result : "")]);
+    return finish("读取网页", url);
+  }
+  if (normalized.startsWith("mcp:")) {
+    const [, server = "", tool = ""] = name.split(":");
+    fields.push(["服务", server], ["工具", tool], ["结果", typeof result === "string" ? result : toolResultPreview(result, message.content)]);
+    return finish(`MCP · ${server || "外部服务"}`, tool || "调用工具");
+  }
+  fields.push(["目标", firstToolValue(path, args?.query, args?.url)]);
+  fields.push(["输出", typeof result === "string" ? result : firstToolValue(result?.message, result?.content)]);
+  fields.push(["错误", failure]);
+  return finish(toolDisplayName(name), firstToolValue(path, command, result?.message, "执行完成"));
+}
+
+function toolDisplayName(name) {
+  const normalized = String(name || "").toLowerCase();
+  const labels = {
+    list_files: "查看目录",
+    read_file: "读取文件",
+    write_file: "写入文件",
+    create_directory: "创建目录",
+    file_exists: "检查路径",
+    delete_path: "删除路径",
+    chmod_path: "修改权限",
+    run_terminal: "运行命令",
+    computer_terminal: "运行命令",
+    code_search: "搜索代码",
+    code_edit: "编辑代码",
+    computer_workspace: "修改文件",
+    workspace_diff: "查看文件变更",
+    web_search: "联网搜索",
+    web_fetch: "读取网页",
+    image_view: "查看图片",
+    subagent: "运行子代理",
+    ask_user: "向用户提问",
+  };
+  return labels[normalized] || name || "工具执行";
+}
+
+function formatDirectoryEntries(entries) {
+  if (!entries?.length) return "目录为空";
+  return entries.map((entry) => `${entry.directory ? "目录" : "文件"} · ${entry.path}${entry.directory || !entry.size ? "" : ` · ${entry.size} 字节`}`).join("\n");
+}
+
+function formatCodeSearchMatches(matches) {
+  if (!matches?.length) return "未找到匹配内容";
+  return matches.map((match) => `${match.path}:${match.line}  ${String(match.match || "").trim()}`).join("\n");
+}
+
+function createToolProtocolDetails(message, args, payload) {
+  const details = document.createElement("details");
+  details.className = "tool-protocol-details";
+  const summary = document.createElement("summary");
+  summary.textContent = "技术详情";
+  const pre = document.createElement("pre");
+  pre.textContent = prettyToolValue({
+    tool: message.toolName || "",
+    arguments: args ?? message.toolArguments ?? null,
+    result: payload ?? message.content ?? null,
+  });
+  details.append(summary, pre);
   return details;
 }
 
