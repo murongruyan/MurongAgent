@@ -9,6 +9,7 @@ func currentDesktopPlatformInfo() DesktopPlatformInfo {
 		Label:                runtime.GOOS,
 		CredentialProtection: "应用私有密钥 + 系统文件权限",
 		PackageKind:          "portable",
+		Version:              desktopAgentVersion,
 	}
 	switch runtime.GOOS {
 	case "windows":

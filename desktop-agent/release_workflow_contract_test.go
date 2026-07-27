@@ -133,3 +133,20 @@ func TestUnifiedReleaseWorkflowAcceptsVersionOverrides(t *testing.T) {
 		}
 	}
 }
+
+func TestUnifiedReleaseManifestDeclaresDesktopVersion(t *testing.T) {
+	workflow, err := os.ReadFile("../.github/workflows/build-all.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(workflow)
+	for _, marker := range []string{
+		`DESKTOP_VERSION_NAME="$(sed -nE`,
+		`export DESKTOP_VERSION_NAME`,
+		`"desktopAgent": {"name": os.environ["DESKTOP_VERSION_NAME"]}`,
+	} {
+		if !strings.Contains(text, marker) {
+			t.Fatalf("unified release manifest is missing desktop version marker %q", marker)
+		}
+	}
+}

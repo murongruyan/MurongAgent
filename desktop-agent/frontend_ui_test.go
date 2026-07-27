@@ -74,6 +74,40 @@ func TestDesktopSidebarGroupsSessionsByProjectAndUsesCategorisedSettingsDialog(t
 	}
 }
 
+func TestDesktopShowsVersionAndChecksForUpdatesAtStartup(t *testing.T) {
+	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := frontendAssets.ReadFile("frontend/dist/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, js, css := string(index), string(script), string(styles)
+	for _, marker := range []string{
+		`data-settings-section="about"`, `id="desktop-current-version"`, `id="check-desktop-update"`,
+		`id="download-desktop-update"`, `id="desktop-update-banner"`,
+	} {
+		if !strings.Contains(html, marker) {
+			t.Fatalf("desktop version UI is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{"void checkDesktopUpdate(false)", "CheckDesktopUpdate", "OpenDesktopUpdateDownload", "function renderDesktopVersion()"} {
+		if !strings.Contains(js, marker) {
+			t.Fatalf("desktop automatic update wiring is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{".desktop-about-card", ".desktop-version-grid", ".desktop-update-banner"} {
+		if !strings.Contains(css, marker) {
+			t.Fatalf("desktop update styling is missing %q", marker)
+		}
+	}
+}
+
 func TestDesktopChatComposerKeepsPrimaryControlsVisible(t *testing.T) {
 	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
 	if err != nil {

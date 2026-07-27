@@ -75,6 +75,17 @@
         <button id="reclaim-session-execution" class="secondary danger" type="button">强制收回</button>
       </section>
 
+      <section id="desktop-update-banner" class="desktop-update-banner hidden" aria-live="polite">
+        <div>
+          <strong id="desktop-update-banner-title">发现 Murong 电脑版新版本</strong>
+          <span id="desktop-update-banner-detail"></span>
+        </div>
+        <div class="desktop-update-banner-actions">
+          <button id="desktop-update-banner-download" class="primary" type="button">下载更新</button>
+          <button id="desktop-update-banner-dismiss" class="ghost" type="button" aria-label="暂时关闭更新提示">稍后</button>
+        </div>
+      </section>
+
       <div class="messages-shell">
         <aside id="conversation-summary-rail" class="conversation-summary-rail" aria-label="对话摘要跳转">
           <div id="conversation-summary-markers" class="conversation-summary-markers"></div>
@@ -653,6 +664,28 @@
             <label>页面左右边距（px）<input id="content-padding-setting" type="number" min="16" max="96" step="4" value="48"></label>
             <label>电脑侧栏宽度（px）<input id="workbench-width-setting" type="number" min="340" max="960" step="10" value="620"></label>
           </div>
+        </section>
+
+        <section class="settings-card wide desktop-about-card" data-settings-section="about">
+          <div class="desktop-about-heading">
+            <img src="app-icon.jpg" alt="">
+            <div>
+              <p class="eyebrow">MURONG DESKTOP</p>
+              <h3>Murong 电脑版</h3>
+              <p id="desktop-version-summary">正在读取版本…</p>
+            </div>
+          </div>
+          <div class="desktop-version-grid">
+            <div><span>当前版本</span><strong id="desktop-current-version">-</strong></div>
+            <div><span>系统与架构</span><strong id="desktop-platform-version">-</strong></div>
+            <div><span>安装包类型</span><strong id="desktop-package-kind">-</strong></div>
+          </div>
+          <div id="desktop-update-status" class="desktop-update-status" aria-live="polite">启动后会自动检查 GitHub 最新正式版。</div>
+          <div class="desktop-about-actions">
+            <button id="check-desktop-update" class="primary" type="button">检查更新</button>
+            <button id="download-desktop-update" class="secondary hidden" type="button">下载新版本</button>
+          </div>
+          <p class="field-note">更新检查只读取 MurongAgent 的 GitHub 正式 Release；下载会交给系统浏览器，不会静默安装或覆盖当前程序。</p>
         </section>
       </div>
 

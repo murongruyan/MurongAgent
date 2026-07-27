@@ -1,5 +1,6 @@
 const state = {
-	platform: { os: "", architecture: "", label: "电脑端", credentialProtection: "本机凭据保护", packageKind: "" },
+	platform: { os: "", architecture: "", label: "电脑端", credentialProtection: "本机凭据保护", packageKind: "", version: "" },
+  desktopUpdate: { checking: false, checked: false, error: "", currentVersion: "", latestVersion: "", updateAvailable: false, releaseUrl: "", downloadUrl: "", packageName: "", publishedAt: "" },
   config: null,
   sessions: [],
   active: null,
@@ -97,6 +98,7 @@ const settingsCategories = [
   { key: "backup", label: "备份与恢复", view: "settings", description: "创建完整备份、恢复快照并设置保留数量。" },
   { key: "terminal", label: "终端", view: "settings", description: "选择默认 Shell 和终端显示位置。" },
   { key: "appearance", label: "界面", view: "settings", description: "调整侧栏、内容边距和工作台宽度。" },
+  { key: "about", label: "关于与更新", view: "settings", description: "查看电脑版版本，并检查 GitHub 最新正式版。" },
 ];
 
 document.addEventListener("DOMContentLoaded", initialise);
@@ -118,6 +120,7 @@ async function initialise() {
     await refreshComposerCatalog();
     $("#loading").classList.add("hidden");
     $("#app").classList.remove("hidden");
+    void checkDesktopUpdate(false);
   } catch (error) {
     console.error(error);
     $("#loading p").textContent = `启动失败：${errorText(error)}`;
@@ -195,6 +198,10 @@ function bindEvents() {
   $("#default-terminal-setting").addEventListener("change", updateDefaultTerminalPreference);
   $("#apply-layout-settings").addEventListener("click", applyLayoutSettingsFromForm);
   $("#reset-layout-settings").addEventListener("click", resetLayoutSettings);
+  $("#check-desktop-update").addEventListener("click", () => checkDesktopUpdate(true));
+  $("#download-desktop-update").addEventListener("click", openDesktopUpdateDownload);
+  $("#desktop-update-banner-download").addEventListener("click", openDesktopUpdateDownload);
+  $("#desktop-update-banner-dismiss").addEventListener("click", () => $("#desktop-update-banner").classList.add("hidden"));
   $("#clear-workbench-terminal").addEventListener("click", clearWorkbenchTerminal);
   $("#workbench-browser-form").addEventListener("submit", navigateWorkbenchBrowser);
   $("#workbench-browser-back").addEventListener("click", () => navigateWorkbenchBrowserHistory(-1));
@@ -3449,7 +3456,67 @@ function renderSettings() {
   });
   updateAllowlistVisibility();
   renderBackup();
+  renderDesktopVersion();
   renderStatusBar();
+}
+
+function renderDesktopVersion() {
+  const currentVersion = state.desktopUpdate.currentVersion || state.platform.version || "-";
+  $("#desktop-current-version").textContent = currentVersion;
+  $("#desktop-platform-version").textContent = `${state.platform.label || state.platform.os || "电脑端"} · ${state.platform.architecture || "未知架构"}`;
+  $("#desktop-package-kind").textContent = state.platform.packageKind || "未知";
+  $("#desktop-version-summary").textContent = `版本 ${currentVersion}`;
+  const checkButton = $("#check-desktop-update");
+  checkButton.disabled = state.desktopUpdate.checking;
+  checkButton.textContent = state.desktopUpdate.checking ? "正在检查…" : "检查更新";
+  const downloadButton = $("#download-desktop-update");
+  downloadButton.classList.toggle("hidden", !state.desktopUpdate.updateAvailable);
+  const status = $("#desktop-update-status");
+  status.classList.toggle("error", Boolean(state.desktopUpdate.error));
+  status.classList.toggle("available", Boolean(state.desktopUpdate.updateAvailable));
+  if (state.desktopUpdate.checking) {
+    status.textContent = "正在连接 GitHub 检查最新正式版…";
+  } else if (state.desktopUpdate.error) {
+    status.textContent = `暂时无法检查更新：${state.desktopUpdate.error}`;
+  } else if (state.desktopUpdate.updateAvailable) {
+    status.textContent = `发现新版本 ${state.desktopUpdate.latestVersion}，已匹配 ${state.desktopUpdate.packageName || "当前平台安装包"}。`;
+  } else if (state.desktopUpdate.checked) {
+    status.textContent = `当前已经是最新版本（${currentVersion}）。`;
+  } else {
+    status.textContent = "启动后会自动检查 GitHub 最新正式版。";
+  }
+}
+
+async function checkDesktopUpdate(showResult) {
+  if (state.desktopUpdate.checking) return;
+  state.desktopUpdate.checking = true;
+  state.desktopUpdate.error = "";
+  renderDesktopVersion();
+  try {
+    const result = await backend().CheckDesktopUpdate();
+    state.desktopUpdate = { ...state.desktopUpdate, ...result, checking: false, checked: true, error: "" };
+    if (result.updateAvailable) {
+      $("#desktop-update-banner-title").textContent = `发现 Murong 电脑版 ${result.latestVersion}`;
+      $("#desktop-update-banner-detail").textContent = `当前版本 ${result.currentVersion}，可下载 ${result.packageName || "适用于当前平台的安装包"}。`;
+      $("#desktop-update-banner").classList.remove("hidden");
+    } else if (showResult) {
+      showToast(`当前已经是最新版本（${result.currentVersion || state.platform.version}）`);
+    }
+  } catch (error) {
+    state.desktopUpdate.checking = false;
+    state.desktopUpdate.checked = true;
+    state.desktopUpdate.error = errorText(error);
+    if (showResult) showToast(`检查更新失败：${state.desktopUpdate.error}`, true);
+  }
+  renderDesktopVersion();
+}
+
+async function openDesktopUpdateDownload() {
+  try {
+    await backend().OpenDesktopUpdateDownload();
+  } catch (error) {
+    showToast(`无法打开更新：${errorText(error)}`, true);
+  }
 }
 
 async function refreshBuiltinVisionStatus() {

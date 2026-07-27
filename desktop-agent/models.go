@@ -578,6 +578,7 @@ type DesktopPlatformInfo struct {
 	Label                string `json:"label"`
 	CredentialProtection string `json:"credentialProtection"`
 	PackageKind          string `json:"packageKind"`
+	Version              string `json:"version"`
 }
 
 type CodexRuntimeRequest struct {

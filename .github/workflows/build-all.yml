@@ -699,6 +699,9 @@ jobs:
           EXTENSION_SOURCE_COMMIT: ${{ needs.terminal_extension.outputs.source_commit }}
         run: |
           set -euo pipefail
+          DESKTOP_VERSION_NAME="$(sed -nE 's/^[[:space:]]*desktopAgentVersion = "([^"]+)".*/\1/p' desktop-agent/models.go | head -n1)"
+          [[ "$DESKTOP_VERSION_NAME" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] || { echo "Invalid desktop version: $DESKTOP_VERSION_NAME" >&2; exit 1; }
+          export DESKTOP_VERSION_NAME
           mobile_expected=(
             "android-app/${MAIN_APK_FILE}"
             "terminal-extension/${EXTENSION_APK_FILE}"
@@ -771,6 +774,7 @@ jobs:
               "versions": {
                   "androidApp": {"name": os.environ["MAIN_VERSION_NAME"], "code": int(os.environ["MAIN_VERSION_CODE"])},
                   "terminalExtension": {"name": os.environ["EXTENSION_VERSION_NAME"], "code": int(os.environ["EXTENSION_VERSION_CODE"])},
+                  "desktopAgent": {"name": os.environ["DESKTOP_VERSION_NAME"]},
               },
               "packages": [
                   {
