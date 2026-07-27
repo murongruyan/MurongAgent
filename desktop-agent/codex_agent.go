@@ -164,6 +164,9 @@ func (app *DesktopAgentApp) runCodexAgent(ctx context.Context, sessionID string,
 			interruptContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			_ = app.codex.InterruptTurn(interruptContext, threadID, turnID)
 			cancel()
+			if app.runRestartPending(sessionID) {
+				return
+			}
 			settled, _ := app.store.settleWorkflowPlan(sessionID, "用户停止了本轮计划执行。")
 			app.emitSessionsChanged(settled)
 			app.emit("agent:status", map[string]any{"sessionId": sessionID, "state": "cancelled", "text": "已停止"})

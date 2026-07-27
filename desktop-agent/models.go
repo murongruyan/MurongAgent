@@ -263,6 +263,26 @@ type SetProviderReasoningEffortRequest struct {
 	ReasoningEffort   string `json:"reasoningEffort"`
 }
 
+type SetProviderModelRequest struct {
+	ProviderProfileID string `json:"providerProfileId"`
+	Model             string `json:"model"`
+}
+
+type ProviderModelCatalogRequest struct {
+	ProviderProfileID string `json:"providerProfileId"`
+	ProviderID        string `json:"providerId"`
+	BaseURL           string `json:"baseUrl"`
+	CurrentModel      string `json:"currentModel"`
+	APIKey            string `json:"apiKey"`
+	ClearAPIKey       bool   `json:"clearApiKey"`
+}
+
+type ProviderModelCatalogResult struct {
+	Models      []string `json:"models"`
+	SourceLabel string   `json:"sourceLabel"`
+	SyncedAt    int64    `json:"syncedAt"`
+}
+
 type GlobalRule struct {
 	ID      string `json:"id"`
 	Title   string `json:"title"`

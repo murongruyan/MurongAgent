@@ -59,7 +59,6 @@
         </div>
         <div class="run-actions">
           <span id="run-status" class="run-status">就绪</span>
-          <button id="stop-run" class="ghost danger hidden">停止</button>
           <div class="chat-panel-actions" aria-label="聊天布局">
             <button id="toggle-summary-rail" class="chat-panel-button active" type="button" title="隐藏摘要跳转" aria-label="隐藏摘要跳转" aria-pressed="true"><span class="summary-toggle-glyph" aria-hidden="true"><i></i><i></i><i></i></span></button>
             <button id="toggle-bottom-terminal" class="chat-panel-button" type="button" title="打开底部终端" aria-label="打开底部终端" aria-expanded="false"><span class="terminal-toggle-glyph" aria-hidden="true">›_</span></button>
@@ -375,9 +374,15 @@
             <label id="provider-base-url-row" class="span-2">Base URL
               <input id="base-url" placeholder="https://api.openai.com/v1">
             </label>
-            <label>模型
-              <input id="model-name" placeholder="gpt-5.6-sol">
-            </label>
+            <div id="provider-model-row" class="provider-model-row">
+              <label>模型
+                <input id="model-name" list="provider-model-options" placeholder="gpt-5.6-sol">
+                <datalist id="provider-model-options"></datalist>
+              </label>
+              <button id="refresh-provider-models" class="secondary" type="button">从上游获取模型列表</button>
+              <span id="provider-model-state" class="profile-state">可直接输入自定义模型</span>
+              <div id="provider-model-candidates" class="provider-model-candidates"></div>
+            </div>
             <label>推理强度
               <select id="reasoning-effort">
                 <option value="">由供应商决定</option>

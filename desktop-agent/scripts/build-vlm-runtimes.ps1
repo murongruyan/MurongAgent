@@ -127,6 +127,41 @@ function Copy-JarNotices([string]$JarPath, [string]$Destination, [string]$Prefix
     }
 }
 
+function Get-CMakeVisualStudioArguments([string]$TargetArchitecture) {
+    $vswhere = Get-Command vswhere.exe -ErrorAction SilentlyContinue
+    if (-not $vswhere) {
+        $defaultVswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+        if (Test-Path -LiteralPath $defaultVswhere -PathType Leaf) {
+            $vswhere = Get-Item -LiteralPath $defaultVswhere
+        } else {
+            throw "vswhere.exe is required to locate the installed Visual Studio toolchain"
+        }
+    }
+    $vswherePath = if ($vswhere.Source) { $vswhere.Source } else { $vswhere.FullName }
+    $installationPath = [string](& $vswherePath -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
+    $installationVersion = [string](& $vswherePath -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion | Select-Object -First 1)
+    $installationPath = $installationPath.Trim()
+    $installationVersion = $installationVersion.Trim()
+    if (-not $installationPath -or -not $installationVersion) {
+        throw "No Visual Studio installation with a C++ toolchain was found"
+    }
+
+    $majorVersion = [int]($installationVersion.Split('.')[0])
+    $generator = switch ($majorVersion) {
+        17 { "Visual Studio 17 2022" }
+        18 { "Visual Studio 18 2026" }
+        default { throw "Unsupported Visual Studio major version $majorVersion at $installationPath" }
+    }
+    Write-Host "Using Visual Studio $installationVersion at $installationPath with CMake generator '$generator'."
+
+    $arguments = @("-G", $generator, "-A", $(if ($TargetArchitecture -eq "arm64") { "ARM64" } else { "x64" }))
+    if ($TargetArchitecture -eq "arm64") {
+        # MNN's ARM NEON implementation requires ClangCL; MSVC rejects its vector types.
+        $arguments += @("-T", "ClangCL")
+    }
+    return $arguments
+}
+
 New-Item -ItemType Directory -Force -Path $buildRoot, $generatedRoot, $downloadRoot | Out-Null
 
 Write-Host "Preparing MNN $mnnVersion desktop vision runtime..."
@@ -145,13 +180,18 @@ if (-not (Test-Path -LiteralPath (Join-Path $mnnSource "CMakeLists.txt") -PathTy
 }
 
 $mnnBuild = Join-Path $buildRoot "mnn-build"
-$cmakeArchitecture = if ($Architecture -eq "arm64") { "ARM64" } else { "x64" }
-& cmake `
-    -S $sourceRoot `
-    -B $mnnBuild `
-    -G "Visual Studio 17 2022" `
-    -A $cmakeArchitecture `
-    "-DMNN_SOURCE_DIR=$mnnSource"
+$cmakeVisualStudioArguments = Get-CMakeVisualStudioArguments $Architecture
+$mnnOptions = @()
+if ($Architecture -eq "arm64") {
+    # These optional ARM kernels currently assume Linux/ELF toolchains and fail under ClangCL.
+    $mnnOptions += @("-DMNN_KLEIDIAI=OFF", "-DMNN_SME2=OFF")
+}
+Assert-ChildPath $buildRoot $mnnBuild
+if (Test-Path -LiteralPath $mnnBuild) {
+    Remove-Item -LiteralPath $mnnBuild -Recurse -Force
+}
+New-Item -ItemType Directory -Force -Path $mnnBuild | Out-Null
+& cmake -S $sourceRoot -B $mnnBuild @cmakeVisualStudioArguments "-DMNN_SOURCE_DIR=$mnnSource" @mnnOptions
 if ($LASTEXITCODE -ne 0) { throw "MNN CMake configuration failed" }
 & cmake --build $mnnBuild --config Release --target murong-mnn-vlm --parallel -- /p:TrackFileAccess=false
 if ($LASTEXITCODE -ne 0) { throw "MNN desktop vision runtime build failed" }

@@ -1144,6 +1144,35 @@ func (store *desktopStore) setProviderReasoningEffort(id, effort string) (Public
 	return publicConfig(updated), nil
 }
 
+func (store *desktopStore) setProviderModel(id, model string) (PublicDesktopConfig, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	id = strings.TrimSpace(id)
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return PublicDesktopConfig{}, errors.New("模型不能为空")
+	}
+	updated := store.config
+	updated.ProviderProfiles = append([]ProviderProfile{}, store.config.ProviderProfiles...)
+	profile := findProviderProfile(updated.ProviderProfiles, id)
+	if profile == nil {
+		return PublicDesktopConfig{}, errors.New("模型连接不存在")
+	}
+	if profile.ProviderID == providerBuiltinLocal {
+		return PublicDesktopConfig{}, errors.New("内置本地模型请从本地模型中心选择")
+	}
+	profile.Model = model
+	updated.ActiveProviderProfileID = id
+	updated.BaseURL = profile.BaseURL
+	updated.Model = model
+	updated.ProtectedAPIKey = profile.ProtectedAPIKey
+	if err := writeJSONAtomic(store.configPath, updated); err != nil {
+		return PublicDesktopConfig{}, err
+	}
+	store.config = updated
+	return publicConfig(updated), nil
+}
+
 func (store *desktopStore) listSessions() []SessionSummary {
 	store.mu.Lock()
 	defer store.mu.Unlock()

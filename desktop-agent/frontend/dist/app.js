@@ -31,6 +31,8 @@ const state = {
   knowledgeScope: "global",
   toolPolicyScope: "global",
   running: false,
+  autoFollowMessages: true,
+  providerModelCatalogs: {},
   approval: null,
   askUser: null,
   pendingWorkflowRunId: "",
@@ -209,7 +211,7 @@ function bindEvents() {
   $("#workbench-sidechat-refresh").addEventListener("click", refreshWorkbenchSideChat);
   $("#workbench-sidechat-form").addEventListener("submit", sendWorkbenchSideChat);
   $("#new-session").addEventListener("click", createSession);
-  $("#send-message").addEventListener("click", sendMessage);
+  $("#send-message").addEventListener("click", handleComposerAction);
   $("#message-input").addEventListener("keydown", (event) => {
     if (handleComposerInputHistoryKeydown(event)) return;
     if (event.key === "@" && !event.ctrlKey && !event.altKey && !event.metaKey) {
@@ -223,13 +225,11 @@ function bindEvents() {
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      sendMessage();
+      handleComposerAction();
     }
   });
   $("#message-input").addEventListener("input", handleComposerInputChange);
-  $("#stop-run").addEventListener("click", async () => {
-    if (state.active) await backend().CancelRun(state.active.id);
-  });
+  $("#messages").addEventListener("scroll", updateMessageAutoFollow, { passive: true });
 	$("#execute-workflow-plan").addEventListener("click", executeWorkflowPlan);
 	$("#dismiss-workflow-plan").addEventListener("click", dismissWorkflowPlan);
   $("#close-session-details").addEventListener("click", closeSessionDetails);
@@ -330,6 +330,12 @@ function bindEvents() {
   $("#composer-model-select").addEventListener("change", activateComposerModel);
   $("#composer-reasoning-select").addEventListener("change", setComposerReasoningEffort);
   $("#save-settings").addEventListener("click", saveSettings);
+  $("#refresh-provider-models").addEventListener("click", refreshProviderModels);
+  $("#model-name").addEventListener("input", () => {
+    const profile = activeProviderProfile();
+    if (profile) profile.model = $("#model-name").value.trim();
+    renderProviderModelCandidates();
+  });
   $("#refresh-builtin-vision-models").addEventListener("click", refreshBuiltinVisionStatus);
   $("#cancel-builtin-vision-install").addEventListener("click", cancelBuiltinVisionInstall);
   $("#builtin-vision-model-list").addEventListener("click", handleBuiltinVisionModelAction);
@@ -608,13 +614,12 @@ function bindRuntimeEvents() {
     if (!state.active || payload.sessionId !== state.active.id) return;
     state.running = payload.state === "running";
     $("#run-status").textContent = payload.text || payload.state;
-    $("#stop-run").classList.toggle("hidden", !state.running);
     const executionLocked = phoneOwnsActiveSession();
-    $("#send-message").disabled = state.running || executionLocked;
     $("#composer-model-select").disabled = state.running || executionLocked;
     const activeProfile = state.config?.providerProfiles?.find((profile) => profile.id === state.config.activeProviderProfileId);
     $("#composer-reasoning-select").disabled =
       state.running || executionLocked || !activeProfile || $("#composer-reasoning-select").options.length <= 1;
+		updateComposerActionState();
 		renderWorkflowPlan();
     if (payload.state === "error") showToast(payload.text, true);
   });
@@ -751,6 +756,7 @@ function switchView(view) {
 
 async function createSession() {
   try {
+    state.autoFollowMessages = true;
     state.active = await backend().CreateSession();
     syncComposerInputHistoryFromActiveSession();
     state.askUser = null;
@@ -767,6 +773,7 @@ async function createSession() {
 
 async function selectSession(id) {
   try {
+    state.autoFollowMessages = true;
     const selection = await backend().SelectSession(id);
     state.active = selection.session;
     syncComposerInputHistoryFromActiveSession();
@@ -787,7 +794,7 @@ async function selectSession(id) {
 async function sendMessage() {
   const input = $("#message-input");
   const content = input.value.trim();
-  if ((!content && !state.composerImages.length) || state.running) return;
+  if (!content && !state.composerImages.length) return;
   if (phoneOwnsActiveSession()) {
     showToast("这项任务正在手机上继续；请先从手机归还或强制收回", true);
     return;
@@ -808,6 +815,7 @@ async function sendMessage() {
     if (!state.active) state.active = await backend().CreateSession();
     const planMode = Boolean(state.active.planModeEnabled);
     const mode = state.goalModeEnabled && planMode ? "goal_plan" : state.goalModeEnabled ? "goal" : planMode ? "plan" : "";
+    state.autoFollowMessages = true;
     await backend().SendMessage({
       sessionId: state.active.id,
       content,
@@ -825,11 +833,33 @@ async function sendMessage() {
     renderComposerContext();
     autoSizeComposer();
     state.running = true;
-    $("#stop-run").classList.remove("hidden");
-    $("#send-message").disabled = true;
+    updateComposerActionState();
   } catch (error) {
     showToast(errorText(error), true);
   }
+}
+
+async function handleComposerAction() {
+  const hasMessage = Boolean($("#message-input").value.trim() || state.composerImages.length);
+  if (state.running && !hasMessage) {
+    if (state.active) await backend().CancelRun(state.active.id);
+    return;
+  }
+  await sendMessage();
+}
+
+function updateComposerActionState() {
+  const button = $("#send-message");
+  if (!button) return;
+  const hasMessage = Boolean($("#message-input")?.value.trim() || state.composerImages.length);
+  const locked = phoneOwnsActiveSession();
+  const stopping = state.running && !hasMessage;
+  button.dataset.action = stopping ? "stop" : "send";
+  button.textContent = stopping ? "■" : "➤";
+  button.title = stopping ? "终止生成" : state.running ? "发送引导" : "发送";
+  button.setAttribute("aria-label", button.title);
+  button.disabled = locked || (!state.running && !hasMessage);
+  button.classList.toggle("stop", stopping);
 }
 
 function renderSessions() {
@@ -1033,6 +1063,8 @@ function renderActiveSession() {
   refreshWorkbenchLiveViews();
   refreshStatusBar();
   const container = $("#messages");
+  const preserveScroll = !state.autoFollowMessages;
+  const distanceFromBottom = container.scrollHeight - container.scrollTop;
   container.replaceChildren();
   if (!state.active || !state.active.messages?.length) {
     const activeProject = activeProjectPath();
@@ -1060,7 +1092,13 @@ function renderActiveSession() {
   }
   state.active.messages.forEach((message) => appendMessageElement(message));
   renderConversationSummaryRail();
-  scrollMessages();
+  if (preserveScroll) {
+    requestAnimationFrame(() => {
+      container.scrollTop = Math.max(0, container.scrollHeight - distanceFromBottom);
+    });
+  } else {
+    scrollMessages();
+  }
 }
 
 function restoreSummaryRailPreference() {
@@ -1228,8 +1266,7 @@ async function executeWorkflowPlan() {
 		await backend().ExecuteWorkflowPlan(state.active.id);
 		state.running = true;
 		$("#run-status").textContent = "正在按计划执行";
-		$("#stop-run").classList.remove("hidden");
-		$("#send-message").disabled = true;
+		updateComposerActionState();
 		renderWorkflowPlan();
 	} catch (error) {
 		showToast(errorText(error), true);
@@ -1392,11 +1429,10 @@ function renderExecutionHandoff() {
   input.disabled = locked;
   if (locked) input.placeholder = "任务正在手机上继续，归还后可在电脑输入";
   $("#composer-add").disabled = locked;
-  $("#send-message").disabled = state.running || locked;
+  updateComposerActionState();
   $(".composer").classList.toggle("execution-locked", locked);
   if (locked) {
     $("#run-status").textContent = "手机接管中";
-    $("#stop-run").classList.add("hidden");
   } else if (!state.running) {
     $("#run-status").textContent = "就绪";
   }
@@ -1471,6 +1507,19 @@ function renderComposerModelSelect() {
         return;
       }
     }
+    const catalogModels = providerModelsForProfile(profile);
+    if (catalogModels.length > 1) {
+      catalogModels.forEach((model) => {
+        const option = document.createElement("option");
+        option.value = `${profile.id}::model::${model}`;
+        option.dataset.providerProfileId = profile.id;
+        option.dataset.modelId = model;
+        option.textContent = `${profile.name} · ${model}`;
+        option.selected = profile.id === selected && model === profile.model;
+        select.append(option);
+      });
+      return;
+    }
     const option = document.createElement("option");
     option.value = profile.id;
     option.dataset.providerProfileId = profile.id;
@@ -1493,13 +1542,16 @@ async function activateComposerModel(event) {
   const selectedOption = target?.selectedOptions?.[0];
   const id = selectedOption?.dataset.providerProfileId || target?.value || "";
   const visionTier = selectedOption?.dataset.visionTier || "";
+  const modelId = selectedOption?.dataset.modelId || "";
   const selectedLabel = selectedOption?.textContent || id;
   if (!id || state.running || phoneOwnsActiveSession()) return;
   try {
     if (visionTier) {
       await backend().SelectBuiltinVisionModel(visionTier);
     }
-    state.config = await backend().ActivateProviderProfile(id);
+    state.config = modelId
+      ? await backend().SetProviderModel({ providerProfileId: id, model: modelId })
+      : await backend().ActivateProviderProfile(id);
     if (visionTier) {
       await refreshBuiltinVisionStatus();
     }
@@ -1535,22 +1587,22 @@ async function setComposerReasoningEffort(event) {
 function appendMessageElement(message) {
   const container = $("#messages");
   const article = document.createElement("article");
+  if (message.role === "tool") {
+    article.className = "tool-execution-row";
+    if (message.id) article.dataset.messageId = message.id;
+    article.append(createToolExecutionDetails(message));
+    container.append(article);
+    return;
+  }
   const kindClass = message.kind === "error" ? " error" : message.kind === "plan" ? " plan" : message.kind === "subagent_background" ? " subagent-background" : message.role === "tool" ? " tool" : "";
   article.className = `message ${message.role}${kindClass}`;
   if (message.id) article.dataset.messageId = message.id;
   const avatar = document.createElement("div");
   avatar.className = "message-avatar";
-  avatar.textContent = message.role === "user" ? "你" : message.role === "tool" ? "T" : "M";
+  avatar.textContent = message.role === "user" ? "你" : "M";
   const body = document.createElement("div");
   body.className = "message-body";
-  if (message.role === "tool") {
-    const label = document.createElement("span");
-    label.className = "tool-label";
-    label.textContent = message.toolName || "工具结果";
-    const pre = document.createElement("pre");
-    pre.textContent = message.content;
-    body.append(label, pre);
-  } else {
+  {
     body.innerHTML = renderMarkdown(message.content || "");
     if (message.imageAttachments?.length) appendMessageImages(body, message);
     let contextTags = null;
@@ -1613,6 +1665,68 @@ function appendMessageElement(message) {
     article.append(avatar, body);
   }
   container.append(article);
+}
+
+function createToolExecutionDetails(message) {
+  const details = document.createElement("details");
+  details.className = `tool-execution ${message.toolStatus || ""}`;
+  const args = parseToolJSON(message.toolArguments);
+  const payload = parseToolJSON(message.content);
+  const result = payload && typeof payload.result === "object" ? payload.result : payload;
+  const command = firstToolValue(args?.command, args?.cmd, result?.command, result?.cmd);
+  const summary = document.createElement("summary");
+  const title = document.createElement("span");
+  title.className = "tool-execution-title";
+  title.textContent = message.toolName || "工具执行";
+  const preview = document.createElement("code");
+  preview.textContent = command || toolResultPreview(result, message.content);
+  const status = document.createElement("span");
+  status.className = "tool-execution-status";
+  status.textContent = message.toolStatus === "failed" ? "失败" : "完成";
+  summary.append(title, preview, status);
+  const content = document.createElement("div");
+  content.className = "tool-execution-content";
+  appendToolField(content, "命令", command);
+  appendToolField(content, "工作目录", firstToolValue(args?.workingDirectory, args?.cwd, result?.workingDirectory, result?.cwd));
+  appendToolField(content, "终端", firstToolValue(result?.terminal, args?.terminal));
+  const exitCode = result?.exitCode;
+  if (exitCode !== undefined && exitCode !== null) appendToolField(content, "退出码", String(exitCode));
+  appendToolField(content, "标准输出", result?.stdout);
+  appendToolField(content, "错误输出", firstToolValue(result?.stderr, payload?.error));
+  if (!content.childElementCount) appendToolField(content, "完整结果", prettyToolValue(payload ?? message.content));
+  else appendToolField(content, "原始参数", message.toolArguments && prettyToolValue(args ?? message.toolArguments));
+  details.append(summary, content);
+  return details;
+}
+
+function parseToolJSON(value) {
+  if (!value || typeof value !== "string") return value || null;
+  try { return JSON.parse(value); } catch (_) { return null; }
+}
+
+function firstToolValue(...values) {
+  return values.find((value) => value !== undefined && value !== null && String(value).trim() !== "");
+}
+
+function toolResultPreview(result, raw) {
+  const value = firstToolValue(result?.path, result?.file, result?.url, result?.message, raw, "查看执行详情");
+  return truncateText(typeof value === "string" ? value : prettyToolValue(value), 110);
+}
+
+function prettyToolValue(value) {
+  if (typeof value === "string") return value;
+  try { return JSON.stringify(value, null, 2); } catch (_) { return String(value ?? ""); }
+}
+
+function appendToolField(container, label, value) {
+  if (value === undefined || value === null || String(value).trim() === "") return;
+  const section = document.createElement("section");
+  const heading = document.createElement("strong");
+  heading.textContent = label;
+  const pre = document.createElement("pre");
+  pre.textContent = prettyToolValue(value);
+  section.append(heading, pre);
+  container.append(section);
 }
 
 function createReasoningDetails(reasoning, streaming) {
@@ -2766,7 +2880,7 @@ function renderComposerContext() {
   else if (state.goalModeEnabled && state.active?.goal) input.placeholder = "输入新的任务目标，发送后覆盖当前目标…";
   else if (state.goalModeEnabled) input.placeholder = "描述当前目标，后续回复会围绕它推进…";
   else input.placeholder = "让 Murong 处理这个项目…";
-  $("#send-message").title = planMode && state.goalModeEnabled ? "设置目标并生成计划" : planMode ? "生成计划" : state.goalModeEnabled ? "设置目标" : "发送";
+  updateComposerActionState();
 }
 
 function appendComposerStateChip(container, text, onRemove) {
@@ -3658,7 +3772,90 @@ function renderProviderProfileEditor() {
   $("#provider-profile-state").textContent = `${state.config.providerProfiles.length} 个连接 · 当前协议 ${providerLabel(profile.providerId)}`;
   $("#remove-provider-profile").disabled =
     state.config.providerProfiles.length <= 1 || profile.providerId === "murong-local";
+  renderProviderModelCandidates();
   renderCodexProviderStatus();
+}
+
+function providerModelsForProfile(profile) {
+  if (!profile) return [];
+  const fetched = state.providerModelCatalogs[profile.id]?.models || [];
+  const recommendations = fetched.length ? [] : builtinProviderModels(profile.providerId);
+  const codexModels = profile.providerId === "codex-chatgpt"
+    ? (state.codex?.models || []).map((model) => model.model || model.id || "")
+    : [];
+  return [...new Set([profile.model, ...recommendations, ...fetched, ...codexModels]
+    .map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+function builtinProviderModels(providerId) {
+  return {
+    "openai-compatible": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
+    deepseek: ["deepseek-v4-flash", "deepseek-v4-pro"],
+    claude: ["claude-fable-5", "claude-opus-4-8"],
+    kimi: ["kimi-k3"], glm: ["glm-5.2"], qwen: ["qwen3.8-max-preview"],
+    minimax: ["MiniMax-M3"], grok: ["grok-4.5"],
+    mimo: ["mimo-v2.5", "mimo-v2.5-pro"], hy3: ["hy3-preview"],
+    gemini: ["gemini-3.6-flash"],
+  }[providerId] || [];
+}
+
+async function refreshProviderModels() {
+  commitProviderProfileForm();
+  const profile = activeProviderProfile();
+  if (!profile || ["codex-chatgpt", "murong-local"].includes(profile.providerId)) return;
+  const button = $("#refresh-provider-models");
+  button.disabled = true;
+  $("#provider-model-state").textContent = "正在读取上游模型列表…";
+  try {
+    const result = await backend().FetchProviderModels({
+      providerProfileId: profile.id,
+      providerId: profile.providerId,
+      baseUrl: profile.baseUrl,
+      currentModel: profile.model,
+      apiKey: profile._clearApiKey ? "" : profile._apiKey || "",
+      clearApiKey: Boolean(profile._clearApiKey),
+    });
+    state.providerModelCatalogs[profile.id] = result;
+    renderProviderModelCandidates();
+    renderComposerModelSelect();
+    showToast(`已从上游读取 ${result.models?.length || 0} 个模型`);
+  } catch (error) {
+    $("#provider-model-state").textContent = errorText(error);
+    showToast(errorText(error), true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function renderProviderModelCandidates() {
+  const profile = activeProviderProfile();
+  const container = $("#provider-model-candidates");
+  const list = $("#provider-model-options");
+  const stateLabel = $("#provider-model-state");
+  if (!container || !list || !profile) return;
+  const models = providerModelsForProfile(profile);
+  container.replaceChildren();
+  list.replaceChildren();
+  models.forEach((model) => {
+    const option = document.createElement("option");
+    option.value = model;
+    list.append(option);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "provider-model-candidate";
+    button.classList.toggle("active", model === $("#model-name").value.trim());
+    button.textContent = model;
+    button.addEventListener("click", () => {
+      $("#model-name").value = model;
+      profile.model = model;
+      renderProviderModelCandidates();
+    });
+    container.append(button);
+  });
+  const catalog = state.providerModelCatalogs[profile.id];
+  stateLabel.textContent = catalog
+    ? `${catalog.sourceLabel || "上游接口"} · ${catalog.models?.length || 0} 个模型`
+    : models.length ? `当前与推荐模型 · ${models.length} 个` : "可直接输入自定义模型";
 }
 
 function addProviderProfile() {
@@ -3813,7 +4010,11 @@ function updateProviderAPIModeState() {
   $("#model-name").disabled = builtinLocal;
   $("#reasoning-effort").disabled = builtinLocal && $("#reasoning-effort").options.length <= 1;
   $("#codex-provider-panel").classList.toggle("hidden", !codex);
+  $("#refresh-provider-models").classList.toggle("hidden", codex || builtinLocal);
+  $("#provider-model-state").classList.toggle("hidden", builtinLocal);
+  $("#provider-model-candidates").classList.toggle("hidden", builtinLocal);
   if (codex) $("#model-name").setAttribute("list", "codex-model-options");
+  else if (!builtinLocal) $("#model-name").setAttribute("list", "provider-model-options");
   else $("#model-name").removeAttribute("list");
 }
 
@@ -6321,6 +6522,7 @@ function handleComposerInputChange(event) {
     state.composerInputDraftBeforeHistory = updatedText;
   }
   autoSizeComposer();
+  updateComposerActionState();
 }
 
 function autoSizeComposer() {
@@ -6329,9 +6531,18 @@ function autoSizeComposer() {
   input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
 }
 
-function scrollMessages() {
+function updateMessageAutoFollow() {
   const container = $("#messages");
-  requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
+  state.autoFollowMessages = container.scrollHeight - container.scrollTop - container.clientHeight <= 96;
+}
+
+function scrollMessages(force = false) {
+  const container = $("#messages");
+  if (!force && !state.autoFollowMessages) return;
+  requestAnimationFrame(() => {
+    container.scrollTop = container.scrollHeight;
+    state.autoFollowMessages = true;
+  });
 }
 
 function showToast(message, isError = false) {

@@ -1780,7 +1780,7 @@ internal fun ChatScreen(
                     showApprovalModeDialog = true
                 },
                 onSend = {
-                    if (canSubmitDraft && !state.isProcessing) {
+                    if (canSubmitDraft) {
                         keyboardController?.hide()
                         focusManager.clearFocus(force = true)
                         inputHasFocus = false
@@ -1852,12 +1852,12 @@ internal fun ChatScreen(
                     }
                 },
                 onCaptureImage = {
-                    if (multimodalEnabled && !state.isProcessing) {
+                    if (multimodalEnabled) {
                         cameraPreviewLauncher.launch(null)
                     }
                 },
                 onPickImages = {
-                    if (multimodalEnabled && !state.isProcessing) {
+                    if (multimodalEnabled) {
                         imagePickerLauncher.launch("image/*")
                     }
                 },
@@ -6005,7 +6005,9 @@ private fun InputBar(
     var codexUsagePopupOffset by remember { mutableStateOf(IntOffset.Zero) }
     var textFieldFocused by remember { mutableStateOf(false) }
     var voiceGestureWantsCancel by remember { mutableStateOf(false) }
-    val actionsEnabled = enabled && !isSending
+    val actionsEnabled = enabled
+    val sendGuidance = isSending && canSend
+    val stopCurrentRun = isSending && !sendGuidance
     val moreActions = remember(
         currentApprovalModeLabel,
         selectedSkillCount,
@@ -6379,7 +6381,7 @@ private fun InputBar(
                     }
                     Button(
                         onClick = {
-                            if (isSending) {
+                            if (stopCurrentRun) {
                                 onStopSending()
                             } else {
                                 onSend()
@@ -6391,12 +6393,12 @@ private fun InputBar(
                         enabled = if (isSending) true else enabled && canSend,
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isSending) {
+                            containerColor = if (stopCurrentRun) {
                                 MaterialTheme.colorScheme.errorContainer
                             } else {
                                 accent
                             },
-                            contentColor = if (isSending) {
+                            contentColor = if (stopCurrentRun) {
                                 MaterialTheme.colorScheme.onErrorContainer
                             } else {
                                 MaterialTheme.colorScheme.onPrimary
@@ -6404,7 +6406,7 @@ private fun InputBar(
                         )
                     ) {
                         Text(
-                            text = if (isSending) "终止" else "发送"
+                            text = if (stopCurrentRun) "终止" else "发送"
                         )
                     }
                 }

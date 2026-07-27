@@ -29,6 +29,7 @@ type DesktopAgentApp struct {
 	visionRuntime              *desktopVisionRuntime
 	mu                         sync.Mutex
 	runs                       map[string]context.CancelFunc
+	restartRuns                map[string]bool
 	activeSubagentJobs         map[string]activeSubagentJob
 	shuttingDown               bool
 	approvals                  map[string]chan bool
@@ -90,6 +91,7 @@ func newDesktopAgentApp() (*DesktopAgentApp, error) {
 		workspace:                  newWorkspaceChangeTracker(),
 		audit:                      auditStore,
 		runs:                       map[string]context.CancelFunc{},
+		restartRuns:                map[string]bool{},
 		activeSubagentJobs:         map[string]activeSubagentJob{},
 		approvals:                  map[string]chan bool{},
 		pendingApprovals:           map[string]ApprovalRequest{},
@@ -594,6 +596,14 @@ func (app *DesktopAgentApp) SaveSettings(request SaveSettingsRequest) (PublicDes
 	return config, err
 }
 
+func (app *DesktopAgentApp) SetProviderModel(request SetProviderModelRequest) (PublicDesktopConfig, error) {
+	config, err := app.store.setProviderModel(request.ProviderProfileID, request.Model)
+	if err == nil && app.ctx != nil {
+		runtime.EventsEmit(app.ctx, "settings:changed", config)
+	}
+	return config, err
+}
+
 func (app *DesktopAgentApp) SelectProject() (string, error) {
 	if app.ctx == nil {
 		return "", errors.New("窗口尚未就绪")
@@ -742,9 +752,7 @@ func (app *DesktopAgentApp) ResolveApproval(decision ApprovalDecision) bool {
 func (app *DesktopAgentApp) CancelRun(sessionID string) bool {
 	app.mu.Lock()
 	cancel := app.runs[sessionID]
-	if cancel != nil {
-		delete(app.runs, sessionID)
-	}
+	delete(app.restartRuns, sessionID)
 	app.mu.Unlock()
 	if cancel != nil {
 		cancel()

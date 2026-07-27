@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -38,15 +39,49 @@ func (app *DesktopAgentApp) SendMessage(request SendMessageRequest) error {
 		return err
 	}
 	app.mu.Lock()
-	if _, running := app.runs[request.SessionID]; running {
+	if app.restartRuns == nil {
+		app.restartRuns = map[string]bool{}
+	}
+	cancelRunning, running := app.runs[request.SessionID]
+	startRestartWaiter := running && !app.restartRuns[request.SessionID]
+	if startRestartWaiter {
+		app.restartRuns[request.SessionID] = true
+	}
+	if running {
 		app.mu.Unlock()
-		return errors.New("当前会话仍在运行")
+		workspaceSnapshot := WorkspaceChangeSnapshot{}
+		if app.workspace != nil {
+			workspaceSnapshot = app.workspace.Consume(config.ProjectPath)
+		}
+		session, appendErr := app.store.appendMessage(request.SessionID, ChatMessage{
+			Role: "user", Content: request.Content, ImageAttachments: images, Context: contextItems, Mode: request.Mode,
+			WorkspaceChanges: workspaceSnapshot.Changes, WorkspaceChangesOmitted: workspaceSnapshot.OmittedCount,
+		})
+		if appendErr != nil {
+			if app.workspace != nil {
+				app.workspace.Restore(workspaceSnapshot)
+			}
+			if startRestartWaiter {
+				app.mu.Lock()
+				delete(app.restartRuns, request.SessionID)
+				app.mu.Unlock()
+			}
+			return appendErr
+		}
+		app.emitSessionsChanged(session)
+		app.emit("agent:status", map[string]any{"sessionId": request.SessionID, "state": "running", "text": "正在应用新的引导"})
+		cancelRunning()
+		if startRestartWaiter {
+			go app.restartRunAfterSteering(request.SessionID)
+		}
+		return nil
 	}
 	parent := app.ctx
 	if parent == nil {
 		parent = context.Background()
 	}
 	runContext, cancel := context.WithCancel(parent)
+	delete(app.restartRuns, request.SessionID)
 	app.runs[request.SessionID] = cancel
 	app.mu.Unlock()
 
@@ -161,6 +196,9 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 	}
 	for iteration := 1; iteration <= config.MaxToolIterations; iteration++ {
 		if err := ctx.Err(); err != nil {
+			if app.runRestartPending(sessionID) {
+				return
+			}
 			settled, _ := app.store.settleWorkflowPlan(sessionID, "用户停止了本轮计划执行。")
 			app.emitSessionsChanged(settled)
 			app.emit("agent:status", map[string]any{"sessionId": sessionID, "state": "cancelled", "text": "已停止"})
@@ -183,6 +221,9 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 		app.emit("agent:stream-end", map[string]any{"sessionId": sessionID, "streamId": streamID})
 		if err != nil {
 			if ctx.Err() != nil {
+				if app.runRestartPending(sessionID) {
+					return
+				}
 				settled, _ := app.store.settleWorkflowPlan(sessionID, "用户停止了本轮计划执行。")
 				app.emitSessionsChanged(settled)
 				app.emit("agent:status", map[string]any{"sessionId": sessionID, "state": "cancelled", "text": "已停止"})
@@ -245,7 +286,7 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 				output = marshalToolResult(map[string]any{"success": false, "error": toolErr.Error()})
 			}
 			messages = append(messages, modelMessage{Role: "tool", ToolCallID: call.ID, Name: call.Function.Name, Content: output})
-			activity := truncateRunes(output, 6000)
+			activity := output
 			updated, saveErr := app.store.appendMessage(sessionID, ChatMessage{
 				Role: "tool", Content: activity, Kind: "tool", ToolName: call.Function.Name,
 				ToolCallID: call.ID, ToolArguments: truncateRunes(call.Function.Arguments, 64*1024),
@@ -342,6 +383,7 @@ func (app *DesktopAgentApp) systemPrompt(config desktopConfig) string {
 		platform.Label + " 桌面宿主约束：\n" +
 			"- 你直接在用户选择的电脑项目中协作。先读取再修改；覆盖已有文件必须把 read_file 返回的 SHA-256 作为 expected_sha256。\n" +
 			"- 所有文件路径使用项目内相对路径。不要声称执行成功，必须根据工具结果验证。\n" +
+			"- 用户要求修复、修改或构建时，要持续推进到实现和验证完成。一次工具调用失败后应根据错误调整并重试；只有遇到确实需要用户决定或外部条件的阻塞时才停止。\n" +
 			"- 不要自动把普通聊天写入长期记忆、规则或 Skill；只有用户明确要求保存、记住、忘记或创建时才调用对应写入工具。\n" +
 			"- 全局与项目长期记忆不会整库注入上下文。需要时先用 memory_search 或 memory_list，再用 memory_read 获取完整内容。\n" +
 			"- 用户在输入框显式选择的文件、文件夹、Skill、子代理或 MCP 是本轮强意图：按标注读取对应路径，并遵守指定 Skill 或执行方式。\n" +
@@ -922,6 +964,41 @@ func (app *DesktopAgentApp) finishRun(sessionID string) {
 	app.mu.Lock()
 	delete(app.runs, sessionID)
 	app.mu.Unlock()
+}
+
+func (app *DesktopAgentApp) restartRunAfterSteering(sessionID string) {
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		app.mu.Lock()
+		_, running := app.runs[sessionID]
+		restart := app.restartRuns[sessionID]
+		if !running {
+			delete(app.restartRuns, sessionID)
+			if !restart || app.shuttingDown {
+				app.mu.Unlock()
+				return
+			}
+			parent := app.ctx
+			if parent == nil {
+				parent = context.Background()
+			}
+			runContext, cancel := context.WithCancel(parent)
+			app.runs[sessionID] = cancel
+			app.mu.Unlock()
+			app.emit("agent:status", map[string]any{"sessionId": sessionID, "state": "running", "text": "正在根据新消息继续"})
+			go app.runAgent(runContext, sessionID)
+			return
+		}
+		app.mu.Unlock()
+		<-ticker.C
+	}
+}
+
+func (app *DesktopAgentApp) runRestartPending(sessionID string) bool {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	return app.restartRuns[sessionID]
 }
 
 func (app *DesktopAgentApp) emit(name string, payload any) {

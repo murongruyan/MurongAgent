@@ -107,6 +107,67 @@ func TestDesktopChatComposerKeepsPrimaryControlsVisible(t *testing.T) {
 	}
 }
 
+func TestDesktopChatRunControlsSteeringToolDetailsAndScrollFollow(t *testing.T) {
+	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := frontendAssets.ReadFile("frontend/dist/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, js, css := string(index), string(script), string(styles)
+	if strings.Contains(html, "id=\"stop-run\"") || strings.Contains(js, "$(\"#stop-run\")") {
+		t.Fatal("desktop chat still exposes a separate top-right stop button")
+	}
+	for _, marker := range []string{
+		"function handleComposerAction()", "button.dataset.action = stopping ? \"stop\" : \"send\"",
+		"button.title = stopping ? \"终止生成\" : state.running ? \"发送引导\" : \"发送\"",
+		"if (!content && !state.composerImages.length) return;", "await backend().SendMessage({",
+		"function updateMessageAutoFollow()", "if (!force && !state.autoFollowMessages) return;",
+		"article.className = \"tool-execution-row\"", "createToolExecutionDetails(message)",
+		"appendToolField(content, \"命令\", command)", "appendToolField(content, \"标准输出\", result?.stdout)",
+		"appendToolField(content, \"错误输出\", firstToolValue(result?.stderr, payload?.error))",
+	} {
+		if !strings.Contains(js, marker) {
+			t.Fatalf("desktop chat workflow regression guard is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{".tool-execution-row", ".tool-execution-content", ".send-button.stop"} {
+		if !strings.Contains(css, marker) {
+			t.Fatalf("desktop chat workflow styling is missing %q", marker)
+		}
+	}
+	if strings.Contains(css, ".message.tool .message-body") {
+		t.Fatal("tool executions are still styled as ordinary chat bubbles")
+	}
+}
+
+func TestDesktopProviderModelsCanBeFetchedAndSelectedLikeAndroid(t *testing.T) {
+	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, js := string(index), string(script)
+	for _, marker := range []string{
+		"id=\"refresh-provider-models\"", "从上游获取模型列表", "id=\"provider-model-candidates\"",
+		"backend().FetchProviderModels", "function builtinProviderModels(providerId)",
+		"option.dataset.modelId = model", "backend().SetProviderModel",
+	} {
+		if !strings.Contains(html+"\n"+js, marker) {
+			t.Fatalf("desktop provider model catalog is missing %q", marker)
+		}
+	}
+}
+
 func TestDesktopChatOffersInstalledBuiltinModelAsAProvider(t *testing.T) {
 	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
 	if err != nil {

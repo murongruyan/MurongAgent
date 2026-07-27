@@ -609,6 +609,12 @@ jobs:
     needs: [android_app, terminal_extension, desktop]
     runs-on: ubuntu-24.04
     steps:
+      - name: Checkout Release Notes
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
       - name: Download Main APK Artifact
         uses: actions/download-artifact@v8
         with:
@@ -692,6 +698,7 @@ jobs:
             "${MAIN_APK_FILE}" \
             "${EXTENSION_APK_FILE}" \
             "${desktop_expected[@]}" > SHA256SUMS.txt)
+          cp release-notes/latest.md dist/release/RELEASE_NOTES.md
 
           python3 - <<'PY'
           import hashlib
@@ -700,7 +707,7 @@ jobs:
           from pathlib import Path
 
           release = Path("dist/release")
-          packages = sorted(path for path in release.iterdir() if path.is_file() and path.name not in {"SHA256SUMS.txt", "release-manifest.json"})
+          packages = sorted(path for path in release.iterdir() if path.is_file() and path.name not in {"SHA256SUMS.txt", "release-manifest.json", "RELEASE_NOTES.md"})
           if len(packages) != 8:
               raise SystemExit(f"Expected exactly 8 packages, found {len(packages)}")
           manifest = {
@@ -733,6 +740,7 @@ jobs:
           path: |
             dist/release/SHA256SUMS.txt
             dist/release/release-manifest.json
+            dist/release/RELEASE_NOTES.md
           if-no-files-found: error
           retention-days: 7
 
@@ -776,15 +784,15 @@ jobs:
         run: |
           set -euo pipefail
           find release -maxdepth 1 -type f \( -name '*.sha256' -o -name 'android-app.json' -o -name 'terminal-extension.json' \) -delete
-          mapfile -t packages < <(find release -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' ! -name 'release-manifest.json' -printf '%p\n' | sort)
+          mapfile -t packages < <(find release -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' ! -name 'release-manifest.json' ! -name 'RELEASE_NOTES.md' -printf '%p\n' | sort)
           [[ ${#packages[@]} -eq 8 ]] || { echo "Expected 8 release packages, found ${#packages[@]}" >&2; exit 1; }
           tag="${INPUT_RELEASE_TAG:-murong-suite-v${GITHUB_RUN_NUMBER}}"
           assets=("${packages[@]}" release/SHA256SUMS.txt release/release-manifest.json)
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "${assets[@]}" --clobber
-            gh release edit "$tag" --title "Murong Complete Suite ${tag}" --latest
+            gh release edit "$tag" --title "Murong Complete Suite ${tag}" --notes-file release/RELEASE_NOTES.md --latest
           else
-            gh release create "$tag" "${assets[@]}" --generate-notes --latest --title "Murong Complete Suite ${tag}"
+            gh release create "$tag" "${assets[@]}" --notes-file release/RELEASE_NOTES.md --latest --title "Murong Complete Suite ${tag}"
           fi
 
   sync_mobile:

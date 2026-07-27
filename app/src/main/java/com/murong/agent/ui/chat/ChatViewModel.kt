@@ -211,6 +211,9 @@ class ChatViewModel @Inject constructor(
         pendingImages: List<PendingImageAttachmentUi> = emptyList(),
         selectedSkills: List<GlobalSkill> = emptyList()
     ) {
+        if (_isSending.value) {
+            stopSending()
+        }
         launchSendingOperation {
             sessionManager.clearLastAutoRouteDecision()
             val toastMessage = withContext(Dispatchers.IO) {
@@ -783,8 +786,8 @@ class ChatViewModel @Inject constructor(
             } finally {
                 if (activeOperationJob === coroutineContext[Job]) {
                     activeOperationJob = null
+                    _isSending.value = false
                 }
-                _isSending.value = false
             }
         }
         activeOperationJob = job
