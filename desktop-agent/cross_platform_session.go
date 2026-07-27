@@ -102,6 +102,10 @@ func portableCrossPlatformMessages(source []ChatMessage) []CrossPlatformMessage 
 	messages := make([]CrossPlatformMessage, 0, len(source))
 	for _, message := range source {
 		content := message.Content
+		kind := message.Kind
+		if kind == workspaceReviewKind {
+			kind = ""
+		}
 		if names := desktopMessageAttachmentNames(message.ImageAttachments); len(names) > 0 {
 			if strings.TrimSpace(content) != "" {
 				content += "\n\n"
@@ -110,7 +114,7 @@ func portableCrossPlatformMessages(source []ChatMessage) []CrossPlatformMessage 
 		}
 		messages = append(messages, CrossPlatformMessage{
 			Role: message.Role, Content: content, CreatedAt: message.CreatedAt,
-			Kind: message.Kind, ToolName: message.ToolName,
+			Kind: kind, ToolName: message.ToolName,
 		})
 	}
 	return messages

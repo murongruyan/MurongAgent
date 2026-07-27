@@ -148,7 +148,7 @@ func TestDesktopChatRunControlsSteeringToolDetailsAndScrollFollow(t *testing.T) 
 	}
 }
 
-func TestDesktopChatCollapsesToolRunsIntoReadableProcessSummary(t *testing.T) {
+func TestDesktopChatCollapsesOnlyToolRunsAndKeepsModelNarrationReadable(t *testing.T) {
 	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
 	if err != nil {
 		t.Fatal(err)
@@ -160,12 +160,11 @@ func TestDesktopChatCollapsesToolRunsIntoReadableProcessSummary(t *testing.T) {
 	js, css := string(script), string(styles)
 	for _, marker := range []string{
 		"appendMessageTimeline(state.active.messages)",
-		`message.kind === "progress"`,
+		`return message.role === "tool";`,
 		"function createToolExecutionGroup(messages)",
 		"function summarizeToolExecutions(messages)",
-		"function createProcessNarrationDetails(message)",
-		"`已运行 ${commandCount} 个命令`",
-		"`已修改 ${changedCount} 个文件`",
+		"`已运行 ${commandCount} 条命令`",
+		"`已编辑 ${changedCount} 个文件`",
 		"list_files: \"查看目录\"",
 		"code_search: \"搜索代码\"",
 		"run_terminal: \"运行命令\"",
@@ -174,6 +173,9 @@ func TestDesktopChatCollapsesToolRunsIntoReadableProcessSummary(t *testing.T) {
 		if !strings.Contains(js, marker) {
 			t.Fatalf("desktop tool process presentation is missing %q", marker)
 		}
+	}
+	if strings.Contains(js, "function createProcessNarrationDetails(message)") {
+		t.Fatal("model narration is still being converted into a collapsed tool-sized detail")
 	}
 	for _, marker := range []string{
 		".tool-execution-group",
@@ -506,12 +508,15 @@ func TestDesktopWorkspaceChangesTimelineAndDiffAreWired(t *testing.T) {
 		`backend().GetProjectAudit`, `backend().ClearProjectAudit(true)`, `backend().ExportProjectAudit(format)`,
 		`window.runtime.EventsOn("project-audit:changed"`, `renderProjectAuditModal()`,
 		`createWorkspaceMessageNote(message.workspaceChanges || [], message.workspaceChangesOmitted || 0)`,
+		`message.kind === "workspace_review"`, `function createWorkspaceReviewCard(review)`,
+		`backend().GetWorkspaceReviewDiff(review.id, path)`, `backend().UndoWorkspaceReview(review.id)`,
+		`function openWorkspaceReviewFile(review, path)`, `完全展开 ${formatCount(review.files.length)} 个文件`,
 	} {
 		if !strings.Contains(js, marker) {
 			t.Fatalf("desktop workspace timeline wiring is missing %q", marker)
 		}
 	}
-	for _, marker := range []string{".workspace-change-chip", ".workspace-changes-layout", ".workspace-message-note", ".workspace-timeline-tabs", ".project-audit-filters", ".project-audit-item"} {
+	for _, marker := range []string{".workspace-change-chip", ".workspace-changes-layout", ".workspace-message-note", ".workspace-timeline-tabs", ".project-audit-filters", ".project-audit-item", ".workspace-review-card", ".workspace-review-file-stats"} {
 		if !strings.Contains(css, marker) {
 			t.Fatalf("desktop workspace timeline styling is missing %q", marker)
 		}

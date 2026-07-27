@@ -107,7 +107,11 @@ func (app *DesktopAgentApp) SendMessage(request SendMessageRequest) error {
 }
 
 func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
-	defer app.finishRun(sessionID)
+	app.beginRunWorkspaceReview(sessionID)
+	defer func() {
+		app.finalizeRunWorkspaceReview(sessionID)
+		app.finishRun(sessionID)
+	}()
 	rawConfig, session, err := app.sessionExecutionConfig(sessionID, true)
 	if err != nil {
 		app.failRun(sessionID, err)

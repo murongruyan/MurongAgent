@@ -422,6 +422,12 @@ func validateMessageWorkspaceChanges(message ChatMessage) error {
 	if len(message.WorkspaceChanges) > maxPendingWorkspaceChanges || message.WorkspaceChangesOmitted < 0 || message.WorkspaceChangesOmitted > 1_000_000 {
 		return errors.New("项目变化数量超过上限")
 	}
+	if (message.Kind == workspaceReviewKind) != (message.WorkspaceReview != nil) {
+		return errors.New("文件变更审核消息类型不一致")
+	}
+	if err := validateWorkspaceReview(message.WorkspaceReview); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	validKinds := map[string]bool{"created": true, "modified": true, "deleted": true, "renamed_from": true, "renamed_to": true}
 	for _, change := range message.WorkspaceChanges {

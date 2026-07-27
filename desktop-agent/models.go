@@ -3,7 +3,7 @@ package main
 import desktopbridge "github.com/murong-agent/desktop-bridge"
 
 const (
-	desktopAgentVersion = "1.32"
+	desktopAgentVersion = "1.33"
 	approvalReadOnly    = "readonly"
 	approvalAskAll      = "ask"
 	approvalAllowlist   = "allowlist"
@@ -404,6 +404,7 @@ type ChatMessage struct {
 	Mode                    string                   `json:"mode,omitempty"`
 	WorkspaceChanges        []WorkspaceFileChange    `json:"workspaceChanges,omitempty"`
 	WorkspaceChangesOmitted int                      `json:"workspaceChangesOmitted,omitempty"`
+	WorkspaceReview         *WorkspaceReview         `json:"workspaceReview,omitempty"`
 }
 
 type MessageImageAttachment struct {

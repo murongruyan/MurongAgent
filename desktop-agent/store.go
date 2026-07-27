@@ -1332,6 +1332,7 @@ func (store *desktopStore) appendMessage(sessionID string, message ChatMessage) 
 	message.Reasoning = strings.TrimSpace(message.Reasoning)
 	message.ImageAttachments = cloneImageAttachments(validatedImages)
 	message.Context = cloneComposerContext(message.Context)
+	message.WorkspaceReview = cloneWorkspaceReview(message.WorkspaceReview)
 	message.Mode = normalizeComposerMode(message.Mode)
 	if message.ID == "" {
 		message.ID = newID("message")
@@ -1408,6 +1409,7 @@ func cloneSession(session *ChatSession) *ChatSession {
 		copy.Messages[index].Context = cloneComposerContext(copy.Messages[index].Context)
 		copy.Messages[index].ImageAttachments = cloneImageAttachments(copy.Messages[index].ImageAttachments)
 		copy.Messages[index].WorkspaceChanges = cloneWorkspaceChanges(copy.Messages[index].WorkspaceChanges)
+		copy.Messages[index].WorkspaceReview = cloneWorkspaceReview(copy.Messages[index].WorkspaceReview)
 	}
 	return &copy
 }

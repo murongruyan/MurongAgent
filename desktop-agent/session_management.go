@@ -128,6 +128,12 @@ func (store *desktopStore) forkSession(id, messageID string) (*ChatSession, erro
 		messageIDs[originalID] = message.ID
 		message.Context = cloneComposerContext(message.Context)
 		message.ImageAttachments = cloneImageAttachments(message.ImageAttachments)
+		message.WorkspaceReview = cloneWorkspaceReview(message.WorkspaceReview)
+		if message.WorkspaceReview != nil {
+			message.WorkspaceReview.ID = newID("review")
+			message.WorkspaceReview.UndoAvailable = false
+			message.WorkspaceReview.StatusMessage = "这是分叉任务中的历史变更记录；请回到原任务撤销"
+		}
 		forked.Messages = append(forked.Messages, message)
 	}
 	forked.Compression = remapSessionCompression(source.Compression, source.Messages, forked.Messages)
@@ -161,6 +167,7 @@ func (store *desktopStore) rollbackSession(id, messageID string) (*ChatSession, 
 	for index := range session.Messages {
 		session.Messages[index].Context = cloneComposerContext(session.Messages[index].Context)
 		session.Messages[index].ImageAttachments = cloneImageAttachments(session.Messages[index].ImageAttachments)
+		session.Messages[index].WorkspaceReview = cloneWorkspaceReview(session.Messages[index].WorkspaceReview)
 	}
 	session.Goal = sessionGoalFromMessages(session.Messages)
 	session.WorkflowPlan = reconcileWorkflowPlanWithMessages(session.WorkflowPlan, session.Messages)

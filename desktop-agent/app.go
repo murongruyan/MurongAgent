@@ -30,6 +30,7 @@ type DesktopAgentApp struct {
 	mu                         sync.Mutex
 	runs                       map[string]context.CancelFunc
 	restartRuns                map[string]bool
+	runWorkspaceReviews        map[string]runWorkspaceReviewCheckpoint
 	activeSubagentJobs         map[string]activeSubagentJob
 	shuttingDown               bool
 	approvals                  map[string]chan bool
@@ -92,6 +93,7 @@ func newDesktopAgentApp() (*DesktopAgentApp, error) {
 		audit:                      auditStore,
 		runs:                       map[string]context.CancelFunc{},
 		restartRuns:                map[string]bool{},
+		runWorkspaceReviews:        map[string]runWorkspaceReviewCheckpoint{},
 		activeSubagentJobs:         map[string]activeSubagentJob{},
 		approvals:                  map[string]chan bool{},
 		pendingApprovals:           map[string]ApprovalRequest{},

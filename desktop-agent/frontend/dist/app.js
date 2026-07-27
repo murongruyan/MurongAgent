@@ -1585,29 +1585,28 @@ async function setComposerReasoningEffort(event) {
 }
 
 function appendMessageTimeline(messages) {
-  let pendingProcess = [];
-  const flushProcess = () => {
-    if (!pendingProcess.length) return;
+  let pendingTools = [];
+  const flushTools = () => {
+    if (!pendingTools.length) return;
     const article = document.createElement("article");
     article.className = "tool-execution-group-row";
-    article.append(createToolExecutionGroup(pendingProcess));
+    article.append(createToolExecutionGroup(pendingTools));
     $("#messages").append(article);
-    pendingProcess = [];
+    pendingTools = [];
   };
   messages.forEach((message) => {
     if (isProcessTimelineMessage(message)) {
-      pendingProcess.push(message);
+      pendingTools.push(message);
       return;
     }
-    flushProcess();
+    flushTools();
     appendMessageElement(message);
   });
-  flushProcess();
+  flushTools();
 }
 
 function isProcessTimelineMessage(message) {
-  return message.role === "tool" ||
-    (message.role === "assistant" && (message.kind === "progress" || (!message.content?.trim() && message.reasoning?.trim())));
+  return message.role === "tool";
 }
 
 function createToolExecutionGroup(messages) {
@@ -1617,10 +1616,10 @@ function createToolExecutionGroup(messages) {
   const summary = document.createElement("summary");
   const heading = document.createElement("span");
   heading.className = "tool-execution-group-title";
-  heading.textContent = stats.failed ? "执行过程有失败" : "已完成执行过程";
+  heading.textContent = stats.labels[0];
   const labels = document.createElement("span");
   labels.className = "tool-execution-group-summary";
-  labels.textContent = stats.labels.join(" · ");
+  labels.textContent = [...stats.labels.slice(1), ...(stats.failed ? ["存在失败"] : [])].join(" · ");
   const action = document.createElement("span");
   action.className = "tool-execution-group-action";
   action.textContent = "展开";
@@ -1630,9 +1629,7 @@ function createToolExecutionGroup(messages) {
   });
   const content = document.createElement("div");
   content.className = "tool-execution-group-content";
-  messages.forEach((message) => content.append(
-    message.role === "tool" ? createToolExecutionDetails(message) : createProcessNarrationDetails(message),
-  ));
+  messages.forEach((message) => content.append(createToolExecutionDetails(message)));
   details.append(summary, content);
   return details;
 }
@@ -1668,15 +1665,13 @@ function summarizeToolExecutions(messages) {
   const labels = [];
   const changedCount = changedFiles.size + changedWithoutPath;
   const readCount = readFiles.size + readWithoutPath;
-  if (messages.some((message) => message.reasoning?.trim())) labels.push("思考过程");
-  if (commandCount) labels.push(`已运行 ${commandCount} 个命令`);
-  if (changedCount) labels.push(`已修改 ${changedCount} 个文件`);
+  if (commandCount) labels.push(`已运行 ${commandCount} 条命令`);
+  if (changedCount) labels.push(`已编辑 ${changedCount} 个文件`);
   if (readCount) labels.push(`已读取 ${readCount} 个文件`);
   if (searchCount) labels.push(`已搜索 ${searchCount} 次`);
   if (directoryCount) labels.push(`已查看 ${directoryCount} 个目录`);
   if (!labels.length && toolMessages.length) labels.push(`已执行 ${toolMessages.length} 个工具`);
   if (!labels.length) labels.push("执行过程");
-  if (failed) labels.push("存在失败");
   return { labels, failed };
 }
 
@@ -1715,6 +1710,13 @@ function collectToolPaths(...values) {
 function appendMessageElement(message) {
   const container = $("#messages");
   const article = document.createElement("article");
+  if (message.kind === "workspace_review" && message.workspaceReview) {
+    article.className = "workspace-review-row";
+    if (message.id) article.dataset.messageId = message.id;
+    article.append(createWorkspaceReviewCard(message.workspaceReview));
+    container.append(article);
+    return;
+  }
   if (message.role === "tool") {
     article.className = "tool-execution-row";
     if (message.id) article.dataset.messageId = message.id;
@@ -1795,6 +1797,107 @@ function appendMessageElement(message) {
   container.append(article);
 }
 
+function createWorkspaceReviewCard(review) {
+  const card = document.createElement("section");
+  card.className = `workspace-review-card${review.undone ? " undone" : ""}`;
+  const header = document.createElement("header");
+  const summary = document.createElement("div");
+  summary.className = "workspace-review-summary";
+  const title = document.createElement("strong");
+  title.textContent = `已编辑 ${formatCount(review.files?.length || 0)} 个文件`;
+  const totals = document.createElement("span");
+  totals.className = "workspace-review-totals";
+  totals.innerHTML = `<b>+${formatCount(review.additions || 0)}</b><i>-${formatCount(review.deletions || 0)}</i>`;
+  if (review.binaryFiles) {
+    const binary = document.createElement("small");
+    binary.textContent = `${formatCount(review.binaryFiles)} 个二进制文件`;
+    totals.append(binary);
+  }
+  summary.append(title, totals);
+  const actions = document.createElement("div");
+  actions.className = "workspace-review-actions";
+  const undo = document.createElement("button");
+  undo.type = "button";
+  undo.className = "workspace-review-undo";
+  undo.title = review.undone ? "本轮变更已经撤销" : review.undoAvailable ? "只撤销本轮模型产生的文件修改" : (review.statusMessage || "没有可用的安全撤销补丁");
+  undo.disabled = !review.undoAvailable || review.undone || state.running || phoneOwnsActiveSession();
+  undo.innerHTML = `<span aria-hidden="true">↶</span> 撤销`;
+  undo.addEventListener("click", () => undoWorkspaceReview(review));
+  const inspect = document.createElement("button");
+  inspect.type = "button";
+  inspect.className = "workspace-review-inspect";
+  inspect.textContent = "审核";
+  inspect.disabled = !review.files?.length;
+  inspect.addEventListener("click", () => openWorkspaceReviewFile(review, review.files?.[0]?.path || ""));
+  actions.append(undo, inspect);
+  header.append(summary, actions);
+
+  const list = document.createElement("div");
+  list.className = "workspace-review-files";
+  let expanded = false;
+  const renderFiles = () => {
+    list.replaceChildren();
+    const files = expanded ? (review.files || []) : (review.files || []).slice(0, 3);
+    files.forEach((file) => list.append(createWorkspaceReviewFileRow(review, file)));
+    if ((review.files?.length || 0) > 3) {
+      const expand = document.createElement("button");
+      expand.type = "button";
+      expand.className = "workspace-review-expand";
+      expand.innerHTML = expanded
+        ? `<span aria-hidden="true">⌃</span> 收起文件列表`
+        : `<span aria-hidden="true">⌄</span> 完全展开 ${formatCount(review.files.length)} 个文件`;
+      expand.addEventListener("click", () => {
+        expanded = !expanded;
+        renderFiles();
+      });
+      list.append(expand);
+    }
+  };
+  renderFiles();
+  card.append(header, list);
+  if (review.statusMessage) {
+    const status = document.createElement("p");
+    status.className = "workspace-review-status";
+    status.textContent = review.statusMessage;
+    card.append(status);
+  }
+  return card;
+}
+
+function createWorkspaceReviewFileRow(review, file) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "workspace-review-file";
+  row.title = `审核 ${file.path}`;
+  const path = document.createElement("span");
+  path.textContent = file.path;
+  const stats = document.createElement("span");
+  stats.className = "workspace-review-file-stats";
+  if (file.binary) {
+    stats.textContent = "二进制";
+  } else {
+    stats.innerHTML = `<b>+${formatCount(file.additions || 0)}</b><i>-${formatCount(file.deletions || 0)}</i>`;
+  }
+  row.append(path, stats);
+  row.addEventListener("click", () => openWorkspaceReviewFile(review, file.path));
+  return row;
+}
+
+async function undoWorkspaceReview(review) {
+  if (!review?.undoAvailable || review.undone) return;
+  if (!window.confirm(`撤销本轮对 ${formatCount(review.files?.length || 0)} 个文件的修改？\n\n只会反向应用这一轮的补丁；如果文件后来又被修改，操作会安全停止。`)) return;
+  try {
+    const updated = await backend().UndoWorkspaceReview(review.id);
+    if (updated?.id === state.active?.id) {
+      state.active = updated;
+      renderActiveSession();
+    }
+    showToast("本轮文件变更已撤销");
+  } catch (error) {
+    showToast(errorText(error), true);
+  }
+}
+
 function createToolExecutionDetails(message) {
   const details = document.createElement("details");
   details.className = `tool-execution ${message.toolStatus || ""}`;
@@ -1818,27 +1921,6 @@ function createToolExecutionDetails(message) {
   presentation.fields.forEach(([label, value]) => appendToolField(content, label, value));
   if (!content.childElementCount) appendToolField(content, "结果", message.toolStatus === "failed" ? "执行失败" : "执行完成");
   content.append(createToolProtocolDetails(message, args, payload));
-  details.append(summary, content);
-  return details;
-}
-
-function createProcessNarrationDetails(message) {
-  const details = document.createElement("details");
-  details.className = "tool-execution process-narration";
-  const summary = document.createElement("summary");
-  const title = document.createElement("span");
-  title.className = "tool-execution-title";
-  title.textContent = message.reasoning?.trim() ? "思考过程" : "执行说明";
-  const preview = document.createElement("code");
-  preview.textContent = truncateText(firstToolValue(message.content, message.reasoning, "处理中"), 110);
-  const status = document.createElement("span");
-  status.className = "tool-execution-status";
-  status.textContent = "过程";
-  summary.append(title, preview, status);
-  const content = document.createElement("div");
-  content.className = "tool-execution-content";
-  appendToolField(content, "说明", message.content);
-  appendToolField(content, "思考", message.reasoning);
   details.append(summary, content);
   return details;
 }
@@ -5825,6 +5907,7 @@ function openWorkbenchTab(type) {
   if (type === "editor") loadWorkbenchEditorDirectory(tab.id, ".");
   if (type === "git") loadWorkbenchGit(tab.id);
   if (type === "sidechat") refreshWorkbenchSideChat();
+  return tab;
 }
 
 function activeWorkbenchTab(expectedType = "") {
@@ -6124,6 +6207,7 @@ function syncActiveWorkbenchFile(tab) {
   file.asset = tab.asset || null;
   file.dirty = Boolean(tab.dirty);
   file.markdownMode = tab.markdownMode || "";
+  file.reviewDiff = tab.reviewDiff || null;
 }
 
 function activateWorkbenchFile(tab, path) {
@@ -6136,7 +6220,9 @@ function activateWorkbenchFile(tab, path) {
   tab.asset = file.asset || null;
   tab.dirty = Boolean(file.dirty);
   tab.markdownMode = file.markdownMode || "";
-  tab.title = file.path.split("/").pop() || "编辑器";
+  tab.reviewDiff = file.reviewDiff || null;
+  const displayPath = file.displayPath || file.reviewDiff?.path || file.path;
+  tab.title = `${displayPath.split("/").pop() || "编辑器"}${file.reviewDiff ? " · 对比" : ""}`;
   renderWorkbenchEditor(tab);
   if (tab.document) window.MurongWorkbenchVendor?.focusCodeEditor(workbenchEditorController);
   return true;
@@ -6153,7 +6239,9 @@ function upsertWorkbenchFile(tab, file) {
   tab.asset = file.asset || null;
   tab.dirty = Boolean(file.dirty);
   tab.markdownMode = file.markdownMode || "";
-  tab.title = file.path.split("/").pop() || "编辑器";
+  tab.reviewDiff = file.reviewDiff || null;
+  const displayPath = file.displayPath || file.reviewDiff?.path || file.path;
+  tab.title = `${displayPath.split("/").pop() || "编辑器"}${file.reviewDiff ? " · 对比" : ""}`;
 }
 
 function renderWorkbenchEditorFileTabs(tab) {
@@ -6164,13 +6252,14 @@ function renderWorkbenchEditorFileTabs(tab) {
     item.className = `workbench-editor-file-tab${file.path === tab.activeFilePath ? " active" : ""}${file.dirty ? " dirty" : ""}`;
     item.setAttribute("role", "tab");
     item.setAttribute("aria-selected", String(file.path === tab.activeFilePath));
-    item.title = file.path;
+    const displayPath = file.displayPath || file.reviewDiff?.path || file.path;
+    item.title = file.reviewDiff ? `${displayPath} · 本轮修改对比` : displayPath;
     const label = document.createElement("span");
-    label.textContent = file.path.split("/").pop() || file.path;
+    label.textContent = `${displayPath.split("/").pop() || displayPath}${file.reviewDiff ? " ↔" : ""}`;
     const close = document.createElement("button");
     close.type = "button";
     close.title = "关闭文件";
-    close.setAttribute("aria-label", `关闭 ${label.textContent}`);
+    close.setAttribute("aria-label", `关闭 ${displayPath}`);
     close.textContent = "×";
     close.addEventListener("click", (event) => { event.stopPropagation(); closeWorkbenchEditorFile(tab.id, file.path); });
     item.addEventListener("click", () => activateWorkbenchFile(tab, file.path));
@@ -6195,6 +6284,7 @@ function closeWorkbenchEditorFile(tabID, path) {
     tab.asset = null;
     tab.dirty = false;
     tab.markdownMode = "";
+    tab.reviewDiff = null;
     if (next) activateWorkbenchFile(tab, next.path);
   }
   renderWorkbenchEditor(tab);
@@ -6263,19 +6353,29 @@ function renderWorkbenchEditor(tab) {
     tab.entries.forEach((entry) => {
       const button = document.createElement("button");
       button.type = "button";
-      const selectedPath = tab.document?.path || tab.asset?.path || "";
+      const selectedPath = tab.reviewDiff?.path || tab.document?.path || tab.asset?.path || "";
       button.className = `workbench-file-entry${selectedPath === entry.path ? " active" : ""}`;
       const icon = document.createElement("span"); icon.textContent = entry.directory ? "▸" : entry.preview === "image" ? "▧" : "·";
       const name = document.createElement("span"); name.textContent = entry.name;
       button.append(icon, name);
-      button.addEventListener("click", () => entry.directory ? loadWorkbenchEditorDirectory(tab.id, entry.path) : loadWorkbenchEditorFile(tab.id, entry.path, entry.preview));
+      button.addEventListener("click", () => {
+        if (entry.directory) {
+          loadWorkbenchEditorDirectory(tab.id, entry.path);
+        } else if (entry.reviewOnly && tab.reviewDiff?.id) {
+          openWorkspaceReviewFile({ id: tab.reviewDiff.id }, entry.path);
+        } else {
+          loadWorkbenchEditorFile(tab.id, entry.path, entry.preview);
+        }
+      });
       button.addEventListener("contextmenu", (event) => openWorkbenchFileContextMenu(event, tab, entry));
       list.append(button);
     });
   }
   const selected = tab.document || tab.asset;
-  $("#workbench-editor-path").textContent = selected?.path || "选择文件";
-  $("#workbench-editor-state").textContent = tab.dirty
+  $("#workbench-editor-path").textContent = tab.reviewDiff?.path || selected?.path || "选择文件";
+  $("#workbench-editor-state").textContent = tab.reviewDiff
+    ? "本轮修改前后对比 · 只读"
+    : tab.dirty
     ? "未保存"
     : tab.asset ? `${formatCount(tab.asset.size || 0)} B${tab.asset.width ? ` · ${tab.asset.width}×${tab.asset.height}` : ""}`
       : tab.document ? `${formatCount(tab.document.size || 0)} B` : "";
@@ -6287,7 +6387,7 @@ function renderWorkbenchEditor(tab) {
   const placeholder = $("#workbench-editor-placeholder");
   const hasDocument = Boolean(tab.document) && !tab.loading;
   const hasImage = Boolean(tab.asset) && !tab.loading;
-  const hasMarkdown = hasDocument && isMarkdownPath(tab.document.path);
+  const hasMarkdown = hasDocument && !tab.reviewDiff && isMarkdownPath(tab.document.path);
   const markdownMode = hasMarkdown ? (tab.markdownMode || "split") : "edit";
   const showCodeEditor = hasDocument && markdownMode !== "preview";
   const showMarkdownPreview = hasMarkdown && markdownMode !== "edit";
@@ -6308,7 +6408,7 @@ function renderWorkbenchEditor(tab) {
     const key = `${tab.id}:${tab.document.path}`;
     const current = workbenchEditorController?.view?.state.doc.toString() || "";
     if (workbenchEditorController && (workbenchEditorController.documentKey !== key || (!tab.dirty && current !== tab.document.content))) {
-      window.MurongWorkbenchVendor.setCodeEditorDocument(workbenchEditorController, tab.document.content, tab.document.path, !tab.loading);
+      window.MurongWorkbenchVendor.setCodeEditorDocument(workbenchEditorController, tab.document.content, tab.document.path, !tab.loading && !tab.reviewDiff);
       workbenchEditorController.documentKey = key;
     }
     if (hasMarkdown) markdownPreview.innerHTML = renderMarkdown(tab.document.content);
@@ -6325,8 +6425,8 @@ function renderWorkbenchEditor(tab) {
     image.removeAttribute("src");
     image.alt = "";
   }
-  $("#workbench-editor-save").classList.toggle("hidden", !hasDocument);
-  $("#workbench-editor-save").disabled = !tab.document || !tab.dirty || tab.saving;
+  $("#workbench-editor-save").classList.toggle("hidden", !hasDocument || Boolean(tab.reviewDiff));
+  $("#workbench-editor-save").disabled = !tab.document || Boolean(tab.reviewDiff) || !tab.dirty || tab.saving;
 }
 
 function isMarkdownPath(path) {
@@ -6352,15 +6452,21 @@ async function loadWorkbenchEditorDirectory(tabID, directory) {
   const tab = state.workbench.tabs.find((item) => item.id === tabID && item.type === "editor");
   if (!tab) return;
   syncActiveWorkbenchFile(tab);
+  const requestID = (tab.directoryRequestID || 0) + 1;
+  tab.directoryRequestID = requestID;
   tab.loading = true;
   tab.directory = directory || ".";
   renderWorkbench();
   try {
-    tab.entries = await backend().ListWorkbenchFiles(tab.directory);
+    const entries = await backend().ListWorkbenchFiles(tab.directory);
+    if (tab.directoryRequestID !== requestID) return;
+    tab.entries = entries;
   } catch (error) {
+    if (tab.directoryRequestID !== requestID) return;
     tab.entries = [];
     showToast(errorText(error), true);
   } finally {
+    if (tab.directoryRequestID !== requestID) return;
     tab.loading = false;
     if (activeWorkbenchTab()?.id === tab.id) renderWorkbenchEditor(tab);
   }
@@ -6390,6 +6496,48 @@ async function loadWorkbenchEditorFile(tabID, path, preview = "") {
   } finally {
     tab.loading = false;
     if (activeWorkbenchTab()?.id === tab.id) renderWorkbench();
+  }
+}
+
+async function openWorkspaceReviewFile(review, path) {
+  if (!review?.id || !path) return;
+  let tab = activeWorkbenchTab("editor");
+  if (!tab) {
+    tab = state.workbench.tabs.find((item) => item.type === "editor") || null;
+    if (tab) activateWorkbenchTab(tab.id);
+    else tab = openWorkbenchTab("editor");
+  }
+  if (!tab) return;
+  const parts = path.split("/").filter(Boolean);
+  parts.pop();
+  const directory = parts.join("/") || ".";
+  try {
+    await loadWorkbenchEditorDirectory(tab.id, directory);
+    const result = await backend().GetWorkspaceReviewDiff(review.id, path);
+    const content = result.available ? result.diff : (result.message || "当前没有可显示的本轮 Diff。");
+    const pseudoPath = `review:${review.id}:${path}`;
+    if (!(tab.entries || []).some((entry) => entry.path === path)) {
+      tab.entries = [...(tab.entries || []), {
+        name: path.split("/").pop() || path,
+        path,
+        directory: false,
+        preview: "text",
+        reviewOnly: true,
+      }];
+    }
+    upsertWorkbenchFile(tab, {
+      path: pseudoPath,
+      displayPath: path,
+      document: { path: `${path}.diff`, content, sha256: "", size: content.length },
+      asset: null,
+      dirty: false,
+      markdownMode: "",
+      reviewDiff: { id: review.id, path },
+    });
+    renderWorkbench();
+    window.MurongWorkbenchVendor?.focusCodeEditor(workbenchEditorController);
+  } catch (error) {
+    showToast(errorText(error), true);
   }
 }
 

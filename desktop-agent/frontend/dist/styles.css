@@ -195,6 +195,27 @@ button { border: 0; cursor: pointer; }
 .tool-execution-group-summary { min-width: 0; overflow: hidden; color: #70798a; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .tool-execution-group-action { color: #9a6884; font-size: 10px; font-weight: 750; }
 .tool-execution-group-content { display: grid; gap: 8px; padding: 10px; border-top: 1px solid #e0e4eb; background: rgba(255,255,255,.78); }
+.workspace-review-row { width: min(860px,calc(100% - 56px)); margin: 2px auto 14px; }
+.workspace-review-card { overflow: hidden; border: 1px solid #dfe3ea; border-radius: 14px; color: #4e586b; background: rgba(255,255,255,.96); box-shadow: 0 7px 24px rgba(40,46,69,.055); }
+.workspace-review-card.undone { opacity: .72; background: #f8f9fb; }
+.workspace-review-card > header { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 13px; border-bottom: 1px solid #e7eaf0; background: #fafbfc; }
+.workspace-review-summary { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.workspace-review-summary > strong { color: #3b4557; font-size: 13px; }
+.workspace-review-totals, .workspace-review-file-stats { display: inline-flex; align-items: center; gap: 8px; font: 11px "Cascadia Mono",Consolas,monospace; }
+.workspace-review-totals b, .workspace-review-file-stats b { color: #25815f; font-style: normal; }
+.workspace-review-totals i, .workspace-review-file-stats i { color: #c34b64; font-style: normal; }
+.workspace-review-totals small { color: #8991a0; font: 9px/1.3 inherit; }
+.workspace-review-actions { flex: none; display: flex; align-items: center; gap: 7px; }
+.workspace-review-actions button { padding: 7px 10px; border: 1px solid #dce1e8; border-radius: 8px; color: #5c6678; background: #fff; font-size: 10px; font-weight: 720; }
+.workspace-review-actions button:hover:not(:disabled) { color: #9e3868; border-color: #e8bdd1; background: #fff5f9; }
+.workspace-review-actions button:disabled { opacity: .46; cursor: not-allowed; }
+.workspace-review-files { display: grid; padding: 5px 8px 7px; }
+.workspace-review-file, .workspace-review-expand { width: 100%; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 8px 7px; border-radius: 8px; color: #596375; background: transparent; text-align: left; }
+.workspace-review-file:hover, .workspace-review-expand:hover { background: #f5f7fa; }
+.workspace-review-file > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10px "Cascadia Mono",Consolas,monospace; }
+.workspace-review-file-stats { flex: none; color: #8a92a1; }
+.workspace-review-expand { justify-content: center; color: #9a5075; font-size: 10px; font-weight: 720; }
+.workspace-review-status { margin: 0; padding: 0 13px 10px; color: #858d9b; font-size: 9px; }
 .tool-execution { overflow: hidden; border: 1px solid #dfe3ea; border-radius: 8px; color: #586274; background: #f7f8fa; font-size: 11px; }
 .tool-execution.failed { border-color: #edc7cf; background: #fff8f9; }
 .tool-execution summary { min-height: 40px; display: grid; grid-template-columns: minmax(100px,auto) minmax(0,1fr) auto; align-items: center; gap: 10px; padding: 8px 11px; cursor: pointer; list-style-position: inside; }
