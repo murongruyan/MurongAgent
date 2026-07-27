@@ -31,21 +31,24 @@ internal data class ChatProcessSummaryUi(
 
 internal fun isChatProcessMessage(message: ChatMessageUi): Boolean {
     return message.role == "tool_exec" ||
-        message.role == "subagent" ||
-        message.role == "system" ||
-        (message.role == "assistant" && message.content.isBlank() && !message.reasoning.isNullOrBlank())
+        message.role == "subagent"
 }
 
 internal fun buildChatProcessSummary(messages: List<ChatMessageUi>): ChatProcessSummaryUi {
-    val toolCalls = messages.filter { it.role == "tool_exec" }
-    val toolNames = toolCalls.mapNotNull(::toolNameFromProcessMessage)
+    val processMessages = messages.filter(::isChatProcessMessage)
+    val toolCalls = processMessages.filter { it.role == "tool_exec" }
+    val invocationMessages = toolCalls.filter { it.content.startsWith("🔧 正在执行:") }
+    val countedCalls = invocationMessages.ifEmpty {
+        toolCalls.filter { it.content.startsWith("📦 ") }
+    }
+    val toolNames = countedCalls.mapNotNull(::toolNameFromProcessMessage)
     val readPaths = linkedSetOf<String>()
     var readCallsWithoutPath = 0
     var commandCount = 0
-    var changedCallsWithoutFiles = 0
+    var writeCallCount = 0
     val changedFiles = linkedSetOf<String>()
 
-    toolCalls.forEach { message ->
+    countedCalls.forEach { message ->
         val toolName = toolNameFromProcessMessage(message).orEmpty().lowercase()
         if (toolName.isReadTool()) {
             val paths = extractProcessPaths(message.content)
@@ -58,22 +61,23 @@ internal fun buildChatProcessSummary(messages: List<ChatMessageUi>): ChatProcess
         if (toolName.isCommandTool()) {
             commandCount += 1
         }
-        val fileChanges = extractProcessFileChanges(message.content)
-        changedFiles += fileChanges
-        if (fileChanges.isEmpty() && toolName.isWriteTool()) {
-            changedCallsWithoutFiles += 1
+        if (toolName.isWriteTool()) {
+            writeCallCount += 1
         }
+    }
+    toolCalls.forEach { message ->
+        changedFiles += extractProcessFileChanges(message.content)
     }
 
     return ChatProcessSummaryUi(
-        reasoningCount = messages.count { !it.reasoning.isNullOrBlank() },
+        reasoningCount = 0,
         readFileCount = readPaths.size + readCallsWithoutPath,
         commandCount = commandCount,
-        changedFileCount = changedFiles.size + changedCallsWithoutFiles,
-        toolCount = toolNames.distinct().size,
-        subagentCount = messages.count { it.role == "subagent" },
-        systemCount = messages.count { it.role == "system" },
-        hasFailure = messages.any { message ->
+        changedFileCount = changedFiles.size.takeIf { it > 0 } ?: writeCallCount,
+        toolCount = toolNames.size,
+        subagentCount = processMessages.count { it.role == "subagent" },
+        systemCount = 0,
+        hasFailure = processMessages.any { message ->
             message.content.contains("执行失败") ||
                 message.content.contains("失败") ||
                 message.content.contains("error", ignoreCase = true)
@@ -111,7 +115,7 @@ private fun extractProcessFileChanges(content: String): Set<String> {
 }
 
 private fun String.isReadTool(): Boolean =
-    contains("read") || contains("open") || contains("cat")
+    contains("read") || contains("open") || contains("cat") || contains("list_files")
 
 private fun String.isCommandTool(): Boolean =
     contains("bash") || contains("command") || contains("shell") || contains("terminal") || contains("exec")

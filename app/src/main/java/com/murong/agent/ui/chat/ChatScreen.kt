@@ -42,6 +42,7 @@ import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.Undo
 import androidx.compose.material3.Icon
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -206,8 +207,7 @@ private data class ChatQuestionRoundUi(
 )
 
 private data class ChatProcessEntryUi(
-    val messageIndex: Int,
-    val reasoningOnly: Boolean = false
+    val messageIndex: Int
 )
 
 private data class ChatProcessGroupUi(
@@ -225,10 +225,9 @@ private sealed interface ChatTimelineItemUi {
 
     data class Message(
         val messageIndex: Int,
-        override val roundId: Long?,
-        val hideReasoning: Boolean = false
+        override val roundId: Long?
     ) : ChatTimelineItemUi {
-        override val key: String = "msg:$messageIndex:${if (hideReasoning) "answer" else "full"}"
+        override val key: String = "msg:$messageIndex"
         override val contentType: String = "message"
     }
 
@@ -238,6 +237,14 @@ private sealed interface ChatTimelineItemUi {
         override val key: String = "process:${group.groupId}"
         override val roundId: Long = group.roundId
         override val contentType: String = "process_group"
+    }
+
+    data class WorkspaceReview(
+        val review: ChatWorkspaceReviewUi,
+        override val roundId: Long
+    ) : ChatTimelineItemUi {
+        override val key: String = "workspace_review:${review.checkpoint.id}"
+        override val contentType: String = "workspace_review"
     }
 
     data class FoldedRound(
@@ -357,6 +364,7 @@ internal fun ChatScreen(
     var showRecentHistorySurface by remember(state.sessionId) { mutableStateOf(false) }
     var showArchivedMemorySurface by remember(state.sessionId) { mutableStateOf(false) }
     var selectedCheckpoint by remember(state.sessionId) { mutableStateOf<ConversationCheckpointUi?>(null) }
+    var selectedCheckpointCodeOnly by remember(state.sessionId) { mutableStateOf(false) }
     var selectedRecoveryId by remember(state.sessionId) { mutableStateOf<String?>(null) }
     var selectedFileChange by remember(state.sessionId) { mutableStateOf<FileChangeRecordUi?>(null) }
     val selectedMentions = remember(state.sessionId) { mutableStateListOf<FileMentionUi>() }
@@ -745,6 +753,12 @@ internal fun ChatScreen(
     val questionRounds = remember(messages) {
         buildChatQuestionRounds(messages)
     }
+    val workspaceReviews = remember(state.checkpoints, state.fileChanges) {
+        buildChatWorkspaceReviews(
+            checkpoints = state.checkpoints,
+            fileChanges = state.fileChanges
+        )
+    }
     val enableLongConversationCollapse = remember(questionRounds) {
         questionRounds.size >= CHAT_COLLAPSE_MIN_ROUNDS
     }
@@ -752,12 +766,15 @@ internal fun ChatScreen(
     val timelineItems = remember(
         messages,
         questionRounds,
+        workspaceReviews,
+        state.isProcessing,
         enableLongConversationCollapse,
         roundExpansionSnapshot
     ) {
         buildChatTimelineItems(
             messages = messages,
             rounds = questionRounds,
+            workspaceReviews = workspaceReviews,
             isProcessing = state.isProcessing,
             enableRoundCollapse = enableLongConversationCollapse,
             expansionOverrides = roundExpansionSnapshot
@@ -1444,9 +1461,34 @@ internal fun ChatScreen(
                                     )
                                 }
 
+                                is ChatTimelineItemUi.WorkspaceReview -> {
+                                    val wasRecovered = state.recentRecoveryRecords.any { recovery ->
+                                        recovery.checkpointId == item.review.checkpoint.id &&
+                                            recovery.scope != ConversationCheckpointScope.CONVERSATION
+                                    }
+                                    ChatWorkspaceReviewCard(
+                                        review = item.review,
+                                        undoEnabled = !state.isProcessing && !wasRecovered,
+                                        wasRecovered = wasRecovered,
+                                        onUndo = {
+                                            onRollbackCheckpoint(
+                                                item.review.checkpoint.id,
+                                                ConversationCheckpointScope.CODE
+                                            )
+                                        },
+                                        onReview = {
+                                            selectedCheckpointCodeOnly = true
+                                            selectedCheckpoint = item.review.checkpoint
+                                        },
+                                        onOpenFile = { file ->
+                                            selectedFileChange = file.record
+                                        }
+                                    )
+                                }
+
                                 is ChatTimelineItemUi.Message -> {
                                     val sourceMessage = messages[item.messageIndex]
-                                    val msg = if (item.hideReasoning) sourceMessage.copy(reasoning = null) else sourceMessage
+                                    val msg = sourceMessage
                                     val subagentRun = msg.subagentRunId?.let(subagentRunsById::get)
                                     val subagentBatch = msg.subagentBatchId?.let(subagentBatchesById::get)
                                     val previousMessage = messages.getOrNull(item.messageIndex - 1)
@@ -2306,6 +2348,7 @@ internal fun ChatScreen(
             presentation = checkpointHistoryPresentation,
             onDismiss = { showFileChangeHistory = false },
             onOpenCheckpoint = { checkpointId ->
+                selectedCheckpointCodeOnly = false
                 selectedCheckpoint = state.checkpoints.firstOrNull { it.id == checkpointId }
                 showFileChangeHistory = false
             },
@@ -2331,21 +2374,42 @@ internal fun ChatScreen(
         )
     }
     selectedCheckpoint?.let { checkpoint ->
+        val rollbackScope = if (selectedCheckpointCodeOnly) {
+            ConversationCheckpointScope.CODE
+        } else {
+            checkpoint.scope
+        }
+        val checkpointRecords = if (selectedCheckpointCodeOnly) {
+            workspaceReviews
+                .firstOrNull { it.checkpoint.id == checkpoint.id }
+                ?.files
+                ?.map { it.record }
+                .orEmpty()
+        } else {
+            state.fileChanges.filter { it.checkpointId == checkpoint.id }
+        }
         FileChangeBatchDetailSheet(
             checkpoint = checkpoint,
-            records = state.fileChanges.filter { it.checkpointId == checkpoint.id },
-            onDismiss = { selectedCheckpoint = null },
+            records = checkpointRecords,
+            rollbackScope = rollbackScope,
+            onDismiss = {
+                selectedCheckpoint = null
+                selectedCheckpointCodeOnly = false
+            },
             onRollbackCheckpoint = {
                 selectedCheckpoint = null
-                onRollbackCheckpoint(checkpoint.id, checkpoint.scope)
+                selectedCheckpointCodeOnly = false
+                onRollbackCheckpoint(checkpoint.id, rollbackScope)
             },
             onForkCheckpoint = {
                 selectedCheckpoint = null
+                selectedCheckpointCodeOnly = false
                 onForkCheckpointSession(checkpoint.id)
             },
             onOpenRecord = { record ->
                 selectedFileChange = record
                 selectedCheckpoint = null
+                selectedCheckpointCodeOnly = false
             }
         )
     }
@@ -4815,7 +4879,9 @@ private fun MessageBubble(
                         onLongClick = onLongPress
                     )
             ) {
-                var expanded by remember(msg.id) { mutableStateOf(msg.isStreaming) }
+                var expanded by remember(msg.id) {
+                    mutableStateOf(msg.isStreaming || !reasoningContent.isNullOrBlank())
+                }
                 LaunchedEffect(msg.id, msg.isStreaming, reasoningContent) {
                     if (msg.isStreaming && !reasoningContent.isNullOrBlank()) {
                         expanded = true
@@ -7381,11 +7447,11 @@ private fun ChatProcessGroupCard(
 ) {
     val chromeColor = rememberMurongChromeColor()
     val mutedTextColor = rememberMurongMutedTextColor()
-    var expanded by rememberSaveable(group.groupId) { mutableStateOf(group.isRunning) }
-    LaunchedEffect(group.isRunning) {
-        expanded = group.isRunning
-    }
+    var expanded by rememberSaveable(group.groupId) { mutableStateOf(false) }
     val labels = remember(group.summary) { group.summary.labels() }
+    val title = labels.joinToString(" · ").ifBlank {
+        if (group.isRunning) "正在执行工具" else "已执行 ${group.entries.size} 个工具"
+    }
     MurongGlassSurface(
         modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
         shape = RoundedCornerShape(18.dp),
@@ -7410,14 +7476,14 @@ private fun ChatProcessGroupCard(
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (group.isRunning) "执行过程" else "已完成执行过程",
+                            text = title,
                             style = MaterialTheme.typography.labelLarge
                         )
-                        if (labels.isNotEmpty()) {
+                        if (group.summary.hasFailure) {
                             Text(
-                                text = labels.joinToString(" · "),
+                                text = "部分工具执行失败，可展开查看详情",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = mutedTextColor,
+                                color = MaterialTheme.colorScheme.error,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -7425,7 +7491,11 @@ private fun ChatProcessGroupCard(
                     }
                 }
                 Text(
-                    text = if (group.isRunning) "进行中" else if (expanded) "收起" else "展开",
+                    text = when {
+                        expanded -> "收起"
+                        group.isRunning -> "进行中"
+                        else -> "展开"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = if (group.isRunning) MaterialTheme.colorScheme.primary else mutedTextColor
                 )
@@ -7434,7 +7504,7 @@ private fun ChatProcessGroupCard(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     group.entries.forEach { entry ->
                         val sourceMessage = messages[entry.messageIndex]
-                        val message = if (entry.reasoningOnly) sourceMessage.copy(content = "") else sourceMessage
+                        val message = sourceMessage
                         val subagentRun = message.subagentRunId?.let(subagentRunsById::get)
                         val subagentBatch = message.subagentBatchId?.let(subagentBatchesById::get)
                         MessageBubble(
@@ -7451,6 +7521,139 @@ private fun ChatProcessGroupCard(
                             onClick = { onOpenSubagent(subagentRun, subagentBatch) }
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatWorkspaceReviewCard(
+    review: ChatWorkspaceReviewUi,
+    undoEnabled: Boolean,
+    wasRecovered: Boolean,
+    onUndo: () -> Unit,
+    onReview: () -> Unit,
+    onOpenFile: (ChatWorkspaceReviewFileUi) -> Unit
+) {
+    val chromeColor = rememberMurongChromeColor()
+    val surfaceColor = rememberMurongSurfaceColor()
+    val mutedTextColor = rememberMurongMutedTextColor()
+    var expanded by rememberSaveable(review.checkpoint.id) { mutableStateOf(false) }
+    val visibleFiles = if (expanded) review.files else review.files.take(3)
+    MurongGlassSurface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+        surfaceColorOverride = chromeColor.copy(alpha = 0.62f)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "已编辑 ${review.files.size} 个文件",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "+${review.addedLines}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "-${review.deletedLines}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        if (wasRecovered) {
+                            Text(
+                                text = "已撤销",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = mutedTextColor
+                            )
+                        }
+                    }
+                }
+                IconButton(
+                    onClick = onUndo,
+                    enabled = undoEnabled
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Undo,
+                        contentDescription = "撤销本轮文件修改",
+                        tint = if (undoEnabled) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            mutedTextColor.copy(alpha = 0.55f)
+                        }
+                    )
+                }
+                TextButton(onClick = onReview) {
+                    Text("审核")
+                }
+            }
+            visibleFiles.forEach { file ->
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenFile(file) },
+                    shape = RoundedCornerShape(12.dp),
+                    color = surfaceColor.copy(alpha = 0.72f)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 9.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = file.record.path,
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "+${file.addedLines}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "-${file.deletedLines}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+            if (review.files.size > 3) {
+                TextButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { expanded = !expanded }
+                ) {
+                    Text(
+                        if (expanded) {
+                            "收起文件列表"
+                        } else {
+                            "完全展开 ${review.files.size} 个文件"
+                        }
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(
+                        imageVector = if (expanded) {
+                            Icons.Outlined.KeyboardArrowUp
+                        } else {
+                            Icons.Outlined.KeyboardArrowDown
+                        },
+                        contentDescription = null
+                    )
                 }
             }
         }
@@ -7615,7 +7818,7 @@ private fun ReasoningCard(
                     } else {
                         SelectableMarkdownContent(
                             text = normalizedContent,
-                            fontSize = 12,
+                            fontSize = 14,
                             modifier = Modifier.padding(10.dp),
                             maxHeight = 320.dp
                         )
@@ -7651,9 +7854,6 @@ private fun ToolExecutionCard(
                 }
             }
         )
-        tool.callId?.takeIf { it.isNotBlank() }?.let { callId ->
-            DetailRow("调用 ID", callId)
-        }
         when {
             tool.waitingForArgs -> {
                 Text(
@@ -7687,12 +7887,7 @@ private fun buildChatQuestionRounds(messages: List<ChatMessageUi>): List<ChatQue
             startIndex = startIndex,
             endExclusive = endExclusive,
             messageCount = roundMessages.size,
-            processCount = roundMessages.count { message ->
-                message.role == "tool_exec" ||
-                    message.role == "subagent" ||
-                    message.role == "system" ||
-                    !message.reasoning.isNullOrBlank()
-            },
+            processCount = roundMessages.count(::isChatProcessMessage),
             containsStreaming = roundMessages.any { it.isStreaming }
         )
     }
@@ -7701,6 +7896,7 @@ private fun buildChatQuestionRounds(messages: List<ChatMessageUi>): List<ChatQue
 private fun buildChatTimelineItems(
     messages: List<ChatMessageUi>,
     rounds: List<ChatQuestionRoundUi>,
+    workspaceReviews: List<ChatWorkspaceReviewUi>,
     isProcessing: Boolean,
     enableRoundCollapse: Boolean,
     expansionOverrides: Map<Long, Boolean>
@@ -7731,6 +7927,9 @@ private fun buildChatTimelineItems(
         timelineItems += buildExpandedRoundTimelineItems(
             messages = messages,
             round = round,
+            workspaceReviews = workspaceReviews.filter { review ->
+                review.checkpoint.messageIndex in round.startIndex until round.endExclusive
+            },
             isProcessing = isProcessing
         )
     }
@@ -7740,16 +7939,10 @@ private fun buildChatTimelineItems(
 private fun buildExpandedRoundTimelineItems(
     messages: List<ChatMessageUi>,
     round: ChatQuestionRoundUi,
+    workspaceReviews: List<ChatWorkspaceReviewUi>,
     isProcessing: Boolean
 ): List<ChatTimelineItemUi> {
     val isActiveRound = round.endExclusive == messages.size
-    val finalAnswerIndex = messages
-        .subList(round.startIndex, round.endExclusive)
-        .indexOfLast { message ->
-            message.role == "assistant" && message.content.isNotBlank() && !message.isStreaming
-        }
-        .takeIf { it >= 0 }
-        ?.plus(round.startIndex)
     val processEntries = mutableListOf<ChatProcessEntryUi>()
     val timelineItems = mutableListOf<ChatTimelineItemUi>()
 
@@ -7763,7 +7956,13 @@ private fun buildExpandedRoundTimelineItems(
                 entries = entries,
                 summary = buildChatProcessSummary(entries.map { messages[it.messageIndex] }),
                 isRunning = isActiveRound &&
-                    (isProcessing || entries.any { messages[it.messageIndex].isStreaming })
+                    (
+                        entries.any { messages[it.messageIndex].isStreaming } ||
+                            (
+                                isProcessing &&
+                                    entries.last().messageIndex == round.endExclusive - 1
+                            )
+                        )
             )
         )
         processEntries.clear()
@@ -7771,23 +7970,8 @@ private fun buildExpandedRoundTimelineItems(
 
     for (messageIndex in round.startIndex until round.endExclusive) {
         val message = messages[messageIndex]
-        val processEntry = when {
-            messageIndex != round.startIndex && messageIndex != finalAnswerIndex ->
-                ChatProcessEntryUi(messageIndex)
-            isChatProcessMessage(message) -> ChatProcessEntryUi(messageIndex)
-            else -> null
-        }
-        if (processEntry != null) {
-            processEntries += processEntry
-        } else if (messageIndex == finalAnswerIndex && !message.reasoning.isNullOrBlank()) {
-            // 最终回复只保留正文；其 reasoning 也应归入已完成的执行过程。
-            processEntries += ChatProcessEntryUi(messageIndex, reasoningOnly = true)
-            flushProcessGroup()
-            timelineItems += ChatTimelineItemUi.Message(
-                messageIndex = messageIndex,
-                roundId = round.userMessageId,
-                hideReasoning = true
-            )
+        if (isChatProcessMessage(message)) {
+            processEntries += ChatProcessEntryUi(messageIndex)
         } else {
             flushProcessGroup()
             timelineItems += ChatTimelineItemUi.Message(
@@ -7797,6 +7981,12 @@ private fun buildExpandedRoundTimelineItems(
         }
     }
     flushProcessGroup()
+    workspaceReviews.forEach { review ->
+        timelineItems += ChatTimelineItemUi.WorkspaceReview(
+            review = review,
+            roundId = round.userMessageId
+        )
+    }
     return timelineItems
 }
 
@@ -8232,6 +8422,8 @@ private fun isQuietTool(toolName: String): Boolean {
         "grep",
         "glob",
         "ls",
+        "list_files",
+        "code_search",
         "searchcodebase",
         "webfetch",
         "web_fetch" -> true
@@ -8256,11 +8448,13 @@ private fun truncateInlineText(value: String, maxLength: Int = 56): String {
     return singleLine.take(maxLength - 1).trimEnd() + "…"
 }
 
-private fun displayToolName(toolName: String): String {
+internal fun displayToolName(toolName: String): String {
     return when (toolName.lowercase()) {
         "file" -> "文件"
-        "shell", "command" -> "命令"
+        "shell", "command", "run_terminal" -> "运行命令"
         "read" -> "读取"
+        "list_files" -> "列出文件"
+        "code_search" -> "搜索代码"
         "grep" -> "搜索"
         "glob" -> "匹配"
         "searchcodebase" -> "代码库搜索"
@@ -9949,6 +10143,7 @@ private fun CheckpointRecoveryDetailSheet(
 private fun FileChangeBatchDetailSheet(
     checkpoint: ConversationCheckpointUi,
     records: List<FileChangeRecordUi>,
+    rollbackScope: ConversationCheckpointScope,
     onDismiss: () -> Unit,
     onRollbackCheckpoint: () -> Unit,
     onForkCheckpoint: () -> Unit,
@@ -9996,7 +10191,7 @@ private fun FileChangeBatchDetailSheet(
                         color = MaterialTheme.colorScheme.error
                     )
                     Text(
-                        text = formatCheckpointRollbackImpactCopy(checkpoint.scope),
+                        text = formatCheckpointRollbackImpactCopy(rollbackScope),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface
                     )
@@ -10005,9 +10200,9 @@ private fun FileChangeBatchDetailSheet(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilledTonalButton(
                     onClick = onRollbackCheckpoint,
-                    enabled = checkpoint.scope != ConversationCheckpointScope.CODE || records.isNotEmpty()
+                    enabled = rollbackScope != ConversationCheckpointScope.CODE || records.isNotEmpty()
                 ) {
-                    Text(formatCheckpointRollbackActionLabel(checkpoint.scope))
+                    Text(formatCheckpointRollbackActionLabel(rollbackScope))
                 }
                 OutlinedButton(onClick = onForkCheckpoint) {
                     Text("分叉会话")
