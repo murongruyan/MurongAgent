@@ -215,6 +215,8 @@ func TestMainPushPublishesAndSyncsCuratedReleaseNotes(t *testing.T) {
 		"--retry-all-errors",
 		"--retry-max-time 18000",
 		"timeout-minutes: 360",
+		"RELEASES_ORIGIN_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}",
+		`curl_origin_args=(--resolve "${releases_api_host}:443:${releases_origin_ip}")`,
 		`notes_path = Path("../release-source/release-notes/latest.md")`,
 		`"changelog": changelog`,
 		`tag="${INPUT_RELEASE_TAG:-murong-suite-v${suite_version}}"`,

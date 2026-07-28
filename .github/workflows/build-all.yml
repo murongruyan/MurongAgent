@@ -1001,10 +1001,27 @@ jobs:
         env:
           RELEASES_API_URL: https://murongagent.rl1.cc/api/releases.php
           RELEASES_ADMIN_TOKEN: ${{ secrets.MURONG_AGENT_RELEASES_ADMIN_TOKEN }}
+          RELEASES_ORIGIN_HOST: ${{ secrets.MURONG_AGENT_DEPLOY_HOST }}
           METADATA_FILE: ${{ matrix.metadata_file }}
         run: |
           set -euo pipefail
           [[ -n "${RELEASES_ADMIN_TOKEN:-}" ]] || { echo "Missing MURONG_AGENT_RELEASES_ADMIN_TOKEN" >&2; exit 1; }
+          curl_origin_args=()
+          if [[ -n "${RELEASES_ORIGIN_HOST:-}" ]]; then
+            releases_api_host="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.urlsplit(sys.argv[1]).hostname or "")' "$RELEASES_API_URL")"
+            releases_origin_ip="$(RELEASES_ORIGIN_HOST="$RELEASES_ORIGIN_HOST" python3 - <<'PY'
+          import os, socket
+          host = os.environ["RELEASES_ORIGIN_HOST"].strip().strip("[]")
+          addresses = socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
+          if not addresses:
+              raise SystemExit("configured release origin did not resolve to IPv4")
+          print(addresses[0][4][0])
+          PY
+          )"
+            [[ -n "$releases_api_host" && -n "$releases_origin_ip" ]] || { echo "Invalid release origin configuration" >&2; exit 1; }
+            curl_origin_args=(--resolve "${releases_api_host}:443:${releases_origin_ip}")
+            echo "Using the configured origin server for release synchronization."
+          fi
           directory="$(dirname "$METADATA_FILE")"
           artifact="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["artifactKey"])' "$METADATA_FILE")"
           file_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["fileName"])' "$METADATA_FILE")"
@@ -1014,7 +1031,7 @@ jobs:
           echo "Uploading ${artifact} ${version_name} (${version_code}): ${file_name}, ${file_size} bytes"
           response_file="$(mktemp)"
           trap 'rm -f "$response_file" payload.json response.json' EXIT
-          status="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}' \
+          status="$(curl "${curl_origin_args[@]}" --silent --show-error --output "$response_file" --write-out '%{http_code}' \
             --connect-timeout 30 \
             --max-time 18000 \
             --speed-time 300 \
@@ -1056,7 +1073,7 @@ jobs:
           })
           print(json.dumps(metadata, ensure_ascii=False))
           PY
-          status="$(curl --silent --show-error --output response.json --write-out '%{http_code}' \
+          status="$(curl "${curl_origin_args[@]}" --silent --show-error --output response.json --write-out '%{http_code}' \
             --connect-timeout 30 \
             --max-time 300 \
             --retry 4 \
