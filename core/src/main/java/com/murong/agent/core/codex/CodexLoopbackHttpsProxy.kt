@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class CodexLoopbackHttpsProxy private constructor(
     private val serverSocket: ServerSocket,
     private val workers: ExecutorService,
+    private val upstreamProxy: CodexNetworkProxyEndpoint?,
 ) : Closeable {
     private val closed = AtomicBoolean(false)
     private val acceptThread = Thread(::acceptConnections, "codex-loopback-proxy").apply {
@@ -77,36 +78,34 @@ internal class CodexLoopbackHttpsProxy private constructor(
                 return
             }
 
-            val upstream = Socket()
+            var upstream: CodexProxyConnection? = null
             try {
                 // Host and port are deliberately safe to log: this proxy has no
                 // URL paths, headers, device codes, or authentication payloads.
                 Log.i(TAG, "Tunneling Codex HTTPS to ${target.host}:${target.port}")
-                // Socket hostname resolution goes through Android's own network stack.
-                upstream.connect(InetSocketAddress(target.host, target.port), CONNECT_TIMEOUT_MILLIS)
+                val connected = openUpstream(target)
+                upstream = connected
                 // The tunnel lifetime is owned by the child process and the
                 // proxy Closeable. It must not inherit the header timeout.
                 acceptedClient.soTimeout = 0
-                upstream.soTimeout = 0
+                connected.socket.soTimeout = 0
                 writeResponse(output, "200 Connection Established")
 
-                val upstreamInput = BufferedInputStream(upstream.getInputStream())
-                val upstreamOutput = upstream.getOutputStream()
                 val clientToUpstream = workers.submit {
                     try {
-                        input.copyTo(upstreamOutput)
+                        input.copyTo(connected.output)
                         // Do not buffer a TLS tunnel: copyTo only returns after
                         // the peer closes, which would otherwise retain the TLS
                         // ClientHello/response until the request times out.
-                        upstreamOutput.flush()
+                        connected.output.flush()
                     } catch (_: IOException) {
                         // Closing either side is expected for a CONNECT tunnel.
                     } finally {
-                        runCatching { upstream.shutdownOutput() }
+                        runCatching { connected.socket.shutdownOutput() }
                     }
                 }
                 try {
-                    upstreamInput.copyTo(output)
+                    connected.input.copyTo(output)
                     output.flush()
                 } catch (_: IOException) {
                     // Closing either side is expected for a CONNECT tunnel.
@@ -117,9 +116,90 @@ internal class CodexLoopbackHttpsProxy private constructor(
                 writeResponse(output, "502 Bad Gateway")
                 Log.w(TAG, "Codex proxy could not reach ${target.host}:${target.port}", error)
             } finally {
-                runCatching { upstream.close() }
+                runCatching { upstream?.socket?.close() }
             }
         }
+    }
+
+    private fun openUpstream(target: CodexProxyTarget): CodexProxyConnection {
+        val directError = runCatching { connectDirectly(target) }
+            .onSuccess { return it }
+            .exceptionOrNull()
+        val configuredProxy = upstreamProxy
+            ?: throw (directError ?: IOException("Android network connection failed"))
+        Log.w(
+            TAG,
+            "Android network could not reach ${target.host}:${target.port}; retrying via system proxy ${configuredProxy.authority}",
+            directError,
+        )
+        return try {
+            connectThroughProxy(configuredProxy, target)
+        } catch (proxyError: Throwable) {
+            directError?.let(proxyError::addSuppressed)
+            throw proxyError
+        }
+    }
+
+    private fun connectDirectly(target: CodexProxyTarget): CodexProxyConnection {
+        val socket = Socket()
+        try {
+            // Hostname resolution goes through Android's per-network DNS stack.
+            socket.connect(InetSocketAddress(target.host, target.port), CONNECT_TIMEOUT_MILLIS)
+            return CodexProxyConnection(
+                socket = socket,
+                input = BufferedInputStream(socket.getInputStream()),
+                output = socket.getOutputStream(),
+            )
+        } catch (error: Throwable) {
+            runCatching { socket.close() }
+            throw error
+        }
+    }
+
+    private fun connectThroughProxy(
+        proxy: CodexNetworkProxyEndpoint,
+        target: CodexProxyTarget,
+    ): CodexProxyConnection {
+        val socket = Socket()
+        try {
+            socket.connect(InetSocketAddress(proxy.host, proxy.port), CONNECT_TIMEOUT_MILLIS)
+            socket.soTimeout = CONNECT_REQUEST_TIMEOUT_MILLIS
+            val input = BufferedInputStream(socket.getInputStream())
+            val output = socket.getOutputStream()
+            val authority = "${target.host}:${target.port}"
+            output.write(
+                (
+                    "CONNECT $authority HTTP/1.1\r\n" +
+                        "Host: $authority\r\n" +
+                        "Proxy-Connection: Keep-Alive\r\n\r\n"
+                    ).toByteArray(Charsets.US_ASCII),
+            )
+            output.flush()
+            val responseLine = readAsciiLine(input)
+            val responseParts = responseLine.split(' ', limit = 3)
+            val statusCode = responseParts.getOrNull(1)?.toIntOrNull()
+            require(
+                responseParts.size >= 2 &&
+                    responseParts[0].startsWith("HTTP/") &&
+                    statusCode != null &&
+                    statusCode in 200..299,
+            ) {
+                "System proxy rejected CONNECT"
+            }
+            consumeHeaders(input)
+            socket.soTimeout = 0
+            return CodexProxyConnection(socket = socket, input = input, output = output)
+        } catch (error: Throwable) {
+            runCatching { socket.close() }
+            throw error
+        }
+    }
+
+    private fun consumeHeaders(input: BufferedInputStream) {
+        for (index in 0 until MAX_HEADER_LINES) {
+            if (readAsciiLine(input).isEmpty()) return
+        }
+        throw IllegalArgumentException("Too many proxy response headers")
     }
 
     private fun readConnectTarget(input: BufferedInputStream): CodexProxyTarget {
@@ -162,7 +242,7 @@ internal class CodexLoopbackHttpsProxy private constructor(
         private const val MAX_HEADER_LINES = 64
         private const val MAX_LINE_BYTES = 8 * 1024
 
-        fun start(): CodexLoopbackHttpsProxy {
+        fun start(upstreamProxy: CodexNetworkProxyEndpoint? = null): CodexLoopbackHttpsProxy {
             val serverSocket = ServerSocket().apply {
                 reuseAddress = true
                 // getLoopbackAddress() may choose IPv6 (::1). The static
@@ -175,10 +255,17 @@ internal class CodexLoopbackHttpsProxy private constructor(
                 workers = Executors.newCachedThreadPool { runnable ->
                     Thread(runnable, "codex-loopback-proxy-worker").apply { isDaemon = true }
                 },
+                upstreamProxy = upstreamProxy,
             )
         }
     }
 }
+
+private data class CodexProxyConnection(
+    val socket: Socket,
+    val input: BufferedInputStream,
+    val output: OutputStream,
+)
 
 internal data class CodexProxyTarget(
     val host: String,

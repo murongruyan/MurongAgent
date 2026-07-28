@@ -55,7 +55,7 @@ func TestCheckDesktopUpdatePrefersManifestVersion(t *testing.T) {
 				]
 			}`
 		case strings.HasSuffix(request.URL.Path, "/release-manifest.json"):
-			body = `{"versions":{"desktopAgent":{"name":"1.36"}}}`
+			body = `{"versions":{"desktopAgent":{"name":"1.37"}}}`
 		default:
 			return &http.Response{
 				StatusCode: http.StatusNotFound,
@@ -79,7 +79,7 @@ func TestCheckDesktopUpdatePrefersManifestVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.LatestVersion != "1.36" || !info.UpdateAvailable {
+	if info.LatestVersion != "1.37" || !info.UpdateAvailable {
 		t.Fatalf("unexpected update info: %#v", info)
 	}
 	if info.PackageName != "murong-desktop-agent-windows-amd64.exe" {

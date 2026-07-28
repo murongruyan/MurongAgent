@@ -90,16 +90,13 @@ internal class AndroidCodexAppServerTransportFactory(
         val cwd = workingDirectory
             ?.takeIf { it.isDirectory }
             ?: appContext.filesDir
-        // A VPN may publish a local HTTP proxy in LinkProperties without setting
-        // Android's legacy global proxy. Prefer that numeric endpoint: the static
-        // Linux app-server can reach it without DNS, and the VPN owns DNS/routing.
-        // The narrow Java CONNECT bridge remains a fallback for ordinary networks.
-        val networkProxyUrl = activeNetworkProxyUrl()
-        val loopbackProxy = if (
-            command.kind == CodexAppServerExecutableKind.DEDICATED_APP_SERVER &&
-            networkProxyUrl == null
-        ) {
-            CodexLoopbackHttpsProxy.start()
+        // The Linux-musl app-server cannot reliably use Android's per-network DNS.
+        // Always keep the dedicated server behind the Java bridge, including when
+        // a VPN publishes a numeric HTTP proxy. Android-routed sockets are tried
+        // first; the published proxy remains a fallback for proxy-only networks.
+        val networkProxy = activeNetworkProxy()
+        val loopbackProxy = if (command.kind == CodexAppServerExecutableKind.DEDICATED_APP_SERVER) {
+            CodexLoopbackHttpsProxy.start(upstreamProxy = networkProxy)
         } else {
             null
         }
@@ -118,7 +115,7 @@ internal class AndroidCodexAppServerTransportFactory(
                 builder.environment().remove("LD_PRELOAD")
                 builder.environment().remove("TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE")
             }
-            (networkProxyUrl ?: loopbackProxy?.proxyUrl)?.let { proxyUrl ->
+            (loopbackProxy?.proxyUrl ?: networkProxy?.proxyUrl)?.let { proxyUrl ->
                 // reqwest honours both spellings. The proxy only CONNECTs to the
                 // OpenAI/ChatGPT allowlist when bridged, and leaves TLS end-to-end
                 // encrypted in both cases. The network proxy is supplied by the
@@ -158,7 +155,7 @@ internal class AndroidCodexAppServerTransportFactory(
         }
     }
 
-    private fun activeNetworkProxyUrl(): String? {
+    private fun activeNetworkProxy(): CodexNetworkProxyEndpoint? {
         val connectivityManager = appContext.getSystemService(ConnectivityManager::class.java)
             ?: return null
         val activeNetwork = connectivityManager.activeNetwork ?: return null
@@ -166,7 +163,7 @@ internal class AndroidCodexAppServerTransportFactory(
         // PAC URLs require evaluating JavaScript and cannot be converted safely to
         // one static proxy endpoint. Let the loopback bridge handle that case.
         if (proxyInfo.pacFileUrl != Uri.EMPTY) return null
-        return CodexNetworkProxyUrl.fromNumericHost(proxyInfo.host, proxyInfo.port)
+        return CodexNetworkProxyEndpoint.fromNumericHost(proxyInfo.host, proxyInfo.port)
     }
 
     companion object {
@@ -177,16 +174,26 @@ internal class AndroidCodexAppServerTransportFactory(
 }
 
 /** Android-free normalization so system-proxy selection stays unit-testable. */
-internal object CodexNetworkProxyUrl {
-    fun fromNumericHost(host: String?, port: Int): String? {
-        val normalizedHost = host?.trim()?.removeSurrounding("[", "]").orEmpty()
-        if (normalizedHost.isEmpty() || port !in 1..65_535) return null
-        val isIpv4 = normalizedHost.split('.').let { octets ->
-            octets.size == 4 && octets.all { it.toIntOrNull() in 0..255 }
+internal data class CodexNetworkProxyEndpoint(
+    val host: String,
+    val port: Int,
+) {
+    val authority: String
+        get() = if (':' in host) "[$host]:$port" else "$host:$port"
+
+    val proxyUrl: String
+        get() = "http://$authority"
+
+    companion object {
+        fun fromNumericHost(host: String?, port: Int): CodexNetworkProxyEndpoint? {
+            val normalizedHost = host?.trim()?.removeSurrounding("[", "]").orEmpty()
+            if (normalizedHost.isEmpty() || port !in 1..65_535) return null
+            val isIpv4 = normalizedHost.split('.').let { octets ->
+                octets.size == 4 && octets.all { it.toIntOrNull() in 0..255 }
+            }
+            val isIpv6 = ':' in normalizedHost
+            if (!isIpv4 && !isIpv6) return null
+            return CodexNetworkProxyEndpoint(host = normalizedHost, port = port)
         }
-        val isIpv6 = ':' in normalizedHost
-        if (!isIpv4 && !isIpv6) return null
-        val hostForUrl = if (isIpv6) "[$normalizedHost]" else normalizedHost
-        return "http://$hostForUrl:$port"
     }
 }

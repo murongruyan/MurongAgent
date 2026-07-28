@@ -208,6 +208,13 @@ func TestMainPushPublishesAndSyncsCuratedReleaseNotes(t *testing.T) {
 	for _, marker := range []string{
 		"if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_release)",
 		"if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.sync_mobile_to_server)",
+		"strategy:",
+		"fail-fast: false",
+		"metadata_file: mobile/android-app/android-app.json",
+		"metadata_file: mobile/terminal-extension/terminal-extension.json",
+		"--retry-all-errors",
+		"--retry-max-time 18000",
+		"timeout-minutes: 360",
 		`notes_path = Path("../release-source/release-notes/latest.md")`,
 		`"changelog": changelog`,
 		`tag="${INPUT_RELEASE_TAG:-murong-suite-v${suite_version}}"`,

@@ -29,12 +29,12 @@ on:
         description: "统一 Release 标签；为空时使用 murong-suite-v<主程序对外版本号>"
         required: false
       suite_version_name:
-        description: "主程序对外版本号（主版本.次版本，例如 1.35；Android 与 Desktop 共用）"
+        description: "主程序对外版本号（主版本.次版本，例如 1.36；Android 与 Desktop 共用）"
         type: string
         required: false
         default: ""
       suite_build_number:
-        description: "主程序内部构建号（Android versionCode，例如 26072803；不是次版本号）"
+        description: "主程序内部构建号（Android versionCode，例如 26072804；不是次版本号）"
         type: string
         required: false
         default: ""
@@ -155,7 +155,7 @@ jobs:
           version_name="${INPUT_VERSION_NAME:-$(read_gradle_default versionName)}"
           version_code="${INPUT_VERSION_CODE:-$(read_gradle_default versionCode)}"
           [[ "${version_name}" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] || {
-            echo "Invalid suite version: ${version_name}; expected major.minor, for example 1.35" >&2
+            echo "Invalid suite version: ${version_name}; expected major.minor, for example 1.36" >&2
             exit 1
           }
           [[ "${version_code}" =~ ^[1-9][0-9]*$ ]] &&
@@ -972,60 +972,71 @@ jobs:
           fi
 
   sync_mobile:
-    name: Sync Mobile Packages To Murong Backend
+    name: Sync ${{ matrix.label }} To Murong Backend
     needs: [android_app, terminal_extension, verify]
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.sync_mobile_to_server)
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Android App
+            artifact_name: murong-android-app
+            artifact_path: mobile/android-app
+            metadata_file: mobile/android-app/android-app.json
+          - label: Terminal Extension
+            artifact_name: murong-terminal-extension
+            artifact_path: mobile/terminal-extension
+            metadata_file: mobile/terminal-extension/terminal-extension.json
     steps:
-      - name: Download Main APK Artifact
+      - name: Download Mobile Artifact
         uses: actions/download-artifact@v8
         with:
-          name: murong-android-app
-          path: mobile/android-app
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_path }}
 
-      - name: Download Terminal Extension Artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: murong-terminal-extension
-          path: mobile/terminal-extension
-
-      - name: Upload APKs And Publish Metadata
+      - name: Upload APK And Publish Metadata
         shell: bash
         env:
           RELEASES_API_URL: https://murongagent.rl1.cc/api/releases.php
           RELEASES_ADMIN_TOKEN: ${{ secrets.MURONG_AGENT_RELEASES_ADMIN_TOKEN }}
+          METADATA_FILE: ${{ matrix.metadata_file }}
         run: |
           set -euo pipefail
           [[ -n "${RELEASES_ADMIN_TOKEN:-}" ]] || { echo "Missing MURONG_AGENT_RELEASES_ADMIN_TOKEN" >&2; exit 1; }
-          for metadata_file in mobile/android-app/android-app.json mobile/terminal-extension/terminal-extension.json; do
-            directory="$(dirname "$metadata_file")"
-            artifact="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["artifactKey"])' "$metadata_file")"
-            file_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["fileName"])' "$metadata_file")"
-            version_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["versionName"])' "$metadata_file")"
-            version_code="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["versionCode"])' "$metadata_file")"
-            file_size="$(stat -c%s "${directory}/${file_name}")"
-            echo "Uploading ${artifact} ${version_name} (${version_code}): ${file_name}, ${file_size} bytes"
-            response_file="$(mktemp)"
-            status="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}' \
-              --connect-timeout 30 \
-              --max-time 7200 \
-              --speed-time 300 \
-              --speed-limit 1024 \
-              -X POST \
-              -H "Authorization: Bearer ${RELEASES_ADMIN_TOKEN}" \
-              -H 'Accept: application/json' \
-              -H 'Expect: 100-continue' \
-              -F "token=${RELEASES_ADMIN_TOKEN}" \
-              -F "artifact=${artifact}" \
-              -F "apk_file=@${directory}/${file_name};type=application/vnd.android.package-archive" \
-              -F "target_name=${file_name}" \
-              -F "version=${version_name}" \
-              -F "version_code=${version_code}" \
-              "${RELEASES_API_URL}?action=upload")"
-            [[ "$status" == 200 || "$status" == 201 ]] || { cat "$response_file" >&2; exit 1; }
+          directory="$(dirname "$METADATA_FILE")"
+          artifact="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["artifactKey"])' "$METADATA_FILE")"
+          file_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["fileName"])' "$METADATA_FILE")"
+          version_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["versionName"])' "$METADATA_FILE")"
+          version_code="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["versionCode"])' "$METADATA_FILE")"
+          file_size="$(stat -c%s "${directory}/${file_name}")"
+          echo "Uploading ${artifact} ${version_name} (${version_code}): ${file_name}, ${file_size} bytes"
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file" payload.json response.json' EXIT
+          status="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}' \
+            --connect-timeout 30 \
+            --max-time 18000 \
+            --speed-time 300 \
+            --speed-limit 1024 \
+            --retry 4 \
+            --retry-delay 15 \
+            --retry-max-time 18000 \
+            --retry-all-errors \
+            -X POST \
+            -H "Authorization: Bearer ${RELEASES_ADMIN_TOKEN}" \
+            -H 'Accept: application/json' \
+            -H 'Expect: 100-continue' \
+            -F "token=${RELEASES_ADMIN_TOKEN}" \
+            -F "artifact=${artifact}" \
+            -F "apk_file=@${directory}/${file_name};type=application/vnd.android.package-archive" \
+            -F "target_name=${file_name}" \
+            -F "version=${version_name}" \
+            -F "version_code=${version_code}" \
+            "${RELEASES_API_URL}?action=upload")"
+          [[ "$status" == 200 || "$status" == 201 ]] || { cat "$response_file" >&2; exit 1; }
 
-            METADATA_FILE="$metadata_file" UPLOAD_RESPONSE="$(cat "$response_file")" RELEASES_ADMIN_TOKEN="$RELEASES_ADMIN_TOKEN" python3 - <<'PY' > payload.json
+          UPLOAD_RESPONSE="$(cat "$response_file")" RELEASES_ADMIN_TOKEN="$RELEASES_ADMIN_TOKEN" python3 - <<'PY' > payload.json
           import json, os
           metadata = json.load(open(os.environ["METADATA_FILE"], encoding="utf-8"))
           response = json.loads(os.environ["UPLOAD_RESPONSE"])
@@ -1045,13 +1056,17 @@ jobs:
           })
           print(json.dumps(metadata, ensure_ascii=False))
           PY
-            rm -f "$response_file"
-            status="$(curl --silent --show-error --output response.json --write-out '%{http_code}' \
-              -X POST \
-              -H "Authorization: Bearer ${RELEASES_ADMIN_TOKEN}" \
-              -H 'Content-Type: application/json' \
-              -H 'Accept: application/json' \
-              --data @payload.json \
-              "${RELEASES_API_URL}?action=create")"
-            [[ "$status" == 200 || "$status" == 201 ]] || { cat response.json >&2; exit 1; }
-          done
+          status="$(curl --silent --show-error --output response.json --write-out '%{http_code}' \
+            --connect-timeout 30 \
+            --max-time 300 \
+            --retry 4 \
+            --retry-delay 15 \
+            --retry-max-time 600 \
+            --retry-all-errors \
+            -X POST \
+            -H "Authorization: Bearer ${RELEASES_ADMIN_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json' \
+            --data @payload.json \
+            "${RELEASES_API_URL}?action=create")"
+          [[ "$status" == 200 || "$status" == 201 ]] || { cat response.json >&2; exit 1; }
