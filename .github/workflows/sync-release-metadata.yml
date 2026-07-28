@@ -1,0 +1,116 @@
+name: 同步 GitHub Release 更新元数据
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: GitHub Release 标签；为空时使用最新 Release
+        type: string
+        required: false
+        default: ""
+
+jobs:
+  sync:
+    name: Sync ${{ matrix.label }} Metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Android App
+            artifact_key: murongagent-app
+            version_key: androidApp
+            asset_prefix: murongagent-
+          - label: Terminal Extension
+            artifact_key: murong-terminal-extension
+            version_key: terminalExtension
+            asset_prefix: murong-terminal-extension-
+    steps:
+      - name: Resolve Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_RELEASE_TAG:-$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)}"
+          echo "tag=${tag}" >> "$GITHUB_ENV"
+          mkdir -p release-metadata
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            --pattern release-manifest.json \
+            --pattern RELEASE_NOTES.md \
+            --dir release-metadata
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" > release.json
+
+      - name: Publish Metadata To Backend
+        shell: bash
+        env:
+          RELEASES_API_URL: https://murongagent.rl1.cc/api/releases.php
+          RELEASES_ADMIN_TOKEN: ${{ secrets.MURONG_AGENT_RELEASES_ADMIN_TOKEN }}
+          ARTIFACT_KEY: ${{ matrix.artifact_key }}
+          VERSION_KEY: ${{ matrix.version_key }}
+          ASSET_PREFIX: ${{ matrix.asset_prefix }}
+        run: |
+          set -euo pipefail
+          [[ -n "${RELEASES_ADMIN_TOKEN:-}" ]] || { echo "Missing MURONG_AGENT_RELEASES_ADMIN_TOKEN" >&2; exit 1; }
+          python3 - <<'PY' > payload.json
+          import json, os
+          manifest = json.load(open("release-metadata/release-manifest.json", encoding="utf-8"))
+          release = json.load(open("release.json", encoding="utf-8"))
+          prefix = os.environ["ASSET_PREFIX"]
+          packages = [
+              item for item in manifest["packages"]
+              if item["fileName"].startswith(prefix) and item["fileName"].endswith(".apk")
+          ]
+          if len(packages) != 1:
+              raise SystemExit(f"expected one APK for {prefix}, found {len(packages)}")
+          package = packages[0]
+          assets = [item for item in release.get("assets", []) if item.get("name") == package["fileName"]]
+          if len(assets) != 1:
+              raise SystemExit(f"GitHub Release asset missing: {package['fileName']}")
+          asset = assets[0]
+          checksum = str(asset.get("digest") or "").removeprefix("sha256:")
+          if len(checksum) != 64 or checksum != package["sha256"] or int(asset["size"]) != int(package["size"]):
+              raise SystemExit(f"GitHub Release asset verification failed: {package['fileName']}")
+          version = manifest["versions"][os.environ["VERSION_KEY"]]
+          notes = open("release-metadata/RELEASE_NOTES.md", encoding="utf-8").read().strip()
+          print(json.dumps({
+              "artifactKey": os.environ["ARTIFACT_KEY"],
+              "channel": "stable",
+              "versionName": version["name"],
+              "versionCode": int(version["code"]),
+              "fileName": package["fileName"],
+              "downloadUrl": asset["browser_download_url"],
+              "checksumSha256": checksum,
+              "changelog": notes,
+              "updateMessage": f"发现 MurongAgent {version['name']} 更新",
+              "fileSize": int(asset["size"]),
+              "status": "active",
+              "token": os.environ["RELEASES_ADMIN_TOKEN"],
+          }, ensure_ascii=False))
+          PY
+          status="$(curl --silent --show-error --output response.json --write-out '%{http_code}' \
+            --connect-timeout 30 \
+            --max-time 300 \
+            --retry 4 \
+            --retry-delay 15 \
+            --retry-all-errors \
+            -X POST \
+            -H "Authorization: Bearer ${RELEASES_ADMIN_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json' \
+            --data @payload.json \
+            "${RELEASES_API_URL}?action=create")"
+          [[ "$status" == 200 || "$status" == 201 ]] || { cat response.json >&2; exit 1; }
+          python3 - <<'PY'
+          import json
+          response = json.load(open("response.json", encoding="utf-8"))
+          if not response.get("success"):
+              raise SystemExit(response.get("message", "metadata synchronization failed"))
+          data = response.get("data") or {}
+          print(f"Published {data.get('artifactKey')} {data.get('versionName')} -> {data.get('directDownloadUrl')}")
+          PY
