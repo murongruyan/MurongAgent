@@ -158,6 +158,47 @@ func TestUnifiedReleaseManifestDeclaresDesktopVersion(t *testing.T) {
 	}
 }
 
+func TestDesktopReleasePublishesThinAppAndIndependentRuntimePackages(t *testing.T) {
+	workflow, err := os.ReadFile("../.github/workflows/build-all.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(workflow)
+	for _, marker := range []string{
+		"- name: Package Independent Desktop Runtimes",
+		`$codexName = "murong-runtime-codex-${{ matrix.goos }}-${{ matrix.goarch }}-${env:CODEX_VERSION}.tgz"`,
+		"go run ./cmd/runtime-packager",
+		"murong-runtime-mnn-windows-arm64-builtin-vlm-2026-07-v1.tgz",
+		"murong-runtime-llama-windows-amd64-builtin-vlm-2026-07-v1.tgz",
+		"murong-runtime-litert-windows-amd64-builtin-vlm-2026-07-v1.tgz",
+		`"kind": "runtime" if path.name.startswith("murong-runtime-") else "application"`,
+		"Expected exactly 18 application/runtime packages",
+	} {
+		if !strings.Contains(text, marker) {
+			t.Fatalf("independent runtime release contract is missing %q", marker)
+		}
+	}
+	if strings.Contains(text, "build_tags: embedded_codex") ||
+		strings.Contains(text, `-tags "embedded_codex"`) {
+		t.Fatal("desktop release still embeds Codex in the main application")
+	}
+
+	script, err := os.ReadFile("build-release.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptText := string(script)
+	for _, marker := range []string{
+		"murong-runtime-codex-windows-$Architecture-$codexVersion.tgz",
+		"go run ./cmd/runtime-packager",
+		`-platform "windows/$Architecture" -trimpath -o $outputName`,
+	} {
+		if !strings.Contains(scriptText, marker) {
+			t.Fatalf("local thin desktop release script is missing %q", marker)
+		}
+	}
+}
+
 func TestMainPushPublishesAndSyncsCuratedReleaseNotes(t *testing.T) {
 	workflow, err := os.ReadFile("../.github/workflows/build-all.yml")
 	if err != nil {

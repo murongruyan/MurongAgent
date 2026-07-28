@@ -1,16 +1,16 @@
 package com.murong.agent.ui
 
 import android.app.WallpaperManager
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.res.Resources
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.RenderEffect as AndroidRenderEffect
 import android.graphics.Shader
 import android.os.Build
-import android.os.PerformanceHintManager
-import android.os.Process
-import android.os.SystemClock
+import android.view.Window
 import android.view.WindowManager
 import android.graphics.Color as AndroidColor
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -64,7 +64,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -104,11 +103,10 @@ import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import java.util.WeakHashMap
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -157,88 +155,55 @@ private const val KEY_BACKGROUND_BLUR_RADIUS = "background_blur_radius"
 private const val KEY_FONT_SCALE = "font_scale"
 private const val KEY_UI_SCALE = "ui_scale"
 private const val MURONG_INTERACTION_TARGET_FRAME_RATE = 120L
-private const val NANOS_PER_SECOND = 1_000_000_000L
-private const val MURONG_CPU_PULSE_WARMUP_WINDOW_MS = 260L
-private const val MURONG_CPU_PULSE_MAINTAIN_WINDOW_MS = 180L
-private const val MURONG_CPU_PULSE_WARMUP_SLICE_MS = 18L
-private const val MURONG_CPU_PULSE_MAINTAIN_SLICE_MS = 8L
-private const val MURONG_CPU_PULSE_IDLE_SLEEP_MS = 6L
-@Volatile
-private var murongInteractionCpuPulseSink = 0L
+private const val MURONG_INTERACTION_FRAME_RATE_RELEASE_DELAY_MS = 900L
 
-private fun runMurongCpuPulseSlice(durationMs: Long) {
-    val durationNanos = durationMs.coerceAtLeast(1L) * 1_000_000L
-    val start = System.nanoTime()
-    var sink = murongInteractionCpuPulseSink xor start
-    while (System.nanoTime() - start < durationNanos) {
-        sink = sink xor (sink shl 13)
-        sink = sink xor (sink ushr 7)
-        sink = sink xor (sink shl 17)
-        sink += System.nanoTime()
-    }
-    murongInteractionCpuPulseSink = sink
+private tailrec fun Context.murongActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.murongActivity()
+    else -> null
 }
 
-private object MurongInteractionCpuBooster {
-    @Suppress("PLATFORM_CLASS_MAPPED_TO_KOTLIN")
-    private val lock = java.lang.Object()
-    @Volatile
-    private var started = false
-    @Volatile
-    private var activeUntilUptimeMs = 0L
-    @Volatile
-    private var warmupUntilUptimeMs = 0L
+/**
+ * Window refresh-rate requests are reference counted because the pager, page surface and
+ * individual scroll containers can overlap. Restoring the system preference only after the last
+ * request avoids the 120 -> adaptive -> 120 mode churn that otherwise happens between a pointer-up
+ * event and the first fling frame on variable-refresh-rate devices.
+ */
+private object MurongInteractionFrameRateController {
+    private data class WindowState(
+        val originalRefreshRate: Float,
+        val requests: MutableMap<Any, Float> = mutableMapOf(),
+    )
 
-    fun boost(warmup: Boolean) {
-        val now = SystemClock.uptimeMillis()
-        synchronized(lock) {
-            val maintainUntil = now + MURONG_CPU_PULSE_MAINTAIN_WINDOW_MS
-            if (maintainUntil > activeUntilUptimeMs) {
-                activeUntilUptimeMs = maintainUntil
-            }
-            if (warmup) {
-                val warmupUntil = now + MURONG_CPU_PULSE_WARMUP_WINDOW_MS
-                if (warmupUntil > warmupUntilUptimeMs) {
-                    warmupUntilUptimeMs = warmupUntil
-                }
-            }
-            if (!started) {
-                started = true
-                Thread(
-                    {
-                        runCatching {
-                            Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
-                        }
-                        while (true) {
-                            val nowMs = SystemClock.uptimeMillis()
-                            val activeUntil = activeUntilUptimeMs
-                            if (nowMs >= activeUntil) {
-                                synchronized(lock) {
-                                    if (SystemClock.uptimeMillis() >= activeUntilUptimeMs) {
-                                        lock.wait(64L)
-                                    }
-                                }
-                                continue
-                            }
-                            val inWarmup = nowMs < warmupUntilUptimeMs
-                            runMurongCpuPulseSlice(
-                                if (inWarmup) {
-                                    MURONG_CPU_PULSE_WARMUP_SLICE_MS
-                                } else {
-                                    MURONG_CPU_PULSE_MAINTAIN_SLICE_MS
-                                }
-                            )
-                            Thread.sleep(MURONG_CPU_PULSE_IDLE_SLEEP_MS)
-                        }
-                    },
-                    "MurongInteractionBooster"
-                ).apply {
-                    isDaemon = true
-                    start()
-                }
-            }
-            lock.notifyAll()
+    private val states = WeakHashMap<Window, WindowState>()
+
+    @Synchronized
+    fun request(window: Window, token: Any, targetFrameRate: Float) {
+        val state = states.getOrPut(window) {
+            WindowState(originalRefreshRate = window.attributes.preferredRefreshRate)
         }
+        state.requests[token] = targetFrameRate
+        apply(window, state.requests.values.maxOrNull() ?: targetFrameRate)
+    }
+
+    @Synchronized
+    fun release(window: Window, token: Any) {
+        val state = states[window] ?: return
+        state.requests.remove(token)
+        val remaining = state.requests.values.maxOrNull()
+        if (remaining != null) {
+            apply(window, remaining)
+        } else {
+            apply(window, state.originalRefreshRate)
+            states.remove(window)
+        }
+    }
+
+    private fun apply(window: Window, refreshRate: Float) {
+        val attributes = window.attributes
+        if (attributes.preferredRefreshRate == refreshRate) return
+        attributes.preferredRefreshRate = refreshRate
+        window.attributes = attributes
     }
 }
 
@@ -248,39 +213,32 @@ fun MurongInteractionPerformanceHint(
     targetFrameRate: Long = MURONG_INTERACTION_TARGET_FRAME_RATE
 ) {
     val context = LocalContext.current
-    val targetWorkDurationNanos = remember(targetFrameRate) {
-        (NANOS_PER_SECOND / targetFrameRate.coerceAtLeast(1L)).coerceAtLeast(1L)
-    }
-    LaunchedEffect(context, active, targetWorkDurationNanos) {
-        if (!active) return@LaunchedEffect
-        val hintManager = context.getSystemService(PerformanceHintManager::class.java)
-            ?: return@LaunchedEffect
-        val session = runCatching {
-            hintManager.createHintSession(
-                intArrayOf(Process.myTid()),
-                targetWorkDurationNanos
-            )
-        }.getOrNull() ?: return@LaunchedEffect
-        session.updateTargetWorkDuration(targetWorkDurationNanos)
-        var previousFrameNanos = withFrameNanos { it }
-        try {
-            while (currentCoroutineContext().isActive) {
-                val frameNanos = withFrameNanos { it }
-                session.reportActualWorkDuration(
-                    (frameNanos - previousFrameNanos).coerceAtLeast(1L)
-                )
-                previousFrameNanos = frameNanos
-            }
-        } finally {
-            session.close()
-        }
+    val window = remember(context) { context.murongActivity()?.window }
+    val requestToken = remember { Any() }
+    var keepRequestActive by remember { mutableStateOf(active) }
+    val requestedFrameRate = remember(targetFrameRate) {
+        targetFrameRate.coerceIn(60L, 240L).toFloat()
     }
     LaunchedEffect(active) {
-        if (!active) return@LaunchedEffect
-        MurongInteractionCpuBooster.boost(warmup = true)
-        while (currentCoroutineContext().isActive) {
-            delay(48L)
-            MurongInteractionCpuBooster.boost(warmup = false)
+        if (active) {
+            keepRequestActive = true
+        } else {
+            delay(MURONG_INTERACTION_FRAME_RATE_RELEASE_DELAY_MS)
+            keepRequestActive = false
+        }
+    }
+    DisposableEffect(window, requestToken, keepRequestActive, requestedFrameRate) {
+        if (window != null && keepRequestActive) {
+            MurongInteractionFrameRateController.request(
+                window = window,
+                token = requestToken,
+                targetFrameRate = requestedFrameRate,
+            )
+        }
+        onDispose {
+            if (window != null) {
+                MurongInteractionFrameRateController.release(window, requestToken)
+            }
         }
     }
 }
@@ -1484,9 +1442,6 @@ fun MurongPrimaryPageSurface(
                         while (true) {
                             val event = awaitPointerEvent(pass = PointerEventPass.Initial)
                             val isPressed = event.changes.any { it.pressed }
-                            if (isPressed && !touchBoostActive) {
-                                MurongInteractionCpuBooster.boost(warmup = true)
-                            }
                             touchBoostActive = isPressed
                         }
                     }

@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -53,7 +54,7 @@ func hasEmbeddedCodexRuntime() bool {
 	return len(embeddedCodexArchiveBytes()) > 0
 }
 
-func resolveCodexExecutable(runtimeRoot, preferred string) (string, bool, error) {
+func resolveCodexExecutable(ctx context.Context, runtimeRoot, preferred string) (string, bool, error) {
 	preferred = strings.TrimSpace(preferred)
 	if preferred != "" {
 		path, err := validateCodexExecutablePath(preferred)
@@ -63,8 +64,14 @@ func resolveCodexExecutable(runtimeRoot, preferred string) (string, bool, error)
 		path, err := ensureEmbeddedCodexRuntime(runtimeRoot)
 		return path, true, err
 	}
-	path, err := discoverExternalCodexExecutable()
-	return path, false, err
+	if path, err := installedManagedCodexExecutable(runtimeRoot); err == nil {
+		return path, true, nil
+	}
+	if path, err := discoverExternalCodexExecutable(); err == nil {
+		return path, false, nil
+	}
+	path, err := ensureDownloadedCodexRuntime(ctx, runtimeRoot)
+	return path, true, err
 }
 
 func discoverExternalCodexExecutable() (string, error) {
@@ -102,7 +109,48 @@ func discoverExternalCodexExecutable() (string, error) {
 			return path, nil
 		}
 	}
-	return "", errors.New("没有找到可运行的 Codex CLI；正式版应包含当前平台的内置运行时，也可以在高级设置中指定 Codex 可执行文件")
+	return "", errors.New("没有找到可运行的 Codex CLI")
+}
+
+func managedCodexRuntimeTarget(runtimeRoot string, spec codexPlatformSpec) string {
+	return filepath.Join(
+		runtimeRoot,
+		"runtime",
+		"codex-"+embeddedCodexVersion+"-"+spec.NPMPlatform,
+	)
+}
+
+func installedManagedCodexExecutable(runtimeRoot string) (string, error) {
+	spec, err := currentCodexPlatformSpec()
+	if err != nil {
+		return "", err
+	}
+	return validateCodexExecutablePath(codexExecutableInRoot(managedCodexRuntimeTarget(runtimeRoot, spec), spec))
+}
+
+func ensureDownloadedCodexRuntime(ctx context.Context, runtimeRoot string) (string, error) {
+	spec, err := currentCodexPlatformSpec()
+	if err != nil {
+		return "", err
+	}
+	target := managedCodexRuntimeTarget(runtimeRoot, spec)
+	executableRelative := filepath.Join("vendor", spec.Target, "bin", spec.Executable)
+	if err := ensureDesktopRuntimePackage(ctx, desktopRuntimeInstallSpec{
+		PackageName:     desktopRuntimePackageName("codex", embeddedCodexVersion),
+		TargetDirectory: target,
+		StripPrefix:     "package",
+		RequiredPaths:   []string{executableRelative},
+		MaxArchiveBytes: embeddedCodexMaxBytes,
+		MaxFiles:        64,
+		MaxExtractBytes: embeddedCodexMaxBytes,
+	}); err != nil {
+		return "", fmt.Errorf(
+			"无法按需安装 Codex %s 运行时：%w；也可以在高级设置中指定 Codex 可执行文件",
+			embeddedCodexVersion,
+			err,
+		)
+	}
+	return validateCodexExecutablePath(filepath.Join(target, executableRelative))
 }
 
 func validateCodexExecutablePath(value string) (string, error) {
@@ -143,7 +191,7 @@ func ensureEmbeddedCodexRuntime(runtimeRoot string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	target := filepath.Join(base, "codex-"+embeddedCodexVersion+"-"+spec.NPMPlatform)
+	target := managedCodexRuntimeTarget(runtimeRoot, spec)
 	executable := codexExecutableInRoot(target, spec)
 	marker := filepath.Join(target, ".archive-sha256")
 	if markerBytes, readErr := os.ReadFile(marker); readErr == nil && strings.EqualFold(strings.TrimSpace(string(markerBytes)), spec.ArchiveSHA256) {

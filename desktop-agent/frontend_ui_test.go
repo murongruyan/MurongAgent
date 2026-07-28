@@ -601,7 +601,7 @@ func TestDesktopCodexProviderUsesBuiltinRuntimeAndReasoningControl(t *testing.T)
 	}
 	html, js := string(index), string(script)
 	for _, marker := range []string{
-		`value="codex-chatgpt"`, `正式版已内置 Codex`, `id="start-codex-login"`,
+		`value="codex-chatgpt"`, `Codex 运行时按需安装`, `id="start-codex-login"`,
 		`高级：使用外部 Codex CLI`, `id="reasoning-effort"`,
 	} {
 		if !strings.Contains(html, marker) {

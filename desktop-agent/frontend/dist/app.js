@@ -4442,7 +4442,7 @@ function updateProviderAPIModeState() {
 async function refreshCodexStatus() {
   const button = $("#refresh-codex-status");
   button.disabled = true;
-  $("#codex-provider-status").textContent = "正在校验内置 Codex、登录状态和可用模型…";
+  $("#codex-provider-status").textContent = "正在检查或按需安装 Codex 运行时，并读取登录状态与可用模型…";
   try {
     commitProviderProfileForm();
     state.codex = await backend().RefreshCodexStatus({ executablePath: activeProviderProfile()?.executablePath || "" });

@@ -274,6 +274,35 @@ object ToolchainManager {
             ?.absolutePath
     }
 
+    /**
+     * Resolves a signed extension command directly from its read-only native library directory.
+     *
+     * Dedicated static programs such as codex-app-server do not depend on the mutable Termux
+     * overlay. Keeping this narrow fallback separate means one missing APT asset cannot hide a
+     * valid native command, while signature and manifest validation remain mandatory.
+     */
+    fun findNativeExtensionCommandPath(
+        commandName: String,
+        context: Context? = appContext
+    ): String? {
+        val normalized = commandName.trim()
+        if (!isSafeToolchainCommandName(normalized)) return null
+        val safeContext = context?.applicationContext ?: appContext ?: return null
+        val abi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
+        if (abi.isBlank()) return null
+        val host = resolveExternalToolchainHost(safeContext, abi) ?: return null
+        val manifest = runCatching {
+            json.decodeFromString<ToolchainManifest>(host.manifestText)
+        }.getOrNull() ?: return null
+        val rootDir = File(safeContext.filesDir, "toolchain/$abi")
+        if (!isValidManifest(manifest, rootDir, host.nativeLibraryDir)) return null
+        return resolveNativeCommandFile(
+            commands = manifest.commands,
+            commandName = normalized,
+            nativeLibraryDir = host.nativeLibraryDir,
+        )?.takeIf { it.isFile && it.canExecute() }?.absolutePath
+    }
+
     fun hasRelocatablePackageManager(context: Context? = appContext): Boolean {
         val installed = ensureInstalled(context)
         return installed.available &&
@@ -579,6 +608,19 @@ object ToolchainManager {
         } else {
             File(rootDir, relativePath)
         }
+    }
+
+    internal fun resolveNativeCommandFile(
+        commands: Map<String, String>,
+        commandName: String,
+        nativeLibraryDir: File?
+    ): File? {
+        if (!isSafeToolchainCommandName(commandName) || nativeLibraryDir == null) return null
+        val relativePath = commands[commandName] ?: return null
+        if (!relativePath.startsWith("native/") ||
+            !isSafeNativePath(relativePath, nativeLibraryDir)
+        ) return null
+        return File(nativeLibraryDir, relativePath.removePrefix("native/"))
     }
 
     private fun relocateTermuxTextFile(

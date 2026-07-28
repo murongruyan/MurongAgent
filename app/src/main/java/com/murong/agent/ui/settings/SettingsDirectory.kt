@@ -85,6 +85,11 @@ internal fun SettingsDirectoryPage(
     ).matchingNavigation(query)
     val toolItems = listOf(
         SettingsDirectoryNavigationItem(
+            title = "本地模型与推理",
+            summary = "模型安装、CPU 核心与线程、GPU 后端、LiteRT、MNN 和性能模式",
+            onClick = onOpenPhoneTools
+        ),
+        SettingsDirectoryNavigationItem(
             title = "内置工具",
             summary = "文件、代码、命令、搜索与子代理开关",
             onClick = onOpenBuiltInTools
@@ -239,7 +244,7 @@ private fun List<SettingsDirectoryNavigationItem>.matchingNavigation(
 private fun List<SettingsFocus>.matchingFocus(query: String): List<SettingsFocus> =
     filter { item -> matchesSettingsQuery(query, item.title, item.summary) }
 
-private fun matchesSettingsQuery(query: String, vararg fields: String): Boolean {
+internal fun matchesSettingsQuery(query: String, vararg fields: String): Boolean {
     val normalized = query.trim().lowercase()
     return normalized.isBlank() || fields.any { field -> normalized in field.lowercase() }
 }

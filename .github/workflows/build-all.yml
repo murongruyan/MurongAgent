@@ -29,12 +29,12 @@ on:
         description: "统一 Release 标签；为空时使用 murong-suite-v<主程序对外版本号>"
         required: false
       suite_version_name:
-        description: "主程序对外版本号（主版本.次版本，例如 1.34；Android 与 Desktop 共用）"
+        description: "主程序对外版本号（主版本.次版本，例如 1.35；Android 与 Desktop 共用）"
         type: string
         required: false
         default: ""
       suite_build_number:
-        description: "主程序内部构建号（Android versionCode，例如 26072802；不是次版本号）"
+        description: "主程序内部构建号（Android versionCode，例如 26072803；不是次版本号）"
         type: string
         required: false
         default: ""
@@ -155,7 +155,7 @@ jobs:
           version_name="${INPUT_VERSION_NAME:-$(read_gradle_default versionName)}"
           version_code="${INPUT_VERSION_CODE:-$(read_gradle_default versionCode)}"
           [[ "${version_name}" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] || {
-            echo "Invalid suite version: ${version_name}; expected major.minor, for example 1.34" >&2
+            echo "Invalid suite version: ${version_name}; expected major.minor, for example 1.35" >&2
             exit 1
           }
           [[ "${version_code}" =~ ^[1-9][0-9]*$ ]] &&
@@ -485,42 +485,42 @@ jobs:
             goarch: amd64
             codex_platform: win32-x64
             codex_sha256: E04AFBE9841BE306455D075AD414993A946C94A399E55D7F9EC223F734CD4101
-            build_tags: embedded_codex
+            build_tags: ""
           - label: Windows ARM64
             runner: windows-11-arm
             goos: windows
             goarch: arm64
             codex_platform: win32-arm64
             codex_sha256: 92774896D0D293DB1C1808E77085B5A068E5AA70825D0D656E29BD4CA276E651
-            build_tags: embedded_codex
+            build_tags: ""
           - label: macOS Intel
             runner: macos-15-intel
             goos: darwin
             goarch: amd64
             codex_platform: darwin-x64
             codex_sha256: 6F1CDAB2DD23BEB5BFDB82A7D4FF5BB8C33F29AF5D1019778B18584EA7C53165
-            build_tags: embedded_codex
+            build_tags: ""
           - label: macOS Apple Silicon
             runner: macos-15
             goos: darwin
             goarch: arm64
             codex_platform: darwin-arm64
             codex_sha256: 671D58A58CD2058345B9D9E4A969BB69937E50C7C1CD57C6061ED674DC92F94B
-            build_tags: embedded_codex
+            build_tags: ""
           - label: Linux x64
             runner: ubuntu-24.04
             goos: linux
             goarch: amd64
             codex_platform: linux-x64
             codex_sha256: B6752EB2E8C10E6FCC96AC5C1C8AD8342CDB9A74504FB84686ADDF081A7D2868
-            build_tags: embedded_codex webkit2_41
+            build_tags: webkit2_41
           - label: Linux ARM64
             runner: ubuntu-24.04-arm
             goos: linux
             goarch: arm64
             codex_platform: linux-arm64
             codex_sha256: 19F0B01B33F273DF94191670B2E0E5D0F624B0354E765BFDEA5763920B713800
-            build_tags: embedded_codex webkit2_41
+            build_tags: webkit2_41
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     defaults:
@@ -649,16 +649,39 @@ jobs:
             throw "Codex runtime SHA-256 mismatch: expected ${{ matrix.codex_sha256 }}, got $actual"
           }
 
-      - name: Verify Embedded Codex Runtime
+      - name: Package Independent Desktop Runtimes
         shell: pwsh
-        run: go test -count=1 -tags "${{ matrix.build_tags }}" -run TestEmbeddedCodexReleaseArchive .
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $codexName = "murong-runtime-codex-${{ matrix.goos }}-${{ matrix.goarch }}-${env:CODEX_VERSION}.tgz"
+          Copy-Item -LiteralPath runtime/codex-runtime.tgz -Destination "dist/$codexName" -Force
+          if ("${{ matrix.goos }}" -eq "windows") {
+            $visionVersion = "builtin-vlm-2026-07-v1"
+            $components = @(
+              @{ Name = "mnn"; Required = "generated/vlm/mnn/murong-mnn-vlm.exe" },
+              @{ Name = "llama"; Required = "generated/vlm/llama/llama-server.exe" },
+              @{ Name = "litert"; Required = "generated/vlm/litert/runtime/bin/java.exe" }
+            )
+            foreach ($component in $components) {
+              if (-not (Test-Path -LiteralPath $component.Required -PathType Leaf)) { continue }
+              $runtimeName = "murong-runtime-$($component.Name)-${{ matrix.goos }}-${{ matrix.goarch }}-$visionVersion.tgz"
+              go run ./cmd/runtime-packager -source "generated/vlm/$($component.Name)" -output "dist/$runtimeName"
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
 
       - name: Build Native Desktop Package
         shell: pwsh
         run: |
           $name = "murong-desktop-agent-${{ matrix.goos }}-${{ matrix.goarch }}"
           $outputName = if ("${{ matrix.goos }}" -eq "windows") { "$name.exe" } else { $name }
-          wails build -clean -m -s -skipbindings -skipembedcreate -platform "${{ matrix.goos }}/${{ matrix.goarch }}" -tags "${{ matrix.build_tags }}" -trimpath -o $outputName
+          $buildArguments = @(
+            "build", "-clean", "-m", "-s", "-skipbindings", "-skipembedcreate",
+            "-platform", "${{ matrix.goos }}/${{ matrix.goarch }}", "-trimpath", "-o", $outputName
+          )
+          $buildTags = "${{ matrix.build_tags }}".Trim()
+          if ($buildTags) { $buildArguments += @("-tags", $buildTags) }
+          & wails @buildArguments
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows EXE
@@ -696,10 +719,12 @@ jobs:
       - name: Write SHA-256
         shell: pwsh
         run: |
-          $artifact = Get-ChildItem -LiteralPath dist -File | Where-Object { $_.Name -notlike '*.sha256' } | Select-Object -First 1
-          if (-not $artifact) { throw "Desktop artifact was not created" }
-          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifact.FullName).Hash.ToLowerInvariant()
-          "$hash  $($artifact.Name)" | Set-Content -Encoding utf8NoBOM -NoNewline -LiteralPath "dist/$($artifact.Name).sha256"
+          $artifacts = @(Get-ChildItem -LiteralPath dist -File | Where-Object { $_.Name -notlike '*.sha256' })
+          if ($artifacts.Count -lt 2) { throw "Desktop application or runtime artifacts were not created" }
+          foreach ($artifact in $artifacts) {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifact.FullName).Hash.ToLowerInvariant()
+            "$hash  $($artifact.Name)" | Set-Content -Encoding utf8NoBOM -NoNewline -LiteralPath "dist/$($artifact.Name).sha256"
+          }
 
       - name: Upload Desktop Artifact
         uses: actions/upload-artifact@v7
@@ -739,7 +764,7 @@ jobs:
           path: dist/desktop
           merge-multiple: true
 
-      - name: Verify All Eight Packages
+      - name: Verify Application And Independent Runtime Packages
         shell: bash
         env:
           MAIN_APK_FILE: ${{ needs.android_app.outputs.apk_file }}
@@ -766,6 +791,18 @@ jobs:
             murong-desktop-agent-linux-amd64.tar.gz
             murong-desktop-agent-linux-arm64.tar.gz
           )
+          runtime_expected=(
+            murong-runtime-codex-windows-amd64-0.144.6.tgz
+            murong-runtime-codex-windows-arm64-0.144.6.tgz
+            murong-runtime-codex-darwin-amd64-0.144.6.tgz
+            murong-runtime-codex-darwin-arm64-0.144.6.tgz
+            murong-runtime-codex-linux-amd64-0.144.6.tgz
+            murong-runtime-codex-linux-arm64-0.144.6.tgz
+            murong-runtime-mnn-windows-amd64-builtin-vlm-2026-07-v1.tgz
+            murong-runtime-mnn-windows-arm64-builtin-vlm-2026-07-v1.tgz
+            murong-runtime-llama-windows-amd64-builtin-vlm-2026-07-v1.tgz
+            murong-runtime-litert-windows-amd64-builtin-vlm-2026-07-v1.tgz
+          )
           for relative in "${mobile_expected[@]}"; do
             test -f "dist/$relative" || { echo "Missing mobile package: $relative" >&2; exit 1; }
             test -f "dist/$relative.sha256" || { echo "Missing mobile checksum: $relative.sha256" >&2; exit 1; }
@@ -773,6 +810,10 @@ jobs:
           for package in "${desktop_expected[@]}"; do
             test -f "dist/desktop/$package" || { echo "Missing desktop package: $package" >&2; exit 1; }
             test -f "dist/desktop/$package.sha256" || { echo "Missing desktop checksum: $package.sha256" >&2; exit 1; }
+          done
+          for package in "${runtime_expected[@]}"; do
+            test -f "dist/desktop/$package" || { echo "Missing runtime package: $package" >&2; exit 1; }
+            test -f "dist/desktop/$package.sha256" || { echo "Missing runtime checksum: $package.sha256" >&2; exit 1; }
           done
           mapfile -t mobile_actual < <(find dist/android-app dist/terminal-extension -maxdepth 1 -type f \( -name '*.apk' \) -printf '%f\n' | sort)
           mapfile -t mobile_wanted < <(printf '%s\n' "${MAIN_APK_FILE}" "${EXTENSION_APK_FILE}" | sort)
@@ -783,7 +824,7 @@ jobs:
             exit 1
           fi
           mapfile -t desktop_actual < <(find dist/desktop -maxdepth 1 -type f ! -name '*.sha256' -printf '%f\n' | sort)
-          mapfile -t desktop_wanted < <(printf '%s\n' "${desktop_expected[@]}" | sort)
+          mapfile -t desktop_wanted < <(printf '%s\n' "${desktop_expected[@]}" "${runtime_expected[@]}" | sort)
           if [[ "${desktop_actual[*]}" != "${desktop_wanted[*]}" ]]; then
             echo "Unexpected desktop release set" >&2
             printf 'Expected: %s\n' "${desktop_wanted[*]}" >&2
@@ -802,10 +843,15 @@ jobs:
             (cd dist/desktop && sha256sum --check "$package.sha256")
             cp "dist/desktop/$package" dist/release/
           done
+          for package in "${runtime_expected[@]}"; do
+            (cd dist/desktop && sha256sum --check "$package.sha256")
+            cp "dist/desktop/$package" dist/release/
+          done
           (cd dist/release && sha256sum \
             "${MAIN_APK_FILE}" \
             "${EXTENSION_APK_FILE}" \
-            "${desktop_expected[@]}" > SHA256SUMS.txt)
+            "${desktop_expected[@]}" \
+            "${runtime_expected[@]}" > SHA256SUMS.txt)
           cp release-notes/latest.md dist/release/RELEASE_NOTES.md
 
           python3 - <<'PY'
@@ -816,8 +862,30 @@ jobs:
 
           release = Path("dist/release")
           packages = sorted(path for path in release.iterdir() if path.is_file() and path.name not in {"SHA256SUMS.txt", "release-manifest.json", "RELEASE_NOTES.md"})
-          if len(packages) != 8:
-              raise SystemExit(f"Expected exactly 8 packages, found {len(packages)}")
+          if len(packages) != 18:
+              raise SystemExit(f"Expected exactly 18 application/runtime packages, found {len(packages)}")
+          platforms = (
+              ("windows", "amd64"), ("windows", "arm64"),
+              ("darwin", "amd64"), ("darwin", "arm64"),
+              ("linux", "amd64"), ("linux", "arm64"),
+          )
+
+          def package_entry(path):
+              entry = {
+                  "fileName": path.name,
+                  "size": path.stat().st_size,
+                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                  "kind": "runtime" if path.name.startswith("murong-runtime-") else "application",
+              }
+              if entry["kind"] == "runtime":
+                  remainder = path.name.removeprefix("murong-runtime-").removesuffix(".tgz")
+                  for goos, goarch in platforms:
+                      marker = f"-{goos}-{goarch}-"
+                      if marker in remainder:
+                          component, version = remainder.split(marker, 1)
+                          entry.update(component=component, os=goos, arch=goarch, version=version)
+                          break
+              return entry
           manifest = {
               "schemaVersion": 1,
               "runId": os.environ["GITHUB_RUN_ID"],
@@ -832,14 +900,7 @@ jobs:
                   },
                   "desktopAgent": {"name": os.environ["DESKTOP_VERSION_NAME"]},
               },
-              "packages": [
-                  {
-                      "fileName": path.name,
-                      "size": path.stat().st_size,
-                      "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                  }
-                  for path in packages
-              ],
+              "packages": [package_entry(path) for path in packages],
           }
           (release / "release-manifest.json").write_text(
               json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -898,7 +959,7 @@ jobs:
           set -euo pipefail
           find release -maxdepth 1 -type f \( -name '*.sha256' -o -name 'android-app.json' -o -name 'terminal-extension.json' \) -delete
           mapfile -t packages < <(find release -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' ! -name 'release-manifest.json' ! -name 'RELEASE_NOTES.md' -printf '%p\n' | sort)
-          [[ ${#packages[@]} -eq 8 ]] || { echo "Expected 8 release packages, found ${#packages[@]}" >&2; exit 1; }
+          [[ ${#packages[@]} -eq 18 ]] || { echo "Expected 18 application/runtime packages, found ${#packages[@]}" >&2; exit 1; }
           suite_version="$(python3 -c 'import json; print(json.load(open("release/release-manifest.json", encoding="utf-8"))["versions"]["androidApp"]["name"])')"
           tag="${INPUT_RELEASE_TAG:-murong-suite-v${suite_version}}"
           title="MurongAgent ${suite_version}"

@@ -53,6 +53,7 @@ type desktopReleaseManifest struct {
 			Name string `json:"name"`
 		} `json:"desktopAgent"`
 	} `json:"versions"`
+	Packages []desktopReleasePackage `json:"packages"`
 }
 
 func (app *DesktopAgentApp) CheckDesktopUpdate() (DesktopUpdateInfo, error) {

@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"embed"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -16,7 +15,6 @@ import (
 	_ "image/jpeg"
 	"image/png"
 	"io"
-	"io/fs"
 	"math"
 	"net"
 	"net/http"
@@ -30,9 +28,6 @@ import (
 
 	xdraw "golang.org/x/image/draw"
 )
-
-//go:embed generated/vlm/*
-var embeddedVisionRuntimes embed.FS
 
 const (
 	visionProtocolMagic      = uint32(0x314C564D)
@@ -242,7 +237,7 @@ func (runtime *desktopVisionRuntime) inferRaw(
 
 	if runtime.process == nil || runtime.process.tier != descriptor.Tier {
 		runtime.closeLocked()
-		process, err := runtime.startProcess(descriptor, modelDir)
+		process, err := runtime.startProcess(ctx, descriptor, modelDir)
 		if err != nil {
 			return "", 0, 0, err
 		}
@@ -372,7 +367,7 @@ func (runtime *desktopVisionRuntime) inferLlamaLocked(
 	if strings.EqualFold(strings.TrimSpace(reasoningMode), "off") {
 		prompt += "\n\n请直接给出结论和必要步骤，不要输出 <think> 思考过程。"
 	}
-	server, err := runtime.ensureLlamaServerLocked(descriptor, modelDir)
+	server, err := runtime.ensureLlamaServerLocked(ctx, descriptor, modelDir)
 	if err != nil {
 		return "", 0, 0, err
 	}
@@ -479,6 +474,7 @@ func (runtime *desktopVisionRuntime) inferLlamaLocked(
 }
 
 func (runtime *desktopVisionRuntime) ensureLlamaServerLocked(
+	ctx context.Context,
 	descriptor builtinVisionDescriptor,
 	modelDir string,
 ) (*desktopLlamaServer, error) {
@@ -489,7 +485,7 @@ func (runtime *desktopVisionRuntime) ensureLlamaServerLocked(
 		}
 	}
 	runtime.closeLlamaLocked()
-	engineRoot, err := runtime.materialize("llama")
+	engineRoot, err := runtime.materialize(ctx, "llama")
 	if err != nil {
 		return nil, err
 	}
@@ -612,13 +608,14 @@ func (runtime *desktopVisionRuntime) closeLlamaLocked() {
 }
 
 func (runtime *desktopVisionRuntime) startProcess(
+	ctx context.Context,
 	descriptor builtinVisionDescriptor,
 	modelDir string,
 ) (*desktopVisionProcess, error) {
 	var command *exec.Cmd
 	switch descriptor.Engine {
 	case "mnn":
-		engineRoot, err := runtime.materialize("mnn")
+		engineRoot, err := runtime.materialize(ctx, "mnn")
 		if err != nil {
 			return nil, err
 		}
@@ -637,7 +634,7 @@ func (runtime *desktopVisionRuntime) startProcess(
 		)
 		command.Dir = engineRoot
 	case "litert":
-		engineRoot, err := runtime.materialize("litert")
+		engineRoot, err := runtime.materialize(ctx, "litert")
 		if err != nil {
 			return nil, err
 		}
@@ -745,45 +742,47 @@ func desktopMNNCacheFingerprint(modelDir string) (string, error) {
 	return fmt.Sprintf("%x", hasher.Sum(nil))[:20], nil
 }
 
-func (runtime *desktopVisionRuntime) materialize(engine string) (string, error) {
-	sourceRoot := filepath.ToSlash(filepath.Join("generated", "vlm", engine))
+func (runtime *desktopVisionRuntime) materialize(ctx context.Context, engine string) (string, error) {
 	targetRoot := filepath.Join(runtime.dataRoot, engine)
-	if _, err := fs.Stat(embeddedVisionRuntimes, sourceRoot); err != nil {
+	var requiredPaths []string
+	var maxArchiveBytes, maxExtractBytes int64
+	var maxFiles int
+	switch engine {
+	case "mnn":
+		requiredPaths = []string{"murong-mnn-vlm.exe"}
+		maxArchiveBytes = 80 << 20
+		maxExtractBytes = 160 << 20
+		maxFiles = 32
+	case "llama":
+		requiredPaths = []string{"llama-server.exe"}
+		maxArchiveBytes = 180 << 20
+		maxExtractBytes = 320 << 20
+		maxFiles = 256
+	case "litert":
+		requiredPaths = []string{
+			filepath.Join("runtime", "bin", "java.exe"),
+			filepath.Join("lib", "murong-litert-vlm.jar"),
+		}
+		maxArchiveBytes = 320 << 20
+		maxExtractBytes = 520 << 20
+		maxFiles = 1024
+	default:
+		return "", fmt.Errorf("不支持的本地模型运行时：%s", engine)
+	}
+	if desktopRuntimeTargetReady(targetRoot, requiredPaths) {
 		return targetRoot, nil
 	}
-	err := fs.WalkDir(embeddedVisionRuntimes, sourceRoot, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		relative, err := filepath.Rel(filepath.FromSlash(sourceRoot), filepath.FromSlash(path))
-		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			return errors.New("内置视觉运行时包含非法路径")
-		}
-		target := filepath.Join(targetRoot, relative)
-		if entry.IsDir() {
-			return os.MkdirAll(target, 0o700)
-		}
-		data, err := embeddedVisionRuntimes.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if existing, err := os.ReadFile(target); err == nil &&
-			sha256.Sum256(existing) == sha256.Sum256(data) {
-			return nil
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-			return err
-		}
-		partial := target + ".part"
-		if err := os.WriteFile(partial, data, 0o700); err != nil {
-			return err
-		}
-		if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		return os.Rename(partial, target)
-	})
-	return targetRoot, err
+	if err := ensureDesktopRuntimePackage(ctx, desktopRuntimeInstallSpec{
+		PackageName:     desktopRuntimePackageName(engine, builtinVisionPackageVersion),
+		TargetDirectory: targetRoot,
+		RequiredPaths:   requiredPaths,
+		MaxArchiveBytes: maxArchiveBytes,
+		MaxFiles:        maxFiles,
+		MaxExtractBytes: maxExtractBytes,
+	}); err != nil {
+		return "", fmt.Errorf("无法按需安装 %s 运行时：%w", strings.ToUpper(engine), err)
+	}
+	return targetRoot, nil
 }
 
 func readVisionProtocolEvent(reader *bufio.Reader) (string, string, error) {

@@ -415,7 +415,7 @@ func (server *codexAppServer) updateStatus(update func(*CodexRuntimeStatus)) Cod
 func (server *codexAppServer) ensureStarted(ctx context.Context, preferred string) (*codexRPCClient, error) {
 	server.lifecycleMu.Lock()
 	defer server.lifecycleMu.Unlock()
-	executable, builtin, err := resolveCodexExecutable(server.runtimeRoot, preferred)
+	executable, builtin, err := resolveCodexExecutable(ctx, server.runtimeRoot, preferred)
 	if err != nil {
 		server.updateStatus(func(status *CodexRuntimeStatus) {
 			status.Error = err.Error()

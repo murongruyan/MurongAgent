@@ -64,6 +64,9 @@ internal class AndroidCodexAppServerTransportFactory(
             dedicatedAppServerPath = ToolchainManager.findCommandPath(
                 DEDICATED_COMMAND,
                 appContext,
+            ) ?: ToolchainManager.findNativeExtensionCommandPath(
+                DEDICATED_COMMAND,
+                appContext,
             ),
             codexCliPath = ToolchainManager.findCommandPath(CLI_COMMAND, appContext),
         )

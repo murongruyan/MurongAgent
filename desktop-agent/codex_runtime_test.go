@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,7 +69,7 @@ func TestResolveCodexExecutableHonoursAdvancedOverride(t *testing.T) {
 	if err := os.WriteFile(executable, []byte("test"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	resolved, builtin, err := resolveCodexExecutable(t.TempDir(), executable)
+	resolved, builtin, err := resolveCodexExecutable(context.Background(), t.TempDir(), executable)
 	if err != nil || builtin || !strings.EqualFold(resolved, executable) {
 		t.Fatalf("unexpected override resolution: %q %v %v", resolved, builtin, err)
 	}

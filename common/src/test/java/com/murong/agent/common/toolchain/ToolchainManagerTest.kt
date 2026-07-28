@@ -3,11 +3,39 @@ package com.murong.agent.common.toolchain
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
 class ToolchainManagerTest {
+    @Test
+    fun `native extension command resolves only a safe manifest target`() {
+        val nativeRoot = File("build/test-native").absoluteFile
+        assertEquals(
+            File(nativeRoot, "libmurong_ext_safe.so"),
+            ToolchainManager.resolveNativeCommandFile(
+                commands = mapOf("codex-app-server" to "native/libmurong_ext_safe.so"),
+                commandName = "codex-app-server",
+                nativeLibraryDir = nativeRoot,
+            ),
+        )
+        assertNull(
+            ToolchainManager.resolveNativeCommandFile(
+                commands = mapOf("codex-app-server" to "native/../outside.so"),
+                commandName = "codex-app-server",
+                nativeLibraryDir = nativeRoot,
+            ),
+        )
+        assertNull(
+            ToolchainManager.resolveNativeCommandFile(
+                commands = mapOf("codex-app-server" to "bin/codex-app-server"),
+                commandName = "codex-app-server",
+                nativeLibraryDir = nativeRoot,
+            ),
+        )
+    }
+
 
     @Test
     fun installFingerprint_changesWhenExtensionApkVersionChanges() {
