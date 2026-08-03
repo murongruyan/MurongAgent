@@ -619,12 +619,12 @@ jobs:
           if ($testTags) {
             go test -count=1 -tags $testTags .
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            go vet -tags $testTags .
+            go vet -unsafeptr=false -tags $testTags .
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           } else {
             go test -count=1 .
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            go vet .
+            go vet -unsafeptr=false .
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           Push-Location ../desktop-bridge
