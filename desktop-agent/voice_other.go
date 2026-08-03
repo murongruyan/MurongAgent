@@ -17,7 +17,7 @@ func (r *voiceRecorder) isRecording() bool {
 	return false
 }
 
-func (r *voiceRecorder) start() error {
+func (r *voiceRecorder) start(feed func(pcmInt16 []byte)) error {
 	return errors.New("当前平台暂不支持语音输入")
 }
 
@@ -26,6 +26,24 @@ func (r *voiceRecorder) stop() (string, error) {
 }
 
 func (r *voiceRecorder) close() {}
+
+// voiceTtsEngine mirrors the Windows-only engine type so the cross-platform
+// pipeline compiles; every method returns "not supported" on macOS/Linux.
+type voiceTtsEngine struct{}
+
+func (e *DesktopVoiceEngine) ensureTtsEngine() (*voiceTtsEngine, error) {
+	return nil, errors.New("当前平台暂不支持离线朗读")
+}
+
+func (e *voiceTtsEngine) generate(text string, speed float64) ([]float32, int, error) {
+	return nil, 0, errors.New("当前平台暂不支持离线朗读")
+}
+
+func (e *voiceTtsEngine) close() {}
+
+func writeFloat32Wav(path string, samples []float32, sampleRate int) error {
+	return errors.New("当前平台暂不支持离线朗读")
+}
 
 func playWavSync(path string) error {
 	return errors.New("当前平台暂不支持朗读")
