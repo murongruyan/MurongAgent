@@ -31,6 +31,7 @@ object ToolchainManager {
     private const val TERMUX_CACHE_PLACEHOLDER = "/data/data/com.termux/cache"
     private const val TERMUX_APP_DATA_COMPAT = "/data/data/com.termux"
     private const val TERMUX_ROOTFS_COMPAT = "/data/data/com.termux/files"
+    private const val REAL_TERMUX_BIN = "/data/data/com.termux/files/usr/bin"
     private const val SYSTEM_PATH =
         "/system/bin:/system/xbin:/system_ext/bin:/product/bin:/apex/com.android.runtime/bin"
     private val systemLibraryCandidates = listOf(
@@ -337,7 +338,14 @@ object ToolchainManager {
         }
     }
 
-    fun buildSystemPath(): String = SYSTEM_PATH
+    fun buildSystemPath(): String {
+        // When the device has the real Termux app installed, its bin directory
+        // is appended so root/system shell commands (and the agent) can use the
+        // tools the user actually installed in the terminal, such as python,
+        // pip and clang. System directories stay first so platform tools win.
+        val realTermuxBin = File(REAL_TERMUX_BIN)
+        return if (realTermuxBin.isDirectory) "$SYSTEM_PATH:$REAL_TERMUX_BIN" else SYSTEM_PATH
+    }
 
     fun buildSystemLibraryPath(): String {
         return systemLibraryCandidates
@@ -825,15 +833,68 @@ object ToolchainManager {
         return if (command.first() == guestBash) {
             listOf("/system/bin/linker64", guestBash) + command.drop(1)
         } else {
+            val launcherScript = buildVersionedCommandFallbackScript() + """
+                
+                __murong_resolve_command() {
+                  local __murong_cmd="${'$'}1"
+                  if [ -x "${'$'}PREFIX/bin/${'$'}__murong_cmd" ]; then
+                    printf '%s' "${'$'}PREFIX/bin/${'$'}__murong_cmd"
+                    return
+                  fi
+                  local __murong_candidate
+                  for __murong_candidate in "${'$'}PREFIX/bin/${'$'}__murong_cmd"[0-9.-]*; do
+                    [ -f "${'$'}__murong_candidate" ] && [ -x "${'$'}__murong_candidate" ] && {
+                      printf '%s' "${'$'}__murong_candidate"
+                      return
+                    }
+                  done
+                  printf '%s' "${'$'}__murong_cmd"
+                }
+                __murong_resolved="$(__murong_resolve_command "${'$'}1")"
+                shift
+                exec "${'$'}__murong_resolved" "${'$'}@"
+            """.trimIndent()
             listOf(
                 "/system/bin/linker64",
                 guestBash,
                 "-c",
-                "exec \"\$@\"",
+                launcherScript,
                 "murong-package-launcher"
             ) + command
         }
     }
+
+    /**
+     * PRoot can report a versioned Termux symlink (python -> python3.14) as not
+     * executable during Bash PATH lookup, so `python` fails with "command not
+     * found" even though the tool is installed. This bash fallback resolves the
+     * versioned real binary (python3.14) and runs it. The interactive terminal
+     * already relies on this via its shell rc; non-interactive agent/editor
+     * launchers must install the same handler before running user commands.
+     */
+    internal fun buildVersionedCommandFallbackScript(): String = """
+        murong_exec_versioned_command() {
+          local __murong_requested="${'$'}1"
+          shift
+          local __murong_candidate
+          for __murong_candidate in "${'$'}PREFIX/bin/${'$'}__murong_requested"[0-9.-]*; do
+            [ -f "${'$'}__murong_candidate" ] || continue
+            [ -x "${'$'}__murong_candidate" ] || continue
+            "${'$'}__murong_candidate" "${'$'}@"
+            return ${'$'}?
+          done
+          return 125
+        }
+        command_not_found_handle() {
+          murong_exec_versioned_command "${'$'}@"
+          __murong_versioned_status=${'$'}?
+          if [ "${'$'}__murong_versioned_status" -ne 125 ]; then
+            return "${'$'}__murong_versioned_status"
+          fi
+          printf 'bash: %s: command not found\n' "${'$'}1" >&2
+          return 127
+        }
+    """.trimIndent()
 
     private fun readProcessSecurityContext(): String {
         return runCatching {

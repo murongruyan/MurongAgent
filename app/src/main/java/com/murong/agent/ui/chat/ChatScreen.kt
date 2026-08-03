@@ -95,6 +95,7 @@ import com.murong.agent.core.loop.ChatMessageUi
 import com.murong.agent.core.loop.SubagentTimelineEntryUi
 import com.murong.agent.core.loop.AutoRouteAction
 import com.murong.agent.core.loop.AutoRouteDecisionUi
+import com.murong.agent.core.loop.GoalStatusUi
 import com.murong.agent.core.loop.AskAnswerUi
 import com.murong.agent.core.loop.ArchivedMemoryCandidateMutationResult
 import com.murong.agent.core.loop.ArchivedMemoryCandidateScope
@@ -141,6 +142,7 @@ import com.murong.agent.core.voice.VoiceRecognitionProvider
 import com.murong.agent.core.voice.VoiceRecognitionState
 import com.murong.agent.core.voice.VoiceSettings
 import com.murong.agent.voice.OfflineVoiceModelUiState
+import com.murong.agent.voice.OfflineTtsModelUiState
 import com.murong.agent.voice.VoiceInputUiState
 import com.murong.agent.core.provider.ProviderRegistry
 import com.murong.agent.core.provider.BuiltinLocalProvider
@@ -174,6 +176,7 @@ import com.murong.agent.ui.rememberMurongSurfaceColor
 import com.murong.agent.ui.toSessionReadinessPresentation
 import com.murong.agent.ui.settings.ProviderModelCatalogUiState
 import com.murong.agent.ui.voice.OfflineVoiceModelSetting
+import com.murong.agent.ui.voice.OfflineTtsModelSetting
 import com.murong.agent.ui.voice.VoiceRecognitionProviderSetting
 import com.murong.agent.ui.settings.mergeProviderModelCandidates
 import com.murong.agent.ui.settings.withProviderModelSelection
@@ -278,6 +281,7 @@ internal fun ChatScreen(
     voiceInputState: VoiceInputUiState = VoiceInputUiState(),
     voiceSettings: VoiceSettings = VoiceSettings(),
     offlineVoiceModelState: OfflineVoiceModelUiState = OfflineVoiceModelUiState(),
+    offlineTtsModelState: OfflineTtsModelUiState = OfflineTtsModelUiState(),
     voicePlaybackState: VoicePlaybackState = VoicePlaybackState.IDLE,
     activeVoicePlaybackMessageId: Long? = null,
     continuableVoicePlaybackMessageIds: Set<Long> = emptySet(),
@@ -290,12 +294,17 @@ internal fun ChatScreen(
     onUpdateVoiceSettings: ((VoiceSettings) -> VoiceSettings) -> Unit = {},
     onInstallOfflineVoiceModel: () -> Unit = {},
     onDeleteOfflineVoiceModel: () -> Unit = {},
+    onInstallOfflineTtsModel: () -> Unit = {},
+    onDeleteOfflineTtsModel: () -> Unit = {},
     onSpeakAssistantMessage: (Long, String) -> Unit = { _, _ -> },
     onPauseVoicePlayback: () -> Unit = {},
     onResumeVoicePlayback: () -> Unit = {},
     onSend: (String, List<FileMentionUi>, List<PendingImageAttachmentUi>, List<GlobalSkill>) -> Unit,
     onSetSessionGoal: (String) -> Unit = {},
     onClearSessionGoal: () -> Unit = {},
+    onPauseSessionGoal: () -> Unit = {},
+    onResumeSessionGoal: () -> Unit = {},
+    onCompleteSessionGoal: () -> Unit = {},
     onStopSending: () -> Unit = {},
     onClear: () -> Unit,
     onNewSession: () -> Unit = {},
@@ -310,6 +319,7 @@ internal fun ChatScreen(
     onRefreshCodexUsage: () -> Unit = {},
     onRefreshCodexModelCatalog: () -> Unit = {},
     onUpdateProjectToolPreferences: (ProjectToolPreferences?) -> Unit = {},
+    onShouldAutoPlan: (String, List<FileMentionUi>) -> Boolean = { _, _ -> false },
     onUndoMessageKeepCode: (Long) -> Boolean = { false },
     onUndoCodeKeepMessage: (Long) -> Result<Int> = { Result.failure(IllegalStateException("未配置仅撤回改动动作。")) },
     onUndoMessageAndCode: (Long) -> Boolean = { false },
@@ -321,6 +331,7 @@ internal fun ChatScreen(
     onForkCheckpointSession: (String) -> Unit = {},
     onGeneratePlan: (String, List<FileMentionUi>) -> Unit = { _, _ -> },
     onExecutePlan: () -> Unit = {},
+    onModifyWorkflowPlan: (String) -> Unit = {},
     onDismissPlan: () -> Unit = {},
     onForkWorkflowPlanSession: () -> Unit = {},
     onSubmitClarificationAnswer: (String) -> Unit = {},
@@ -378,6 +389,8 @@ internal fun ChatScreen(
     var inputHasFocus by remember(state.sessionId) { mutableStateOf(false) }
     val planModeEnabled = projectToolPreferences?.planModeEnabled ?: false
     var goalModeEnabled by remember(state.sessionId) { mutableStateOf(false) }
+    var showPlanModifyDialog by remember(state.sessionId) { mutableStateOf(false) }
+    var planModifyDraft by remember(state.sessionId) { mutableStateOf("") }
     var showSubagentHint by remember(state.sessionId) { mutableStateOf(true) }
     var showWorkflowPreferenceHint by remember(state.sessionId) { mutableStateOf(true) }
     var showCompressionHint by remember(state.sessionId) { mutableStateOf(true) }
@@ -1345,6 +1358,10 @@ internal fun ChatScreen(
                     isProcessing = state.isProcessing,
                     onFork = onForkWorkflowPlanSession,
                     onExecute = onExecutePlan,
+                    onModify = {
+                        showPlanModifyDialog = true
+                        planModifyDraft = ""
+                    },
                     onDismiss = onDismissPlan
                 )
             }
@@ -1372,33 +1389,6 @@ internal fun ChatScreen(
                     onSubmit = onSubmitAskAnswers,
                     onDismiss = onDismissAsk
                 )
-            }
-            state.sessionGoal?.takeIf { it.isNotBlank() }?.let { sessionGoal ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    AssistChip(
-                        onClick = {
-                            inputText = sessionGoal
-                            goalModeEnabled = true
-                            inputHistoryIndex = -1
-                            inputDraftBeforeHistory = sessionGoal
-                            selectedImages.clear()
-                            keyboardController?.show()
-                        },
-                        label = {
-                            Text("目标: ${sessionGoal.take(40)}${if (sessionGoal.length > 40) "..." else ""}")
-                        }
-                    )
-                    MurongTagButton(
-                        text = "清除目标",
-                        onClick = onClearSessionGoal
-                    )
-                }
             }
             // 消息列表
             if (messages.isEmpty() && !state.isProcessing) {
@@ -1681,6 +1671,21 @@ internal fun ChatScreen(
                 planModeEnabled = planModeEnabled,
                 goalModeEnabled = goalModeEnabled,
                 hasSessionGoal = !state.sessionGoal.isNullOrBlank(),
+                sessionGoal = state.sessionGoal,
+                goalStatus = state.goalStatus,
+                onPauseGoal = onPauseSessionGoal,
+                onResumeGoal = onResumeSessionGoal,
+                onCompleteGoal = onCompleteSessionGoal,
+                onEditGoal = {
+                    state.sessionGoal?.takeIf { it.isNotBlank() }?.let { sessionGoal ->
+                        inputText = sessionGoal
+                        goalModeEnabled = true
+                        inputHistoryIndex = -1
+                        inputDraftBeforeHistory = sessionGoal
+                        selectedImages.clear()
+                        keyboardController?.show()
+                    }
+                },
                 onTextChange = { updatedText ->
                     if (inputHistoryIndex >= 0) {
                         val recalledText = inputHistory.getOrNull(inputHistoryIndex)
@@ -1854,12 +1859,27 @@ internal fun ChatScreen(
                                     selectedSkills.toList()
                                 )
                             }
-                            else -> onSend(
-                                sentText,
-                                selectedMentions.toList(),
-                                selectedImages.toList(),
-                                selectedSkills.toList()
-                            )
+                            else -> {
+                                val autoGoal = detectGoalModeIntent(sentText)
+                                if (autoGoal != null) {
+                                    onSetSessionGoal(autoGoal)
+                                    onSend(
+                                        buildGoalModeMessage(autoGoal),
+                                        selectedMentions.toList(),
+                                        emptyList(),
+                                        selectedSkills.toList()
+                                    )
+                                } else if (onShouldAutoPlan(sentText, selectedMentions.toList())) {
+                                    onGeneratePlan(sentText, selectedMentions.toList())
+                                } else {
+                                    onSend(
+                                        sentText,
+                                        selectedMentions.toList(),
+                                        selectedImages.toList(),
+                                        selectedSkills.toList()
+                                    )
+                                }
+                            }
                         }
                         if (goalModeEnabled) {
                             goalModeEnabled = false
@@ -2019,10 +2039,13 @@ internal fun ChatScreen(
                 VoiceSettingsDialog(
                     settings = voiceSettings,
                     offlineModelState = offlineVoiceModelState,
+                    offlineTtsModelState = offlineTtsModelState,
                     onDismiss = { showVoiceSettings = false },
                     onUpdateSettings = onUpdateVoiceSettings,
                     onInstallOfflineModel = onInstallOfflineVoiceModel,
                     onDeleteOfflineModel = onDeleteOfflineVoiceModel,
+                    onInstallOfflineTtsModel = onInstallOfflineTtsModel,
+                    onDeleteOfflineTtsModel = onDeleteOfflineTtsModel,
                 )
             }
 
@@ -2373,6 +2396,49 @@ internal fun ChatScreen(
             onDismiss = { showArchivedMemorySurface = false }
         )
     }
+    if (showPlanModifyDialog) {
+        AlertDialog(
+            onDismissRequest = { showPlanModifyDialog = false },
+            title = { Text("修改执行计划") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "告诉模型要调整哪些步骤或目标，模型会重新生成计划，不会直接执行。",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    OutlinedTextField(
+                        value = planModifyDraft,
+                        onValueChange = { planModifyDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 3,
+                        maxLines = 6,
+                        placeholder = {
+                            Text("例如：第 2 步先补测试；不要修改远端文件；先只做分析…")
+                        }
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val feedback = planModifyDraft.trim()
+                        showPlanModifyDialog = false
+                        if (feedback.isNotBlank()) {
+                            onModifyWorkflowPlan(feedback)
+                        }
+                    },
+                    enabled = planModifyDraft.trim().isNotBlank()
+                ) {
+                    Text("重新生成计划")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPlanModifyDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
     selectedCheckpoint?.let { checkpoint ->
         val rollbackScope = if (selectedCheckpointCodeOnly) {
             ConversationCheckpointScope.CODE
@@ -2433,10 +2499,13 @@ internal fun ChatScreen(
 private fun VoiceSettingsDialog(
     settings: VoiceSettings,
     offlineModelState: OfflineVoiceModelUiState,
+    offlineTtsModelState: OfflineTtsModelUiState,
     onDismiss: () -> Unit,
     onUpdateSettings: ((VoiceSettings) -> VoiceSettings) -> Unit,
     onInstallOfflineModel: () -> Unit,
     onDeleteOfflineModel: () -> Unit,
+    onInstallOfflineTtsModel: () -> Unit,
+    onDeleteOfflineTtsModel: () -> Unit,
 ) {
     MurongDialog(onDismissRequest = onDismiss) {
         MurongPopupSurface(
@@ -2446,7 +2515,10 @@ private fun VoiceSettingsDialog(
                 .padding(16.dp)
         ) {
             Column(
-                modifier = Modifier.padding(16.dp),
+                modifier = Modifier
+                    .padding(16.dp)
+                    .heightIn(max = 720.dp)
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Row(
@@ -2490,6 +2562,11 @@ private fun VoiceSettingsDialog(
                     state = offlineModelState,
                     onInstall = onInstallOfflineModel,
                     onDelete = onDeleteOfflineModel,
+                )
+                OfflineTtsModelSetting(
+                    state = offlineTtsModelState,
+                    onInstall = onInstallOfflineTtsModel,
+                    onDelete = onDeleteOfflineTtsModel,
                 )
 
                 Text("识别与朗读语言", style = MaterialTheme.typography.labelLarge)
@@ -5871,6 +5948,45 @@ private fun buildGoalPlanModeInput(goal: String): String {
     """.trimIndent()
 }
 
+/**
+ * Detects a user request to open goal mode ("开个目标模式", "开启目标",
+ * "goal mode" ...) and returns the goal text to use. The control phrase is
+ * stripped so "开个目标模式，帮我重构登录模块" becomes "帮我重构登录模块";
+ * when nothing substantive remains, the whole message is kept as the goal so
+ * the model can clarify instead of guessing from a fragment.
+ */
+internal fun detectGoalModeIntent(text: String): String? {
+    val normalized = text.trim()
+    if (normalized.isBlank()) return null
+    val intentPhrases = listOf(
+        "开启目标模式", "打开目标模式", "进入目标模式", "设置目标模式",
+        "启用目标模式", "开个目标模式", "开目标模式", "目标模式开始干",
+        "开始目标模式", "用目标模式", "开启目标", "开个目标", "设为目标",
+        "open goal mode", "start goal mode", "goal mode", "goal模式", "目标模式"
+    )
+    val matched = intentPhrases.firstOrNull { normalized.contains(it, ignoreCase = true) } ?: return null
+    val matchIndex = normalized.indexOf(matched, ignoreCase = true)
+    val punctuation = charArrayOf('，', ',', '。', '！', '!', '？', '?', '：', ':', '、', ' ', '\n', '\t')
+    val beforeCleaned = normalized.substring(0, matchIndex)
+        .trimEnd(*punctuation)
+        .trim()
+    val afterCleaned = normalized.substring(matchIndex + matched.length)
+        .trimStart(*punctuation)
+        .trim()
+    val filler = Regex("""(?:开始干吧|开始干|开始吧|开干|干吧|开始)\s*$""")
+    fun usable(value: String): Boolean =
+        value.length >= 2 && value.any(Char::isLetterOrDigit) && !filler.matches(value)
+    // 目标短语靠前时（"开个目标模式，帮我…"）取短语之后；靠后时（"帮我把…，开个目标模式干吧"）
+    // 取短语之前的任务描述；两边都无有效内容时保留整句，让模型澄清。
+    val preferred = if (matchIndex <= 6) afterCleaned else beforeCleaned
+    return when {
+        usable(preferred) -> preferred
+        usable(beforeCleaned) -> beforeCleaned
+        usable(afterCleaned) -> afterCleaned
+        else -> normalized
+    }
+}
+
 @Composable
 private fun SelectedSkillsBar(
     skills: List<GlobalSkill>,
@@ -5998,6 +6114,12 @@ private fun InputBar(
     planModeEnabled: Boolean,
     goalModeEnabled: Boolean,
     hasSessionGoal: Boolean,
+    sessionGoal: String?,
+    goalStatus: GoalStatusUi,
+    onPauseGoal: () -> Unit = {},
+    onResumeGoal: () -> Unit = {},
+    onCompleteGoal: () -> Unit = {},
+    onEditGoal: () -> Unit = {},
     onTextChange: (String) -> Unit,
     onInputFocusChanged: (Boolean) -> Unit,
     currentApprovalModeLabel: String,
@@ -6489,6 +6611,26 @@ private fun InputBar(
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.Start),
                     verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically)
                 ) {
+                    if (hasSessionGoal && !sessionGoal.isNullOrBlank()) {
+                        val goalLabel = sessionGoal.trim()
+                        MurongTagButton(
+                            text = "🎯 ${goalLabel.take(16)}${if (goalLabel.length > 16) "…" else ""} · " +
+                                if (goalStatus == GoalStatusUi.PAUSED) "已暂停" else "进行中",
+                            onClick = { if (actionsEnabled) onEditGoal() }
+                        )
+                        MurongTagButton(
+                            text = if (goalStatus == GoalStatusUi.PAUSED) "继续" else "暂停",
+                            onClick = {
+                                if (actionsEnabled) {
+                                    if (goalStatus == GoalStatusUi.PAUSED) onResumeGoal() else onPauseGoal()
+                                }
+                            }
+                        )
+                        MurongTagButton(
+                            text = "✓ 完成",
+                            onClick = { if (actionsEnabled) onCompleteGoal() }
+                        )
+                    }
                     if (aiConfigurationRootItems.isNotEmpty()) {
                         MurongTagButton(
                             text = aiConfigurationSummary.ifBlank { "模型与运行参数" },

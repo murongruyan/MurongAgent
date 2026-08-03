@@ -64,6 +64,8 @@ internal data class PendingExecutionStatusPresentation(
 
 internal data class WorkflowPlanSessionPresentation(
     val showRawPlan: Boolean,
+    val collapsed: Boolean,
+    val toggleDetailsLabel: String,
     val rawPlanToggleLabel: String? = null,
     val rawPlanContent: String? = null,
     val recentHistorySummary: String? = null,
@@ -73,7 +75,8 @@ internal data class WorkflowPlanSessionPresentation(
 )
 
 internal data class WorkflowPlanInteractionState(
-    val showRawPlan: Boolean = false
+    val showRawPlan: Boolean = false,
+    val collapsed: Boolean = true
 )
 
 internal enum class WorkflowPlanStepPresentationStatus {
@@ -255,6 +258,8 @@ internal fun buildWorkflowPlanSessionPresentation(
     val showRawPlan = interactionState.showRawPlan
     return WorkflowPlanSessionPresentation(
         showRawPlan = canToggleRawPlan && showRawPlan,
+        collapsed = interactionState.collapsed,
+        toggleDetailsLabel = if (interactionState.collapsed) "查看完整计划" else "收起计划",
         rawPlanToggleLabel = if (canToggleRawPlan) {
             if (showRawPlan) "收起原始计划" else "展开原始计划"
         } else {
@@ -309,6 +314,12 @@ internal fun toggleWorkflowPlanRawPlan(
 ): WorkflowPlanInteractionState {
     if (presentation.rawPlan.isBlank()) return state.copy(showRawPlan = false)
     return state.copy(showRawPlan = !state.showRawPlan)
+}
+
+internal fun toggleWorkflowPlanCollapsed(
+    state: WorkflowPlanInteractionState
+): WorkflowPlanInteractionState {
+    return state.copy(collapsed = !state.collapsed)
 }
 
 internal fun buildInitialClarificationInteractionState(): ClarificationInteractionState {

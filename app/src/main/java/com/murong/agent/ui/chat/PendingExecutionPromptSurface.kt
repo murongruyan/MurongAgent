@@ -6,6 +6,8 @@ import android.view.ViewGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -31,7 +33,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.murong.agent.core.loop.WorkflowPlanStatusUi
 import com.murong.agent.ui.MurongDialog
@@ -53,6 +57,7 @@ internal fun WorkflowPlanDialog(
     isProcessing: Boolean,
     onFork: () -> Unit,
     onExecute: () -> Unit,
+    onModify: () -> Unit,
     onDismiss: () -> Unit
 ) {
     MurongDialog(onDismissRequest = onDismiss) {
@@ -69,6 +74,7 @@ internal fun WorkflowPlanDialog(
                 isProcessing = isProcessing,
                 onFork = onFork,
                 onExecute = onExecute,
+                onModify = onModify,
                 onDismiss = onDismiss
             )
         }
@@ -83,27 +89,91 @@ internal fun WorkflowPlanPromptCard(
     isProcessing: Boolean,
     onFork: () -> Unit,
     onExecute: () -> Unit,
+    onModify: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val chromeColor = rememberMurongChromeColor()
+    val mutedTextColor = rememberMurongMutedTextColor()
+    var localInteractionState by remember(presentation.requestId) {
+        mutableStateOf(buildInitialWorkflowPlanInteractionState())
+    }
+    val currentInteractionState = interactionState ?: localInteractionState
+    val updateInteractionState: (WorkflowPlanInteractionState) -> Unit = remember(
+        onInteractionStateChange
+    ) {
+        { nextState ->
+            if (onInteractionStateChange != null) {
+                onInteractionStateChange(nextState)
+            } else {
+                localInteractionState = nextState
+            }
+        }
+    }
+    val sessionPresentation = remember(presentation, currentInteractionState, isProcessing) {
+        buildWorkflowPlanSessionPresentation(
+            presentation = presentation,
+            interactionState = currentInteractionState,
+            isProcessing = isProcessing
+        )
+    }
     MurongGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = 12.dp, vertical = 4.dp),
         shape = MaterialTheme.shapes.large,
-        contentPadding = PaddingValues(14.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         surfaceColorOverride = chromeColor.copy(alpha = 0.72f)
     ) {
-        WorkflowPlanPromptContent(
-            presentation = presentation,
-            interactionState = interactionState,
-            onInteractionStateChange = onInteractionStateChange,
-            showDetailedHistory = false,
-            isProcessing = isProcessing,
-            onFork = onFork,
-            onExecute = onExecute,
-            onDismiss = onDismiss
-        )
+        if (sessionPresentation.collapsed) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "📋 执行计划",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "${presentation.statusLabel} · ${presentation.progressLabel}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = mutedTextColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                MurongTagButton(
+                    text = "查看",
+                    onClick = {
+                        updateInteractionState(toggleWorkflowPlanCollapsed(currentInteractionState))
+                    }
+                )
+                MurongTagButton(
+                    text = "修改",
+                    onClick = { if (!isProcessing) onModify() }
+                )
+                Button(
+                    onClick = onExecute,
+                    enabled = !isProcessing,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                ) {
+                    Text("✓ 确认执行", fontSize = 12.sp)
+                }
+            }
+        } else {
+            WorkflowPlanPromptContent(
+                presentation = presentation,
+                interactionState = currentInteractionState,
+                onInteractionStateChange = onInteractionStateChange,
+                showDetailedHistory = false,
+                isProcessing = isProcessing,
+                onFork = onFork,
+                onExecute = onExecute,
+                onModify = onModify,
+                onDismiss = onDismiss
+            )
+        }
     }
 }
 
@@ -116,6 +186,7 @@ private fun WorkflowPlanPromptContainer(
     isProcessing: Boolean,
     onFork: () -> Unit,
     onExecute: () -> Unit,
+    onModify: () -> Unit,
     onDismiss: () -> Unit
 ) {
     MurongLargeDialogScaffold(onDismissRequest = onDismiss) {
@@ -134,6 +205,7 @@ private fun WorkflowPlanPromptContainer(
                 isProcessing = isProcessing,
                 onFork = onFork,
                 onExecute = onExecute,
+                onModify = onModify,
                 onDismiss = onDismiss
             )
         }
@@ -149,6 +221,7 @@ private fun WorkflowPlanPromptContent(
     isProcessing: Boolean,
     onFork: () -> Unit,
     onExecute: () -> Unit,
+    onModify: () -> Unit,
     onDismiss: () -> Unit
 ) {
     var localInteractionState by remember(presentation.requestId) {
@@ -202,27 +275,6 @@ private fun WorkflowPlanPromptContent(
             Spacer(modifier = Modifier.width(8.dp))
             WorkflowPlanStatusBadge(status = presentation.status)
         }
-        if (presentation.stageChips.isNotEmpty()) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = presentation.stageSectionTitle,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    presentation.stageChips.forEach { stage ->
-                        WorkflowPlanStageChip(
-                            label = stage.label,
-                            isCurrent = stage.isCurrent,
-                            isCompleted = stage.isCompleted
-                        )
-                    }
-                }
-            }
-        }
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -248,99 +300,127 @@ private fun WorkflowPlanPromptContent(
         Text(
             text = presentation.summary,
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
         )
-        presentation.recentHistoryClue?.let { historyClue ->
-            RecentHistoryClueSurface(
-                historyClue = historyClue,
-                accent = accent,
-                mutedTextColor = mutedTextColor,
-                surfaceColor = surfaceColor,
-                showDetailedRows = showDetailedHistory
-            )
-        }
         MurongGlassSurface(
             modifier = Modifier.fillMaxWidth(),
             shape = MaterialTheme.shapes.medium,
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
             surfaceColorOverride = surfaceColor.copy(alpha = 0.70f)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(
-                    text = presentation.nextStepTitle,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = accent
-                )
-                Text(
-                    text = presentation.nextStepHint,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
+            Text(
+                text = "${presentation.nextStepTitle}：${presentation.nextStepHint}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
         }
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            presentation.stepRows.forEach { step ->
-                WorkflowPlanStepRow(
-                    badgeLabel = step.badgeLabel,
-                    step = step.step,
-                    status = step.status
-                )
-            }
-        }
-        if (presentation.mentionedFiles.isNotEmpty()) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = presentation.mentionedFilesSectionTitle,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    presentation.mentionedFiles.forEach { displayPath ->
-                        Surface(
-                            shape = MaterialTheme.shapes.medium,
-                            color = surfaceColor.copy(alpha = 0.68f)
+        AnimatedVisibility(visible = !sessionPresentation.collapsed) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 320.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (presentation.stageChips.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = presentation.stageSectionTitle,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text(
-                                text = displayPath,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                            )
+                            presentation.stageChips.forEach { stage ->
+                                WorkflowPlanStageChip(
+                                    label = stage.label,
+                                    isCurrent = stage.isCurrent,
+                                    isCompleted = stage.isCompleted
+                                )
+                            }
                         }
                     }
                 }
-            }
-        }
-        sessionPresentation.rawPlanToggleLabel?.let { rawPlanToggleLabel ->
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                MurongTagButton(
-                    text = rawPlanToggleLabel,
-                    onClick = {
-                        updateInteractionState(
-                            toggleWorkflowPlanRawPlan(
-                                state = currentInteractionState,
-                                presentation = presentation
-                            )
+                presentation.recentHistoryClue?.let { historyClue ->
+                    RecentHistoryClueSurface(
+                        historyClue = historyClue,
+                        accent = accent,
+                        mutedTextColor = mutedTextColor,
+                        surfaceColor = surfaceColor,
+                        showDetailedRows = showDetailedHistory
+                    )
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    presentation.stepRows.forEach { step ->
+                        WorkflowPlanStepRow(
+                            badgeLabel = step.badgeLabel,
+                            step = step.step,
+                            status = step.status
                         )
                     }
-                )
-                AnimatedVisibility(visible = sessionPresentation.showRawPlan) {
-                    MurongGlassSurface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = MaterialTheme.shapes.medium,
-                        contentPadding = PaddingValues(12.dp),
-                        surfaceColorOverride = surfaceColor.copy(alpha = 0.68f)
-                    ) {
-                        NativeSelectableScrollableText(
-                            text = sessionPresentation.rawPlanContent.orEmpty(),
-                            modifier = Modifier.fillMaxWidth(),
-                            monospace = true,
-                            fontSizeSp = 12f,
-                            maxHeight = 320.dp
+                }
+                if (presentation.mentionedFiles.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = presentation.mentionedFilesSectionTitle,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
                         )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            presentation.mentionedFiles.forEach { displayPath ->
+                                Surface(
+                                    shape = MaterialTheme.shapes.medium,
+                                    color = surfaceColor.copy(alpha = 0.68f)
+                                ) {
+                                    Text(
+                                        text = displayPath,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                sessionPresentation.rawPlanToggleLabel?.let { rawPlanToggleLabel ->
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        MurongTagButton(
+                            text = rawPlanToggleLabel,
+                            onClick = {
+                                updateInteractionState(
+                                    toggleWorkflowPlanRawPlan(
+                                        state = currentInteractionState,
+                                        presentation = presentation
+                                    )
+                                )
+                            }
+                        )
+                        AnimatedVisibility(visible = sessionPresentation.showRawPlan) {
+                            MurongGlassSurface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = MaterialTheme.shapes.medium,
+                                contentPadding = PaddingValues(12.dp),
+                                surfaceColorOverride = surfaceColor.copy(alpha = 0.68f)
+                            ) {
+                                NativeSelectableScrollableText(
+                                    text = sessionPresentation.rawPlanContent.orEmpty(),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    monospace = true,
+                                    fontSizeSp = 12f,
+                                    maxHeight = 320.dp
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -368,6 +448,16 @@ private fun WorkflowPlanPromptContent(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            MurongTagButton(
+                text = sessionPresentation.toggleDetailsLabel,
+                onClick = {
+                    updateInteractionState(toggleWorkflowPlanCollapsed(currentInteractionState))
+                }
+            )
+            MurongTagButton(
+                text = "修改计划",
+                onClick = { if (!isProcessing) onModify() }
+            )
             MurongOutlinedActionButton(
                 text = sessionPresentation.dismissLabel,
                 onClick = onDismiss,

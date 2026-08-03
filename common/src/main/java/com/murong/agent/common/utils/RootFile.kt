@@ -215,6 +215,24 @@ object RootFile {
         return runCheckedCommand("chmod $mode \"$path\"")
     }
 
+    fun mkdir(path: String) {
+        mkdirChecked(path)
+    }
+
+    fun mkdirChecked(path: String): OperationResult {
+        if (dirExists(path)) {
+            return OperationResult(success = true, output = "OK")
+        }
+        val parent = parentPath(path)
+        if (parent != null && !dirExists(parent)) {
+            return OperationResult(
+                success = false,
+                error = "Parent directory does not exist: $parent"
+            )
+        }
+        return runCheckedCommand("mkdir \"$path\"")
+    }
+
     fun delete(path: String) {
         deleteChecked(path)
     }

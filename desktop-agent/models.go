@@ -3,7 +3,7 @@ package main
 import desktopbridge "github.com/murong-agent/desktop-bridge"
 
 const (
-	desktopAgentVersion = "1.36"
+	desktopAgentVersion = "1.37"
 	approvalReadOnly    = "readonly"
 	approvalAskAll      = "ask"
 	approvalAllowlist   = "allowlist"
@@ -268,6 +268,11 @@ type SetProviderModelRequest struct {
 	Model             string `json:"model"`
 }
 
+type SetSessionGoalStatusRequest struct {
+	SessionID string `json:"sessionId"`
+	Status    string `json:"status"`
+}
+
 type ProviderModelCatalogRequest struct {
 	ProviderProfileID string `json:"providerProfileId"`
 	ProviderID        string `json:"providerId"`
@@ -392,6 +397,7 @@ type ChatMessage struct {
 	ID                      string                   `json:"id"`
 	Role                    string                   `json:"role"`
 	Content                 string                   `json:"content"`
+	Goal                    string                   `json:"goal,omitempty"`
 	Reasoning               string                   `json:"reasoning,omitempty"`
 	ImageAttachments        []MessageImageAttachment `json:"imageAttachments,omitempty"`
 	CreatedAt               int64                    `json:"createdAt"`
@@ -524,6 +530,7 @@ type ChatSession struct {
 	SyncOriginSessionID    string                  `json:"syncOriginSessionId,omitempty"`
 	ProjectPath            string                  `json:"projectPath,omitempty"`
 	Goal                   string                  `json:"goal,omitempty"`
+	GoalStatus             string                  `json:"goalStatus,omitempty"`
 	PlanModeEnabled        bool                    `json:"planModeEnabled,omitempty"`
 	WorkflowPlan           *DesktopWorkflowPlan    `json:"workflowPlan,omitempty"`
 	Usage                  SessionUsage            `json:"usage,omitempty"`
@@ -649,6 +656,7 @@ type StartRemoteNodeRequest struct {
 type SendMessageRequest struct {
 	SessionID string                   `json:"sessionId"`
 	Content   string                   `json:"content"`
+	Goal      string                   `json:"goal,omitempty"`
 	Context   []ComposerContextItem    `json:"context,omitempty"`
 	Images    []MessageImageAttachment `json:"images,omitempty"`
 	Mode      string                   `json:"mode,omitempty"`

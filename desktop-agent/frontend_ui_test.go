@@ -1059,3 +1059,63 @@ func TestDesktopGUIAutomationPrivacySettingsAreWired(t *testing.T) {
 		}
 	}
 }
+
+func TestDesktopComposerModelSwitchIsNotLockedByStaleRunState(t *testing.T) {
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(script)
+	for _, marker := range []string{
+		`runningSessions: {},`,
+		`state.runningSessions[payload.sessionId] = payload.state === "running";`,
+		`if (!payload.sessionId) return;`,
+		`function refreshRunningState() {`,
+		`state.running = Boolean(state.runningSessions[state.active?.id]);`,
+		`  refreshRunningState();`,
+		`state.runningSessions[sessionId] = true;`,
+		`await backend().SendMessage({`,
+	} {
+		if !strings.Contains(js, marker) {
+			t.Fatalf("desktop composer model switch must not be locked by stale run state, missing %q", marker)
+		}
+	}
+	// The optimistic running flag must be set before the backend call so a
+	// fast-failing run's idle/error status can clear it instead of being
+	// overwritten by the SendMessage continuation.
+	before := strings.Index(js, "state.runningSessions[sessionId] = true;")
+	after := strings.Index(js, "await backend().SendMessage({")
+	if before < 0 || after < 0 || before > after {
+		t.Fatal("desktop composer model switch: optimistic running state must be set before SendMessage")
+	}
+}
+
+func TestDesktopGoalAndPlanModesSupportClosedLoop(t *testing.T) {
+	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := frontendAssets.ReadFile("frontend/dist/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := string(index) + "\n" + string(script) + "\n" + string(styles)
+	for _, marker := range []string{
+		`function isComplexTask(text)`,
+		`if (!mode && isComplexTask(content))`,
+		`function detectGoalModeIntent(text)`,
+		`goal = autoGoal;`,
+		`backend().SetSessionGoalStatus`,
+		`backend().CompleteSessionGoal`,
+		`appendComposerActionChip`,
+		`goalStatus === "paused"`,
+	} {
+		if !strings.Contains(all, marker) {
+			t.Fatalf("desktop goal/plan closed-loop UI is missing %q", marker)
+		}
+	}
+}

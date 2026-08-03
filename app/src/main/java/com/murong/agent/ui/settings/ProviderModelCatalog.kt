@@ -86,17 +86,27 @@ internal fun ProviderConfig.withProviderModelSelection(providerId: String, model
                 "deepseek-v4-pro" -> "pro"
                 else -> "custom"
             }
-            copy(
+            // The active relay owns the resolved model after the legacy relay
+            // migration. Update it as well, otherwise getResolvedModel keeps
+            // returning the old relay model and the chat/settings switcher
+            // appears to do nothing.
+            updateActiveRelay(providerId) {
+                it.copy(model = normalizedModel)
+            }.copy(
                 deepseekModelPreset = preset,
                 deepseekModel = normalizedModel
             ).withModelAutoSelection(providerId, false)
         }
 
-        "openai-compatible" -> copy(
+        "openai-compatible" -> updateActiveRelay(providerId) {
+            it.copy(model = normalizedModel)
+        }.copy(
             openaiModel = normalizedModel
         ).withModelAutoSelection(providerId, false)
 
-        "claude" -> copy(
+        "claude" -> updateActiveRelay(providerId) {
+            it.copy(model = normalizedModel)
+        }.copy(
             claudeModel = normalizedModel
         ).withModelAutoSelection(providerId, false)
 

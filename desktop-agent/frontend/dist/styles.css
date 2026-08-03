@@ -239,6 +239,25 @@ button { border: 0; cursor: pointer; }
 .message.user .message-history-actions button { color: rgba(255,255,255,.82); }
 .message.user .message-history-actions button:hover { color: white; background: rgba(255,255,255,.15); }
 .message-history-actions button:disabled { cursor: default; opacity: .4; }
+.speak-button:not(:disabled) { color: #2d8b68; }
+.speak-button:not(:disabled):hover { color: #1f6e50; background: #e8f6ef; }
+.message.user .message-history-actions .speak-button { color: rgba(255,255,255,.82); }
+.message.user .message-history-actions .speak-button:hover { color: white; background: rgba(255,255,255,.15); }
+.voice-partial { padding: 4px 12px 0; font-size: 12px; color: #bd3f79; min-height: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; animation: voicePulse 1.2s ease-in-out infinite; }
+@keyframes voicePulse { 0%, 100% { opacity: .7; } 50% { opacity: 1; } }
+.composer-mic-button { flex: none; width: 34px; height: 34px; padding: 0; border: 1px solid #e1e5ed; border-radius: 50%; color: #687186; background: #f8f9fc; font-size: 15px; line-height: 1; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: .16s ease; }
+.composer-mic-button:hover { color: #bd3f79; border-color: #f1bad3; background: #fff4f9; }
+.composer-mic-button.recording { color: white; background: #e05454; border-color: #e05454; animation: voicePulse 1s ease-in-out infinite; }
+.composer-mic-button:disabled { cursor: default; opacity: .45; }
+.voice-card .voice-engine-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 4px; }
+.voice-card .voice-engine-item { padding: 14px 16px; border: 1px solid #e1e5ed; border-radius: 14px; background: #f8f9fc; }
+.voice-card .voice-engine-item h4 { margin: 0 0 6px; font-size: 14px; }
+.voice-card .voice-engine-item p { margin: 0 0 8px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.voice-card .voice-engine-item .inline-state { font-size: 12px; }
+.inline-state.ok { color: #2d8b68; }
+.voice-card .voice-engine-advanced { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.voice-card .voice-engine-advanced summary { cursor: pointer; color: #687186; font-weight: 620; }
+@media (max-width: 900px) { .voice-card .voice-engine-grid { grid-template-columns: 1fr; } }
 .stream-cursor::after { content: ""; display: inline-block; width: 7px; height: 14px; margin-left: 4px; vertical-align: -2px; border-radius: 2px; background: var(--pink); animation: blink .9s infinite; }
 @keyframes blink { 50% { opacity: .18; } }
 

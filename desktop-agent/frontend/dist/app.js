@@ -32,6 +32,7 @@ const state = {
   knowledgeScope: "global",
   toolPolicyScope: "global",
   running: false,
+  runningSessions: {},
   autoFollowMessages: true,
   providerModelCatalogs: {},
   approval: null,
@@ -83,8 +84,9 @@ let builtinVisionPollTimer = 0;
 
 const settingsCategories = [
   { key: "project", label: "项目", view: "settings", description: "选择当前任务使用的电脑项目目录。" },
-  { key: "model", label: "模型", view: "settings", description: "管理模型连接、API Key、模型与推理强度。" },
-  { key: "permissions", label: "审批与工具", view: "settings", description: "设置审批模式、白名单和 Agent 可调用的工具。" },
+    { key: "model", label: "模型", view: "settings", description: "管理模型连接、API Key、模型与推理强度。" },
+    { key: "voice", label: "语音", view: "settings", description: "管理完全离线的中文朗读与语音输入模型。" },
+    { key: "permissions", label: "审批与工具", view: "settings", description: "设置审批模式、白名单和 Agent 可调用的工具。" },
   { key: "gui", label: "界面操作", view: "settings", description: "配置 Windows 语义树、截图识别、本地视觉模型与远程隐私边界。" },
   { key: "agent", label: "Agent", view: "settings", description: "调整系统提示词、回答详细度和执行 Profile。" },
   { key: "rules", label: "规则", view: "knowledge", description: "管理每轮都会遵守的全局或项目规则。" },
@@ -618,6 +620,8 @@ function bindRuntimeEvents() {
   });
   window.runtime.EventsOn("agent:status", (payload) => {
     $("#statusbar-run").textContent = payload.text || payload.state || "就绪";
+    if (!payload.sessionId) return;
+    state.runningSessions[payload.sessionId] = payload.state === "running";
     if (!state.active || payload.sessionId !== state.active.id) return;
     state.running = payload.state === "running";
     $("#run-status").textContent = payload.text || payload.state;
@@ -798,6 +802,52 @@ async function selectSession(id) {
   }
 }
 
+function isComplexTask(text) {
+  const normalized = String(text || "").trim();
+  if (!normalized) return false;
+  const keywords = [
+    "自动", "下载", "接入", "集成", "重构", "架构", "规划", "计划", "迁移",
+    "批量", "排查", "调试", "分析", "审查", "搜索", "联网", "修复", "实现",
+    "设计", "优化", "整体", "深入", "彻底", "复杂",
+    "mcp", "skill", "workflow", "subagent", "review", "debug", "refactor",
+  ];
+  const lower = normalized.toLowerCase();
+  return keywords.some((word) => lower.includes(word));
+}
+
+function detectGoalModeIntent(text) {
+  const normalized = String(text || "").trim();
+  if (!normalized) return null;
+  const phrases = [
+    "开启目标模式", "打开目标模式", "进入目标模式", "设置目标模式",
+    "启用目标模式", "开个目标模式", "开目标模式", "目标模式开始干",
+    "开始目标模式", "用目标模式", "开启目标", "开个目标", "设为目标",
+    "open goal mode", "start goal mode", "goal mode", "goal模式", "目标模式",
+  ];
+  let matched = null;
+  let matchIndex = -1;
+  const lower = normalized.toLowerCase();
+  phrases.forEach((phrase) => {
+    const idx = lower.indexOf(phrase.toLowerCase());
+    if (idx >= 0 && (matchIndex < 0 || idx < matchIndex)) {
+      matched = phrase;
+      matchIndex = idx;
+    }
+  });
+  if (!matched) return null;
+  const punctuation = /^[，,。！!？?：:、 \n\t]+|[，,。！!？?：:、 \n\t]+$/g;
+  const before = normalized.slice(0, matchIndex).replace(punctuation, "").trim();
+  const after = normalized.slice(matchIndex + matched.length).replace(punctuation, "").trim();
+  const filler = /(?:开始干吧|开始干|开始吧|开干|干吧|开始)$/;
+  const usable = (value) =>
+    value.length >= 2 && /[a-zA-Z0-9\u4e00-\u9fa5]/.test(value) && !filler.test(value);
+  const preferred = matchIndex <= 6 ? after : before;
+  if (usable(preferred)) return preferred;
+  if (usable(before)) return before;
+  if (usable(after)) return after;
+  return normalized;
+}
+
 async function sendMessage() {
   const input = $("#message-input");
   const content = input.value.trim();
@@ -820,12 +870,30 @@ async function sendMessage() {
   }
   try {
     if (!state.active) state.active = await backend().CreateSession();
+    const sessionId = state.active.id;
     const planMode = Boolean(state.active.planModeEnabled);
-    const mode = state.goalModeEnabled && planMode ? "goal_plan" : state.goalModeEnabled ? "goal" : planMode ? "plan" : "";
+    let mode = state.goalModeEnabled && planMode ? "goal_plan" : state.goalModeEnabled ? "goal" : planMode ? "plan" : "";
+    let goal = "";
+    if (!state.goalModeEnabled && !(state.active?.goal || "").trim()) {
+      const autoGoal = detectGoalModeIntent(content);
+      if (autoGoal) {
+        goal = autoGoal;
+        mode = planMode ? "goal_plan" : "goal";
+      }
+    }
+    if (!mode && isComplexTask(content)) {
+      mode = "plan";
+      showToast("检测到复杂任务，已自动进入计划模式：模型先生成计划，点击计划卡片即可执行");
+    }
     state.autoFollowMessages = true;
+    state.runningSessions[sessionId] = true;
+    state.running = true;
+    updateComposerActionState();
+    renderComposerModelSelect();
     await backend().SendMessage({
-      sessionId: state.active.id,
+      sessionId,
       content,
+      goal,
       context: state.composerContext,
       images: state.composerImages.map((value) => value.attachment),
       mode,
@@ -839,9 +907,15 @@ async function sendMessage() {
     closeComposerPicker();
     renderComposerContext();
     autoSizeComposer();
-    state.running = true;
     updateComposerActionState();
   } catch (error) {
+    const sessionId = state.active?.id;
+    if (sessionId && state.runningSessions[sessionId] === true) {
+      state.runningSessions[sessionId] = false;
+      refreshRunningState();
+      updateComposerActionState();
+      renderComposerModelSelect();
+    }
     showToast(errorText(error), true);
   }
 }
@@ -1061,6 +1135,7 @@ function persistSessionProjectPreferences() {
 }
 
 function renderActiveSession() {
+  refreshRunningState();
   renderHeaderMeta();
   renderExecutionHandoff();
   renderComposerContext();
@@ -1269,13 +1344,25 @@ function renderWorkflowPlan() {
 
 async function executeWorkflowPlan() {
 	if (!state.active || state.running || phoneOwnsActiveSession()) return;
+	const sessionId = state.active.id;
 	try {
-		await backend().ExecuteWorkflowPlan(state.active.id);
+		state.runningSessions[sessionId] = true;
 		state.running = true;
-		$("#run-status").textContent = "正在按计划执行";
+		updateComposerActionState();
+		renderComposerModelSelect();
+		await backend().ExecuteWorkflowPlan(sessionId);
+		if (state.runningSessions[sessionId] === true) {
+			$("#run-status").textContent = "正在按计划执行";
+		}
 		updateComposerActionState();
 		renderWorkflowPlan();
 	} catch (error) {
+		if (state.runningSessions[sessionId] === true) {
+			state.runningSessions[sessionId] = false;
+			refreshRunningState();
+			updateComposerActionState();
+			renderComposerModelSelect();
+		}
 		showToast(errorText(error), true);
 	}
 }
@@ -1422,6 +1509,11 @@ async function dismissAskUser() {
 
 function phoneOwnsActiveSession() {
   return state.active?.executionHandoff?.owner === "android";
+}
+
+function refreshRunningState() {
+  state.running = Boolean(state.runningSessions[state.active?.id]);
+  return state.running;
 }
 
 function renderExecutionHandoff() {
@@ -1789,7 +1881,13 @@ function appendMessageElement(message) {
     rollbackButton.textContent = "回退到此处";
     rollbackButton.disabled = state.running || phoneOwnsActiveSession();
     rollbackButton.addEventListener("click", () => requestSessionRollback(message.id));
-    historyActions.append(forkButton, rollbackButton);
+    const speakButton = document.createElement("button");
+    speakButton.type = "button";
+    speakButton.textContent = "朗读";
+    speakButton.className = "speak-button";
+    speakButton.disabled = !state.voice?.ttsModelInstalled;
+    speakButton.addEventListener("click", () => toggleSpeakMessage(message, body, speakButton));
+    historyActions.append(speakButton, forkButton, rollbackButton);
     body.append(historyActions);
   }
   if (message.role === "assistant") {
@@ -3190,7 +3288,40 @@ function renderComposerContext() {
     });
   }
   if (state.active?.goal) {
-    appendComposerStateChip(container, `目标 · ${truncateText(state.active.goal, 54)}`, clearActiveSessionGoal);
+    const goalStatusLabel = state.active.goalStatus === "paused" ? "已暂停" : "进行中";
+    appendComposerStateChip(
+      container,
+      `目标 · ${truncateText(state.active.goal, 30)} · ${goalStatusLabel}`,
+      clearActiveSessionGoal,
+      () => {
+        const input = $("#message-input");
+        input.value = state.active.goal || "";
+        state.goalModeEnabled = true;
+        renderComposerContext();
+        input.focus();
+      }
+    );
+    appendComposerActionChip(container, goalStatusLabel === "已暂停" ? "继续" : "暂停", async () => {
+      if (!state.active?.id || phoneOwnsActiveSession()) return;
+      try {
+        state.active = await backend().SetSessionGoalStatus({
+          sessionId: state.active.id,
+          status: state.active.goalStatus === "paused" ? "active" : "paused",
+        });
+        renderActiveSession();
+      } catch (error) {
+        showToast(errorText(error), true);
+      }
+    });
+    appendComposerActionChip(container, "✓ 完成", async () => {
+      if (!state.active?.id || phoneOwnsActiveSession()) return;
+      try {
+        state.active = await backend().CompleteSessionGoal(state.active.id);
+        renderActiveSession();
+      } catch (error) {
+        showToast(errorText(error), true);
+      }
+    });
   }
   state.composerContext.forEach((item) => {
     const chip = document.createElement("div");
@@ -3244,17 +3375,34 @@ function renderComposerContext() {
   updateComposerActionState();
 }
 
-function appendComposerStateChip(container, text, onRemove) {
+function appendComposerStateChip(container, text, onRemove, onLabelClick) {
   const chip = document.createElement("div");
   chip.className = "composer-context-chip mode-chip";
   const label = document.createElement("span");
   label.textContent = text;
+  if (onLabelClick) {
+    label.style.cursor = "pointer";
+    label.title = "点击编辑目标";
+    label.addEventListener("click", onLabelClick);
+  }
   const remove = document.createElement("button");
   remove.type = "button";
   remove.title = "关闭";
   remove.textContent = "×";
   remove.addEventListener("click", onRemove);
   chip.append(label, remove);
+  container.append(chip);
+}
+
+function appendComposerActionChip(container, text, onClick) {
+  const chip = document.createElement("div");
+  chip.className = "composer-context-chip mode-chip";
+  const label = document.createElement("button");
+  label.type = "button";
+  label.textContent = text;
+  label.style.cssText = "width:auto;height:auto;padding:0;background:transparent;border:0;color:inherit;font:inherit;";
+  label.addEventListener("click", onClick);
+  chip.append(label);
   container.append(chip);
 }
 
@@ -7055,3 +7203,260 @@ function formatTime(timestamp) {
 function cssEscape(value) {
   return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
 }
+
+// ---- 离线朗读与语音输入（Windows） ----
+const voiceDefaults = {
+  runtimeInstalled: false,
+  ttsModelInstalled: false,
+  asrModelInstalled: false,
+  busy: false,
+  recording: false,
+  listening: false,
+  partialText: "",
+  speaking: false,
+  lastError: "",
+};
+state.voice = { ...voiceDefaults };
+
+async function refreshVoiceStatus() {
+  try {
+    applyVoiceStatus(await backend().VoiceStatus());
+  } catch (error) {
+    console.error("voice status failed", error);
+  }
+}
+
+function applyVoiceStatus(status) {
+  state.voice = { ...voiceDefaults, ...(status || {}) };
+  renderVoiceSettings();
+  updateVoiceControls();
+}
+
+function renderVoiceSettings() {
+  const voice = state.voice;
+  const statusEl = $("#voice-runtime-status");
+  const ttsStatus = $("#voice-tts-status");
+  const asrStatus = $("#voice-asr-status");
+  if (!statusEl) return;
+  if (voice.busy) {
+    statusEl.textContent = "正在下载并校验离线组件…请保持网络连接，此操作需要几分钟。";
+  } else if (voice.runtimeInstalled) {
+    statusEl.textContent = "离线语音引擎已就绪（Sherpa-onnx " + "1.13.2" + "，完全离线运行）";
+  } else {
+    statusEl.textContent = "首次使用朗读或语音输入时会自动下载语音引擎（约 20 MB）。";
+  }
+  if (ttsStatus) {
+    ttsStatus.textContent = voice.ttsModelInstalled ? "已安装" : (voice.busy ? "安装中…" : "未安装");
+    ttsStatus.className = "inline-state" + (voice.ttsModelInstalled ? " ok" : "");
+  }
+  if (asrStatus) {
+    asrStatus.textContent = voice.asrModelInstalled ? "已安装" : (voice.busy ? "安装中…" : "未安装");
+    asrStatus.className = "inline-state" + (voice.asrModelInstalled ? " ok" : "");
+  }
+  const installTts = $("#install-tts-model");
+  const installAsr = $("#install-asr-model");
+  if (installTts) {
+    installTts.disabled = voice.busy || voice.ttsModelInstalled;
+    installTts.textContent = voice.ttsModelInstalled ? "朗读模型已安装" : (voice.busy ? "安装中…" : "安装朗读模型");
+  }
+  if (installAsr) {
+    installAsr.disabled = voice.busy || voice.asrModelInstalled;
+    installAsr.textContent = voice.asrModelInstalled ? "识别模型已安装" : (voice.busy ? "安装中…" : "安装识别模型");
+  }
+  if (voice.lastError) {
+    showToast(voice.lastError, true);
+  }
+}
+
+function updateVoiceControls() {
+  const voice = state.voice;
+  const mic = $("#composer-mic");
+  const partial = $("#voice-partial");
+  if (mic) {
+    mic.disabled = voice.busy;
+    mic.classList.toggle("recording", voice.listening);
+    mic.textContent = voice.listening ? "⏹" : "🎤";
+    mic.title = voice.listening ? "点击结束并转文字" : (voice.asrModelInstalled ? "语音输入：点击开始" : "语音输入：需先安装识别模型（自动）");
+  }
+  if (partial) {
+    partial.classList.toggle("hidden", !voice.listening);
+    if (voice.listening) {
+      partial.textContent = voice.partialText ? "识别中：" + voice.partialText : "正在听…请说话";
+    }
+  }
+  document.querySelectorAll(".speak-button").forEach((button) => {
+    button.disabled = !voice.ttsModelInstalled;
+    if (button.dataset.speakingMessageId) {
+      button.textContent = voice.speaking ? "停止朗读" : "朗读";
+      if (!voice.speaking) delete button.dataset.speakingMessageId;
+    }
+  });
+}
+
+async function ensureVoiceRuntime() {
+  const voice = state.voice;
+  if (voice.runtimeInstalled) return true;
+  const confirmed = window.confirm("首次使用需要下载 Murong 内置的离线语音引擎（约 20 MB，来自 Sherpa-onnx 官方发布，SHA-256 校验）。是否现在下载？");
+  if (!confirmed) return false;
+  try {
+    await backend().VoiceInstallRuntime();
+    await refreshVoiceStatus();
+    return true;
+  } catch (error) {
+    showToast("语音引擎安装失败：" + errorText(error), true);
+    return false;
+  }
+}
+
+async function ensureTtsModel() {
+  if (state.voice.ttsModelInstalled) return true;
+  if (!(await ensureVoiceRuntime())) return false;
+  const confirmed = window.confirm("还需要下载离线中文朗读模型（约 113 MB，下载后完全离线朗读）。是否继续？");
+  if (!confirmed) return false;
+  try {
+    await backend().VoiceInstallTtsModel();
+    await refreshVoiceStatus();
+    return state.voice.ttsModelInstalled;
+  } catch (error) {
+    showToast("朗读模型安装失败：" + errorText(error), true);
+    return false;
+  }
+}
+
+async function ensureAsrModel() {
+  if (state.voice.asrModelInstalled) return true;
+  if (!(await ensureVoiceRuntime())) return false;
+  const confirmed = window.confirm("还需要下载离线中英语音识别模型（约 128 MB，下载后完全离线听写）。是否继续？");
+  if (!confirmed) return false;
+  try {
+    await backend().VoiceInstallAsrModel();
+    await refreshVoiceStatus();
+    return state.voice.asrModelInstalled;
+  } catch (error) {
+    showToast("识别模型安装失败：" + errorText(error), true);
+    return false;
+  }
+}
+
+function markdownToPlainText(markdown) {
+  return String(markdown || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^>\s?/gm, "")
+    .replace(/^[-*+]\s+/gm, "")
+    .replace(/^\d+\.\s+/gm, "")
+    .replace(/[*_~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function toggleSpeakMessage(message, body, button) {
+  const voice = state.voice;
+  if (voice.speaking && button.dataset.speakingMessageId === String(message.id)) {
+    try { await backend().VoiceStopSpeaking(); } catch (error) { console.error(error); }
+    delete button.dataset.speakingMessageId;
+    button.textContent = "朗读";
+    return;
+  }
+  if (!(await ensureTtsModel())) return;
+  let plain = "";
+  if (body) {
+    const bodyCopy = body.cloneNode(true);
+    bodyCopy.querySelector(".message-history-actions")?.remove();
+    plain = bodyCopy.textContent || "";
+  }
+  plain = markdownToPlainText(plain || message.content).slice(0, 3000);
+  if (!plain) {
+    showToast("这条消息没有可朗读的文本", true);
+    return;
+  }
+  try {
+    document.querySelectorAll(".speak-button").forEach((other) => delete other.dataset.speakingMessageId);
+    button.dataset.speakingMessageId = String(message.id);
+    button.textContent = "停止朗读";
+    await backend().VoiceSpeak(plain, 1.0);
+  } catch (error) {
+    delete button.dataset.speakingMessageId;
+    button.textContent = "朗读";
+    showToast("朗读失败：" + errorText(error), true);
+  }
+}
+
+async function startVoiceListening() {
+  if (state.voice.listening) return;
+  if (state.voice.busy) {
+    showToast("语音组件正在安装中，请稍候…", true);
+    return;
+  }
+  if (!(await ensureAsrModel())) return;
+  try {
+    await backend().VoiceStartListening();
+    await refreshVoiceStatus();
+  } catch (error) {
+    showToast("麦克风启动失败：" + errorText(error), true);
+  }
+}
+
+async function stopVoiceListening() {
+  if (!state.voice.listening) return;
+  try {
+    const text = await backend().VoiceStopListeningAndGetFinal();
+    await refreshVoiceStatus();
+    if (text) {
+      const base = ($("#message-input")?.value || "").trim();
+      setComposerInputValue(base ? base + "\n" + text : text);
+      $("#message-input")?.focus();
+    } else {
+      showToast("没有识别到语音，请靠近麦克风重试", true);
+    }
+  } catch (error) {
+    await refreshVoiceStatus();
+    showToast("语音识别失败：" + errorText(error), true);
+  }
+}
+
+function bindVoiceEvents() {
+  const mic = $("#composer-mic");
+  if (mic) {
+    mic.addEventListener("click", () => {
+      if (mic.disabled) return;
+      if (state.voice.listening) {
+        void stopVoiceListening();
+      } else {
+        void startVoiceListening();
+      }
+    });
+  }
+  const installTts = $("#install-tts-model");
+  if (installTts) {
+    installTts.addEventListener("click", () => {
+      if (state.voice.ttsModelInstalled || state.voice.busy) return;
+      void ensureTtsModel();
+    });
+  }
+  const installAsr = $("#install-asr-model");
+  if (installAsr) {
+    installAsr.addEventListener("click", () => {
+      if (state.voice.asrModelInstalled || state.voice.busy) return;
+      void ensureAsrModel();
+    });
+  }
+}
+
+if (window.runtime?.EventsOn) {
+  window.runtime.EventsOn("voice_status", (status) => applyVoiceStatus(status));
+  window.runtime.EventsOn("voice_final", (text) => {
+    if (!text) return;
+    const base = ($("#message-input")?.value || "").trim();
+    setComposerInputValue(base ? base + "\n" + text : text);
+    $("#message-input")?.focus();
+  });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  bindVoiceEvents();
+  void refreshVoiceStatus();
+});

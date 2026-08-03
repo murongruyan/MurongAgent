@@ -122,4 +122,32 @@ class PendingExecutionSessionPresentationTest {
         assertTrue(toggled.showRawPlan)
         assertEquals("继续补信息", updatedAnswer.answer)
     }
+
+    @Test
+    fun pendingExecutionInteractionReducers_togglePlanCollapsedDetails() {
+        val workflowPresentation = PendingExecutionPresentationTestFixtures
+            .workflowPlan()
+            .toWorkflowPlanPromptPresentation()
+        val initial = buildInitialWorkflowPlanInteractionState()
+        val expanded = toggleWorkflowPlanCollapsed(initial)
+
+        assertTrue(initial.collapsed)
+        assertFalse(expanded.collapsed)
+        assertEquals(
+            "查看完整计划",
+            buildWorkflowPlanSessionPresentation(
+                presentation = workflowPresentation,
+                interactionState = initial,
+                isProcessing = false
+            ).toggleDetailsLabel
+        )
+        assertEquals(
+            "收起计划",
+            buildWorkflowPlanSessionPresentation(
+                presentation = workflowPresentation,
+                interactionState = expanded,
+                isProcessing = false
+            ).toggleDetailsLabel
+        )
+    }
 }

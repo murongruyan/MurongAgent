@@ -22,7 +22,7 @@ class ShellTool(
 ) : Tool {
 
     override val name = "shell"
-    override val description = "在 Android 设备上执行 shell 命令。environment=system（默认）按“设备权限 > 执行通道”选择 Root 或已授权的 Shizuku，适合 pm、dumpsys、settings、进程和系统文件操作；environment=extension 使用应用 UID 下的终端扩展包 PRoot/Termux 环境，适合 pkg、apt、dpkg、python、pip、clang 等开发命令。标准应用或无障碍模式不会伪装成系统 Shell，但聊天、文件和无障碍 GUI 自动化仍可正常使用。访问 /storage/emulated/0（或 /sdcard）中的普通文件需要在应用设置中授予“全部文件访问”；未授权时目录可能可见，但 ZIP、IMG、SH 等文件会被 Android 隐藏。返回标准输出和错误输出。做代码库定位时，如果你已知类名或文件名但还不知道路径，可先用 find/ls 在 src/main、src/test、app/src、core/src、common/src 等源码目录里找精确文件，再用 file.read 或 code_search 看局部内容；不要把 build、intermediates、mapping 产物当成首选证据。"
+    override val description = "在 Android 设备上执行 shell 命令。environment=system（默认）按“设备权限 > 执行通道”选择 Root 或已授权的 Shizuku，适合 pm、dumpsys、settings、进程和系统文件操作；如果设备安装了 Termux，其 python/pip/clang 等也会出现在 PATH 里。environment=extension 使用应用 UID 下的终端扩展包 PRoot/Termux 沙箱环境，内置 pkg/apt/dpkg/bash；当 python、pip、git、clang、zip 等常用开发命令在该沙箱中缺失时，工具会自动用 pkg install 安装并重试一次；该沙箱与系统 Termux 相互隔离，Termux 里装的包不会自动出现。标准应用或无障碍模式不会伪装成系统 Shell，但聊天、文件和无障碍 GUI 自动化仍可正常使用。访问 /storage/emulated/0（或 /sdcard）中的普通文件需要在应用设置中授予“全部文件访问”；未授权时目录可能可见，但 ZIP、IMG、SH 等文件会被 Android 隐藏。返回标准输出和错误输出。做代码库定位时，如果你已知类名或文件名但还不知道路径，可先用 find/ls 在 src/main、src/test、app/src、core/src、common/src 等源码目录里找精确文件，再用 file.read 或 code_search 看局部内容；不要把 build、intermediates、mapping 产物当成首选证据。"
     override val parameters: Map<String, Any> = mapOf(
         "type" to "object",
         "properties" to mapOf(
@@ -164,17 +164,92 @@ class ShellTool(
         workingDirectory: String?
     ): ToolExecutionResult {
         if (environment == ShellEnvironment.EXTENSION) {
-            return formatExtensionResult(
-                extensionCommandExecutor(
-                    command,
-                    timeout.coerceAtLeast(1),
-                    workingDirectory?.let(::File)
-                ),
+            val directory = workingDirectory?.let(::File)
+            val initial = formatExtensionResult(
+                extensionCommandExecutor(command, timeout.coerceAtLeast(1), directory),
                 timeout
             )
+            if (initial.success == true || !isCommandNotFound(initial.output, initial.exitCode)) {
+                return initial
+            }
+            val install = tryAutoInstallMissingTool(command, initial.output, directory)
+            if (install == null) {
+                return initial
+            }
+            val retry = formatExtensionResult(
+                extensionCommandExecutor(command, timeout.coerceAtLeast(1), directory),
+                timeout
+            )
+            return if (retry.success == true) {
+                successResult(
+                    output = "${retry.output}\n\n(已自动在终端扩展环境安装 ${install.packageName} 后重试成功)",
+                    exitCode = retry.exitCode
+                )
+            } else {
+                failureResult(
+                    output = "${retry.output}\n\n(已自动尝试安装 ${install.packageName}，但命令仍然失败：${install.summary})",
+                    exitCode = retry.exitCode,
+                    timedOut = retry.timedOut
+                )
+            }
         }
         val scopedCommand = buildWorkingDirectoryCommand(command, workingDirectory)
         return formatSystemResult(systemCommandExecutor(scopedCommand, timeout), timeout)
+    }
+
+    private data class AutoInstallOutcome(
+        val packageName: String,
+        val summary: String
+    )
+
+    /**
+     * When a known developer tool is missing inside the extension sandbox
+     * (python, git, clang, zip, ...), install it via the sandbox's own pkg/apt
+     * manager once, so the agent self-heals instead of failing repeatedly.
+     * Returns null when the failing command is not a known installable tool.
+     */
+    private fun tryAutoInstallMissingTool(
+        command: String,
+        failureOutput: String,
+        directory: File?
+    ): AutoInstallOutcome? {
+        val missingTool = missingCommandName(failureOutput)
+            ?: firstKnownToolInCommand(command)
+            ?: return null
+        val packageName = AUTO_INSTALL_PACKAGES[missingTool] ?: return null
+        val installCommand = "pkg install -y $packageName 2>&1 || { pkg update -y 2>&1 && pkg install -y $packageName 2>&1; }"
+        val installResult = extensionCommandExecutor(
+            installCommand,
+            AUTO_INSTALL_TIMEOUT_SECONDS,
+            directory
+        )
+        val summary = installResult.output.trim().takeLast(400)
+        val installed = installResult.exitCode == null || installResult.exitCode == 0
+        return AutoInstallOutcome(
+            packageName = packageName,
+            summary = if (installed) {
+                "安装成功".takeIf { summary.isBlank() } ?: summary
+            } else {
+                "安装失败(exit ${installResult.exitCode}): $summary"
+            }
+        )
+    }
+
+    private fun missingCommandName(output: String): String? {
+        return Regex(
+            """(?m)\b([a-zA-Z][a-zA-Z0-9_+.-]*):\s*(?:command not found|not found)\s*$"""
+        )
+            .find(output)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.lowercase()
+    }
+
+    private fun firstKnownToolInCommand(command: String): String? {
+        val lower = command.lowercase()
+        return AUTO_INSTALL_PACKAGES.keys.firstOrNull { key ->
+            Regex("\\b${Regex.escape(key)}\\b").containsMatchIn(lower)
+        }
     }
 
     private fun formatExtensionResult(
@@ -203,7 +278,10 @@ class ShellTool(
             } else {
                 "Command execution error (exit ${result.exitCode}):\n$normalizedResult"
             }
-            return failureResult(output, exitCode = result.exitCode)
+            return failureResult(
+                output = output + extensionCommandNotFoundHint(normalizedResult, result.exitCode),
+                exitCode = result.exitCode
+            )
         }
         return successResult(
             output = normalizedResult.ifBlank { "(command completed, no output)" },
@@ -237,7 +315,10 @@ class ShellTool(
             } else {
                 "Command execution error (exit $exitCode):\n$normalizedResult"
             }
-            return failureResult(output, exitCode = exitCode)
+            return failureResult(
+                output = output + systemCommandNotFoundHint(normalizedResult, exitCode),
+                exitCode = exitCode
+            )
         }
         if (exitCode == null && normalizedResult.startsWith("error:", ignoreCase = true)) {
             return failureResult("Command execution error: $normalizedResult")
@@ -274,6 +355,37 @@ class ShellTool(
     private companion object {
         const val TIMEOUT_MARKER = "__RSNX_TIMEOUT__"
         const val EXIT_CODE_MARKER = "__RSNX_EXIT_CODE__"
+        const val AUTO_INSTALL_TIMEOUT_SECONDS = 600
+        // 常用开发工具命令 -> Termux 包名。只有这些明确已知的命令缺
+        // 失时才会自动 pkg install，避免随意安装未知包。
+        val AUTO_INSTALL_PACKAGES = linkedMapOf(
+            "python3" to "python",
+            "python" to "python",
+            "pip" to "python-pip",
+            "pip3" to "python-pip",
+            "git" to "git",
+            "clang" to "clang",
+            "gcc" to "gcc",
+            "g++" to "gcc",
+            "make" to "make",
+            "cmake" to "cmake",
+            "node" to "nodejs",
+            "npm" to "nodejs",
+            "zip" to "zip",
+            "unzip" to "unzip",
+            "tar" to "tar",
+            "xz" to "xz",
+            "jq" to "jq",
+            "curl" to "curl",
+            "wget" to "wget",
+            "openssl" to "openssl",
+            "patch" to "patch",
+            "shellcheck" to "shellcheck",
+            "shfmt" to "shfmt",
+            "diff" to "diffutils",
+            "awk" to "gawk",
+            "sed" to "sed"
+        )
         val EXIT_CODE_PATTERN = Regex("(?m)^${EXIT_CODE_MARKER}(-?\\d+)\\s*$")
 
         fun wrapCommandWithTimeout(command: String, timeoutSeconds: Int): String {
@@ -313,6 +425,22 @@ class ShellTool(
         return output.startsWith("Error:", ignoreCase = true) ||
             output.startsWith("Command execution error", ignoreCase = true) ||
             output.startsWith("Command timed out", ignoreCase = true)
+    }
+
+    private fun isCommandNotFound(output: String, exitCode: Int?): Boolean {
+        if (exitCode == 127) return true
+        val lower = output.lowercase()
+        return "command not found" in lower || "not recognized" in lower
+    }
+
+    private fun extensionCommandNotFoundHint(output: String, exitCode: Int?): String {
+        if (!isCommandNotFound(output, exitCode)) return ""
+        return "\n\n提示：终端扩展环境里没有这个命令。可先运行 pkg install -y <包名> 安装（例如 python → pkg install -y python），安装完成后重试；该环境是应用自带的沙箱，系统 Termux 里安装的包不会自动出现在这里。"
+    }
+
+    private fun systemCommandNotFoundHint(output: String, exitCode: Int?): String {
+        if (!isCommandNotFound(output, exitCode)) return ""
+        return "\n\n提示：系统环境里没有这个命令。若目标是 python/pip/clang 等开发工具，请改用 environment=extension（终端扩展环境）执行；必要时先在该环境里 pkg install 安装。若设备装有 Termux，python 等也可能在系统 PATH 中可用。"
     }
 
     private fun successResult(output: String, exitCode: Int? = null): ToolExecutionResult {

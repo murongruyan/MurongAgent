@@ -103,6 +103,7 @@ class ConversationStoreTest {
                 providerId = "test-provider",
                 modelName = "test-model",
                 sessionGoal = "修复登录态过期问题",
+                goalStatus = "paused",
                 projectPath = "C:/workspace/app",
                 messages = listOf(
                     PersistedMessage(
@@ -132,6 +133,33 @@ class ConversationStoreTest {
             assertEquals("archive-01#2", archived.anchorMessageReference)
             assertNull(store.loadSession(session.id))
             assertTrue(store.listSessions().none { it.id == session.id })
+        } finally {
+            tempDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun goalStatus_persistsThroughSaveAndLoad() {
+        val tempDir = Files.createTempDirectory("conversation-store-goal-status-test")
+        try {
+            val store = ConversationStore(tempDir.toFile())
+            val session = PersistedSession(
+                id = "goal-status-01",
+                title = "目标会话",
+                createdAt = 1L,
+                updatedAt = 2L,
+                providerId = "test-provider",
+                modelName = "test-model",
+                sessionGoal = "完成登录重构",
+                goalStatus = "paused",
+                messages = emptyList()
+            )
+
+            assertTrue(store.saveSession(session))
+
+            val restored = assertNotNull(store.loadSession(session.id))
+            assertEquals("paused", restored.goalStatus)
+            assertEquals("完成登录重构", restored.sessionGoal)
         } finally {
             tempDir.toFile().deleteRecursively()
         }

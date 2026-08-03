@@ -47,8 +47,13 @@ object ExtensionShellExecutor {
 
         val bash = ToolchainManager.getBundledCommandPath("bash")
             ?: return Result(output = "", error = "终端扩展环境缺少 bash。")
+        // PRoot treats versioned Termux symlinks (python -> python3.14) as
+        // non-executable during PATH lookup; install the same versioned-command
+        // fallback the interactive terminal uses so `python` etc. resolve to
+        // their real versioned binaries in non-interactive shells too.
+        val wrappedCommand = ToolchainManager.buildVersionedCommandFallbackScript() + "\n" + command
         val launchCommand = ToolchainManager.buildPackageCompatibleCommand(
-            listOf(bash, "-c", command)
+            listOf(bash, "-c", wrappedCommand)
         )
         val safeTimeout = timeoutSeconds.coerceAtLeast(1)
 

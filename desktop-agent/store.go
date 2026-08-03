@@ -1314,6 +1314,77 @@ func (store *desktopStore) clearSessionGoal(id string) (*ChatSession, error) {
 	return cloneSession(session), nil
 }
 
+func (store *desktopStore) setSessionGoal(id string, goal string) (*ChatSession, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	session := store.sessions[id]
+	if session == nil {
+		return nil, errors.New("会话不存在")
+	}
+	if err := requireDesktopExecutionAuthority(session); err != nil {
+		return nil, err
+	}
+	normalized := strings.TrimSpace(goal)
+	if normalized == "" {
+		return cloneSession(session), nil
+	}
+	session.Goal = truncateRunes(normalized, 20_000)
+	session.GoalStatus = "active"
+	if err := store.saveSessionsLocked(); err != nil {
+		return nil, err
+	}
+	return cloneSession(session), nil
+}
+
+func (store *desktopStore) setSessionGoalStatus(id string, status string) (*ChatSession, error) {
+	if status != "active" && status != "paused" {
+		return nil, errors.New("目标状态只能是 active 或 paused")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	session := store.sessions[id]
+	if session == nil {
+		return nil, errors.New("会话不存在")
+	}
+	if err := requireDesktopExecutionAuthority(session); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(session.Goal) == "" {
+		return cloneSession(session), nil
+	}
+	session.GoalStatus = status
+	if err := store.saveSessionsLocked(); err != nil {
+		return nil, err
+	}
+	return cloneSession(session), nil
+}
+
+func (store *desktopStore) completeSessionGoal(id string) (*ChatSession, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	session := store.sessions[id]
+	if session == nil {
+		return nil, errors.New("会话不存在")
+	}
+	if err := requireDesktopExecutionAuthority(session); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(session.Goal) == "" {
+		return cloneSession(session), nil
+	}
+	completedGoal := session.Goal
+	session.Goal = ""
+	session.GoalStatus = ""
+	session.Messages = append(session.Messages, ChatMessage{
+		ID: newID("message"), Role: "system", CreatedAt: time.Now().UnixMilli(),
+		Content: "✅ 目标已完成，已退出目标模式：" + completedGoal, Kind: "goal",
+	})
+	if err := store.saveSessionsLocked(); err != nil {
+		return nil, err
+	}
+	return cloneSession(session), nil
+}
+
 func (store *desktopStore) appendMessage(sessionID string, message ChatMessage) (*ChatSession, error) {
 	validatedImages, err := store.validateMessageImages(message.ImageAttachments)
 	if err != nil {
@@ -1342,7 +1413,12 @@ func (store *desktopStore) appendMessage(sessionID string, message ChatMessage) 
 	}
 	session.Messages = append(session.Messages, message)
 	if message.Role == "user" && (message.Mode == "goal" || message.Mode == "goal_plan") {
-		session.Goal = truncateRunes(message.Content, 20_000)
+		goal := strings.TrimSpace(message.Goal)
+		if goal == "" {
+			goal = message.Content
+		}
+		session.Goal = truncateRunes(goal, 20_000)
+		session.GoalStatus = "active"
 	}
 	session.UpdatedAt = message.CreatedAt
 	if session.Title == "新会话" && message.Role == "user" && message.Content != "" {

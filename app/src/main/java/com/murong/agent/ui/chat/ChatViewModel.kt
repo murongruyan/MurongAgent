@@ -8,6 +8,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import com.murong.agent.voice.VoiceChatController
 import com.murong.agent.voice.VoiceInputUiState
 import com.murong.agent.voice.OfflineVoiceModelUiState
+import com.murong.agent.voice.OfflineTtsModelUiState
 import com.murong.agent.core.config.ConfigRepository
 import com.murong.agent.core.config.GlobalSkill
 import com.murong.agent.core.config.ProviderConfig
@@ -86,6 +87,7 @@ class ChatViewModel @Inject constructor(
     val voiceInputState: StateFlow<VoiceInputUiState> = voiceController.inputState
     val voiceSettings: StateFlow<VoiceSettings> = voiceController.settings
     val offlineVoiceModelState: StateFlow<OfflineVoiceModelUiState> = voiceController.offlineModelState
+    val offlineTtsModelState: StateFlow<OfflineTtsModelUiState> = voiceController.offlineTtsModelState
     val voicePlaybackState: StateFlow<VoicePlaybackState> = voiceController.playbackState
     val activeVoicePlaybackMessageId: StateFlow<Long?> = voiceController.activePlaybackMessageId
     val continuableVoicePlaybackMessageIds: StateFlow<Set<Long>> =
@@ -234,11 +236,25 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    fun shouldAutoPlan(text: String, mentionedFiles: List<FileMentionUi> = emptyList()): Boolean {
+        return sessionManager.shouldAutoPlanTask(text, mentionedFiles)
+    }
+
     fun generateWorkflowPlan(text: String, mentionedFiles: List<FileMentionUi> = emptyList()) {
         launchSendingOperation {
             sessionManager.clearLastAutoRouteDecision()
             withContext(Dispatchers.IO) {
                 sessionManager.generateWorkflowPlan(text, mentionedFiles)
+            }
+            refreshSessions()
+        }
+    }
+
+    fun modifyPendingWorkflowPlan(feedback: String) {
+        launchSendingOperation {
+            sessionManager.clearLastAutoRouteDecision()
+            withContext(Dispatchers.IO) {
+                sessionManager.modifyPendingWorkflowPlan(feedback)
             }
             refreshSessions()
         }
@@ -392,6 +408,10 @@ class ChatViewModel @Inject constructor(
 
     fun deleteOfflineVoiceModel() = voiceController.deleteOfflineVoiceModel()
 
+    fun installOfflineTtsModel() = voiceController.installOfflineTtsModel()
+
+    fun deleteOfflineTtsModel() = voiceController.deleteOfflineTtsModel()
+
     fun speakAssistantMessage(messageId: Long, content: String) = voiceController.speak(messageId, content)
 
     fun pauseVoicePlayback() = voiceController.pauseSpeaking()
@@ -491,6 +511,21 @@ class ChatViewModel @Inject constructor(
 
     fun clearCurrentSessionGoal() {
         sessionManager.clearCurrentSessionGoal()
+        refreshSessions()
+    }
+
+    fun pauseCurrentSessionGoal() {
+        sessionManager.setCurrentSessionGoalStatus(GoalStatusUi.PAUSED)
+        refreshSessions()
+    }
+
+    fun resumeCurrentSessionGoal() {
+        sessionManager.setCurrentSessionGoalStatus(GoalStatusUi.ACTIVE)
+        refreshSessions()
+    }
+
+    fun completeCurrentSessionGoal() {
+        sessionManager.completeCurrentSessionGoal()
         refreshSessions()
     }
 

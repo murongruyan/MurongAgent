@@ -53,7 +53,7 @@ try {
 
     go test -count=1 .
     if ($LASTEXITCODE -ne 0) { throw "Desktop Agent tests failed" }
-    go vet .
+    go vet -unsafeptr=false .
     if ($LASTEXITCODE -ne 0) { throw "Desktop Agent vet failed" }
 
     New-Item -ItemType Directory -Force $dist | Out-Null

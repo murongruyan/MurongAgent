@@ -54,7 +54,7 @@ func (app *DesktopAgentApp) SendMessage(request SendMessageRequest) error {
 			workspaceSnapshot = app.workspace.Consume(config.ProjectPath)
 		}
 		session, appendErr := app.store.appendMessage(request.SessionID, ChatMessage{
-			Role: "user", Content: request.Content, ImageAttachments: images, Context: contextItems, Mode: request.Mode,
+			Role: "user", Content: request.Content, Goal: request.Goal, ImageAttachments: images, Context: contextItems, Mode: request.Mode,
 			WorkspaceChanges: workspaceSnapshot.Changes, WorkspaceChangesOmitted: workspaceSnapshot.OmittedCount,
 		})
 		if appendErr != nil {
@@ -90,7 +90,7 @@ func (app *DesktopAgentApp) SendMessage(request SendMessageRequest) error {
 		workspaceSnapshot = app.workspace.Consume(config.ProjectPath)
 	}
 	session, err := app.store.appendMessage(request.SessionID, ChatMessage{
-		Role: "user", Content: request.Content, ImageAttachments: images, Context: contextItems, Mode: request.Mode,
+		Role: "user", Content: request.Content, Goal: request.Goal, ImageAttachments: images, Context: contextItems, Mode: request.Mode,
 		WorkspaceChanges: workspaceSnapshot.Changes, WorkspaceChangesOmitted: workspaceSnapshot.OmittedCount,
 	})
 	if err != nil {
@@ -159,7 +159,20 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 	}
 	systemPrompt := app.systemPrompt(config)
 	if goal := strings.TrimSpace(session.Goal); goal != "" {
-		systemPrompt += "\n\n当前会话长期目标（后续回复必须围绕它推进，除非用户更新或清除）：\n" + goal
+		systemPrompt += "\n\n当前会话长期目标：\n" + goal
+		if session.GoalStatus == "paused" {
+			systemPrompt += "\n目标状态：PAUSED。暂时不要继续朝这个目标推进，直到用户恢复它。"
+		} else {
+			systemPrompt += "\n目标状态：ACTIVE。后续回复必须围绕它推进，除非用户更新或清除。"
+		}
+		systemPrompt += "\n\n如需切换目标或计划状态，可以在回复开头单独一行输出控制标记："
+		systemPrompt += "\n[goal:start] <新目标>"
+		systemPrompt += "\n[goal:update] <新目标>"
+		systemPrompt += "\n[goal:pause]"
+		systemPrompt += "\n[goal:resume]"
+		systemPrompt += "\n[goal:complete]"
+		systemPrompt += "\n[plan:start]"
+		systemPrompt += "\n只在用户明确要求切换时才输出标记，否则正常回复、不要输出任何标记。"
 	}
 	if planPrompt := workflowExecutionPrompt(session.WorkflowPlan); planPrompt != "" {
 		systemPrompt += "\n\n" + planPrompt
@@ -242,7 +255,12 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 		}
 		assistantMessage := modelMessage{Role: "assistant", Content: result.Content, ReasoningContent: result.Reasoning, ToolCalls: result.ToolCalls}
 		messages = append(messages, assistantMessage)
-		if strings.TrimSpace(result.Content) != "" {
+		goalMarkers := parseGoalControlMarkers(result.Content)
+		assistantContent := strings.TrimSpace(result.Content)
+		if goalMarkers != nil {
+			assistantContent = strings.TrimSpace(goalMarkers.RemainingContent)
+		}
+		if assistantContent != "" {
 			kind := ""
 			if len(result.ToolCalls) > 0 {
 				kind = "progress"
@@ -250,7 +268,7 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 				kind = "plan"
 			}
 			updated, saveErr := app.store.appendMessage(sessionID, ChatMessage{
-				Role: "assistant", Content: result.Content, Reasoning: result.Reasoning, Kind: kind,
+				Role: "assistant", Content: assistantContent, Reasoning: result.Reasoning, Kind: kind,
 			})
 			if saveErr != nil {
 				app.failRun(sessionID, saveErr)
@@ -258,13 +276,16 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 			}
 			if planMode && len(result.ToolCalls) == 0 {
 				sourceMessageID := updated.Messages[len(updated.Messages)-1].ID
-				updated, saveErr = app.store.captureWorkflowPlan(sessionID, sourceMessageID, result.Content)
+				updated, saveErr = app.store.captureWorkflowPlan(sessionID, sourceMessageID, assistantContent)
 				if saveErr != nil {
 					app.failRun(sessionID, saveErr)
 					return
 				}
 			}
 			app.emitSessionsChanged(updated)
+		}
+		if goalMarkers != nil {
+			app.applyGoalControlMarkers(sessionID, goalMarkers)
 		}
 		if len(result.ToolCalls) == 0 {
 			settled, settleErr := app.store.settleWorkflowPlan(sessionID, "")

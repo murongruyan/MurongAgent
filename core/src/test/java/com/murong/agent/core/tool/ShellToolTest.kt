@@ -88,12 +88,128 @@ class ShellToolTest {
 
         val result = tool.executeWithResult("""{"command":"missing","environment":"extension"}""")
 
-        assertEquals("Command execution error (exit 127):\nmissing", result.output)
+        assertTrue(result.output.startsWith("Command execution error (exit 127):\nmissing"))
+        assertTrue(result.output.contains("pkg install -y"))
         assertEquals(ToolExecutionStatus.FAILURE, result.status)
         assertEquals(false, result.success)
         assertEquals(127, result.exitCode)
         assertFalse(result.timedOut)
         assertEquals(false, result.resolvedSuccess)
+    }
+
+    @Test
+    fun execute_systemCommandNotFoundSuggestsExtensionEnvironment() = runBlocking {
+        val tool = ShellTool(
+            rootAvailableProvider = { true },
+            systemCommandExecutor = { _, _ ->
+                "python3: command not found\n__RSNX_EXIT_CODE__127"
+            }
+        )
+
+        val result = tool.executeWithResult("""{"command":"python3 -V","environment":"system"}""")
+
+        assertTrue(result.output.contains("Command execution error (exit 127)"))
+        assertTrue(result.output.contains("environment=extension"))
+        assertEquals(ToolExecutionStatus.FAILURE, result.status)
+        assertEquals(false, result.success)
+        assertEquals(127, result.exitCode)
+    }
+
+    @Test
+    fun execute_regularFailureDoesNotAddCommandNotFoundHint() = runBlocking {
+        val tool = ShellTool(
+            rootAvailableProvider = { true },
+            systemCommandExecutor = { _, _ ->
+                "boom\n__RSNX_EXIT_CODE__1"
+            }
+        )
+
+        val result = tool.executeWithResult("""{"command":"false","environment":"system"}""")
+
+        assertEquals("Command execution error (exit 1):\nboom", result.output)
+        assertEquals(ToolExecutionStatus.FAILURE, result.status)
+        assertEquals(false, result.success)
+    }
+
+    @Test
+    fun execute_extensionAutoInstallsMissingKnownToolAndRetries() = runBlocking {
+        val calls = mutableListOf<String>()
+        val tool = ShellTool(
+            rootAvailableProvider = { false },
+            extensionAvailableProvider = { true },
+            extensionCommandExecutor = { command, _, _ ->
+                calls += command
+                when (calls.size) {
+                    1 -> ExtensionShellExecutor.Result(
+                        output = "sh: python: command not found",
+                        exitCode = 127
+                    )
+
+                    2 -> ExtensionShellExecutor.Result(output = "pkg install done", exitCode = 0)
+                    else -> ExtensionShellExecutor.Result(output = "Python 3.14.6", exitCode = 0)
+                }
+            }
+        )
+
+        val result = tool.executeWithResult("""{"command":"python --version","environment":"extension"}""")
+
+        assertEquals(3, calls.size)
+        assertTrue(calls[1].startsWith("pkg install -y python"))
+        assertEquals(ToolExecutionStatus.SUCCESS, result.status)
+        assertTrue(result.output.contains("Python 3.14.6"))
+        assertTrue(result.output.contains("已自动在终端扩展环境安装 python"))
+    }
+
+    @Test
+    fun execute_extensionDoesNotAutoInstallUnknownCommand() = runBlocking {
+        var calls = 0
+        val tool = ShellTool(
+            rootAvailableProvider = { false },
+            extensionAvailableProvider = { true },
+            extensionCommandExecutor = { _, _, _ ->
+                calls++
+                ExtensionShellExecutor.Result(
+                    output = "sh: weirdcmd99: command not found",
+                    exitCode = 127
+                )
+            }
+        )
+
+        val result = tool.executeWithResult("""{"command":"weirdcmd99","environment":"extension"}""")
+
+        assertEquals(1, calls)
+        assertEquals(ToolExecutionStatus.FAILURE, result.status)
+        assertEquals(false, result.success)
+    }
+
+    @Test
+    fun execute_extensionAutoInstallFailureKeepsFailureWithNote() = runBlocking {
+        val calls = mutableListOf<String>()
+        val tool = ShellTool(
+            rootAvailableProvider = { false },
+            extensionAvailableProvider = { true },
+            extensionCommandExecutor = { command, _, _ ->
+                calls += command
+                when (calls.size) {
+                    1 -> ExtensionShellExecutor.Result(
+                        output = "sh: git: command not found",
+                        exitCode = 127
+                    )
+
+                    2 -> ExtensionShellExecutor.Result(output = "pkg installed", exitCode = 0)
+                    else -> ExtensionShellExecutor.Result(
+                        output = "git: command not found",
+                        exitCode = 127
+                    )
+                }
+            }
+        )
+
+        val result = tool.executeWithResult("""{"command":"git status","environment":"extension"}""")
+
+        assertEquals(3, calls.size)
+        assertEquals(ToolExecutionStatus.FAILURE, result.status)
+        assertTrue(result.output.contains("已自动尝试安装 git"))
     }
 
     @Test

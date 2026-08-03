@@ -186,4 +186,29 @@ class ToolchainManagerTest {
         assertEquals("/data/data/com.termux/files/usr/bin/bash", command[1])
         assertEquals("-i", command.last())
     }
+
+    @Test
+    fun packageCompatibilityGuestLauncher_nonBashCommand_usesVersionedSymlinkFallback() {
+        val command = ToolchainManager.packageCompatibilityGuestLauncher(
+            listOf("python", "1.py")
+        )
+
+        assertEquals("/system/bin/linker64", command.first())
+        assertEquals("/data/data/com.termux/files/usr/bin/bash", command[1])
+        assertEquals("-c", command[2])
+        assertTrue(command[3].contains("command_not_found_handle"))
+        assertTrue(command[3].contains("__murong_resolve_command"))
+        assertTrue(command[3].contains("exec \"${'$'}__murong_resolved\""))
+        assertEquals("murong-package-launcher", command[4])
+        assertEquals("python", command[5])
+    }
+
+    @Test
+    fun buildVersionedCommandFallbackScript_installsCommandNotFoundHandler() {
+        val script = ToolchainManager.buildVersionedCommandFallbackScript()
+
+        assertTrue(script.contains("murong_exec_versioned_command"))
+        assertTrue(script.contains("command_not_found_handle"))
+        assertTrue(script.contains("PREFIX/bin"))
+    }
 }

@@ -146,9 +146,10 @@ class VoiceChatController(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val settingsRepository = VoiceSettingsRepository(appContext)
     private val offlineModelManager = OfflineVoiceModelManager(appContext)
+    private val offlineTtsModelManager = OfflineTtsModelManager(appContext)
     private val systemRecognition = AndroidSpeechRecognitionService(appContext)
     private val offlineRecognition = OfflineSherpaSpeechRecognitionService(appContext, offlineModelManager)
-    private val playback = AndroidTextToSpeechService(appContext)
+    private val playback = ResilientVoicePlaybackService(appContext, offlineTtsModelManager)
     private val _inputState = MutableStateFlow(VoiceInputUiState())
     /** The engine currently visible in the composer; late callbacks from a previous engine are ignored. */
     private var displayedRecognition: VoiceRecognitionService? = null
@@ -164,6 +165,7 @@ class VoiceChatController(
     val inputState: StateFlow<VoiceInputUiState> = _inputState.asStateFlow()
     val settings: StateFlow<VoiceSettings> = settingsRepository.settings
     val offlineModelState: StateFlow<OfflineVoiceModelUiState> = offlineModelManager.state
+    val offlineTtsModelState: StateFlow<OfflineTtsModelUiState> = offlineTtsModelManager.state
     val playbackState: StateFlow<VoicePlaybackState> = playback.state
     /** The sole message currently entitled to control the stop button. */
     val activePlaybackMessageId: StateFlow<Long?> = playback.activeMessageId
@@ -334,6 +336,12 @@ class VoiceChatController(
         }
     }
 
+    fun installOfflineTtsModel() = offlineTtsModelManager.install()
+
+    fun deleteOfflineTtsModel() {
+        scope.launch { offlineTtsModelManager.delete() }
+    }
+
     fun speak(messageId: Long, messageText: String) {
         val request = preparePlaybackRequest(messageId, messageText) ?: return
         scope.launch {
@@ -399,6 +407,7 @@ class VoiceChatController(
         systemRecognition.close()
         offlineRecognition.close()
         offlineModelManager.close()
+        offlineTtsModelManager.close()
         playback.close()
         settingsRepository.close()
     }
@@ -605,7 +614,7 @@ private class AndroidSpeechRecognitionService(context: Context) : VoiceRecogniti
     }
 }
 
-private class AndroidTextToSpeechService(context: Context) : VoicePlaybackService {
+internal class AndroidTextToSpeechService(context: Context) : VoicePlaybackService {
     private val appContext = context.applicationContext
     private val _state = MutableStateFlow(VoicePlaybackState.IDLE)
     private val _activeMessageId = MutableStateFlow<Long?>(null)

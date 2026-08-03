@@ -53,6 +53,7 @@ import com.murong.agent.core.provider.ProviderRegistry
 import com.murong.agent.core.voice.VoiceSettings
 import com.murong.agent.backup.MurongBackupSettingsSnapshot
 import com.murong.agent.voice.OfflineVoiceModelUiState
+import com.murong.agent.voice.OfflineTtsModelUiState
 import com.murong.agent.ui.MemoryDraftImportCard
 import com.murong.agent.ui.McpDraftImportCard
 import com.murong.agent.ui.MurongDialog
@@ -67,6 +68,7 @@ import com.murong.agent.ui.sanitizeSkillAllowedTools
 import com.murong.agent.ui.SkillAllowedToolsBudgetView
 import com.murong.agent.ui.SkillDraftImportCard
 import com.murong.agent.ui.voice.OfflineVoiceModelSetting
+import com.murong.agent.ui.voice.OfflineTtsModelSetting
 import com.murong.agent.ui.voice.VoiceRecognitionProviderSetting
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
@@ -116,6 +118,9 @@ fun SettingsScreen(
     offlineVoiceModelState: OfflineVoiceModelUiState = OfflineVoiceModelUiState(),
     onInstallOfflineVoiceModel: () -> Unit = {},
     onDeleteOfflineVoiceModel: () -> Unit = {},
+    offlineTtsModelState: OfflineTtsModelUiState = OfflineTtsModelUiState(),
+    onInstallOfflineTtsModel: () -> Unit = {},
+    onDeleteOfflineTtsModel: () -> Unit = {},
     backupRestoreState: BackupRestoreUiState = BackupRestoreUiState(),
     suggestedBackupFileName: String = "murong_backup.zip",
     onRefreshBackupStatus: () -> Unit = {},
@@ -477,6 +482,9 @@ fun SettingsScreen(
                 offlineModelState = offlineVoiceModelState,
                 onInstallOfflineModel = onInstallOfflineVoiceModel,
                 onDeleteOfflineModel = onDeleteOfflineVoiceModel,
+                offlineTtsModelState = offlineTtsModelState,
+                onInstallOfflineTtsModel = onInstallOfflineTtsModel,
+                onDeleteOfflineTtsModel = onDeleteOfflineTtsModel,
             )
         }
         }
@@ -688,6 +696,9 @@ private fun VoiceSettingsSection(
     offlineModelState: OfflineVoiceModelUiState,
     onInstallOfflineModel: () -> Unit,
     onDeleteOfflineModel: () -> Unit,
+    offlineTtsModelState: OfflineTtsModelUiState,
+    onInstallOfflineTtsModel: () -> Unit,
+    onDeleteOfflineTtsModel: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
@@ -716,6 +727,11 @@ private fun VoiceSettingsSection(
             state = offlineModelState,
             onInstall = onInstallOfflineModel,
             onDelete = onDeleteOfflineModel,
+        )
+        OfflineTtsModelSetting(
+            state = offlineTtsModelState,
+            onInstall = onInstallOfflineTtsModel,
+            onDelete = onDeleteOfflineTtsModel,
         )
         AssistantInvocationSettings(
             offlineModelState = offlineModelState,

@@ -17,6 +17,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.murong.agent.core.voice.VoiceRecognitionProvider
 import com.murong.agent.core.voice.VoiceSettings
+import com.murong.agent.voice.OfflineTtsModelDescriptor
+import com.murong.agent.voice.OfflineTtsModelUiState
 import com.murong.agent.voice.OfflineVoiceModelDescriptor
 import com.murong.agent.voice.OfflineVoiceModelInstallStatus
 import com.murong.agent.voice.OfflineVoiceModelUiState
@@ -101,6 +103,54 @@ fun OfflineVoiceModelSetting(
     }
 }
 
+@Composable
+fun OfflineTtsModelSetting(
+    state: OfflineTtsModelUiState,
+    onInstall: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("离线中文朗读模型", style = MaterialTheme.typography.labelLarge)
+        Text(
+            offlineTtsModelStatusText(state),
+            style = MaterialTheme.typography.bodySmall,
+            color = if (state.status == OfflineVoiceModelInstallStatus.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (state.isBusy) {
+            LinearProgressIndicator(progress = { state.progress }, modifier = Modifier.fillMaxWidth())
+        }
+        Text(
+            "来源：Sherpa-onnx 官方发布包 · ${OfflineTtsModelDescriptor.DISPLAY_NAME} · 下载约 159 MB · 解包约 190 MB · 完全本地离线合成，不依赖系统朗读引擎（部分厂商系统引擎对第三方应用拒绝合成）。仅在你点击安装后下载，存放在应用私有目录。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            "SHA-256：${OfflineTtsModelDescriptor.ARCHIVE_SHA256}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            "运行时随 APK 内置；模型文件按需下载。安装后朗读优先使用该离线模型，失败或未安装时回退到系统引擎。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (!state.isInstalled) {
+                Button(onClick = onInstall, enabled = !state.isBusy) {
+                    Text(
+                        when (state.status) {
+                            OfflineVoiceModelInstallStatus.FAILED -> "重新下载"
+                            else -> "安装离线朗读模型"
+                        }
+                    )
+                }
+            } else {
+                OutlinedButton(onClick = onDelete, enabled = !state.isBusy) { Text("删除模型") }
+            }
+        }
+    }
+}
+
 private fun recognitionProviderOptions(): List<Pair<VoiceRecognitionProvider, String>> = listOf(
     VoiceRecognitionProvider.AUTOMATIC to "自动",
     VoiceRecognitionProvider.SYSTEM to "系统服务",
@@ -115,6 +165,16 @@ private fun offlineVoiceModelStatusText(state: OfflineVoiceModelUiState): String
     OfflineVoiceModelInstallStatus.READY -> "已安装，可实时显示中英文识别结果，并由模型原生输出标点"
     OfflineVoiceModelInstallStatus.LEGACY_READY -> "旧版模型仍可用；升级后由实时模型原生输出中英文标点"
     OfflineVoiceModelInstallStatus.FAILED -> state.message ?: "安装失败，请重新下载"
+}
+
+private fun offlineTtsModelStatusText(state: OfflineTtsModelUiState): String = when (state.status) {
+    OfflineVoiceModelInstallStatus.NOT_INSTALLED -> "未安装，朗读使用系统引擎"
+    OfflineVoiceModelInstallStatus.DOWNLOADING -> "正在下载${state.message?.let { " $it" }.orEmpty()}：${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}"
+    OfflineVoiceModelInstallStatus.VERIFYING -> "正在校验${state.message?.let { " $it" }.orEmpty()} SHA-256…"
+    OfflineVoiceModelInstallStatus.EXTRACTING -> "正在安全解包并启用${state.message?.let { " $it" }.orEmpty()}…"
+    OfflineVoiceModelInstallStatus.READY -> "已安装，朗读将完全离线合成，不再依赖系统引擎"
+    OfflineVoiceModelInstallStatus.FAILED -> state.message ?: "安装失败，请重新下载"
+    OfflineVoiceModelInstallStatus.LEGACY_READY -> "已安装"
 }
 
 private fun formatBytes(value: Long): String = when {

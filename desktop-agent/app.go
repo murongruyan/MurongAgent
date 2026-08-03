@@ -27,6 +27,7 @@ type DesktopAgentApp struct {
 	codex                      *codexAppServer
 	vision                     *builtinVisionManager
 	visionRuntime              *desktopVisionRuntime
+	voiceEngine                *DesktopVoiceEngine
 	mu                         sync.Mutex
 	runs                       map[string]context.CancelFunc
 	restartRuns                map[string]bool
@@ -104,6 +105,19 @@ func newDesktopAgentApp() (*DesktopAgentApp, error) {
 	app.workbenchTerminals = newWorkbenchTerminalManager(app.emit)
 	app.codex = newCodexAppServer(codexRuntimeRootFromStore(store))
 	app.visionRuntime = newDesktopVisionRuntime(filepath.Dir(store.configPath))
+	app.voiceEngine = newDesktopVoiceEngine(
+		filepath.Join(filepath.Dir(store.configPath), "voice-runtime"),
+		func(status VoiceRuntimeStatus) {
+			if app.ctx != nil {
+				app.emit("voice_status", status)
+			}
+		},
+		func(text string) {
+			if app.ctx != nil {
+				app.emit("voice_final", text)
+			}
+		},
+	)
 	app.vision = newBuiltinVisionManager(store.configPath, func() {
 		if app.ctx != nil {
 			app.emit("builtin_vision_status", app.vision.Status())
@@ -237,6 +251,9 @@ func (app *DesktopAgentApp) shutdown(context.Context) {
 	}
 	if app.vision != nil {
 		app.vision.Close()
+	}
+	if app.voiceEngine != nil {
+		app.voiceEngine.Close()
 	}
 }
 
@@ -678,6 +695,25 @@ func (app *DesktopAgentApp) DismissWorkflowPlan(id string) (*ChatSession, error)
 
 func (app *DesktopAgentApp) ClearSessionGoal(id string) (*ChatSession, error) {
 	session, err := app.store.clearSessionGoal(strings.TrimSpace(id))
+	if err == nil {
+		app.emitSessionsChanged(session)
+	}
+	return session, err
+}
+
+func (app *DesktopAgentApp) SetSessionGoalStatus(request SetSessionGoalStatusRequest) (*ChatSession, error) {
+	session, err := app.store.setSessionGoalStatus(
+		strings.TrimSpace(request.SessionID),
+		strings.TrimSpace(request.Status),
+	)
+	if err == nil {
+		app.emitSessionsChanged(session)
+	}
+	return session, err
+}
+
+func (app *DesktopAgentApp) CompleteSessionGoal(id string) (*ChatSession, error) {
+	session, err := app.store.completeSessionGoal(strings.TrimSpace(id))
 	if err == nil {
 		app.emitSessionsChanged(session)
 	}

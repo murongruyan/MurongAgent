@@ -499,6 +499,7 @@ data class PersistedSession(
     val agentBackend: String = "provider_api",
     val codexThreadId: String? = null,
     val sessionGoal: String? = null,
+    val goalStatus: String = "active",
     val projectPath: String? = null,
     val remoteTaskRepositoryOwner: String? = null,
     val remoteTaskRepositoryName: String? = null,

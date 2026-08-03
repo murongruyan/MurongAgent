@@ -804,6 +804,10 @@ private fun ProjectEditorSection(
     var projectRunInProgress by remember(currentProjectPath) { mutableStateOf(false) }
     var projectRunProcess by remember(currentProjectPath) { mutableStateOf<Process?>(null) }
     var showRunInstallConfirmation by remember(currentProjectPath) { mutableStateOf(false) }
+    var showCreateFileDialog by remember(currentProjectPath) { mutableStateOf(false) }
+    var showCreateFolderDialog by remember(currentProjectPath) { mutableStateOf(false) }
+    var createEntryNameDraft by remember(currentProjectPath) { mutableStateOf("") }
+    var createEntryError by remember(currentProjectPath) { mutableStateOf<String?>(null) }
     var showUnsavedChangesDialog by remember(currentProjectPath) { mutableStateOf(false) }
     var reloadVersion by remember(currentProjectPath) { mutableStateOf(0) }
     var searchQuery by remember(currentProjectPath) { mutableStateOf("") }
@@ -1071,6 +1075,63 @@ private fun ProjectEditorSection(
             } finally {
                 isFileLoading = false
             }
+        }
+    }
+
+    fun currentTreeDirectory(): String {
+        val root = activeTreeRootPath ?: return ""
+        return expandedDirs.maxByOrNull { it.length } ?: root
+    }
+
+    fun createProjectEntry(kind: ProjectCreateEntryKind) {
+        val targetDir = currentTreeDirectory()
+        if (targetDir.isBlank()) {
+            createEntryError = "请先选择一个项目文件夹"
+            return
+        }
+        val name = createEntryNameDraft.trim()
+        if (name.isBlank()) {
+            createEntryError = if (kind == ProjectCreateEntryKind.FILE) "请输入文件名" else "请输入文件夹名称"
+            return
+        }
+        if (!isSafeProjectEntryName(name)) {
+            createEntryError = "名称不能为空、不能是 . 或 ..，且不能包含 / \\ 或控制字符"
+            return
+        }
+        val target = File(targetDir, name)
+        scope.launch {
+            createEntryError = null
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (RootFile.exists(target.absolutePath)) {
+                        error("已存在同名文件或文件夹")
+                    }
+                    if (kind == ProjectCreateEntryKind.FILE) {
+                        saveProjectFile(target, "")
+                    } else {
+                        val operation = RootFile.mkdirChecked(target.absolutePath)
+                        require(operation.success) { operation.error ?: "创建文件夹失败" }
+                    }
+                }
+            }
+            result
+                .onSuccess {
+                    if (kind == ProjectCreateEntryKind.FILE) {
+                        showCreateFileDialog = false
+                        createEntryNameDraft = ""
+                        loadDir(targetDir)
+                        ensurePathExpanded(target.absolutePath)
+                        openFile(target.absolutePath)
+                    } else {
+                        showCreateFolderDialog = false
+                        createEntryNameDraft = ""
+                        loadDir(targetDir)
+                        expandedDirs = expandedDirs + target.absolutePath
+                    }
+                }
+                .onFailure { error ->
+                    createEntryError = error.message ?: "创建失败"
+                }
         }
     }
 
@@ -2067,6 +2128,28 @@ private fun ProjectEditorSection(
                                 tint = MaterialTheme.colorScheme.primary
                             )
                         }
+                        if (!isRemoteTaskMode) {
+                            TextButton(
+                                onClick = {
+                                    createEntryError = null
+                                    createEntryNameDraft = ""
+                                    showCreateFileDialog = true
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp)
+                            ) {
+                                Text("新建文件", fontSize = 12.sp)
+                            }
+                            TextButton(
+                                onClick = {
+                                    createEntryError = null
+                                    createEntryNameDraft = ""
+                                    showCreateFolderDialog = true
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp)
+                            ) {
+                                Text("新建文件夹", fontSize = 12.sp)
+                            }
+                        }
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
@@ -2751,6 +2834,65 @@ private fun ProjectEditorSection(
             }
         ) {
             Text("将安装：${plan?.requiredPackages?.joinToString(", ").orEmpty()}")
+        }
+    }
+
+    if (showCreateFileDialog || showCreateFolderDialog) {
+        val creatingFile = showCreateFileDialog
+        ProjectScreenLargeDialog(
+            title = if (creatingFile) "新建文件" else "新建文件夹",
+            subtitle = "创建位置：${currentTreeDirectory()}",
+            onDismissRequest = {
+                showCreateFileDialog = false
+                showCreateFolderDialog = false
+                createEntryError = null
+            },
+            actions = {
+                TextButton(
+                    onClick = {
+                        showCreateFileDialog = false
+                        showCreateFolderDialog = false
+                        createEntryError = null
+                    }
+                ) {
+                    Text("取消")
+                }
+                TextButton(
+                    onClick = {
+                        createProjectEntry(
+                            if (creatingFile) ProjectCreateEntryKind.FILE else ProjectCreateEntryKind.FOLDER
+                        )
+                    }
+                ) {
+                    Text("创建")
+                }
+            }
+        ) {
+            OutlinedTextField(
+                value = createEntryNameDraft,
+                onValueChange = {
+                    createEntryNameDraft = it
+                    createEntryError = null
+                },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = {
+                    Text(
+                        if (creatingFile) {
+                            "文件名（含扩展名）"
+                        } else {
+                            "文件夹名称"
+                        }
+                    )
+                }
+            )
+            createEntryError?.let { message ->
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
         }
     }
 
@@ -8839,6 +8981,19 @@ private fun suggestProjectGitHubRepoDescription(repo: ProjectDetectedRepoUi?): S
         "，目录 ${repo.relativePath}"
     }
     return "${repo.displayName} 项目$featureSummary$scopeSummary"
+}
+
+private enum class ProjectCreateEntryKind {
+    FILE,
+    FOLDER
+}
+
+private fun isSafeProjectEntryName(name: String): Boolean {
+    if (name.isBlank()) return false
+    if (name == "." || name == "..") return false
+    if (name.any { it == '/' || it == '\\' || it == '\u0000' }) return false
+    if (name.endsWith(".") || name.endsWith(" ")) return false
+    return true
 }
 
 private fun listProjectEntries(dir: File): List<ProjectTreeEntry> {

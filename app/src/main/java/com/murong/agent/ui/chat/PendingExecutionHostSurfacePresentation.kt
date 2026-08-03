@@ -24,7 +24,11 @@ internal fun buildWorkflowPlanHostSurfacePresentation(
         )
     }
     return WorkflowPlanHostSurfacePresentation(
-        kind = if (isChatScreenVisible) WorkflowPlanHostSurfaceKind.CHAT_INLINE else WorkflowPlanHostSurfaceKind.DIALOG,
+        // The execution plan always lives inline in the chat as a tappable
+        // card. A full-screen dialog hides the ongoing conversation and makes
+        // the agent's work invisible, so we no longer route to DIALOG even
+        // when the chat page is not the currently visible screen.
+        kind = WorkflowPlanHostSurfaceKind.CHAT_INLINE,
         workflowPlanPresentation = workflowPlanPresentation,
         interactionState = interactionState
     )

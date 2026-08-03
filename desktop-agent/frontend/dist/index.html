@@ -171,6 +171,7 @@
         <div class="composer">
           <div id="composer-context-chips" class="composer-context-chips hidden"></div>
           <textarea id="message-input" rows="1" maxlength="20000" placeholder="让 Murong 处理这个项目…"></textarea>
+          <div id="voice-partial" class="voice-partial hidden" aria-live="polite"></div>
           <div class="composer-footer">
             <div class="composer-tool-row">
               <button id="composer-add" class="composer-tool icon-only" type="button" title="添加上下文">＋</button>
@@ -192,6 +193,7 @@
                   <option value="max">最大</option>
                 </select>
               </label>
+              <button id="composer-mic" class="composer-mic-button" type="button" title="语音输入：点击开始，再点结束并转文字">🎤</button>
               <button id="send-message" class="send-button" title="发送">➤</button>
             </div>
           </div>
@@ -436,6 +438,33 @@
 			  </label>
 			</details>
           </div>
+        </section>
+
+        <section class="settings-card wide voice-card" data-settings-section="voice">
+          <div class="card-heading">
+            <div><h3>朗读与语音输入</h3><p>完全离线的中文朗读和麦克风听写，复用与安卓端相同的 Sherpa 模型；不依赖系统语音引擎，不上传任何音频。</p></div>
+            <div class="voice-card-actions">
+              <button id="install-tts-model" class="secondary" type="button">安装朗读模型</button>
+              <button id="install-asr-model" class="secondary" type="button">安装识别模型</button>
+            </div>
+          </div>
+          <div id="voice-runtime-status" class="profile-state">正在检查语音引擎状态…</div>
+          <div class="voice-engine-grid">
+            <div class="voice-engine-item">
+              <h4>离线中文朗读（MeloTTS）</h4>
+              <p>约 159 MB 下载，解包约 190 MB。安装后每条助手回复旁会出现朗读按钮。</p>
+              <span id="voice-tts-status" class="inline-state">未安装</span>
+            </div>
+            <div class="voice-engine-item">
+              <h4>离线语音识别（Zipformer）</h4>
+              <p>约 128 MB 下载，解包约 162 MB。安装后输入框旁出现麦克风按钮，按住说话松手自动填入文本。</p>
+              <span id="voice-asr-status" class="inline-state">未安装</span>
+            </div>
+          </div>
+          <details class="voice-engine-advanced">
+            <summary>查看组件详情与安全说明</summary>
+            <p>语音引擎使用 Sherpa-onnx 官方发布的 Windows 预编译二进制（Apache-2.0），模型文件从官方 Release 下载并校验 SHA-256 后存放在应用私有目录。录音只在按住麦克风期间进行，识别完成后立即删除临时音频。</p>
+          </details>
         </section>
 
         <section class="settings-card wide tool-policy-card" data-settings-section="permissions">

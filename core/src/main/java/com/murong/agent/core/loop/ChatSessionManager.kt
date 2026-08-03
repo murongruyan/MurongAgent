@@ -329,6 +329,11 @@ enum class WorkflowPlanStatusUi {
     COMPLETED
 }
 
+enum class GoalStatusUi {
+    ACTIVE,
+    PAUSED
+}
+
 data class WorkflowStepSignOffUi(
     val stepIndex: Int,
     val step: String,
@@ -446,6 +451,64 @@ data class AutoRouteDecisionUi(
     val reason: String,
     val createdAt: Long = System.currentTimeMillis()
 )
+
+data class GoalControlMarkerResult(
+    val goalStart: String? = null,
+    val pause: Boolean = false,
+    val resume: Boolean = false,
+    val complete: Boolean = false,
+    val planStart: Boolean = false,
+    val remainingContent: String = ""
+)
+
+/**
+ * Parses goal/plan control markers the model may place on their own lines in a
+ * reply, e.g. `[goal:start] 帮我重构登录模块` or `[goal:complete]`. Recognized
+ * marker lines are removed from the remaining content. Returns null when the
+ * reply contains no markers.
+ */
+internal fun parseGoalControlMarkers(raw: String): GoalControlMarkerResult? {
+    val trimmed = raw.trim()
+    if (trimmed.isBlank()) return null
+    val markerLine = Regex(
+        """^\[(goal:start|goal:update|goal:pause|goal:resume|goal:complete|plan:start)\](.*)$""",
+        RegexOption.IGNORE_CASE
+    )
+    var goalStart: String? = null
+    var pause = false
+    var resume = false
+    var complete = false
+    var planStart = false
+    var sawMarker = false
+    val kept = mutableListOf<String>()
+    trimmed.lines().forEach { rawLine ->
+        val line = rawLine.trim()
+        val match = markerLine.matchEntire(line)
+        if (match != null) {
+            sawMarker = true
+            val action = match.groupValues[1].trim().lowercase()
+            val rest = match.groupValues[2].trim()
+            when (action) {
+                "goal:start", "goal:update" -> goalStart = rest
+                "goal:pause" -> pause = true
+                "goal:resume" -> resume = true
+                "goal:complete" -> complete = true
+                "plan:start" -> planStart = true
+            }
+        } else {
+            kept.add(rawLine)
+        }
+    }
+    if (!sawMarker) return null
+    return GoalControlMarkerResult(
+        goalStart = goalStart,
+        pause = pause,
+        resume = resume,
+        complete = complete,
+        planStart = planStart,
+        remainingContent = kept.joinToString("\n")
+    )
+}
 
 data class WorkflowFallbackUi(
     val message: String,
@@ -1066,6 +1129,7 @@ data class SessionState(
     val sessionTitle: String = "新对话",
     val codexThreadId: String? = null,
     val sessionGoal: String? = null,
+    val goalStatus: GoalStatusUi = GoalStatusUi.ACTIVE,
     val projectPath: String? = null,
     val remoteTaskRepositoryOwner: String? = null,
     val remoteTaskRepositoryName: String? = null,
@@ -3200,6 +3264,9 @@ class ChatSessionManager(
             sessionTitle = session.title,
             codexThreadId = session.codexThreadId,
             sessionGoal = session.sessionGoal,
+            goalStatus = GoalStatusUi.entries.firstOrNull {
+                it.name.equals(session.goalStatus, ignoreCase = true)
+            } ?: GoalStatusUi.ACTIVE,
             projectPath = session.projectPath,
             remoteTaskRepositoryOwner = session.remoteTaskRepositoryOwner,
             remoteTaskRepositoryName = session.remoteTaskRepositoryName,
@@ -3494,13 +3561,40 @@ class ChatSessionManager(
     fun setCurrentSessionGoal(goal: String) {
         val normalizedGoal = goal.trim()
         if (normalizedGoal.isBlank()) return
-        _state.value = _state.value.copy(sessionGoal = normalizedGoal)
+        _state.value = _state.value.copy(
+            sessionGoal = normalizedGoal,
+            goalStatus = GoalStatusUi.ACTIVE
+        )
         saveCurrentSession()
     }
 
     fun clearCurrentSessionGoal() {
         if (_state.value.sessionGoal.isNullOrBlank()) return
-        _state.value = _state.value.copy(sessionGoal = null)
+        _state.value = _state.value.copy(
+            sessionGoal = null,
+            goalStatus = GoalStatusUi.ACTIVE
+        )
+        saveCurrentSession()
+    }
+
+    fun setCurrentSessionGoalStatus(status: GoalStatusUi) {
+        if (_state.value.sessionGoal.isNullOrBlank()) return
+        if (_state.value.goalStatus == status) return
+        _state.value = _state.value.copy(goalStatus = status)
+        saveCurrentSession()
+    }
+
+    fun completeCurrentSessionGoal() {
+        if (_state.value.sessionGoal.isNullOrBlank()) return
+        val completedGoal = _state.value.sessionGoal
+        _state.value = _state.value.copy(
+            sessionGoal = null,
+            goalStatus = GoalStatusUi.ACTIVE
+        )
+        appendSystemMessage(
+            content = "✅ 目标已完成，已退出目标模式：$completedGoal",
+            source = "goal:complete"
+        )
         saveCurrentSession()
     }
 
@@ -4543,7 +4637,11 @@ class ChatSessionManager(
         return null
     }
 
-    suspend fun generateWorkflowPlan(goal: String, mentionedFiles: List<FileMentionUi> = emptyList()) {
+    suspend fun generateWorkflowPlan(
+        goal: String,
+        mentionedFiles: List<FileMentionUi> = emptyList(),
+        revisionRequest: String? = null
+    ) {
         val normalizedGoal = goal.trim()
         if (normalizedGoal.isBlank() || _state.value.isProcessing) return
 
@@ -4592,7 +4690,22 @@ class ChatSessionManager(
                         mentionedFiles = mentionedFiles,
                         extraContext = listOfNotNull(
                             workspaceChangeBatch?.attachment,
-                            computerWorkspaceChangeBatch?.attachment
+                            computerWorkspaceChangeBatch?.attachment,
+                            revisionRequest?.takeIf { it.isNotBlank() }?.let { feedback ->
+                                buildString {
+                                    appendLine("用户对上一版计划的修改要求，请据此重新生成一份完整、可执行的计划：")
+                                    appendLine(feedback)
+                                    stateBeforePlanning.pendingWorkflowPlan?.let { plan ->
+                                        appendLine()
+                                        appendLine("上一版计划（保留其中合适的步骤）：")
+                                        appendLine(
+                                            plan.rawPlan.ifBlank {
+                                                plan.steps.joinToString("\n")
+                                            }
+                                        )
+                                    }
+                                }
+                            }
                         ).joinToString("\n\n").takeIf { it.isNotBlank() }
                     ),
                     model = plannerConfig.getActiveModel(),
@@ -4630,6 +4743,16 @@ class ChatSessionManager(
         } finally {
             _state.value = _state.value.copy(isProcessing = false)
         }
+    }
+
+    suspend fun modifyPendingWorkflowPlan(feedback: String) {
+        val plan = _state.value.pendingWorkflowPlan ?: return
+        if (feedback.trim().isBlank() || _state.value.isProcessing) return
+        generateWorkflowPlan(
+            goal = plan.goal,
+            mentionedFiles = plan.mentionedFiles,
+            revisionRequest = feedback
+        )
     }
 
     suspend fun executePendingWorkflowPlan() {
@@ -5322,6 +5445,14 @@ class ChatSessionManager(
                     mentionedFiles = mentionedFiles,
                     existingClarificationAnswers = existingClarificationAnswers,
                     config = config
+                )
+            ) {
+                return
+            }
+
+            if (handleGoalControlMarkersIfNeeded(
+                    assistantMessageId = assistantMsg.id,
+                    mentionedFiles = mentionedFiles
                 )
             ) {
                 return
@@ -9412,6 +9543,17 @@ class ChatSessionManager(
         return ExecutionProfileDecider.isAutoDiscoveryRequest(goal)
     }
 
+    /**
+     * Whether a user message looks complex enough that the chat should
+     * auto-produce an execution plan before executing (plan card stays inline
+     * and is tapped to run), instead of requiring a manual plan-mode toggle.
+     */
+    fun shouldAutoPlanTask(text: String, mentionedFiles: List<FileMentionUi> = emptyList()): Boolean {
+        val normalized = text.trim()
+        if (normalized.isBlank()) return false
+        return isComplexTask(normalized, mentionedFiles)
+    }
+
     private fun isComplexTask(goal: String, mentionedFiles: List<FileMentionUi> = emptyList()): Boolean {
         return ExecutionProfileDecider.isComplexTask(goal, mentionedFiles.size)
     }
@@ -9782,10 +9924,28 @@ class ChatSessionManager(
 
     private fun buildSessionGoalContext(): String? {
         val sessionGoal = _state.value.sessionGoal?.trim().takeIf { !it.isNullOrBlank() } ?: return null
+        val paused = _state.value.goalStatus == GoalStatusUi.PAUSED
         return buildString {
             appendLine("Current Session Goal:")
             appendLine(sessionGoal)
-            append("Keep replies and execution aligned with this goal unless the user clearly changes or clears it.")
+            appendLine()
+            if (paused) {
+                appendLine("Goal status: PAUSED. Do not continue working toward this goal until the user resumes it.")
+            } else {
+                appendLine("Goal status: ACTIVE. Keep replies and execution aligned with this goal unless the user clearly changes or clears it.")
+            }
+            appendLine()
+            appendLine(
+                "You can change goal/plan state by starting your reply with one control marker on its own line. " +
+                    "Use them only when the user explicitly asks to open, update, pause, resume, complete a goal, or start planning:"
+            )
+            appendLine("  [goal:start] <new goal text>   — open goal mode with this goal and start working toward it")
+            appendLine("  [goal:update] <new goal text>  — replace the current goal")
+            appendLine("  [goal:pause]                   — pause the goal (stop pursuing it until resumed)")
+            appendLine("  [goal:resume]                  — resume the paused goal")
+            appendLine("  [goal:complete]                — mark the goal achieved and exit goal mode")
+            appendLine("  [plan:start]                   — generate an execution plan for the current goal/task")
+            append("When no marker is needed, reply normally without any marker.")
         }.trim()
     }
 
@@ -10582,6 +10742,58 @@ class ChatSessionManager(
         return true
     }
 
+    private suspend fun handleGoalControlMarkersIfNeeded(
+        assistantMessageId: Long,
+        mentionedFiles: List<FileMentionUi>
+    ): Boolean {
+        val assistantMessage = _state.value.messages.firstOrNull { it.id == assistantMessageId } ?: return false
+        val markers = parseGoalControlMarkers(assistantMessage.content) ?: return false
+        val cleanedContent = markers.remainingContent.trim()
+        updateMessage(assistantMessageId) { message ->
+            message.copy(content = cleanedContent, isStreaming = false)
+        }
+        var changed = false
+        markers.goalStart?.trim()?.takeIf { it.isNotBlank() }?.let { goal ->
+            _state.value = _state.value.copy(
+                sessionGoal = goal,
+                goalStatus = GoalStatusUi.ACTIVE
+            )
+            changed = true
+        }
+        if (markers.pause && !_state.value.sessionGoal.isNullOrBlank()) {
+            _state.value = _state.value.copy(goalStatus = GoalStatusUi.PAUSED)
+            changed = true
+        }
+        if (markers.resume && !_state.value.sessionGoal.isNullOrBlank()) {
+            _state.value = _state.value.copy(goalStatus = GoalStatusUi.ACTIVE)
+            changed = true
+        }
+        if (markers.complete && !_state.value.sessionGoal.isNullOrBlank()) {
+            val completedGoal = _state.value.sessionGoal
+            _state.value = _state.value.copy(
+                sessionGoal = null,
+                goalStatus = GoalStatusUi.ACTIVE
+            )
+            appendSystemMessage(
+                content = "✅ 目标已完成，已退出目标模式：$completedGoal",
+                source = "goal:complete"
+            )
+            changed = true
+        }
+        if (changed) saveCurrentSession()
+        if (markers.planStart) {
+            val planGoal = cleanedContent.ifBlank {
+                markers.goalStart?.trim()?.takeIf { it.isNotBlank() }
+                    ?: _state.value.sessionGoal?.trim().orEmpty()
+            }
+            if (planGoal.isNotBlank()) {
+                generateWorkflowPlan(planGoal, mentionedFiles)
+                return true
+            }
+        }
+        return changed
+    }
+
     private fun buildLocalFallbackClarificationQuestion(
         goal: String,
         previousAnswers: List<ClarificationAnswerUi>
@@ -11032,6 +11244,7 @@ class ChatSessionManager(
             agentBackend = agentBackend,
             codexThreadId = state.codexThreadId,
             sessionGoal = state.sessionGoal,
+            goalStatus = state.goalStatus.name.lowercase(),
             projectPath = state.projectPath,
             remoteTaskRepositoryOwner = state.remoteTaskRepositoryOwner,
             remoteTaskRepositoryName = state.remoteTaskRepositoryName,

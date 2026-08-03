@@ -32,6 +32,12 @@
 # intact in minified releases so the optional offline voice provider is not stripped or renamed.
 -keep class com.k2fsa.sherpa.onnx.** { *; }
 
+# sherpa-onnx streams TTS output through Kotlin callback lambdas. Its JNI bridge
+# reflects the "invoke([F)Ljava/lang/Integer;" method on the lambda class, and
+# R8's inlining/unboxing rewrites would break that reflection. Keep the whole
+# voice package unoptimized so the streaming callback survives minification.
+-keep class com.murong.agent.voice.** { *; }
+
 # JGit pulls in some desktop/JVM-only integrations that Android does not provide.
 # Suppress those optional references so release minification can complete.
 -dontwarn java.lang.ProcessHandle

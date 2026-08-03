@@ -39,7 +39,7 @@ class PendingExecutionHostSurfacePresentationTest {
     }
 
     @Test
-    fun buildWorkflowPlanHostSurfacePresentation_whenChatHidden_routesToDialog() {
+    fun buildWorkflowPlanHostSurfacePresentation_whenChatHidden_staysInlineCard() {
         val workflowPlanPresentation = workflowPlan().toWorkflowPlanPromptPresentation()
 
         val presentation = buildWorkflowPlanHostSurfacePresentation(
@@ -48,7 +48,7 @@ class PendingExecutionHostSurfacePresentationTest {
             isChatScreenVisible = false
         )
 
-        assertEquals(WorkflowPlanHostSurfaceKind.DIALOG, presentation.kind)
+        assertEquals(WorkflowPlanHostSurfaceKind.CHAT_INLINE, presentation.kind)
         assertEquals(workflowPlanPresentation, presentation.workflowPlanPresentation)
         assertEquals(false, presentation.interactionState.showRawPlan)
     }

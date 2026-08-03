@@ -302,6 +302,7 @@ internal fun MainScreen(
     val voiceInputState by chatVm.voiceInputState.collectAsState()
     val voiceSettings by chatVm.voiceSettings.collectAsState()
     val offlineVoiceModelState by chatVm.offlineVoiceModelState.collectAsState()
+    val offlineTtsModelState by chatVm.offlineTtsModelState.collectAsState()
     val voicePlaybackState by chatVm.voicePlaybackState.collectAsState()
     val activeVoicePlaybackMessageId by chatVm.activeVoicePlaybackMessageId.collectAsState()
     val continuableVoicePlaybackMessageIds by chatVm.continuableVoicePlaybackMessageIds.collectAsState()
@@ -1439,6 +1440,7 @@ internal fun MainScreen(
                                 voiceInputState = voiceInputState,
                                 voiceSettings = voiceSettings,
                                 offlineVoiceModelState = offlineVoiceModelState,
+                                offlineTtsModelState = offlineTtsModelState,
                                 voicePlaybackState = voicePlaybackState,
                                 activeVoicePlaybackMessageId = activeVoicePlaybackMessageId,
                                 continuableVoicePlaybackMessageIds = continuableVoicePlaybackMessageIds,
@@ -1451,6 +1453,8 @@ internal fun MainScreen(
                                 onUpdateVoiceSettings = chatVm::updateVoiceSettings,
                                 onInstallOfflineVoiceModel = chatVm::installOfflineVoiceModel,
                                 onDeleteOfflineVoiceModel = chatVm::deleteOfflineVoiceModel,
+                                onInstallOfflineTtsModel = chatVm::installOfflineTtsModel,
+                                onDeleteOfflineTtsModel = chatVm::deleteOfflineTtsModel,
                                 onSpeakAssistantMessage = chatVm::speakAssistantMessage,
                                 onPauseVoicePlayback = chatVm::pauseVoicePlayback,
                                 onResumeVoicePlayback = chatVm::resumeVoicePlayback,
@@ -1462,6 +1466,15 @@ internal fun MainScreen(
                                 },
                                 onClearSessionGoal = {
                                     chatVm.clearCurrentSessionGoal()
+                                },
+                                onPauseSessionGoal = {
+                                    chatVm.pauseCurrentSessionGoal()
+                                },
+                                onResumeSessionGoal = {
+                                    chatVm.resumeCurrentSessionGoal()
+                                },
+                                onCompleteSessionGoal = {
+                                    chatVm.completeCurrentSessionGoal()
                                 },
                                 onStopSending = {
                                     val message = if (chatVm.stopSending()) {
@@ -1503,6 +1516,9 @@ internal fun MainScreen(
                                         preferences
                                     )
                                 },
+                                onShouldAutoPlan = { text, mentions ->
+                                    chatVm.shouldAutoPlan(text, mentions)
+                                },
                                 onUndoMessageKeepCode = { messageId ->
                                     chatVm.rollbackConversationAfterUserMessage(messageId)
                                 },
@@ -1538,6 +1554,9 @@ internal fun MainScreen(
                                 },
                                 onExecutePlan = {
                                     chatVm.executePendingWorkflowPlan()
+                                },
+                                onModifyWorkflowPlan = { feedback ->
+                                    chatVm.modifyPendingWorkflowPlan(feedback)
                                 },
                                 onDismissPlan = {
                                     chatVm.dismissPendingWorkflowPlan()
@@ -1952,6 +1971,9 @@ internal fun MainScreen(
                             offlineVoiceModelState = offlineVoiceModelState,
                             onInstallOfflineVoiceModel = chatVm::installOfflineVoiceModel,
                             onDeleteOfflineVoiceModel = chatVm::deleteOfflineVoiceModel,
+                            offlineTtsModelState = offlineTtsModelState,
+                            onInstallOfflineTtsModel = chatVm::installOfflineTtsModel,
+                            onDeleteOfflineTtsModel = chatVm::deleteOfflineTtsModel,
                             backupRestoreState = backupRestoreState,
                             suggestedBackupFileName = settingsVm.suggestedBackupFileName(),
                             onRefreshBackupStatus = { settingsVm.refreshBackupStatus() },
@@ -2810,6 +2832,11 @@ internal fun MainScreen(
                     }
                 },
                 onExecute = { chatVm.executePendingWorkflowPlan() },
+                onModify = {
+                    chatVm.modifyPendingWorkflowPlan(
+                        "请重新生成一版更合适的执行计划。"
+                    )
+                },
                 onDismiss = { chatVm.dismissPendingWorkflowPlan() }
             )
         }
