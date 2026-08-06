@@ -1,5 +1,6 @@
 package com.murong.agent.shizuku
 
+import android.annotation.SuppressLint
 import android.app.ActivityOptions
 import android.app.PendingIntent
 import android.content.ClipData
@@ -425,6 +426,7 @@ class ShizukuCommandUserService @Keep constructor(
     }.getOrDefault(false)
 
     /** Moves the existing task stack; it deliberately never starts the package launcher again. */
+    @SuppressLint("BlockedPrivateApi") // Runs only in the Root/Shizuku privileged process.
     private fun moveAgentRootTaskToDisplay(
         sourceDisplayId: Int,
         targetDisplayId: Int,
@@ -454,6 +456,7 @@ class ShizukuCommandUserService @Keep constructor(
         true
     }.getOrDefault(false)
 
+    @SuppressLint("BlockedPrivateApi") // Reads task state only from the privileged process.
     private fun topPackageOnDisplay(displayId: Int): String? = runCatching {
         val managerClass = Class.forName("android.app.ActivityTaskManager")
         val manager = managerClass.getDeclaredMethod("getService")
@@ -604,6 +607,7 @@ class ShizukuCommandUserService @Keep constructor(
         ),
     )
 
+    @SuppressLint("BlockedPrivateApi") // Assigning the virtual display is required before privileged injection.
     private fun injectInput(displayId: Int, event: InputEvent): Boolean {
         try {
             InputEvent::class.java.getDeclaredMethod(
