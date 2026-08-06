@@ -30,8 +30,9 @@ data class RootAccessibilityEnableResult(
 /**
  * Explicit, Root-assisted accessibility authorization for sideloaded builds.
  *
- * The caller must show a user confirmation before invoking [enableWithRoot]. Existing enabled
- * services are merged and preserved; this object never silently enables the service at startup.
+ * The caller must be handling an explicit user phone-control request or show a confirmation before
+ * invoking [enableWithRoot]. Existing enabled services are merged and preserved; this object never
+ * silently enables the service at startup.
  */
 object AndroidGuiAccessibilityAccess {
     const val DETAILS_SETTINGS_ACTION =

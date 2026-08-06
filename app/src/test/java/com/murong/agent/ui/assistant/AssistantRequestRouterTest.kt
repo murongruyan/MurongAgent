@@ -8,6 +8,34 @@ import kotlin.test.assertTrue
 
 class AssistantRequestRouterTest {
     @Test
+    fun `basic device controls stay local and never invoke phone vision`() {
+        listOf(
+            "打开手电筒",
+            "打开相机",
+            "关闭自动旋转",
+            "打开 Wi-Fi",
+            "关闭移动数据",
+        ).forEach { request ->
+            val route = AssistantRequestRouter.classify(request)
+            assertEquals(AssistantTaskKind.INSTANT_LOCAL, route.kind)
+            assertFalse(route.requiresScreenContext)
+            assertFalse(route.mayTakeOverScreen)
+        }
+    }
+
+    @Test
+    fun `messages replies and food orders use phone automation instead of chat`() {
+        listOf(
+            "给雪绒的3号小屋发消息说你好",
+            "回复微信里老板的消息说收到",
+            "帮我点一杯蜜雪冰城",
+        ).forEach { request ->
+            val route = AssistantRequestRouter.classify(request)
+            assertEquals(AssistantTaskKind.PHONE_FOREGROUND, route.kind)
+            assertTrue(route.runWithNotification)
+        }
+    }
+    @Test
     fun `greeting never requests screen context`() {
         val route = AssistantRequestRouter.classify("你好")
 
@@ -70,6 +98,19 @@ class AssistantRequestRouterTest {
             AssistantTaskKind.INSTANT_LOCAL,
             AssistantRequestRouter.classify("今天时间").kind,
         )
+        listOf(
+            "开启五分钟倒计时",
+            "暂停倒计时",
+            "关闭倒计时",
+            "开始秒表",
+            "暂停秒表",
+            "秒表清零",
+        ).forEach { request ->
+            val route = AssistantRequestRouter.classify(request)
+            assertEquals(AssistantTaskKind.INSTANT_LOCAL, route.kind)
+            assertFalse(route.mayTakeOverScreen)
+            assertFalse(route.requiresScreenContext)
+        }
     }
 
     @Test

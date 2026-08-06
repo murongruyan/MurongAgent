@@ -45,6 +45,8 @@ internal object AssistantRequestRouter {
         "打开抖音", "打开微信", "打开支付宝", "打开淘宝", "打开京东", "打开美团",
         "打开饿了么", "帮我打开", "替我打开", "点击", "滑动", "往下翻", "输入到",
         "在手机上", "操作手机", "操作屏幕", "自动操作", "帮我点", "替我点",
+        "发消息", "发送消息", "回消息", "回复消息", "回复微信", "回复qq",
+        "点外卖", "点一杯", "点一份", "外卖下单",
     )
     private val webFreshnessTerms = listOf(
         "最新资讯", "最新消息", "最新新闻", "今天新闻", "今日新闻", "搜一下", "搜索一下",
@@ -53,7 +55,7 @@ internal object AssistantRequestRouter {
     )
     private val alarmTerms = listOf("闹钟", "叫醒我", "提醒我起床")
     private val timerTerms = listOf(
-        "计时", "倒计时", "定时器", "秒后", "分钟后", "小时后",
+        "计时", "倒计时", "定时器", "秒表", "秒后", "分钟后", "小时后",
     )
     private val calendarTerms = listOf(
         "日程", "日历事件", "添加事件", "创建事件", "新建事件", "安排会议", "行程",
@@ -62,6 +64,11 @@ internal object AssistantRequestRouter {
         "几点了", "现在几点", "当前时间", "现在时间", "今天时间", "今天几号",
         "今天日期", "当前日期", "今天星期", "星期几", "日期和时间", "查时间",
         "查询时间", "时间是多少", "什么时间",
+    )
+    private val localDeviceControlTerms = listOf(
+        "手电筒", "闪光灯", "打开相机", "启动相机", "关闭自动旋转", "开启自动旋转",
+        "打开自动旋转", "锁定屏幕旋转", "锁定屏幕方向",
+        "wifi", "wi-fi", "无线网络", "移动数据", "数据网络", "蜂窝数据",
     )
     private val greetingTerms = setOf(
         "你好", "您好", "嗨", "hi", "hello", "哈喽", "在吗", "慕容你好", "你好慕容",
@@ -89,6 +96,11 @@ internal object AssistantRequestRouter {
                 kind = AssistantTaskKind.BACKGROUND_CODE,
                 runWithNotification = true,
                 label = "后台代码/系统任务",
+            )
+
+            localDeviceControlTerms.any(normalized::contains) -> AssistantRequestRoute(
+                kind = AssistantTaskKind.INSTANT_LOCAL,
+                label = "本地设备控制",
             )
 
             phoneActionTerms.any(normalized::contains) ||

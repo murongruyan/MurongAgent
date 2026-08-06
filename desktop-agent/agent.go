@@ -307,7 +307,7 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 				"sessionId": sessionID, "toolCallId": call.ID, "toolName": call.Function.Name, "state": "running", "text": "正在执行",
 			})
 			output, toolErr := app.executeTool(ctx, sessionID, runConfig, workspace, call)
-			if toolErr != nil {
+			if toolErr != nil && strings.TrimSpace(output) == "" {
 				output = marshalToolResult(map[string]any{"success": false, "error": toolErr.Error()})
 			}
 			messages = append(messages, modelMessage{Role: "tool", ToolCallID: call.ID, Name: call.Function.Name, Content: output})
@@ -864,7 +864,11 @@ func (app *DesktopAgentApp) executeTool(
 			return "", err
 		}
 		result, err := runLocalTerminal(ctx, workspace, backend, path, commandText, intArg("timeout_seconds", 120))
-		return marshalToolResult(map[string]any{"success": err == nil, "result": result}), err
+		errorMessage := ""
+		if err != nil {
+			errorMessage = err.Error()
+		}
+		return marshalToolResult(map[string]any{"success": err == nil, "result": result, "error": errorMessage}), err
 	case "code_search":
 		return app.executeCodeSearchTool(ctx, sessionID, config, workspace, call, raw)
 	case "workspace_diff":

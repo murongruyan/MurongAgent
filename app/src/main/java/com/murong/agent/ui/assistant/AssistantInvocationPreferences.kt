@@ -85,13 +85,51 @@ internal object AssistantInvocationPreferences {
 }
 
 internal const val DEFAULT_WAKE_PHRASE = "慕容慕容"
-internal const val DEFAULT_SPEAKER_VERIFICATION_THRESHOLD = 0.58f
+internal const val DEFAULT_SPEAKER_VERIFICATION_THRESHOLD = 0.52f
 
 internal fun normalizeWakePhrase(text: String): String =
     text.lowercase().filter(Char::isLetterOrDigit)
 
 internal fun containsWakePhrase(transcript: String, phrase: String): Boolean {
     val normalizedPhrase = normalizeWakePhrase(phrase)
-    return normalizedPhrase.length >= 2 &&
-        normalizeWakePhrase(transcript).contains(normalizedPhrase)
+    if (normalizedPhrase.length < 2) return false
+    val normalizedTranscript = normalizeWakePhrase(transcript)
+    if (normalizedTranscript.contains(normalizedPhrase)) return true
+    if (normalizedPhrase.length < 4) return false
+    val candidateLengths = listOf(
+        normalizedPhrase.length - 1,
+        normalizedPhrase.length,
+        normalizedPhrase.length + 1,
+    )
+    return candidateLengths.any { length ->
+        length > 0 && normalizedTranscript.windowed(length).any { candidate ->
+            editDistanceAtMostOne(candidate, normalizedPhrase)
+        }
+    }
+}
+
+private fun editDistanceAtMostOne(left: String, right: String): Boolean {
+    if (kotlin.math.abs(left.length - right.length) > 1) return false
+    var leftIndex = 0
+    var rightIndex = 0
+    var edits = 0
+    while (leftIndex < left.length && rightIndex < right.length) {
+        if (left[leftIndex] == right[rightIndex]) {
+            leftIndex++
+            rightIndex++
+        } else {
+            edits++
+            if (edits > 1) return false
+            when {
+                left.length > right.length -> leftIndex++
+                right.length > left.length -> rightIndex++
+                else -> {
+                    leftIndex++
+                    rightIndex++
+                }
+            }
+        }
+    }
+    if (leftIndex < left.length || rightIndex < right.length) edits++
+    return edits <= 1
 }

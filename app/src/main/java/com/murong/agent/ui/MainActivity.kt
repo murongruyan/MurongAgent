@@ -103,6 +103,7 @@ import com.murong.agent.ui.chat.SessionDrawerContent
 import com.murong.agent.ui.chat.buildConversationText
 import com.murong.agent.ui.auth.GitHubAuthFlow
 import com.murong.agent.ui.assistant.VoiceAssistantEntry
+import com.murong.agent.ui.assistant.AssistantTaskEntry
 import com.murong.agent.ui.assistant.VoiceAssistantLaunchAction
 import com.murong.agent.ui.assistant.voiceAssistantLaunchAction
 import com.murong.agent.ui.project.ProjectEditorMenuAction
@@ -178,11 +179,13 @@ class MainActivity : ComponentActivity() {
                 MainScreen(
                     externalShareRequests = externalShareRequests,
                     savedWorkflowOpenRequests = savedWorkflowOpenRequests,
-                    voiceAssistantEntryRequests = VoiceAssistantEntry.requests
+                    voiceAssistantEntryRequests = VoiceAssistantEntry.requests,
+                    assistantTaskEntryRequests = AssistantTaskEntry.requests
                 )
             }
         }
         VoiceAssistantEntry.dispatch(intent)
+        AssistantTaskEntry.dispatch(intent)
         dispatchExternalShare(intent, deliveredViaOnNewIntent = false)
         dispatchSavedWorkflowOpen(intent)
     }
@@ -192,6 +195,7 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         dispatchGitHubOAuthCallback(intent)
         VoiceAssistantEntry.dispatch(intent)
+        AssistantTaskEntry.dispatch(intent)
         dispatchExternalShare(intent, deliveredViaOnNewIntent = true)
         dispatchSavedWorkflowOpen(intent)
     }
@@ -265,7 +269,8 @@ internal data class ProjectSecondaryChromeState(
 internal fun MainScreen(
     externalShareRequests: Flow<ExternalShareDraft> = emptyFlow(),
     savedWorkflowOpenRequests: Flow<Unit> = emptyFlow(),
-    voiceAssistantEntryRequests: Flow<Unit> = emptyFlow()
+    voiceAssistantEntryRequests: Flow<Unit> = emptyFlow(),
+    assistantTaskEntryRequests: Flow<Unit> = emptyFlow()
 ) {
     val shellScreens = remember {
         listOf(Screen.Chat, Screen.Projects, Screen.Tools, Screen.Settings)
@@ -890,6 +895,12 @@ internal fun MainScreen(
                     voiceAssistantMicrophoneLauncher.launch(Manifest.permission.RECORD_AUDIO)
                 }
             }
+        }
+    }
+
+    LaunchedEffect(assistantTaskEntryRequests) {
+        assistantTaskEntryRequests.collect {
+            navigateToTopLevel(Screen.Chat)
         }
     }
 

@@ -73,7 +73,7 @@ func encodeCrossPlatformSession(session *ChatSession) ([]byte, error) {
 	usage := normalizeSessionUsage(session.Usage)
 	portable := CrossPlatformSession{
 		Title: session.Title, CreatedAt: session.CreatedAt, UpdatedAt: session.UpdatedAt,
-		ProviderID: usage.LastProviderID, ModelName: usage.LastModel, Goal: session.Goal,
+		ProviderID: usage.LastProviderID, ModelName: usage.LastModel, Goal: redactExportedCredentials(session.Goal),
 		Messages: messages,
 		Usage: CrossPlatformUsage{
 			ModelRequests: usage.ModelRequests, ReportedUsageRequests: usage.ReportedUsageRequests,
@@ -83,7 +83,7 @@ func encodeCrossPlatformSession(session *ChatSession) ([]byte, error) {
 	}
 	if strings.TrimSpace(session.Compression.Summary) != "" {
 		portable.Compression = &CrossPlatformCompression{
-			Version: session.Compression.Version, Summary: session.Compression.Summary,
+			Version: session.Compression.Version, Summary: redactExportedCredentials(session.Compression.Summary),
 			SourceMessageCount: session.Compression.SourceMessageCount,
 			CreatedAt:          session.Compression.CreatedAt, Active: session.Compression.Active,
 		}
@@ -101,7 +101,7 @@ func encodeCrossPlatformSession(session *ChatSession) ([]byte, error) {
 func portableCrossPlatformMessages(source []ChatMessage) []CrossPlatformMessage {
 	messages := make([]CrossPlatformMessage, 0, len(source))
 	for _, message := range source {
-		content := message.Content
+		content := redactExportedCredentials(message.Content)
 		kind := message.Kind
 		if kind == workspaceReviewKind {
 			kind = ""

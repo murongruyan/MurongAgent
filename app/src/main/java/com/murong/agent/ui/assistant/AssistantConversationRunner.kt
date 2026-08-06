@@ -1,8 +1,10 @@
 package com.murong.agent.ui.assistant
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.util.Base64
+import com.murong.agent.common.toolchain.ToolchainManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import com.murong.agent.core.config.ConfigRepository
 import com.murong.agent.core.config.ProviderConfig
@@ -13,27 +15,35 @@ import com.murong.agent.core.provider.ChatRequest
 import com.murong.agent.core.provider.StreamDelta
 import com.murong.agent.core.loop.ChatSessionManager
 import com.murong.agent.core.loop.PendingImageAttachmentUi
+import com.murong.agent.core.tool.AndroidGuiAccessibilityAccess
+import com.murong.agent.core.tool.AndroidGuiAccessibilityService
 import com.murong.agent.core.tool.BuiltinVisionModels
 import com.murong.agent.core.tool.BuiltinVisionRuntime
 import com.murong.agent.core.tool.GuiAutomationTool
 import com.murong.agent.core.tool.GuiToolResponse
 import com.murong.agent.core.tool.PhoneAgentApps
+import com.murong.agent.shizuku.ShizukuPhoneAgentIsolatedDisplaySession
+import com.murong.agent.shizuku.ShizukuSystemAccess
 import com.murong.agent.core.tool.PhoneAgentRunResult
 import com.murong.agent.core.tool.WebSearchTool
 import com.murong.agent.core.tool.isUsableWebSearchResult
 import java.io.File
 import java.time.LocalDate
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
@@ -72,6 +82,7 @@ class AssistantConversationRunner @Inject constructor(
     private val fastResponseIds = AtomicLong(9_000_000_000L)
     private val cancelledFastResponseId = AtomicLong(-1L)
     @Volatile private var fastTurnJob: Job? = null
+    @Volatile private var activePhoneDisplay: ShizukuPhoneAgentIsolatedDisplaySession? = null
 
     val state = sessionManager.state
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
@@ -438,6 +449,7 @@ class AssistantConversationRunner @Inject constructor(
                 error = reportedError,
             )
         }.getOrElse { error ->
+            if (error is CancellationException) throw error
             AssistantBackgroundTurnResult(
                 accepted = true,
                 error = error.message?.trim()?.take(300)
@@ -468,43 +480,80 @@ class AssistantConversationRunner @Inject constructor(
                 error = "手机任务内容为空",
             )
         }
+        sessionManager.recordAssistantRequest(normalized)
         return runCatching {
+            // A new Phone Agent request owns a new isolated workspace. Retire any result page
+            // retained by the previous request before allocating the next display.
+            releasePhoneDisplayAndBroker(activePhoneDisplay)
+            activePhoneDisplay = null
             val currentConfig = configRepository.getConfig()
+            val isolatedDisplay = ShizukuPhoneAgentIsolatedDisplaySession(appContext)
+                .takeIf {
+                    ShizukuSystemAccess.isAgentDisplayAvailable() &&
+                        !requiresPhysicalPhoneDisplay(normalized)
+                }
+            activePhoneDisplay = isolatedDisplay
             val guiTool = GuiAutomationTool(
                 configProvider = { currentConfig },
                 progressReporter = onProgress,
+                isolatedDisplaySession = isolatedDisplay,
+                retainIsolatedDisplayOnCompletion = isolatedDisplay != null,
             )
+            val leadingApp = leadingLaunchAppLabel(normalized)
             val simpleApp = simpleLaunchAppLabel(normalized)
-            if (simpleApp != null) {
-                onProgress("正在启动$simpleApp，并验证它是否真正进入前台")
-            }
-            val toolArgs = if (simpleApp != null) {
-                buildJsonObject {
-                    put("action", "launch")
-                    put("target", "android")
-                    put("packageName", PhoneAgentApps.packageFor(simpleApp))
-                    put("prompt", "打开$simpleApp")
+            if (leadingApp != null && (simpleApp != null || isolatedDisplay == null)) {
+                onProgress("正在直接启动$leadingApp，无需先读取屏幕")
+                val packageName = PhoneAgentApps.packageFor(leadingApp)
+                val launched = launchInstalledApplication(packageName)
+                if (launched) delay(DIRECT_APP_LAUNCH_SETTLE_MILLIS)
+                if (!launched || simpleApp != null) {
+                    val result = AssistantBackgroundTurnResult(
+                        accepted = true,
+                        responseText = if (launched) "已打开$leadingApp。" else "",
+                        error = if (launched) null else "找不到可启动的应用：$leadingApp",
+                    )
+                    sessionManager.recordAssistantReply(
+                        userText = normalized,
+                        assistantText = result.error ?: result.responseText,
+                    )
+                    return@runCatching result
                 }
-            } else {
-                buildJsonObject {
-                    put("action", "run_task")
-                    put("target", "android")
-                    put("task", normalized)
+                onProgress("已打开$leadingApp，继续完成后续操作")
+            } else if (leadingApp != null) {
+                onProgress("将在隔离屏幕中直接启动$leadingApp，主屏可继续使用")
+            }
+            if (!AndroidGuiAccessibilityService.isConnected()) {
+                onProgress("检测到 Murong 无障碍未连接，正在通过 Root 自动启用")
+                val accessibilityResult = AndroidGuiAccessibilityAccess.enableWithRoot(appContext)
+                onProgress(accessibilityResult.message)
+                if (!accessibilityResult.success) {
+                    val result = AssistantBackgroundTurnResult(
+                        accepted = true,
+                        needsAttention = true,
+                        error = accessibilityResult.message,
+                    )
+                    sessionManager.recordAssistantReply(
+                        userText = normalized,
+                        assistantText = accessibilityResult.message,
+                    )
+                    return@runCatching result
                 }
             }
-            val execution = guiTool.executeWithResult(toolArgs.toString())
+            val toolArgs = buildJsonObject {
+                put("action", "run_task")
+                put("target", "android")
+                put("task", normalized)
+            }
+            val execution = try {
+                guiTool.executeWithResult(toolArgs.toString())
+            } catch (error: Throwable) {
+                if (activePhoneDisplay === isolatedDisplay) {
+                    runCatching { isolatedDisplay?.close() }
+                    activePhoneDisplay = null
+                }
+                throw error
+            }
             val response = assistantJson.decodeFromString<GuiToolResponse>(execution.output)
-            if (simpleApp != null) {
-                return@runCatching AssistantBackgroundTurnResult(
-                    accepted = true,
-                    responseText = if (response.success) {
-                        "已打开$simpleApp。"
-                    } else {
-                        ""
-                    },
-                    error = response.error.takeUnless { response.success },
-                )
-            }
             val phoneResult = response.modelResult
                 ?.let { raw ->
                     runCatching {
@@ -527,14 +576,25 @@ class AssistantConversationRunner @Inject constructor(
                 responseText = response.message.orEmpty(),
                 needsAttention = phoneResult?.requiresUserAction == true,
                 error = response.error.takeUnless { response.success },
-            )
+            ).also { result ->
+                sessionManager.recordAssistantReply(
+                    userText = normalized,
+                    assistantText = result.error ?: result.responseText,
+                )
+            }
         }.getOrElse { error ->
+            if (error is CancellationException) throw error
             AssistantBackgroundTurnResult(
                 accepted = true,
                 error = error.message?.trim()?.take(300)
                     ?.ifBlank { null }
                     ?: "Phone Agent 执行失败",
-            )
+            ).also { result ->
+                sessionManager.recordAssistantReply(
+                    userText = normalized,
+                    assistantText = result.error.orEmpty(),
+                )
+            }
         }
     }
 
@@ -543,6 +603,16 @@ class AssistantConversationRunner @Inject constructor(
         sendMain(text, images)
 
     fun cancelCurrent(): Boolean {
+        val phoneDisplay = activePhoneDisplay
+        val brokerHasDisplay = runCatching {
+            val service = ShizukuSystemAccess.connectedAgentDisplayService()
+            (service?.currentAgentDisplayId() ?: -1) >= 0
+        }.getOrDefault(false)
+        if (phoneDisplay != null || brokerHasDisplay) {
+            BuiltinVisionRuntime.cancelActiveGeneration()
+            activePhoneDisplay = null
+            scope.launch { releasePhoneDisplayAndBroker(phoneDisplay) }
+        }
         val fast = _fastTurnState.value
         if (fast.isProcessing) {
             cancelledFastResponseId.set(fast.responseId)
@@ -554,7 +624,70 @@ class AssistantConversationRunner @Inject constructor(
             )
             return true
         }
-        return sessionManager.cancelCurrentProcessing()
+        return sessionManager.cancelCurrentProcessing() || phoneDisplay != null || brokerHasDisplay
+    }
+
+    fun hasRetainedPhoneDisplay(): Boolean =
+        activePhoneDisplay != null &&
+            runCatching {
+                ShizukuSystemAccess.agentDisplayService()?.currentAgentDisplayId() ?: -1
+            }.getOrDefault(-1) >= 0
+
+    /**
+     * Session teardown normally owns the release. The broker-level second pass is intentional:
+     * cancellation can race a vendor Binder timeout, and after that race the Kotlin session may
+     * already have cleared its local reference while the Root process still owns the display.
+     */
+    private suspend fun releasePhoneDisplayAndBroker(
+        phoneDisplay: ShizukuPhoneAgentIsolatedDisplaySession?,
+    ) {
+        runCatching { phoneDisplay?.close() }
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val service = ShizukuSystemAccess.connectedAgentDisplayService()
+                if ((service?.currentAgentDisplayId() ?: -1) >= 0) {
+                    service?.releaseAgentDisplay()
+                }
+            }
+        }
+    }
+
+    private suspend fun launchInstalledApplication(packageName: String): Boolean {
+        val normalized = packageName.trim()
+        if (ANDROID_PACKAGE_NAME.matches(normalized)) {
+            val rootLaunchSucceeded = withContext(Dispatchers.IO) {
+                runCatching {
+                    val command =
+                        "monkey -p '$normalized' -c android.intent.category.LAUNCHER 1 " +
+                            ">/dev/null 2>&1"
+                    val process = ProcessBuilder(
+                        ToolchainManager.resolveSystemCommandPath("su"),
+                        "-c",
+                        command,
+                    ).redirectErrorStream(true).start()
+                    val finished = process.waitFor(
+                        DIRECT_APP_LAUNCH_TIMEOUT_SECONDS,
+                        TimeUnit.SECONDS,
+                    )
+                    if (!finished) {
+                        process.destroy()
+                        if (!process.waitFor(400, TimeUnit.MILLISECONDS)) {
+                            process.destroyForcibly()
+                        }
+                    }
+                    finished && process.exitValue() == 0
+                }.getOrDefault(false)
+            }
+            if (rootLaunchSucceeded) return true
+        }
+        return runCatching {
+            val intent = Intent(Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_LAUNCHER)
+                .setPackage(normalized)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+            appContext.startActivity(intent)
+            true
+        }.getOrDefault(false)
     }
 
     private fun buildFastSystemPrompt(
@@ -586,6 +719,7 @@ class AssistantConversationRunner @Inject constructor(
             )
             while (fastHistory.size > 8) fastHistory.removeFirst()
         }
+        sessionManager.recordAssistantExchange(userText, assistantText)
     }
 
     private fun PendingImageAttachmentUi.toLocalChatImage(): ChatImageAttachment {
@@ -652,6 +786,40 @@ internal fun simpleLaunchAppLabel(text: String): String? {
         .trimEnd('。', '！', '!', '？', '?')
         .trim()
     if (candidate.isBlank()) return null
-    val packageName = PhoneAgentApps.packageFor(candidate)
-    return candidate.takeIf { PhoneAgentApps.labelForPackage(packageName) == candidate }
+    if (ANDROID_PACKAGE_NAME.matches(candidate)) return candidate
+    val packageName = PhoneAgentApps.packageMentionedIn(candidate) ?: return null
+    val label = PhoneAgentApps.labelForPackage(packageName) ?: return null
+    return label.takeIf { candidate.equals(it, ignoreCase = true) }
+}
+
+internal fun leadingLaunchAppLabel(text: String): String? {
+    val candidate = text.trim()
+        .removePrefix("请")
+        .removePrefix("帮我")
+        .removePrefix("给我")
+        .removePrefix("替我")
+        .let { value ->
+            when {
+                value.startsWith("打开") -> value.removePrefix("打开")
+                value.startsWith("启动") -> value.removePrefix("启动")
+                else -> return null
+            }
+        }
+        .trim()
+    if (candidate.isBlank()) return null
+    val packageName = PhoneAgentApps.packageMentionedIn(candidate) ?: return null
+    val label = PhoneAgentApps.labelForPackage(packageName) ?: return null
+    return label.takeIf { candidate.startsWith(it, ignoreCase = true) }
+}
+
+private const val DIRECT_APP_LAUNCH_SETTLE_MILLIS = 650L
+private const val DIRECT_APP_LAUNCH_TIMEOUT_SECONDS = 5L
+private val ANDROID_PACKAGE_NAME = Regex("^[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z0-9_]+)+$")
+
+private fun requiresPhysicalPhoneDisplay(task: String): Boolean {
+    val normalized = task.lowercase()
+    return listOf(
+        "视频通话", "视频电话", "打视频", "语音通话", "语音电话", "打电话",
+        "打开相机", "启动相机", "拍照", "录像", "扫码", "付款", "支付",
+    ).any(normalized::contains)
 }

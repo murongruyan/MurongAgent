@@ -175,6 +175,13 @@ import com.murong.agent.ui.rememberMurongMutedTextColor
 import com.murong.agent.ui.rememberMurongSurfaceColor
 import com.murong.agent.ui.toSessionReadinessPresentation
 import com.murong.agent.ui.settings.ProviderModelCatalogUiState
+import com.murong.agent.ui.assistant.AssistantOffscreenEntry
+import com.murong.agent.ui.assistant.AssistantOffscreenActionLabels
+import com.murong.agent.ui.assistant.AssistantInlineDisplayPreviewView
+import com.murong.agent.ui.assistant.AssistantOffscreenTaskSnapshot
+import com.murong.agent.ui.assistant.AssistantOffscreenTaskState
+import com.murong.agent.ui.assistant.AssistantTaskForegroundService
+import com.murong.agent.ui.assistant.AssistantVoicePopupEntry
 import com.murong.agent.ui.voice.OfflineVoiceModelSetting
 import com.murong.agent.ui.voice.OfflineTtsModelSetting
 import com.murong.agent.ui.voice.VoiceRecognitionProviderSetting
@@ -256,6 +263,14 @@ private sealed interface ChatTimelineItemUi {
         override val key: String = "round:${round.userMessageId}"
         override val roundId: Long = round.userMessageId
         override val contentType: String = "folded_round"
+    }
+
+    data class OffscreenTask(
+        val task: AssistantOffscreenTaskSnapshot,
+        override val roundId: Long?,
+    ) : ChatTimelineItemUi {
+        override val key: String = "assistant_offscreen_task:${task.request.hashCode()}"
+        override val contentType: String = "assistant_offscreen_task"
     }
 }
 
@@ -360,6 +375,7 @@ internal fun ChatScreen(
     var inputDraftBeforeHistory by remember(state.sessionId) { mutableStateOf("") }
 
     val coroutineScope = rememberCoroutineScope()
+    val offscreenTask by AssistantOffscreenTaskState.state.collectAsState()
     LaunchedEffect(state.sessionId) {
         val savedHistory = onLoadInputHistory()
         inputHistory.clear()
@@ -389,8 +405,6 @@ internal fun ChatScreen(
     var inputHasFocus by remember(state.sessionId) { mutableStateOf(false) }
     val planModeEnabled = projectToolPreferences?.planModeEnabled ?: false
     var goalModeEnabled by remember(state.sessionId) { mutableStateOf(false) }
-    var showPlanModifyDialog by remember(state.sessionId) { mutableStateOf(false) }
-    var planModifyDraft by remember(state.sessionId) { mutableStateOf("") }
     var showSubagentHint by remember(state.sessionId) { mutableStateOf(true) }
     var showWorkflowPreferenceHint by remember(state.sessionId) { mutableStateOf(true) }
     var showCompressionHint by remember(state.sessionId) { mutableStateOf(true) }
@@ -782,15 +796,20 @@ internal fun ChatScreen(
         workspaceReviews,
         state.isProcessing,
         enableLongConversationCollapse,
-        roundExpansionSnapshot
+        roundExpansionSnapshot,
+        offscreenTask,
     ) {
-        buildChatTimelineItems(
+        attachOffscreenTaskToTimeline(
+            timelineItems = buildChatTimelineItems(
+                messages = messages,
+                rounds = questionRounds,
+                workspaceReviews = workspaceReviews,
+                isProcessing = state.isProcessing,
+                enableRoundCollapse = enableLongConversationCollapse,
+                expansionOverrides = roundExpansionSnapshot,
+            ),
             messages = messages,
-            rounds = questionRounds,
-            workspaceReviews = workspaceReviews,
-            isProcessing = state.isProcessing,
-            enableRoundCollapse = enableLongConversationCollapse,
-            expansionOverrides = roundExpansionSnapshot
+            task = offscreenTask,
         )
     }
     val subagentRunsById = remember(state.subagentRuns) {
@@ -832,12 +851,12 @@ internal fun ChatScreen(
     ) {
         messages
             .asReversed()
-            .asSequence()
-            .flatMap { it.imageAttachments.asSequence() }
-            .filter { it.localCachePath.isNotBlank() }
-            .distinctBy { it.localCachePath }
-            .take(8)
-            .toList()
+             .asSequence()
+             .flatMap { it.imageAttachments.asSequence() }
+             .filter { it.localCachePath.isNotBlank() }
+            .distinctBy(::recentImageAttachmentKey)
+             .take(8)
+             .toList()
     }
     val listState = remember(state.sessionId) {
         LazyListState()
@@ -1358,10 +1377,7 @@ internal fun ChatScreen(
                     isProcessing = state.isProcessing,
                     onFork = onForkWorkflowPlanSession,
                     onExecute = onExecutePlan,
-                    onModify = {
-                        showPlanModifyDialog = true
-                        planModifyDraft = ""
-                    },
+                    onModify = onModifyWorkflowPlan,
                     onDismiss = onDismissPlan
                 )
             }
@@ -1391,7 +1407,7 @@ internal fun ChatScreen(
                 )
             }
             // 消息列表
-            if (messages.isEmpty() && !state.isProcessing) {
+            if (messages.isEmpty() && !state.isProcessing && offscreenTask == null) {
                 WelcomeView(
                     hasApiKey = hasApiKey,
                     usesCodexChatGpt = globalConfig.usesCodexChatGptBackend(),
@@ -1519,6 +1535,10 @@ internal fun ChatScreen(
                                             }
                                         }
                                     )
+                                }
+
+                                is ChatTimelineItemUi.OffscreenTask -> {
+                                    AssistantOffscreenTaskCard(item.task)
                                 }
                             }
                         }
@@ -2396,49 +2416,6 @@ internal fun ChatScreen(
             onDismiss = { showArchivedMemorySurface = false }
         )
     }
-    if (showPlanModifyDialog) {
-        AlertDialog(
-            onDismissRequest = { showPlanModifyDialog = false },
-            title = { Text("修改执行计划") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "告诉模型要调整哪些步骤或目标，模型会重新生成计划，不会直接执行。",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    OutlinedTextField(
-                        value = planModifyDraft,
-                        onValueChange = { planModifyDraft = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 3,
-                        maxLines = 6,
-                        placeholder = {
-                            Text("例如：第 2 步先补测试；不要修改远端文件；先只做分析…")
-                        }
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val feedback = planModifyDraft.trim()
-                        showPlanModifyDialog = false
-                        if (feedback.isNotBlank()) {
-                            onModifyWorkflowPlan(feedback)
-                        }
-                    },
-                    enabled = planModifyDraft.trim().isNotBlank()
-                ) {
-                    Text("重新生成计划")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showPlanModifyDialog = false }) {
-                    Text("取消")
-                }
-            }
-        )
-    }
     selectedCheckpoint?.let { checkpoint ->
         val rollbackScope = if (selectedCheckpointCodeOnly) {
             ConversationCheckpointScope.CODE
@@ -2493,6 +2470,220 @@ internal fun ChatScreen(
                 onDismiss = { selectedRecoveryId = null }
             )
         }
+}
+
+@Composable
+private fun AssistantOffscreenTaskCard(task: AssistantOffscreenTaskSnapshot) {
+    val context = LocalContext.current
+    var previewAspectRatio by remember(task.request) {
+        mutableFloatStateOf(1440f / 3136f)
+    }
+    MurongGlassSurface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        shape = RoundedCornerShape(20.dp),
+        contentPadding = PaddingValues(14.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        when {
+                            task.active -> "离屏正在运行"
+                            task.displayAvailable -> "操作已完成 · 离屏仍保留"
+                            else -> "离屏任务已结束"
+                        },
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        task.request,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Surface(
+                    shape = CircleShape,
+                    color = if (task.active) Color(0xFFFF6BBE) else MaterialTheme.colorScheme.surfaceVariant,
+                ) {
+                    Text(
+                        when {
+                            task.active -> "运行中"
+                            task.displayAvailable -> "可进入"
+                            else -> "已结束"
+                        },
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (task.active) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Text(
+                task.detail,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+            // A heartbeat is service status, not model speech. Only render this block after the
+            // controller has delivered real streamed/final model text.
+            val visibleModelOutput = task.modelOutput.takeIf(String::isNotBlank)
+            if (visibleModelOutput != null) {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = "Agent 判断 · 模型原文",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            text = visibleModelOutput,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+            val earlierProgress = task.executionHistory
+                .dropLastWhile { it == task.detail }
+                .takeLast(10)
+            if (earlierProgress.isNotEmpty()) {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = "执行动作与验证",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        earlierProgress.forEach { progress ->
+                            Text(
+                                text = "• $progress",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+            if (task.displayAvailable) {
+                BoxWithConstraints(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    val safeAspectRatio = previewAspectRatio.coerceIn(0.25f, 4f)
+                    val maximumPreviewHeight = 300.dp
+                    val previewWidth = minOf(maxWidth, maximumPreviewHeight * safeAspectRatio)
+                    val previewHeight = previewWidth / safeAspectRatio
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        AndroidView(
+                            factory = { previewContext ->
+                                AssistantInlineDisplayPreviewView(previewContext).apply {
+                                    onOpenPreview = {
+                                        context.startActivity(AssistantOffscreenEntry.launchIntent(context))
+                                    }
+                                    onFrameAspectRatioChanged = { previewAspectRatio = it }
+                                }
+                            },
+                            update = { preview ->
+                                preview.onOpenPreview = {
+                                    context.startActivity(AssistantOffscreenEntry.launchIntent(context))
+                                }
+                                preview.onFrameAspectRatioChanged = { previewAspectRatio = it }
+                            },
+                            modifier = Modifier
+                                .width(previewWidth)
+                                .height(previewHeight)
+                                .clip(RoundedCornerShape(18.dp)),
+                        )
+                        Spacer(modifier = Modifier.height(5.dp))
+                        Text(
+                            text = "实时离屏 · 点按进入全屏预览",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            if (task.active || task.displayAvailable) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FilledTonalButton(
+                        onClick = {
+                            context.startActivity(AssistantVoicePopupEntry.launchIntent(context))
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(AssistantOffscreenActionLabels.RETURN_VOICE_ASSISTANT)
+                    }
+                    if (task.displayAvailable) {
+                        FilledTonalButton(
+                            onClick = {
+                                context.startActivity(AssistantOffscreenEntry.launchIntent(context))
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text(AssistantOffscreenActionLabels.FULLSCREEN_PREVIEW)
+                        }
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (task.displayAvailable) {
+                        FilledTonalButton(
+                            onClick = {
+                                context.startService(
+                                    android.content.Intent(
+                                        context,
+                                        AssistantTaskForegroundService::class.java,
+                                    ).setAction(AssistantTaskForegroundService.ACTION_HANDOFF_DISPLAY),
+                                )
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text(AssistantOffscreenActionLabels.FULLSCREEN_TAKEOVER)
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            context.startService(
+                                android.content.Intent(
+                                    context,
+                                    AssistantTaskForegroundService::class.java,
+                                ).setAction(AssistantTaskForegroundService.ACTION_CANCEL_TASK),
+                            )
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(AssistantOffscreenActionLabels.CLOSE_OFFSCREEN)
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -6962,46 +7153,68 @@ private fun RecentImageAttachmentsBar(
     onOpenPreview: (List<MessageImageAttachmentUi>, Int) -> Unit
 ) {
     val accent = rememberMurongAccentColor()
+    var expanded by remember { mutableStateOf(false) }
     MurongGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 4.dp),
         shape = MaterialTheme.shapes.large,
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                text = "最近图片",
-                style = MaterialTheme.typography.labelMedium,
-                color = accent
-            )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+        Box {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "最近图片 ${attachments.size}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = accent,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1
+                )
+                MurongTagButton(
+                    text = "预览",
+                    onClick = { onOpenPreview(attachments, 0) }
+                )
+                MurongTagButton(
+                    text = if (expanded) "收起" else "选择",
+                    onClick = { expanded = !expanded }
+                )
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+                modifier = Modifier.widthIn(min = 240.dp, max = 340.dp)
             ) {
                 attachments.forEachIndexed { index, attachment ->
                     val pendingUri = Uri.fromFile(File(attachment.localCachePath)).toString()
-                    AssistChip(
-                        onClick = { onReuse(attachment) },
-                        label = {
-                            Text(
-                                text = attachment.fileName.ifBlank { "最近图片" },
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(
+                                    text = attachment.fileName.ifBlank { "最近图片" },
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = if (pendingUri in selectedUris) "已加入本轮" else "点击重新使用",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = rememberMurongMutedTextColor()
+                                )
+                            }
                         },
-                        leadingIcon = {
-                            Text(
-                                text = if (pendingUri in selectedUris) "已" else "图",
-                                fontSize = 10.sp
-                            )
+                        onClick = {
+                            onReuse(attachment)
+                            expanded = false
                         },
                         trailingIcon = {
-                            TextButton(
-                                onClick = { onOpenPreview(attachments, index) },
-                                contentPadding = PaddingValues(0.dp)
-                            ) {
-                                Text("看")
+                            TextButton(onClick = {
+                                expanded = false
+                                onOpenPreview(attachments, index)
+                            }) {
+                                Text("预览")
                             }
                         }
                     )
@@ -7009,6 +7222,16 @@ private fun RecentImageAttachmentsBar(
             }
         }
     }
+}
+
+internal fun recentImageAttachmentKey(attachment: MessageImageAttachmentUi): String {
+    return listOf(
+        attachment.fileName.trim().lowercase(),
+        attachment.mimeType.trim().lowercase(),
+        attachment.sizeBytes.toString(),
+        attachment.width.toString(),
+        attachment.height.toString()
+    ).joinToString("|")
 }
 
 private fun resolveAttachmentDisplayName(context: android.content.Context, uri: Uri): String? {
@@ -8076,6 +8299,39 @@ private fun buildChatTimelineItems(
         )
     }
     return timelineItems
+}
+
+private fun attachOffscreenTaskToTimeline(
+    timelineItems: List<ChatTimelineItemUi>,
+    messages: List<ChatMessageUi>,
+    task: AssistantOffscreenTaskSnapshot?,
+): List<ChatTimelineItemUi> {
+    task ?: return timelineItems
+    val normalizedRequest = task.request.trim().replace(Regex("\\s+"), " ")
+    val anchorIndex = messages.indexOfLast { message ->
+        message.role == "user" &&
+            message.content.trim().replace(Regex("\\s+"), " ") == normalizedRequest
+    }
+    val anchorMessageId = messages.getOrNull(anchorIndex)?.id
+    val anchorTimelineIndex = timelineItems.indexOfLast { item ->
+        when (item) {
+            is ChatTimelineItemUi.Message -> item.messageIndex == anchorIndex
+            is ChatTimelineItemUi.FoldedRound -> item.round.userMessageId == anchorMessageId
+            else -> false
+        }
+    }
+    val roundId = anchorTimelineIndex
+        .takeIf { it >= 0 }
+        ?.let(timelineItems::get)
+        ?.roundId
+        ?: anchorMessageId
+    val taskItem = ChatTimelineItemUi.OffscreenTask(task = task, roundId = roundId)
+    if (anchorTimelineIndex < 0) return timelineItems + taskItem
+    return buildList(timelineItems.size + 1) {
+        addAll(timelineItems.subList(0, anchorTimelineIndex + 1))
+        add(taskItem)
+        addAll(timelineItems.subList(anchorTimelineIndex + 1, timelineItems.size))
+    }
 }
 
 private fun buildExpandedRoundTimelineItems(

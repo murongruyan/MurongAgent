@@ -5,8 +5,11 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.provider.AlarmClock
 import android.provider.CalendarContract
+import android.provider.MediaStore
 import androidx.core.content.ContextCompat
 import com.murong.agent.common.shell.KeepShellPublic
 import java.time.LocalDate
@@ -33,8 +36,30 @@ internal object AssistantLocalActions {
                 ?: return "请告诉我日程内容和日期，例如“两天后更新调度”或“明天上午 9 点开会”。"
             return createCalendarEvent(context, draft)
         }
+        if ("手电筒" in normalized || "闪光灯" in normalized) {
+            val turnOn = listOf("关闭", "关掉", "关上").none(normalized::contains)
+            return setTorch(context, turnOn)
+        }
+        if (normalized.contains("相机") && listOf("打开", "启动").any(normalized::contains)) {
+            return if (openCamera(context)) "已打开相机。" else "系统没有找到可启动的相机。"
+        }
+        if (listOf("自动旋转", "屏幕旋转", "屏幕方向").any(normalized::contains)) {
+            val enabled = listOf("关闭", "锁定").none(normalized::contains)
+            return setAutoRotation(enabled)
+        }
+        if (listOf("wifi", "wi-fi", "无线网络").any(normalized::contains)) {
+            val enabled = listOf("关闭", "关掉", "断开").none(normalized::contains)
+            return setNetworkRadioWithRoot(NetworkRadio.WIFI, enabled)
+        }
+        if (listOf("移动数据", "数据网络", "蜂窝数据").any(normalized::contains)) {
+            val enabled = listOf("关闭", "关掉", "断开").none(normalized::contains)
+            return setNetworkRadioWithRoot(NetworkRadio.MOBILE_DATA, enabled)
+        }
         if (isDateTimeQuery(normalized)) {
             return formatCurrentDateTime()
+        }
+        if ("秒表" in normalized) {
+            return AssistantTimekeepingActions.handleStopwatch(context, normalized)
         }
         if (
             "计时" in normalized ||
@@ -44,21 +69,7 @@ internal object AssistantLocalActions {
             "小时后" in normalized ||
             "秒后" in normalized
         ) {
-            val seconds = parseDurationSeconds(normalized)
-                ?: return "请告诉我要计时多久，例如“计时 10 分钟”。"
-            val launched = launchClockActivity(
-                context,
-                Intent(AlarmClock.ACTION_SET_TIMER)
-                    .putExtra(AlarmClock.EXTRA_LENGTH, seconds)
-                    .putExtra(AlarmClock.EXTRA_MESSAGE, "Murong 语音计时")
-                    .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            ) || launchTimerWithRoot(seconds)
-            return if (launched) {
-                "好，已设置${formatDuration(seconds)}计时。"
-            } else {
-                CLOCK_REJECTED_MESSAGE
-            }
+            return AssistantTimekeepingActions.handleCountdown(context, normalized)
         }
         if ("闹钟" in normalized || "叫醒我" in normalized || "提醒我起床" in normalized) {
             val time = parseAlarmTime(normalized)
@@ -79,6 +90,115 @@ internal object AssistantLocalActions {
             }
         }
         return null
+    }
+}
+
+private enum class NetworkRadio(
+    val shellName: String,
+    val settingsKey: String,
+    val displayName: String,
+) {
+    WIFI("wifi", "wifi_on", "Wi-Fi"),
+    MOBILE_DATA("data", "mobile_data", "移动数据"),
+}
+
+private fun setNetworkRadioWithRoot(radio: NetworkRadio, enabled: Boolean): String {
+    if (!KeepShellPublic.checkRoot()) {
+        return "${radio.displayName}后台开关需要 Root 权限，请授权后重试。"
+    }
+    val desiredAction = if (enabled) "enable" else "disable"
+    val output = KeepShellPublic.doCmdSync(
+        "svc ${radio.shellName} $desiredAction 2>&1",
+    ).trim()
+    if (output.contains("exception", ignoreCase = true) ||
+        output.contains("error", ignoreCase = true) ||
+        output.contains("denied", ignoreCase = true)
+    ) {
+        return "${radio.displayName}操作失败：${output.take(100)}"
+    }
+    val state = KeepShellPublic.doCmdSync(
+        "settings get global ${radio.settingsKey} 2>/dev/null",
+    ).trim()
+    val expected = if (enabled) "1" else "0"
+    return if (state == expected || state.isBlank() || state == "null") {
+        if (enabled) "已打开${radio.displayName}。" else "已关闭${radio.displayName}。"
+    } else {
+        "已提交${radio.displayName}${if (enabled) "打开" else "关闭"}请求，系统状态正在刷新。"
+    }
+}
+
+private fun setTorch(context: Context, enabled: Boolean): String {
+    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) !=
+        PackageManager.PERMISSION_GRANTED
+    ) {
+        if (!KeepShellPublic.checkRoot()) {
+            return "需要相机权限才能控制手电筒，请授权后重试。"
+        }
+        val grantOutput = KeepShellPublic.doCmdSync(
+            "pm grant ${context.packageName} android.permission.CAMERA 2>&1",
+        )
+        if (grantOutput.contains("exception", ignoreCase = true) ||
+            grantOutput.contains("error", ignoreCase = true)
+        ) {
+            return "相机权限授予失败，无法控制手电筒。"
+        }
+    }
+    return runCatching {
+        val manager = context.getSystemService(CameraManager::class.java)
+            ?: error("CameraManager unavailable")
+        val cameraId = manager.cameraIdList.firstOrNull { id ->
+            val characteristics = manager.getCameraCharacteristics(id)
+            characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true &&
+                characteristics.get(CameraCharacteristics.LENS_FACING) ==
+                CameraCharacteristics.LENS_FACING_BACK
+        } ?: manager.cameraIdList.firstOrNull { id ->
+            manager.getCameraCharacteristics(id)
+                .get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+        } ?: error("No flash camera")
+        manager.setTorchMode(cameraId, enabled)
+        if (enabled) "已打开手电筒。" else "已关闭手电筒。"
+    }.getOrElse { error ->
+        "手电筒操作失败：${error.message?.take(100) ?: "系统相机服务不可用"}"
+    }
+}
+
+private fun openCamera(context: Context): Boolean {
+    val intent = Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    if (intent.resolveActivity(context.packageManager) == null) return false
+
+    // Android 14+ may silently BAL_BLOCK an activity launched by a receiver/foreground service:
+    // startActivity() returns normally even though the camera never becomes visible. Root is an
+    // existing supported capability in Murong, and ActivityManager's result is observable.
+    if (KeepShellPublic.checkRoot()) {
+        val output = KeepShellPublic.doCmdSync(
+            "am start -W -a android.media.action.STILL_IMAGE_CAMERA 2>&1",
+        )
+        val rejected = listOf("permission denial", "error:", "exception", "result: 3")
+            .any { marker -> output.contains(marker, ignoreCase = true) }
+        if (!rejected) return true
+    }
+    return runCatching {
+        context.startActivity(intent)
+        true
+    }.getOrDefault(false)
+}
+
+private fun setAutoRotation(enabled: Boolean): String {
+    if (!KeepShellPublic.checkRoot()) {
+        return "需要 Root 权限才能直接修改自动旋转。"
+    }
+    val desired = if (enabled) 1 else 0
+    val output = KeepShellPublic.doCmdSync(
+        "settings put --user current system accelerometer_rotation $desired 2>&1; " +
+            "settings get --user current system accelerometer_rotation",
+    ).trim()
+    val applied = output.lineSequence().map(String::trim).lastOrNull(String::isNotBlank) ==
+        desired.toString()
+    return if (applied) {
+        if (enabled) "已开启自动旋转。" else "已关闭自动旋转。"
+    } else {
+        "系统没有接受自动旋转设置。"
     }
 }
 

@@ -33,6 +33,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -119,6 +121,8 @@ class MurongAssistActivity : ComponentActivity() {
     private var pendingNotificationTask: Pair<String, AssistantTaskKind>? = null
     private var pendingCalendarAction: Pair<String, AssistantRequestRoute>? = null
     private var backgroundHandoffJob: Job? = null
+    private var followUpPrompt by mutableStateOf("")
+    private var followUpTaskContext by mutableStateOf("")
     private val microphonePermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -165,6 +169,12 @@ class MurongAssistActivity : ComponentActivity() {
         // The Activity owns the wake-word pause for its whole lifetime. The controller must not
         // resume the hotword recorder between turns while the assistant is still visible.
         voiceController = VoiceChatController(this, manageWakeWordMicrophone = false)
+        followUpPrompt = intent.getStringExtra(AssistantVoicePopupEntry.EXTRA_FOLLOW_UP_PROMPT)
+            .orEmpty()
+            .trim()
+        followUpTaskContext = intent.getStringExtra(
+            AssistantVoicePopupEntry.EXTRA_FOLLOW_UP_TASK_CONTEXT,
+        ).orEmpty().trim()
         VoiceWakeWordService.pauseForAssistant(this)
         setContent {
             MurongTheme {
@@ -174,6 +184,8 @@ class MurongAssistActivity : ComponentActivity() {
                     ).orEmpty(),
                     voiceController = voiceController,
                     conversationRunner = conversationRunner,
+                    initialPrompt = followUpPrompt,
+                    followUpTaskContext = followUpTaskContext,
                     onStartListening = ::startListeningWithPermission,
                     onStopListening = ::stopListening,
                     onCancelListening = ::cancelListening,
@@ -188,7 +200,13 @@ class MurongAssistActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        startListeningWithPermission()
+        followUpPrompt = intent.getStringExtra(AssistantVoicePopupEntry.EXTRA_FOLLOW_UP_PROMPT)
+            .orEmpty()
+            .trim()
+        followUpTaskContext = intent.getStringExtra(
+            AssistantVoicePopupEntry.EXTRA_FOLLOW_UP_TASK_CONTEXT,
+        ).orEmpty().trim()
+        if (followUpPrompt.isBlank()) startListeningWithPermission()
     }
 
     override fun onDestroy() {
@@ -317,6 +335,8 @@ private fun AssistantPopup(
     invocationSource: String,
     voiceController: VoiceChatController,
     conversationRunner: AssistantConversationRunner,
+    initialPrompt: String,
+    followUpTaskContext: String,
     onStartListening: () -> Unit,
     onStopListening: () -> Unit,
     onCancelListening: () -> Unit,
@@ -333,13 +353,28 @@ private fun AssistantPopup(
     val fastTurnState by conversationRunner.fastTurnState.collectAsState()
     val screenContext by VoiceAssistantScreenContext.state.collectAsState()
     val currentVoiceState by rememberUpdatedState(voiceState)
-    val entries = remember { mutableStateListOf<AssistantOverlayEntry>() }
+    val entries = remember(initialPrompt) {
+        mutableStateListOf<AssistantOverlayEntry>().apply {
+            initialPrompt.takeIf(String::isNotBlank)?.let { prompt ->
+                add(
+                    AssistantOverlayEntry(
+                        key = "follow-up-${prompt.hashCode()}",
+                        role = AssistantOverlayRole.ASSISTANT,
+                        text = prompt,
+                    ),
+                )
+            }
+        }
+    }
     val listState = rememberLazyListState()
     val sessionBaselineMessageId = remember {
         sessionState.messages.maxOfOrNull { it.id } ?: 0L
     }
     val fastBaselineResponseId = remember { fastTurnState.responseId }
     var expanded by remember { mutableStateOf(false) }
+    val density = LocalDensity.current
+    val imeVisible = WindowInsets.ime.getBottom(density) > 0
+    val usesFullHeight = expanded || imeVisible
     var draftText by remember { mutableStateOf("") }
     var draftRevision by remember { mutableLongStateOf(0L) }
     var suppressNextAutoSubmit by remember { mutableStateOf(false) }
@@ -392,6 +427,7 @@ private fun AssistantPopup(
     val submitText: (String) -> Unit = submit@ { raw ->
         val text = raw.trim()
         if (text.isBlank() || processing) return@submit
+        val taskText = assistantFollowUpTaskText(text, followUpTaskContext)
         onCancelListening()
         voiceController.consumeFinalText()
         draftRevision += 1
@@ -402,13 +438,13 @@ private fun AssistantPopup(
             role = AssistantOverlayRole.USER,
             text = text,
         )
-        val route = AssistantRequestRouter.classify(text)
+        val route = AssistantRequestRouter.classify(taskText)
         activeRoute = route
         when (route.kind) {
             AssistantTaskKind.INSTANT_LOCAL,
             AssistantTaskKind.FAST_LOCAL_CHAT,
             AssistantTaskKind.FAST_LOCAL_WEB,
-            -> onDispatchFast(text, route)
+            -> onDispatchFast(taskText, route)
 
             AssistantTaskKind.BACKGROUND_WEB_RESEARCH,
             AssistantTaskKind.BACKGROUND_CODE,
@@ -429,7 +465,7 @@ private fun AssistantPopup(
                 )
                 handoffInProgress = true
                 onAnnounceAndEnqueueTask(
-                    text,
+                    taskText,
                     route.kind,
                     acknowledgement,
                     voiceSettings.autoReadFinalAnswers,
@@ -437,7 +473,7 @@ private fun AssistantPopup(
             }
 
             AssistantTaskKind.SCREEN_AWARE -> {
-                val prompt = VoiceAssistantScreenContext.buildModelPrompt(text)
+                val prompt = VoiceAssistantScreenContext.buildModelPrompt(taskText)
                 val screenshot = VoiceAssistantScreenContext.createScreenshotAttachment(context)
                 if (screenshot == null) {
                     conversationRunner.postLocalStatus(
@@ -449,7 +485,7 @@ private fun AssistantPopup(
                 }
             }
 
-            AssistantTaskKind.MAIN_MODEL -> conversationRunner.sendMain(text)
+            AssistantTaskKind.MAIN_MODEL -> conversationRunner.sendMain(taskText)
         }
     }
 
@@ -457,7 +493,10 @@ private fun AssistantPopup(
         if (expanded) expanded = false else onDismiss()
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(initialPrompt) {
+        if (initialPrompt.isNotBlank()) {
+            voiceController.speakAndAwait(System.nanoTime(), initialPrompt)
+        }
         onStartListening()
     }
 
@@ -614,19 +653,19 @@ private fun AssistantPopup(
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.16f))
             .clickable {
-                if (!expanded) onDismiss()
+                if (!usesFullHeight) onDismiss()
             },
         contentAlignment = Alignment.BottomCenter,
     ) {
         Surface(
-            modifier = (if (expanded) {
+            modifier = (if (usesFullHeight) {
                 Modifier.fillMaxSize()
             } else {
                 Modifier
                     .fillMaxWidth()
                     .heightIn(min = 360.dp, max = 620.dp)
             }).clickable(onClick = {}),
-            shape = if (expanded) {
+            shape = if (usesFullHeight) {
                 RectangleShape
             } else {
                 RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp)
@@ -637,11 +676,11 @@ private fun AssistantPopup(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .then(if (expanded) Modifier.statusBarsPadding() else Modifier)
+                    .then(if (usesFullHeight) Modifier.statusBarsPadding() else Modifier)
                     .navigationBarsPadding()
                     .imePadding()
                     .padding(horizontal = 20.dp, vertical = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(if (imeVisible) 8.dp else 12.dp),
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -675,34 +714,36 @@ private fun AssistantPopup(
                     }
                 }
 
-                Text(
-                    text = screenPrivacyText,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                if (!imeVisible) {
+                    Text(
+                        text = screenPrivacyText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    TextButton(
-                        enabled = !processing,
-                        onClick = {
-                            runExplicitScreenAnalysis(
-                                "请识别当前屏幕中的文字、图片和关键信息。",
-                                null,
-                            )
-                        },
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        Text("识别屏幕")
-                    }
-                    TextButton(
-                        enabled = !processing,
-                        onClick = { showScreenSelector = true },
-                    ) {
-                        Text("圈选识别")
+                        TextButton(
+                            enabled = !processing,
+                            onClick = {
+                                runExplicitScreenAnalysis(
+                                    "请识别当前屏幕中的文字、图片和关键信息。",
+                                    null,
+                                )
+                            },
+                        ) {
+                            Text("识别屏幕")
+                        }
+                        TextButton(
+                            enabled = !processing,
+                            onClick = { showScreenSelector = true },
+                        ) {
+                            Text("圈选识别")
+                        }
                     }
                 }
 
@@ -748,10 +789,12 @@ private fun AssistantPopup(
                         message,
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall,
+                        maxLines = if (imeVisible) 2 else Int.MAX_VALUE,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
 
-                if (pendingConfirmation) {
+                if (pendingConfirmation && !imeVisible) {
                     Text(
                         "这个操作需要确认；当前助手会话已保留，可稍后在主程序中处理。",
                         color = MaterialTheme.colorScheme.primary,
@@ -765,11 +808,14 @@ private fun AssistantPopup(
                         draftText = it
                         draftRevision += 1
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = if (imeVisible) 64.dp else 56.dp),
                     placeholder = {
                         Text(if (capturing) "正在把语音写入这里…" else "输入或点按麦克风")
                     },
-                    maxLines = if (expanded) 5 else 3,
+                    minLines = if (imeVisible) 2 else 1,
+                    maxLines = if (usesFullHeight) 5 else 3,
                     trailingIcon = {
                         IconButton(
                             enabled = draftText.isNotBlank() && !processing,
@@ -853,12 +899,14 @@ private fun AssistantPopup(
                         Text("取消")
                     }
                 }
-                Text(
-                    "点一下持续录音；再次点按停止。按住说话，松手后自动整理并发送；点“暂停录音”可先编辑。",
-                    modifier = Modifier.fillMaxWidth(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (!imeVisible) {
+                    Text(
+                        "点一下持续录音；再次点按停止。按住说话，松手后自动整理并发送；点“暂停录音”可先编辑。",
+                        modifier = Modifier.fillMaxWidth(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
         if (showScreenSelector && selectorScreenshot != null) {
@@ -1177,5 +1225,6 @@ private fun invocationLabel(source: String): String = when (source) {
     "volume_shortcut" -> "由音量加减键组合三连按唤醒"
     "pinned_shortcut" -> "由桌面快捷方式唤醒"
     "settings_test" -> "弹窗测试"
+    AssistantVoicePopupEntry.INVOCATION_SOURCE -> "从离屏任务返回"
     else -> "系统默认助理"
 }

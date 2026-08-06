@@ -24,6 +24,9 @@ const (
 	maxPortableSessionMessage = 50_000
 )
 
+var exportedCredentialTokenPattern = regexp.MustCompile(`(?i)\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,})\b`)
+var exportedCredentialAssignmentPattern = regexp.MustCompile(`(?i)((?:authorization|api[_ -]?key|access[_ -]?token|github[_ -]?token|password|passwd|secret)\s*[:=]\s*(?:bearer\s+)?)([^\s,;"']{6,})`)
+
 type RenameSessionRequest struct {
 	SessionID string `json:"sessionId"`
 	Title     string `json:"title"`
@@ -336,6 +339,8 @@ func encodePortableSession(session *ChatSession) ([]byte, error) {
 func clonePortableSession(session *ChatSession) *ChatSession {
 	portable := cloneSession(session)
 	if portable != nil {
+		portable.Goal = redactExportedCredentials(portable.Goal)
+		portable.Compression.Summary = redactExportedCredentials(portable.Compression.Summary)
 		portable.CodexThreadID = ""
 		portable.CodexSyncedID = ""
 		portable.CodexToolsVersion = 0
@@ -343,6 +348,9 @@ func clonePortableSession(session *ChatSession) *ChatSession {
 		portable.WorkflowPlan = nil
 		for index := range portable.Messages {
 			message := &portable.Messages[index]
+			message.Content = redactExportedCredentials(message.Content)
+			message.Goal = redactExportedCredentials(message.Goal)
+			message.Reasoning = redactExportedCredentials(message.Reasoning)
 			message.ToolCallID = ""
 			message.ToolArguments = ""
 			message.ToolStatus = ""
@@ -358,6 +366,14 @@ func clonePortableSession(session *ChatSession) *ChatSession {
 		}
 	}
 	return portable
+}
+
+func redactExportedCredentials(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return value
+	}
+	value = exportedCredentialTokenPattern.ReplaceAllString(value, "[已脱敏]")
+	return exportedCredentialAssignmentPattern.ReplaceAllString(value, "${1}[已脱敏]")
 }
 
 func decodePortableSession(data []byte) (*ChatSession, error) {
@@ -410,11 +426,12 @@ func exportSessionMarkdown(session *ChatSession) ([]byte, error) {
 	if err := validatePortableSession(session); err != nil {
 		return nil, err
 	}
+	session = clonePortableSession(session)
 	var output strings.Builder
 	output.WriteString("# ")
 	output.WriteString(session.Title)
 	output.WriteString("\n\n")
-	output.WriteString("> Murong 会话阅读副本。若要重新导入，请另存 JSON 格式。\n\n")
+	output.WriteString("> Murong 会话阅读副本；敏感凭据已自动脱敏。若要重新导入，请另存 JSON 格式。\n\n")
 	if goal := strings.TrimSpace(session.Goal); goal != "" {
 		output.WriteString("## 会话目标\n\n")
 		output.WriteString(goal)

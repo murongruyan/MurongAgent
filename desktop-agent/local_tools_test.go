@@ -104,6 +104,29 @@ func TestLocalWorkspaceListAndTerminal(t *testing.T) {
 			if err != nil || result.ExitCode != 0 || !strings.Contains(result.Stdout, "murong-terminal-ok") {
 				t.Fatalf("unexpected terminal result: %#v, %v", result, err)
 			}
+			failed, err := runLocalTerminal(ctx, workspace, backend, ".", "exit 7", 25)
+			if err == nil || failed.ExitCode != 7 || !strings.Contains(err.Error(), "退出码为 7") {
+				t.Fatalf("non-zero terminal result was reported as success: %#v, %v", failed, err)
+			}
 		})
+	}
+}
+
+func TestBuildTerminalCommandDisablesInteractiveGitPrompts(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	backends := discoverTerminalBackends(ctx)
+	if len(backends) == 0 {
+		t.Fatal("no supported terminal backends were discovered")
+	}
+	command, err := buildTerminalCommand(ctx, backends[0], t.TempDir(), "echo ok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := strings.Join(command.Env, "\n")
+	for _, wanted := range []string{"GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=Never", "GIT_EDITOR=true", "GIT_SEQUENCE_EDITOR=true"} {
+		if !strings.Contains(environment, wanted) {
+			t.Fatalf("terminal environment is missing %q", wanted)
+		}
 	}
 }

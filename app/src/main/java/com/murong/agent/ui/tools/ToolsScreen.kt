@@ -59,6 +59,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import com.murong.agent.ui.sanitizeForUiDisplay
+import com.murong.agent.ui.settings.AssistantOffscreenDisplaySettingsPanel
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -1212,7 +1213,9 @@ private fun GuiAutomationSettingsCard(
                     PermissionToggleRow(
                         title = "推理时临时拉满 CPU / GPU 频率",
                         subtitle = if (rootAvailable) {
-                            "仅推理期间通过 Root 提升最低频率，结束或失败后恢复；慕容调度可通过包名排除列表跳过本应用。会显著增加发热和耗电。"
+                            "仅推理期间通过 Root 临时释放系统频率投票并请求硬件最高档，" +
+                                "高通设备同时适配 KGSL，结束、失败或停止后恢复原值。" +
+                                "若模型回退到 CPU，GPU 不会产生推理负载。会显著增加发热和耗电。"
                         } else {
                             "需要 Root；当前未检测到 Root，设置不会生效。"
                         },
@@ -1547,6 +1550,7 @@ private fun GuiAutomationSettingsCard(
                             label = { Text("单任务最大步骤（1–100）") },
                             singleLine = true
                         )
+                        AssistantOffscreenDisplaySettingsPanel()
                         PermissionToggleRow(
                             title = "允许当前远程模型接收完整截图",
                             subtitle = "手机操作必须看见屏幕；本地模型不上传，远程模型关闭此项时不会启动连续任务。",

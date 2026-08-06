@@ -5,8 +5,54 @@ import com.murong.agent.core.provider.ToolCallFunction
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 class PhoneAgentProtocolTest {
+    @Test
+    fun selectsFaraNativeToolSchemaOnlyForFaraModels() {
+        assertTrue(PhoneAgentProtocol.toolsJsonForModel("microsoft/Fara1.5-4B").contains("computer_use"))
+        assertTrue(PhoneAgentProtocol.toolsJsonForModel("qwen-vl").contains("phone_action"))
+    }
+    @Test
+    fun parsesFaraXmlComputerUseCalls() {
+        val click = PhoneAgentProtocol.parse(
+            """
+            I should open the visible result.
+            <tool_call>
+            {"name":"computer_use","arguments":{"action":"left_click","coordinate":[420,730]}}
+            </tool_call>
+            """.trimIndent(),
+        )
+        val execute = assertIs<PhoneAgentDecision.Execute>(click)
+        assertEquals("Tap", execute.command.action)
+        assertEquals(420, execute.command.x)
+        assertEquals(730, execute.command.y)
+    }
+
+    @Test
+    fun mapsFaraTerminateScrollAndQuestionActions() {
+        val finish = PhoneAgentProtocol.parse(
+            """<tool_call>{"name":"computer_use","arguments":{"action":"terminate","answer":"done"}}</tool_call>""",
+        )
+        assertEquals("done", assertIs<PhoneAgentDecision.Finish>(finish).message)
+
+        val scroll = assertIs<PhoneAgentDecision.Execute>(
+            PhoneAgentProtocol.parse(
+                """{"name":"computer_use","arguments":{"action":"scroll","pixels":-600}}""",
+            ),
+        )
+        assertEquals("Swipe", scroll.command.action)
+        assertEquals(750, scroll.command.startY)
+        assertEquals(250, scroll.command.endY)
+
+        val question = assertIs<PhoneAgentDecision.Execute>(
+            PhoneAgentProtocol.parse(
+                """{"name":"computer_use","arguments":{"action":"ask_user_question","question":"which one?"}}""",
+            ),
+        )
+        assertEquals("Take_over", question.command.action)
+        assertEquals("which one?", question.command.message)
+    }
     @Test
     fun parsesOfficialTapSyntaxAfterReasoning() {
         val decision = PhoneAgentProtocol.parse(
@@ -73,6 +119,18 @@ class PhoneAgentProtocolTest {
     }
 
     @Test
+    fun parsesChineseActionAndFieldAliasesFromSmallLocalModel() {
+        val decision = PhoneAgentProtocol.parse(
+            """{"动作":"点击","坐标":[512,233]}"""
+        )
+
+        val execute = assertIs<PhoneAgentDecision.Execute>(decision)
+        assertEquals("Tap", execute.command.action)
+        assertEquals(512, execute.command.x)
+        assertEquals(233, execute.command.y)
+    }
+
+    @Test
     fun parsesNativePhoneActionToolCallWithoutText() {
         val decision = PhoneAgentProtocol.parse(
             PhoneAgentModelResponse(
@@ -111,5 +169,29 @@ class PhoneAgentProtocolTest {
         )
 
         assertEquals("已经完成", assertIs<PhoneAgentDecision.Finish>(decision).message)
+    }
+
+    @Test
+    fun parsesNamedPhoneActionCallWrittenAsText() {
+        val decision = PhoneAgentProtocol.parse(
+            """phone_action({"action":"tap","x":420,"y":730})"""
+        )
+
+        val execute = assertIs<PhoneAgentDecision.Execute>(decision)
+        assertEquals("Tap", execute.command.action)
+        assertEquals(420, execute.command.x)
+        assertEquals(730, execute.command.y)
+    }
+
+    @Test
+    fun parsesNamedPhoneFinishCallWrittenAsText() {
+        val decision = PhoneAgentProtocol.parse(
+            """phone_finish(message="消息已发送并验证")"""
+        )
+
+        assertEquals(
+            "消息已发送并验证",
+            assertIs<PhoneAgentDecision.Finish>(decision).message,
+        )
     }
 }

@@ -38,6 +38,7 @@ dependencies {
     implementation(libs.jsoup)
     implementation(libs.datastore.preferences)
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.14.0")
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 
     testImplementation(kotlin("test"))
     testImplementation(kotlin("test-junit"))

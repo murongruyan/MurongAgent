@@ -240,9 +240,7 @@ class AgentLoop(
                                 language = preferredSummaryLanguage
                             ),
                             finalReadinessReceipt = finalReadinessReceipt,
-                            userVisibleMessage = buildFinalReadinessBlockedUserVisibleMessage(
-                                preferredSummaryLanguage.toFinalReadinessLanguage()
-                            )
+                            userVisibleMessage = null
                         )
                     )
                     onEvent(AgentEvent.Done)
@@ -525,11 +523,22 @@ class AgentLoop(
             } catch (e: java.io.IOException) {
                 val msg = e.message ?: "未知网络错误"
                 if (e is ProviderHttpException && e.statusCode in setOf(401, 403)) {
-                    onEvent(AgentEvent.Error("🔑 API Key 无效或被拒绝（$msg）。请在设置中检查 API Key。"))
+                    onEvent(
+                        AgentEvent.Error(
+                            message = msg,
+                            userVisibleMessage = "API Key 无效或无权访问当前模型，请在设置中检查模型连接。"
+                        )
+                    )
                     return null
                 }
                 if (!isRetryableProviderFailure(e)) {
-                    onEvent(AgentEvent.Error("⚠️ 请求失败：$msg"))
+                    val hasImages = request.messages.any { it.images.isNotEmpty() }
+                    onEvent(
+                        AgentEvent.Error(
+                            message = msg,
+                            userVisibleMessage = providerFailureUserVisibleMessage(e, hasImages)
+                        )
+                    )
                     return null
                 }
                 retryAfterMillis = (e as? ProviderHttpException)?.retryAfterMillis
@@ -538,16 +547,31 @@ class AgentLoop(
                     in 500..599 -> "🔧 服务端错误（$msg）"
                     else -> "⚠️ 网络或流式连接错误：$msg"
                 }
-                onEvent(AgentEvent.Error("$lastError (重试 $attempt/$MAX_PROVIDER_RETRIES)"))
+                onEvent(
+                    AgentEvent.Error(
+                        message = "$lastError (重试 $attempt/$MAX_PROVIDER_RETRIES)",
+                        userVisibleMessage = null
+                    )
+                )
             } catch (e: Exception) {
                 // 兜底：捕获所有其他异常（JSON 解析错误、空指针等）
                 val msg = e.message ?: e.javaClass.simpleName
                 lastError = "⚠️ 请求异常：$msg"
                 if (provider.id == "murong-local") {
-                    onEvent(AgentEvent.Error(lastError))
+                    onEvent(
+                        AgentEvent.Error(
+                            message = lastError,
+                            userVisibleMessage = "本地模型处理失败，请检查模型状态后重试。"
+                        )
+                    )
                     return null
                 }
-                onEvent(AgentEvent.Error("⚠️ $lastError (重试 $attempt/$MAX_PROVIDER_RETRIES)"))
+                onEvent(
+                    AgentEvent.Error(
+                        message = "$lastError (重试 $attempt/$MAX_PROVIDER_RETRIES)",
+                        userVisibleMessage = null
+                    )
+                )
             }
 
             if (attempt < MAX_PROVIDER_RETRIES) {
@@ -556,9 +580,12 @@ class AgentLoop(
         }
 
         // 所有重试都失败
-        onEvent(AgentEvent.Error(
-            "❌ ${lastError ?: "请求失败"}。已重试 $MAX_PROVIDER_RETRIES 次，请稍后再试。"
-        ))
+        onEvent(
+            AgentEvent.Error(
+                message = "${lastError ?: "请求失败"}。已重试 $MAX_PROVIDER_RETRIES 次。",
+                userVisibleMessage = "模型服务暂时不可用，已自动重试 $MAX_PROVIDER_RETRIES 次。请稍后再试。"
+            )
+        )
         return null
     }
 

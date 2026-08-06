@@ -196,6 +196,48 @@ class BuiltinVisionModelsTest {
     }
 
     @Test
+    fun workerAffinityDedicatesBigCoresAndSharesTheSmallCluster() {
+        val topology = BuiltinLocalCpuTopology(
+            allCoreIds = (0..7).toList(),
+            performanceCoreIds = listOf(4, 5, 6, 7),
+            exclusivePerformanceCoreIds = listOf(6, 7),
+        )
+
+        assertEquals(
+            listOf("7" to "80", "6" to "40", "0-5" to "3f", "0-5" to "3f"),
+            builtinLocalWorkerAffinityPlan(
+                topology = topology,
+                cpuCorePolicy = BuiltinLocalCpuCorePolicy.ALL_CORES,
+                cpuThreads = 4,
+            ),
+        )
+        assertEquals(
+            listOf("7" to "80", "6" to "40", "4-5" to "30", "4-5" to "30"),
+            builtinLocalWorkerAffinityPlan(
+                topology = topology,
+                cpuCorePolicy = BuiltinLocalCpuCorePolicy.PERFORMANCE_CLUSTER,
+                cpuThreads = 4,
+            ),
+        )
+    }
+
+    @Test
+    fun generationCancellationRunsRegisteredCleanupExactlyOnce() {
+        val cancellation = BuiltinLocalGenerationCancellation()
+        var cleanupCount = 0
+        cancellation.invokeOnCancel { cleanupCount += 1 }
+
+        assertTrue(cancellation.cancel())
+        assertFalse(cancellation.cancel())
+        assertEquals(1, cleanupCount)
+
+        val alreadyCancelled = BuiltinLocalGenerationCancellation()
+        assertTrue(alreadyCancelled.cancel())
+        alreadyCancelled.invokeOnCancel { cleanupCount += 1 }
+        assertEquals(2, cleanupCount)
+    }
+
+    @Test
     fun automaticMnnBackendKeepsQwen35OnStableCpuPath() {
         val automatic = BuiltinLocalRuntimeSettings(
             backend = BuiltinLocalComputeBackend.AUTO

@@ -27,6 +27,7 @@ const state = {
   composerImages: [],
   composerPickerMode: "",
   composerProjectEntries: [],
+  composerBrowserPath: "",
   composerSearchToken: 0,
   goalModeEnabled: false,
   knowledgeScope: "global",
@@ -239,8 +240,6 @@ function bindEvents() {
   });
   $("#message-input").addEventListener("input", handleComposerInputChange);
   $("#messages").addEventListener("scroll", updateMessageAutoFollow, { passive: true });
-	$("#execute-workflow-plan").addEventListener("click", executeWorkflowPlan);
-	$("#dismiss-workflow-plan").addEventListener("click", dismissWorkflowPlan);
   $("#close-session-details").addEventListener("click", closeSessionDetails);
   $("#session-details-modal").addEventListener("click", (event) => { if (event.target === event.currentTarget) closeSessionDetails(); });
   $("#rename-session-form").addEventListener("submit", renameActiveSession);
@@ -392,6 +391,7 @@ function bindEvents() {
   $("#add-skill").addEventListener("click", () => addKnowledgeItem("skills"));
   $("#save-knowledge").addEventListener("click", saveKnowledge);
   $("#toggle-mcp-panel").addEventListener("click", toggleMCPPanel);
+  $("#add-nuphus-mcp").addEventListener("click", addNuphusMCPServer);
   $("#add-mcp-server").addEventListener("click", addMCPServer);
   $("#save-mcp-servers").addEventListener("click", saveMCPServers);
   $("#connect-mcp-servers").addEventListener("click", connectMCPServers);
@@ -631,7 +631,7 @@ function bindRuntimeEvents() {
     $("#composer-reasoning-select").disabled =
       state.running || executionLocked || !activeProfile || $("#composer-reasoning-select").options.length <= 1;
 		updateComposerActionState();
-		renderWorkflowPlan();
+		renderComposerContext();
     if (payload.state === "error") showToast(payload.text, true);
   });
   window.runtime.EventsOn("agent:stream-start", (payload) => {
@@ -1072,6 +1072,8 @@ function openSessionContextMenu(event, session) {
   separator.role = "separator";
   menu.append(separator);
   addAction("导出 JSON", async () => { await selectTarget(); await exportActiveSession("json"); });
+  addAction("导出 Markdown", async () => { await selectTarget(); await exportActiveSession("markdown"); });
+  addAction("导出跨端 JSON", async () => { await selectTarget(); await exportActiveSession("portable"); });
   addAction("复制任务 ID", async () => { await navigator.clipboard.writeText(session.id); showToast("任务 ID 已复制"); });
   addAction("删除任务", async () => deleteSessionById(session.id), {
     danger: true,
@@ -1139,7 +1141,6 @@ function renderActiveSession() {
   renderHeaderMeta();
   renderExecutionHandoff();
   renderComposerContext();
-	renderWorkflowPlan();
   renderSubagentJobs();
   renderAskUser();
   refreshWorkbenchLiveViews();
@@ -1285,63 +1286,6 @@ function summaryPreview(value, maxLength) {
   return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
 }
 
-function renderWorkflowPlan() {
-	const card = $("#workflow-plan-card");
-	if (!card) return;
-	const plan = state.active?.workflowPlan || null;
-	card.classList.toggle("hidden", !plan);
-	if (!plan) {
-		$("#workflow-plan-steps").replaceChildren();
-		return;
-	}
-	const statusLabels = { ready: "待确认", executing: "执行中", blocked: "需要继续", completed: "已完成" };
-	const current = Math.max(0, Math.min(Number(plan.currentStepIndex) || 0, plan.steps?.length || 0));
-	const total = plan.steps?.length || 0;
-	$("#workflow-plan-summary").textContent = plan.summary || "执行计划";
-	$("#workflow-plan-goal").textContent = plan.goal || "";
-	const status = $("#workflow-plan-status");
-	status.textContent = `${statusLabels[plan.status] || plan.status} · ${current}/${total}`;
-	status.className = `workflow-plan-status ${plan.status || "ready"}`;
-	$("#workflow-plan-progress-bar").style.width = `${total ? Math.round((current / total) * 100) : 0}%`;
-	const signOffs = new Map((plan.stepSignOffs || []).map((value) => [value.stepIndex, value]));
-	const list = $("#workflow-plan-steps");
-	list.replaceChildren();
-	(plan.steps || []).forEach((step, index) => {
-		const item = document.createElement("li");
-		const itemState = index < current ? "completed" : index === current && plan.status !== "completed" ? "current" : "pending";
-		item.className = `workflow-plan-step ${itemState}`;
-		const marker = document.createElement("span");
-		marker.className = "workflow-step-marker";
-		marker.textContent = itemState === "completed" ? "✓" : String(index + 1);
-		const copy = document.createElement("div");
-		const title = document.createElement("strong");
-		title.textContent = step;
-		copy.append(title);
-		const signOff = signOffs.get(index);
-		if (signOff) {
-			const evidence = document.createElement("small");
-			evidence.textContent = `${signOff.resultSummary} · ${signOff.matchedEvidence}/${signOff.totalEvidence} 条证据 · ${(signOff.matchedToolNames || []).join("、")}`;
-			copy.append(evidence);
-		} else if (itemState === "current") {
-			const hint = document.createElement("small");
-			hint.textContent = "当前步骤完成后必须用 complete_step 和真实工具收据签收";
-			copy.append(hint);
-		}
-		item.append(marker, copy);
-		list.append(item);
-	});
-	$("#workflow-plan-next").textContent = plan.nextStepHint || "";
-	const raw = $("#workflow-plan-raw");
-	raw.classList.toggle("hidden", !plan.rawPlan);
-	$("#workflow-plan-raw-content").textContent = plan.rawPlan || "";
-	const locked = state.running || phoneOwnsActiveSession();
-	const execute = $("#execute-workflow-plan");
-	execute.classList.toggle("hidden", plan.status === "completed" || plan.status === "executing");
-	execute.textContent = plan.status === "blocked" ? "继续执行" : "按计划执行";
-	execute.disabled = locked || plan.status === "completed" || plan.status === "executing";
-	$("#dismiss-workflow-plan").disabled = locked;
-}
-
 async function executeWorkflowPlan() {
 	if (!state.active || state.running || phoneOwnsActiveSession()) return;
 	const sessionId = state.active.id;
@@ -1355,7 +1299,7 @@ async function executeWorkflowPlan() {
 			$("#run-status").textContent = "正在按计划执行";
 		}
 		updateComposerActionState();
-		renderWorkflowPlan();
+		renderComposerContext();
 	} catch (error) {
 		if (state.runningSessions[sessionId] === true) {
 			state.runningSessions[sessionId] = false;
@@ -1372,7 +1316,7 @@ async function dismissWorkflowPlan() {
 	try {
 		state.active = await backend().DismissWorkflowPlan(state.active.id);
 		renderActiveSession();
-		showToast("已清除当前规范计划");
+		showToast("已取消当前计划");
 	} catch (error) {
 		showToast(errorText(error), true);
 	}
@@ -1857,15 +1801,60 @@ function appendMessageElement(message) {
       if (contextTags) contextTags.after(note);
       else body.prepend(note);
     }
-    if (message.role === "assistant" && message.kind === "plan") {
-      const action = document.createElement("button");
-      action.className = "plan-execute-button";
-      action.type = "button";
-      action.textContent = "按这个计划开始执行";
-      action.addEventListener("click", () => {
-        setComposerInputValue("请按上面的计划开始执行，并在完成后验证结果。");
+    if (message.role === "assistant" && message.kind === "plan" &&
+        state.active?.workflowPlan?.sourceMessageId === message.id &&
+        state.active.workflowPlan.status !== "completed") {
+      const actions = document.createElement("div");
+      actions.className = "plan-message-actions";
+      const execute = document.createElement("button");
+      execute.className = "plan-execute-button";
+      execute.type = "button";
+      execute.textContent = state.active.workflowPlan.status === "blocked" ? "继续执行" : "按计划执行";
+      execute.disabled = state.running || state.active.workflowPlan.status === "executing" || phoneOwnsActiveSession();
+      execute.addEventListener("click", executeWorkflowPlan);
+      const modify = document.createElement("button");
+      modify.className = "plan-modify-button";
+      modify.type = "button";
+      modify.textContent = "修改计划";
+      modify.disabled = state.running || phoneOwnsActiveSession();
+      const cancel = document.createElement("button");
+      cancel.className = "plan-cancel-button";
+      cancel.type = "button";
+      cancel.textContent = "取消计划";
+      cancel.disabled = state.running || phoneOwnsActiveSession();
+      cancel.addEventListener("click", dismissWorkflowPlan);
+      actions.append(execute, modify, cancel);
+
+      const editor = document.createElement("form");
+      editor.className = "plan-revision-editor hidden";
+      const feedback = document.createElement("textarea");
+      feedback.rows = 2;
+      feedback.maxLength = 6000;
+      feedback.placeholder = "告诉模型要调整哪些步骤或目标…";
+      const submit = document.createElement("button");
+      submit.type = "submit";
+      submit.className = "primary";
+      submit.textContent = "重新生成计划";
+      editor.append(feedback, submit);
+      modify.addEventListener("click", () => {
+        editor.classList.toggle("hidden");
+        if (!editor.classList.contains("hidden")) feedback.focus();
       });
-      body.append(action);
+      editor.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const note = feedback.value.trim();
+        if (!note || state.running || phoneOwnsActiveSession()) return;
+        try {
+          submit.disabled = true;
+          state.active = await backend().SetSessionPlanMode(state.active.id, true);
+          setComposerInputValue(`请根据以下意见修改当前计划：\n${note}`);
+          await sendMessage();
+        } catch (error) {
+          showToast(errorText(error), true);
+          submit.disabled = false;
+        }
+      });
+      body.append(actions, editor);
     }
   }
   if (message.id) {
@@ -3046,6 +3035,7 @@ function openComposerPicker(mode) {
     return;
   }
   state.composerPickerMode = mode;
+  state.composerBrowserPath = "";
   const labels = {
     all: ["添加本轮上下文", "项目内容、Skill、子代理和 MCP 都会真实进入本轮请求"],
     files: ["@ 文件或文件夹", "从当前项目选择重点上下文"],
@@ -3083,7 +3073,7 @@ async function loadComposerProjectEntries() {
   state.composerProjectEntries = [];
   if ((mode === "all" || mode === "files") && activeProjectPath() && state.sessionProjectAvailable) {
     try {
-      const entries = await backend().SearchProjectEntries(query);
+      const entries = await backend().BrowseProjectEntries(state.composerBrowserPath || "", query);
       if (token !== state.composerSearchToken) return;
       state.composerProjectEntries = entries || [];
     } catch (error) {
@@ -3124,9 +3114,10 @@ function renderComposerPicker() {
     appendComposerPickerSection(list, "运行模式", filterChoices(modeItems));
   }
   if (mode === "all" || mode === "files") {
+    appendComposerBrowserNavigation(list, query);
     const files = state.composerProjectEntries.map((entry) => ({
-      kind: entry.directory ? "folder" : "file", path: entry.path, label: entry.path,
-      detail: entry.directory ? "项目文件夹" : formatFileSize(entry.size), scope: "project",
+      kind: entry.directory ? "folder" : "file", path: entry.path, label: entry.name || entry.path,
+      detail: entry.directory ? entry.path : `${entry.path} · ${formatFileSize(entry.size)}`, scope: "project",
     }));
     appendComposerPickerSection(
       list,
@@ -3171,6 +3162,34 @@ function renderComposerPicker() {
   }
 }
 
+function appendComposerBrowserNavigation(container, query) {
+  if (!activeProjectPath() || !state.sessionProjectAvailable) return;
+  const nav = document.createElement("div");
+  nav.className = "composer-browser-nav";
+  const up = document.createElement("button");
+  up.type = "button";
+  up.textContent = "← 上一级";
+  up.disabled = !state.composerBrowserPath || Boolean(query);
+  up.addEventListener("click", () => {
+    const parts = state.composerBrowserPath.split("/").filter(Boolean);
+    parts.pop();
+    navigateComposerFolder(parts.join("/"));
+  });
+  const current = document.createElement("span");
+  current.textContent = query
+    ? `在 ${state.composerBrowserPath || "项目根目录"} 中搜索`
+    : state.composerBrowserPath || "项目根目录";
+  current.title = current.textContent;
+  nav.append(up, current);
+  container.append(nav);
+}
+
+function navigateComposerFolder(path) {
+  state.composerBrowserPath = String(path || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  $("#composer-picker-search").value = "";
+  scheduleComposerPickerRender();
+}
+
 function appendComposerPickerSection(container, title, items, emptyText = "") {
   if (!items?.length && !emptyText) return;
   const heading = document.createElement("div");
@@ -3204,13 +3223,25 @@ function createComposerPickerItem(item) {
   copy.append(strong, detail);
   const scope = document.createElement("span");
   scope.className = "composer-picker-scope";
-  scope.textContent = composerContextSelected(item) ? "已选择" : (item.scope === "project" ? "项目" : item.scope === "global" ? "全局" : contextKindLabel(item.kind));
+  scope.textContent = composerContextSelected(item) ? "已选择" : (item.kind === "folder" ? "打开" : item.scope === "project" ? "项目" : item.scope === "global" ? "全局" : contextKindLabel(item.kind));
   button.append(icon, copy, scope);
   button.addEventListener("click", () => {
     if (item.kind === "image") selectComposerImages();
     else if (item.kind === "mode") toggleComposerMode(item.id);
+    else if (item.kind === "folder") navigateComposerFolder(item.path);
     else toggleComposerContext(item);
   });
+  if (item.kind === "folder") {
+    const row = document.createElement("div");
+    row.className = "composer-picker-folder-row";
+    const select = document.createElement("button");
+    select.type = "button";
+    select.className = `composer-folder-select${composerContextSelected(item) ? " selected" : ""}`;
+    select.textContent = composerContextSelected(item) ? "已选" : "选择文件夹";
+    select.addEventListener("click", () => toggleComposerContext(item));
+    row.append(button, select);
+    return row;
+  }
   return button;
 }
 
@@ -3277,6 +3308,10 @@ function renderComposerContext() {
   const container = $("#composer-context-chips");
   if (!container) return;
   container.replaceChildren();
+  const workflowPlan = state.active?.workflowPlan;
+  if (workflowPlan && ["executing", "blocked"].includes(workflowPlan.status)) {
+    appendWorkflowPlanProgressCapsule(container, workflowPlan);
+  }
   if (state.active?.planModeEnabled) {
     appendComposerStateChip(container, "计划模式", () => toggleComposerMode("plan"));
   }
@@ -3373,6 +3408,36 @@ function renderComposerContext() {
   else if (state.goalModeEnabled) input.placeholder = "描述当前目标，后续回复会围绕它推进…";
   else input.placeholder = "让 Murong 处理这个项目…";
   updateComposerActionState();
+}
+
+function appendWorkflowPlanProgressCapsule(container, plan) {
+  const total = plan.steps?.length || 0;
+  const current = Math.max(0, Math.min(Number(plan.currentStepIndex) || 0, total));
+  const capsule = document.createElement("div");
+  capsule.className = `workflow-progress-capsule ${plan.status}`;
+  const dot = document.createElement("span");
+  dot.className = "workflow-progress-dot";
+  const label = document.createElement("span");
+  label.textContent = plan.status === "blocked"
+    ? `计划待继续 · ${current}/${total}`
+    : `计划执行中 · ${Math.min(current + 1, total)}/${total}`;
+  const hover = document.createElement("div");
+  hover.className = "workflow-plan-hover";
+  const strong = document.createElement("strong");
+  strong.textContent = plan.summary || "完整计划";
+  const detail = document.createElement("pre");
+  detail.textContent = plan.rawPlan || (plan.steps || []).map((step, index) => `${index + 1}. ${step}`).join("\n");
+  hover.append(strong, detail);
+  capsule.append(dot, label, hover);
+  if (plan.status === "blocked") {
+    const resume = document.createElement("button");
+    resume.type = "button";
+    resume.textContent = "继续";
+    resume.disabled = state.running || phoneOwnsActiveSession();
+    resume.addEventListener("click", executeWorkflowPlan);
+    capsule.append(resume);
+  }
+  container.append(capsule);
 }
 
 function appendComposerStateChip(container, text, onRemove, onLabelClick) {
@@ -4967,6 +5032,46 @@ function addMCPServer() {
   renderMCP();
   const cards = document.querySelectorAll(".mcp-server-card");
   cards[cards.length - 1]?.querySelector(".mcp-name")?.select();
+}
+
+function addNuphusMCPServer() {
+  state.mcp ||= { servers: [], statuses: [], tools: [] };
+  state.mcp.servers ||= [];
+  const existing = state.mcp.servers.find((server) =>
+    String(server.name || "").toLowerCase().includes("nuphus") ||
+    (server.args || []).some((argument) => String(argument).includes("@nuphus/nuphus-mcp"))
+  );
+  if (existing) {
+    state.mcpExpanded = true;
+    renderMCP();
+    document.querySelector(`[data-mcp-id="${CSS.escape(existing.id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    $("#mcp-status").textContent = "Nuphus 电脑控制预设已经存在";
+    return;
+  }
+  state.mcp.servers.push({
+    id: `mcp_${crypto.randomUUID?.() || `${Date.now()}_${Math.random().toString(16).slice(2)}`}`,
+    name: "Nuphus 电脑控制",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@nuphus/nuphus-mcp", "--confirm-write"],
+    cwd: "",
+    url: "",
+    requestTimeoutSeconds: 120,
+    trustedReadOnlyTools: [
+      "desktop_screen_size", "desktop_windows_list", "desktop_window_info",
+      "desktop_vision", "desktop_perceive", "browser_snapshot", "browser_extract",
+      "browser_cookies_get", "browser_list_tabs", "browser_list_downloads", "browser_wait_for",
+    ],
+    enabled: true,
+    autoStart: false,
+    environmentKeys: [],
+    headerKeys: [],
+  });
+  state.mcpExpanded = true;
+  renderMCP();
+  const cards = document.querySelectorAll(".mcp-server-card");
+  cards[cards.length - 1]?.scrollIntoView({ behavior: "smooth", block: "center" });
+  $("#mcp-status").textContent = "已添加安全预设；点击“保存并连接”后下载并启动 Nuphus";
 }
 
 function parseMCPSecretJSON(value, label) {
@@ -6935,11 +7040,12 @@ function refreshWorkbenchLiveViews() {
 
 async function refreshStatusBar(force = false) {
   const sessionID = state.active?.id || "";
-  renderStatusBar();
   if (!sessionID) {
     state.statusStats = null;
+    renderStatusBar();
     return;
   }
+  renderStatusBar();
   if (!force && state.statusStats?.sessionId === sessionID) return;
   const request = ++state.statusStatsRequest;
   try {
@@ -6957,16 +7063,34 @@ function renderStatusBar() {
   const usage = state.active?.usage || {};
   const tokens = Number(stats.providerTotalTokens || usage.totalTokens || stats.estimatedTokens || 0);
   const cached = Number(stats.cachedInputTokens || usage.cachedInputTokens || 0);
+  const providerInput = Number(stats.providerInputTokens || usage.inputTokens || 0);
+  const cachePercent = providerInput > 0 ? Math.min(100, Math.max(0, Math.round(cached / providerInput * 100))) : 0;
   const context = Number(stats.estimatedTokens || 0);
   const windowTokens = Number(profile.contextWindowTokens || 0);
+  const contextPercent = windowTokens > 0 ? Math.min(100, Math.max(0, Math.round(context / windowTokens * 100))) : 0;
   $("#statusbar-project").textContent = project ? `项目 ${projectName(project)}` : "未选择项目";
   $("#statusbar-project").title = project || "";
   $("#statusbar-model").textContent = usage.lastModel || providerProfileModelLabel(profile) || "模型未配置";
-  $("#statusbar-cache").textContent = `缓存 ${formatCount(cached)}`;
+  $("#statusbar-cache").textContent = `缓存 ${cachePercent}% · ${formatCount(cached)}`;
+  $("#statusbar-cache").title = providerInput > 0
+    ? `缓存输入 ${formatCount(cached)} / 总输入 ${formatCount(providerInput)}`
+    : "模型尚未返回缓存用量";
   $("#statusbar-tokens").textContent = `Token ${formatCount(tokens)}`;
   $("#statusbar-context").textContent = windowTokens
-    ? `上下文 ${formatCount(context)} / ${formatCount(windowTokens)} (${Math.min(999, Math.round(context / windowTokens * 100))}%)`
+    ? `上下文 ${formatCount(context)} / ${formatCount(windowTokens)} (${contextPercent}%)`
     : `上下文 ${formatCount(context)}`;
+  const meter = $("#composer-context-meter");
+  const ring = $("#composer-context-meter-ring");
+  const value = $("#composer-context-meter-value");
+  if (meter && ring && value) {
+    ring.style.setProperty("--context-percent", `${contextPercent * 3.6}deg`);
+    value.textContent = String(contextPercent);
+    $("#composer-context-meter-title").textContent = `上下文 ${contextPercent}%`;
+    $("#composer-context-meter-detail").textContent = windowTokens
+      ? `${formatCount(context)} / ${formatCount(windowTokens)} Token · 缓存 ${cachePercent}% (${formatCount(cached)})`
+      : `${formatCount(context)} Token（本地估算）· 缓存 ${cachePercent}% (${formatCount(cached)})`;
+    meter.setAttribute("aria-label", `上下文已用 ${contextPercent}%`);
+  }
   if (!state.running) $("#statusbar-run").textContent = "就绪";
 }
 

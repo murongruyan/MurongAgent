@@ -45,6 +45,23 @@ func TestParseDesktopWorkflowPlanIsBoundedAndCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestParseDesktopWorkflowPlanKeepsTopLevelStepsAndIgnoresNestedDetails(t *testing.T) {
+	raw := "# 计划\n1. 检查项目\n   - 查看构建配置\n   - 查看测试\n2. 修复问题\n   * 保留用户改动\n3. 完成验证"
+	plan, err := parseDesktopWorkflowPlan("修复项目", raw, "message-plan", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"检查项目", "修复问题", "完成验证"}
+	if len(plan.Steps) != len(want) {
+		t.Fatalf("nested details were incorrectly split into steps: %#v", plan.Steps)
+	}
+	for index := range want {
+		if plan.Steps[index] != want[index] {
+			t.Fatalf("step %d = %q, want %q", index, plan.Steps[index], want[index])
+		}
+	}
+}
+
 func TestWorkflowPlanPersistsClonesAndSettlesWithoutFalseCompletion(t *testing.T) {
 	store, session, _ := createWorkflowPlanFixture(t, []string{"读取配置", "运行测试"})
 	ready := store.getSession(session.ID)
@@ -187,17 +204,20 @@ func TestCompleteStepToolExposureAndWorkflowPlanUIContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	html, js, css := string(index), string(script), string(styles)
-	for _, marker := range []string{`id="workflow-plan-card"`, `id="workflow-plan-steps"`, `id="execute-workflow-plan"`, `id="dismiss-workflow-plan"`} {
+	if strings.Contains(html, `id="workflow-plan-card"`) {
+		t.Fatal("workflow plan must not render a second large panel above the composer")
+	}
+	for _, marker := range []string{`class="composer-context-meter"`, `id="composer-context-chips"`} {
 		if !strings.Contains(html, marker) {
-			t.Fatalf("workflow plan UI is missing %q", marker)
+			t.Fatalf("compact workflow plan UI is missing %q", marker)
 		}
 	}
-	for _, marker := range []string{`function renderWorkflowPlan()`, `backend().ExecuteWorkflowPlan`, `backend().DismissWorkflowPlan`, `真实工具收据签收`} {
+	for _, marker := range []string{`className = "plan-message-actions"`, `修改计划`, `取消计划`, `backend().ExecuteWorkflowPlan`, `backend().DismissWorkflowPlan`, `function appendWorkflowPlanProgressCapsule`} {
 		if !strings.Contains(js, marker) {
 			t.Fatalf("workflow plan UI wiring is missing %q", marker)
 		}
 	}
-	for _, marker := range []string{".workflow-plan-card", ".workflow-plan-step.current", ".workflow-plan-step.completed"} {
+	for _, marker := range []string{".plan-message-actions", ".plan-revision-editor", ".workflow-progress-capsule", ".workflow-plan-hover"} {
 		if !strings.Contains(css, marker) {
 			t.Fatalf("workflow plan styling is missing %q", marker)
 		}

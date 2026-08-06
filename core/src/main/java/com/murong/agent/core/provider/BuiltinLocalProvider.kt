@@ -141,6 +141,7 @@ class BuiltinLocalProvider : ModelProvider {
 
     private fun buildLocalPrompt(request: ChatRequest): String {
         val tools = compactToolDefinitions(request.tools).take(3_000)
+        val phoneActionRequest = isPhoneActionRequest(request.tools)
         val protocol = if (tools.isBlank()) {
             """
                 你是 Murong 的极速离线对话助手。本轮只进行自然语言聊天、问答或总结，
@@ -150,6 +151,17 @@ class BuiltinLocalProvider : ModelProvider {
                 <tool_call>、[TOOL]、JSON 工具参数、函数名或系统协议；这些内容对用户无效。
                 如果问题需要联网、看屏幕或执行操作，明确说明当前轻量本地对话模型做不到，
                 并建议用户切换到相应任务模型，不要伪造工具调用。
+            """.trimIndent()
+        } else if (phoneActionRequest) {
+            """
+                你是 Murong 的手机单步动作执行器。根据当前截图和任务，每轮只决定一个动作。
+                先用一行不超过 32 个字的中文说明当前判断，并把同一句判断写入动作的 message 字段，
+                这句话会原样显示给用户。然后必须且只能输出下面两种动作格式之一。
+                禁止长篇分析、Markdown 或第二个动作：
+                <tool_call>{"name":"phone_action","arguments":{"action":"tap","message":"看到目标按钮，准备点击","x":500,"y":500}}</tool_call>
+                <tool_call>{"name":"phone_finish","arguments":{"message":"已完成并验证"}}</tool_call>
+                arguments 必须是合法 JSON 对象，并严格使用系统协议列出的字段。看不清时用 wait、back 或 take_over，禁止猜坐标。
+                $BUILTIN_LOCAL_VISIBLE_LANGUAGE_POLICY
             """.trimIndent()
         } else {
             """
@@ -174,12 +186,16 @@ class BuiltinLocalProvider : ModelProvider {
             .filter { it.role.equals("system", ignoreCase = true) }
             .joinToString("\n") { it.content.orEmpty() }
             .trim()
-            .take(1_000)
-        val historyBudget = if (tools.isBlank()) 5_000 else 2_400
-        val history = request.messages
+            .take(if (tools.isBlank()) 1_000 else 6_000)
+        val nonSystemMessages = request.messages
             .filterNot { it.role.equals("system", ignoreCase = true) }
-            .joinToString("\n\n", transform = ::formatMessage)
-            .takeLast(historyBudget)
+        val history = if (phoneActionRequest) {
+            compactPhoneActionHistory(nonSystemMessages)
+        } else {
+            nonSystemMessages
+                .joinToString("\n\n", transform = ::formatMessage)
+                .takeLast(if (tools.isBlank()) 5_000 else 2_400)
+        }
         return buildString {
             append(protocol)
             if (system.isNotBlank()) {
@@ -196,6 +212,33 @@ class BuiltinLocalProvider : ModelProvider {
             }
             append("\n\n[ASSISTANT]\n")
         }
+    }
+
+    private fun compactPhoneActionHistory(messages: List<ChatMessage>): String {
+        if (messages.isEmpty()) return ""
+        val task = messages.first()
+        val recent = messages.drop(1).takeLast(4)
+        return buildString {
+            append(formatMessage(task).take(1_400))
+            recent.forEach { message ->
+                append("\n\n")
+                // Keep the beginning of each observation: it contains the step, current app,
+                // task facts and semantic-coordinate header. Tail-only truncation can erase the
+                // original task and was the cause of unrelated taps in long Phone Agent runs.
+                append(formatMessage(message).take(1_500))
+            }
+        }
+    }
+
+    private fun isPhoneActionRequest(raw: String?): Boolean {
+        val parsed = runCatching { Json.parseToJsonElement(raw.orEmpty()) }.getOrNull()
+            as? JsonArray ?: return false
+        val names = parsed.mapNotNull { element ->
+            val root = element as? JsonObject ?: return@mapNotNull null
+            val function = root["function"] as? JsonObject ?: root
+            function.string("name").lowercase().takeIf { it.isNotBlank() }
+        }.toSet()
+        return "phone_action" in names && names.all { it in PHONE_ACTION_TOOL_NAMES }
     }
 
     private fun formatMessage(message: ChatMessage): String = buildString {
@@ -289,6 +332,7 @@ class BuiltinLocalProvider : ModelProvider {
             "github",
             "mcp"
         )
+        private val PHONE_ACTION_TOOL_NAMES = setOf("phone_action", "phone_finish")
         private val TOOL_CALL_PATTERN = Regex(
             "<tool_call>\\s*([\\s\\S]*?)\\s*</tool_call>",
             RegexOption.IGNORE_CASE

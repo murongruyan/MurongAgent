@@ -6597,6 +6597,66 @@ class ChatSessionManager(
         }
     }
 
+    /** Persists local voice-assistant turns that do not pass through the normal model loop. */
+    @Synchronized
+    fun recordAssistantRequest(userText: String): Boolean {
+        val normalizedUser = userText.trim()
+        if (normalizedUser.isBlank() || _state.value.isProcessing) return false
+        val lastMessage = _state.value.messages.lastOrNull()
+        if (lastMessage?.role == "user" && lastMessage.content.trim() == normalizedUser) {
+            return true
+        }
+        appendMessages(ChatMessageUi(id = nextId(), role = "user", content = normalizedUser))
+        if (_state.value.sessionTitle == "新对话") {
+            _state.value = _state.value.copy(
+                sessionTitle = conversationStore.generateTitle(_state.value.messages),
+            )
+        }
+        saveCurrentSession()
+        return true
+    }
+
+    @Synchronized
+    fun recordAssistantReply(userText: String, assistantText: String): Boolean {
+        val normalizedUser = userText.trim()
+        val normalizedAssistant = assistantText.trim()
+        if (normalizedUser.isBlank() || normalizedAssistant.isBlank() || _state.value.isProcessing) {
+            return false
+        }
+        val requestAlreadyRecorded = _state.value.messages.any { message ->
+            message.role == "user" && message.content.trim() == normalizedUser
+        }
+        if (!requestAlreadyRecorded) {
+            return recordAssistantExchange(normalizedUser, normalizedAssistant)
+        }
+        appendMessages(
+            ChatMessageUi(id = nextId(), role = "assistant", content = normalizedAssistant),
+        )
+        saveCurrentSession()
+        return true
+    }
+
+    /** Persists a complete local voice-assistant turn in one operation. */
+    @Synchronized
+    fun recordAssistantExchange(userText: String, assistantText: String): Boolean {
+        val normalizedUser = userText.trim()
+        val normalizedAssistant = assistantText.trim()
+        if (normalizedUser.isBlank() || normalizedAssistant.isBlank() || _state.value.isProcessing) {
+            return false
+        }
+        appendMessages(
+            ChatMessageUi(id = nextId(), role = "user", content = normalizedUser),
+            ChatMessageUi(id = nextId(), role = "assistant", content = normalizedAssistant),
+        )
+        if (_state.value.sessionTitle == "新对话") {
+            _state.value = _state.value.copy(
+                sessionTitle = conversationStore.generateTitle(_state.value.messages),
+            )
+        }
+        saveCurrentSession()
+        return true
+    }
+
     fun saveCurrentSession(config: ProviderConfig? = null) {
         val stateSnapshot = _state.value
         if (!shouldPersistSession(stateSnapshot)) return

@@ -108,28 +108,6 @@
         </section>
       </div>
 
-	  <section id="workflow-plan-card" class="workflow-plan-card hidden" aria-live="polite">
-		<div class="workflow-plan-heading">
-		  <div>
-			<p class="eyebrow">CANONICAL WORKFLOW</p>
-			<h3 id="workflow-plan-summary">执行计划</h3>
-			<p id="workflow-plan-goal"></p>
-		  </div>
-		  <span id="workflow-plan-status" class="workflow-plan-status">待确认</span>
-		</div>
-		<div class="workflow-plan-progress"><span id="workflow-plan-progress-bar"></span></div>
-		<ol id="workflow-plan-steps" class="workflow-plan-steps"></ol>
-		<p id="workflow-plan-next" class="workflow-plan-next"></p>
-		<details id="workflow-plan-raw" class="workflow-plan-raw">
-		  <summary>查看模型原始计划</summary>
-		  <pre id="workflow-plan-raw-content"></pre>
-		</details>
-		<div class="workflow-plan-actions">
-		  <button id="dismiss-workflow-plan" class="secondary" type="button">清除计划</button>
-		  <button id="execute-workflow-plan" class="primary" type="button">按计划执行</button>
-		</div>
-	  </section>
-
       <section id="subagent-jobs" class="subagent-jobs hidden" aria-label="后台子代理"></section>
 
       <section id="ask-user-card" class="ask-user-card hidden" aria-live="polite">
@@ -178,6 +156,13 @@
               <span id="composer-hint">Enter 发送 · Shift+Enter 换行</span>
             </div>
             <div class="composer-right-controls">
+              <div id="composer-context-meter" class="composer-context-meter" tabindex="0" aria-label="上下文用量">
+                <span id="composer-context-meter-ring" class="composer-context-meter-ring"><span id="composer-context-meter-value">0</span></span>
+                <span class="composer-context-meter-popover">
+                  <strong id="composer-context-meter-title">上下文 0%</strong>
+                  <small id="composer-context-meter-detail">尚无上下文用量</small>
+                </span>
+              </div>
               <label class="composer-runtime-control composer-model-control" title="选择本轮使用的模型连接">
                 <span>模型</span>
                 <select id="composer-model-select" aria-label="模型连接"></select>
@@ -267,9 +252,11 @@
             <span id="mcp-summary">尚未配置 MCP 服务器</span>
             <div>
               <button id="connect-mcp-servers" class="secondary" type="button">重新连接全部</button>
+              <button id="add-nuphus-mcp" class="secondary" type="button">＋ Nuphus 电脑控制</button>
               <button id="add-mcp-server" class="secondary" type="button">＋ 添加服务器</button>
             </div>
           </div>
+          <p class="mcp-preset-note">Nuphus 预设通过官方 MIT 许可的 npm 包提供本地 OCR、窗口、键鼠和浏览器工具；首次连接需联网下载，写操作仍需审批并启用严格确认。</p>
           <div id="mcp-server-list" class="mcp-server-list"></div>
           <div class="mcp-save-row">
             <span id="mcp-status"></span>

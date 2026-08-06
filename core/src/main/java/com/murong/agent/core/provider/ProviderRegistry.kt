@@ -30,6 +30,11 @@ object ProviderRegistry {
             supportedReasoningEfforts = listOf("low", "medium", "xhigh")
         ))
         register(OfficialOpenAICompatibleProvider(
+            id = "modelscope-vision", name = "魔搭 ModelScope Vision",
+            defaultBaseUrl = "https://api-inference.modelscope.cn/v1",
+            defaultModel = "Qwen/Qwen3-VL-30B-A3B-Instruct"
+        ))
+        register(OfficialOpenAICompatibleProvider(
             id = "minimax", name = "MiniMax",
             defaultBaseUrl = "https://api.minimaxi.com/v1", defaultModel = "MiniMax-M3"
         ))

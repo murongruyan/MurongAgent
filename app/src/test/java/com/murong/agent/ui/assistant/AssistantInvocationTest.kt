@@ -11,6 +11,7 @@ class AssistantInvocationTest {
     @Test
     fun `wake phrase matching ignores spaces punctuation and case`() {
         assertTrue(containsWakePhrase("慕容，慕容！", "慕容慕容"))
+        assertTrue(containsWakePhrase("慕容慕蓉", "慕容慕容"))
         assertTrue(containsWakePhrase("Hey MURONG agent", "murong"))
         assertFalse(containsWakePhrase("慕容你好", "慕容慕容"))
         assertFalse(containsWakePhrase("a", "a"))
@@ -102,6 +103,13 @@ class AssistantInvocationTest {
         assertEquals("抖音", simpleLaunchAppLabel("打开抖音"))
         assertEquals("微信", simpleLaunchAppLabel("请打开微信应用"))
         assertNull(simpleLaunchAppLabel("打开微信给老爸发送你好"))
+        assertEquals("微信", leadingLaunchAppLabel("打开微信给老爸发送你好"))
+        assertEquals("QQ", simpleLaunchAppLabel("打开QQ"))
+        assertNull(simpleLaunchAppLabel("打开设置查看当前电池电量并告诉我"))
+        assertNull(leadingLaunchAppLabel("打开设置查看当前电池电量并告诉我"))
+        assertNull(simpleLaunchAppLabel("打开一个不存在的应用"))
+        assertNull(leadingLaunchAppLabel("打开一个不存在的应用后继续操作"))
+        assertEquals("com.example.demo", simpleLaunchAppLabel("打开com.example.demo"))
 
         val serviceSource = File(
             "src/main/java/com/murong/agent/ui/assistant/AssistantTaskForegroundService.kt"
@@ -109,6 +117,22 @@ class AssistantInvocationTest {
         assertTrue(serviceSource.contains("conversationRunner.runPhoneAndAwait(taskText)"))
         assertTrue(serviceSource.contains("conversationRunner.runCodeAndAwait(modelInput)"))
         assertTrue(serviceSource.contains("showTaskProgressOverlay"))
+    }
+
+    @Test
+    fun `phone cancellation releases a broker display even after session reference is lost`() {
+        val runnerSource = File(
+            "src/main/java/com/murong/agent/ui/assistant/AssistantConversationRunner.kt"
+        ).readText()
+        val serviceSource = File(
+            "src/main/java/com/murong/agent/ui/assistant/AssistantTaskForegroundService.kt"
+        ).readText()
+
+        assertTrue(runnerSource.contains("releasePhoneDisplayAndBroker(activePhoneDisplay)"))
+        assertTrue(runnerSource.contains("connectedAgentDisplayService()"))
+        assertTrue(runnerSource.contains("service?.releaseAgentDisplay()"))
+        assertTrue(serviceSource.contains("if (running) {"))
+        assertTrue(serviceSource.contains("conversationRunner.cancelCurrent()"))
     }
 
     @Test

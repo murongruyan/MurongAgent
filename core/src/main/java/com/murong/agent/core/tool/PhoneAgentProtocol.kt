@@ -30,7 +30,10 @@ internal object PhoneAgentProtocol {
                   },
                   "app": {"type": "string"},
                   "text": {"type": "string"},
-                  "message": {"type": "string"},
+                  "message": {
+                    "type": "string",
+                    "description": "A concise Chinese explanation of what is visible and why this action is next; shown verbatim to the user."
+                  },
                   "x": {"type": "integer", "minimum": 0, "maximum": 1000},
                   "y": {"type": "integer", "minimum": 0, "maximum": 1000},
                   "startX": {"type": "integer", "minimum": 0, "maximum": 1000},
@@ -39,7 +42,7 @@ internal object PhoneAgentProtocol {
                   "endY": {"type": "integer", "minimum": 0, "maximum": 1000},
                   "durationMs": {"type": "integer", "minimum": 0, "maximum": 10000}
                 },
-                "required": ["action"]
+                "required": ["action", "message"]
               }
             }
           },
@@ -61,6 +64,40 @@ internal object PhoneAgentProtocol {
         ]
     """.trimIndent()
 
+    private val faraToolsJson: String = """
+        [
+          {
+            "type": "function",
+            "function": {
+              "name": "computer_use",
+              "description": "Execute one Android GUI action. Coordinates use a normalized 0-1000 space.",
+              "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": ["key", "type", "left_click", "right_click", "double_click", "triple_click", "scroll", "hscroll", "history_back", "pause_and_memorize_fact", "ask_user_question", "wait", "terminate"]
+                  },
+                  "keys": {"type": "array", "items": {"type": "string"}},
+                  "text": {"type": "string"},
+                  "coordinate": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+                  "pixels": {"type": "integer"},
+                  "fact": {"type": "string"},
+                  "question": {"type": "string"},
+                  "time": {"type": "integer", "minimum": 0, "maximum": 10},
+                  "answer": {"type": "string"}
+                },
+                "required": ["action"]
+              }
+            }
+          }
+        ]
+    """.trimIndent()
+
+    fun toolsJsonForModel(model: String): String =
+        if (model.contains("fara", ignoreCase = true)) faraToolsJson else toolsJson
+
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
@@ -76,8 +113,8 @@ internal object PhoneAgentProtocol {
     fun parse(response: String): PhoneAgentDecision {
         parseJsonDecision(response)?.let { return it }
 
-        val finish = extractCall(response, "finish")
-        val action = extractCall(response, "do")
+        val finish = latestCall(response, FINISH_TOOL_NAMES)
+        val action = latestCall(response, ACTION_TOOL_NAMES)
         if (finish != null && (action == null || finish.first > action.first)) {
             val args = parseArguments(finish.second)
             return PhoneAgentDecision.Finish(
@@ -90,6 +127,10 @@ internal object PhoneAgentProtocol {
             )
         }
 
+        parseJsonObject(action.second)?.let { arguments ->
+            return decisionFromJson(arguments, requireAction = true)
+                ?: PhoneAgentDecision.Invalid("phone_action 的 arguments 缺少 action")
+        }
         val args = parseArguments(action.second)
         val actionName = args["action"]?.trim().orEmpty()
         if (actionName.isBlank()) {
@@ -183,13 +224,14 @@ internal object PhoneAgentProtocol {
         }
 
         val state = root.stringValue("type", "status", "kind").trim().lowercase()
-        val rawAction = root.stringValue("action", "command").trim()
+        val rawAction = root.stringValue("action", "command", "动作", "操作").trim()
         if (
             rawAction.equals("finish", ignoreCase = true) ||
+            rawAction.equals("terminate", ignoreCase = true) ||
             state in FINISHED_STATES
         ) {
             return PhoneAgentDecision.Finish(
-                root.valueText("message", "result", "summary")
+                root.valueText("message", "result", "summary", "answer")
                     .ifBlank { "任务已完成" }
             )
         }
@@ -201,25 +243,58 @@ internal object PhoneAgentProtocol {
             }
         }
 
-        val point = root.coordinates("element", "point", "coordinates")
-        val start = root.coordinates("start", "from")
-        val end = root.coordinates("end", "to")
+        val point = root.coordinates(
+            "element", "point", "coordinate", "coordinates", "坐标", "位置",
+        )
+        val start = root.coordinates("start", "from", "起点", "开始")
+        val end = root.coordinates("end", "to", "终点", "结束")
+        val normalizedAction = normalizeAction(rawAction)
+        val faraScrollPixels = root.intValue("pixels")
+        val generatedSwipe = when {
+            normalizedAction != "Swipe" || faraScrollPixels == null -> null
+            rawAction.equals("hscroll", ignoreCase = true) && faraScrollPixels >= 0 ->
+                listOf(250, 500, 750, 500)
+            rawAction.equals("hscroll", ignoreCase = true) -> listOf(750, 500, 250, 500)
+            faraScrollPixels >= 0 -> listOf(500, 250, 500, 750)
+            else -> listOf(500, 750, 500, 250)
+        }
+        val faraKeys = root.stringArray("keys")
+        val actionText = when (normalizedAction) {
+            "Key" -> faraKeys.firstOrNull()?.let(::androidKeyCodeForFara)
+                ?: root.stringValue("key", "text")
+            else -> root.stringValue("text", "input", "value", "文字", "内容")
+        }
+        if (normalizedAction == "Take_over") {
+            return PhoneAgentDecision.Execute(
+                PhoneAgentCommand(
+                    action = normalizedAction,
+                    message = root.valueText("question", "message", "reason")
+                        .ifBlank { "模型需要用户补充信息" },
+                )
+            )
+        }
         return PhoneAgentDecision.Execute(
             PhoneAgentCommand(
-                action = normalizeAction(rawAction),
-                app = root.stringValue("app", "application", "packageName")
+                action = normalizedAction,
+                app = root.stringValue("app", "application", "packageName", "应用")
                     .takeIf { it.isNotBlank() },
-                text = root.stringValue("text", "input", "value")
-                    .takeIf { it.isNotBlank() },
-                message = root.stringValue("message", "reason", "note")
+                text = actionText.takeIf { it.isNotBlank() },
+                message = root.stringValue(
+                    "message", "reason", "note", "fact", "消息", "原因", "备注",
+                )
                     .takeIf { it.isNotBlank() },
                 x = point?.first ?: root.intValue("x"),
                 y = point?.second ?: root.intValue("y"),
-                startX = start?.first ?: root.intValue("startX", "start_x"),
-                startY = start?.second ?: root.intValue("startY", "start_y"),
-                endX = end?.first ?: root.intValue("endX", "end_x"),
-                endY = end?.second ?: root.intValue("endY", "end_y"),
+                startX = start?.first ?: root.intValue("startX", "start_x")
+                    ?: generatedSwipe?.get(0),
+                startY = start?.second ?: root.intValue("startY", "start_y")
+                    ?: generatedSwipe?.get(1),
+                endX = end?.first ?: root.intValue("endX", "end_x")
+                    ?: generatedSwipe?.get(2),
+                endY = end?.second ?: root.intValue("endY", "end_y")
+                    ?: generatedSwipe?.get(3),
                 durationMs = root.intValue("durationMs", "duration_ms", "duration")
+                    ?: root.intValue("time")?.times(1_000),
             )
         )
     }
@@ -228,18 +303,30 @@ internal object PhoneAgentProtocol {
         action.trim().lowercase().replace('-', '_')
     ) {
         "open", "launch" -> "Launch"
-        "click", "tap" -> "Tap"
+        "打开", "启动", "打开应用", "启动应用" -> "Launch"
+        "click", "tap", "left_click" -> "Tap"
+        "点击", "点一下", "单击" -> "Tap"
         "input", "type" -> "Type"
+        "输入", "填写", "打字" -> "Type"
         "type_name" -> "Type_Name"
-        "scroll", "swipe" -> "Swipe"
-        "back" -> "Back"
+        "scroll", "hscroll", "swipe", "left_click_drag" -> "Swipe"
+        "滑动", "滚动", "下滑", "上滑" -> "Swipe"
+        "back", "history_back" -> "Back"
+        "返回" -> "Back"
         "home" -> "Home"
-        "long press", "long_press", "long_click" -> "Long Press"
-        "double tap", "double_tap", "double_click" -> "Double Tap"
+        "桌面", "返回桌面" -> "Home"
+        "long press", "long_press", "long_click", "right_click" -> "Long Press"
+        "长按" -> "Long Press"
+        "double tap", "double_tap", "double_click", "triple_click" -> "Double Tap"
+        "双击" -> "Double Tap"
         "wait" -> "Wait"
-        "takeover", "take over", "take_over" -> "Take_over"
+        "等待" -> "Wait"
+        "takeover", "take over", "take_over", "ask_user_question" -> "Take_over"
+        "接管", "人工接管", "用户接管" -> "Take_over"
         "call_api", "call api" -> "Call_API"
-        "note" -> "Note"
+        "note", "pause_and_memorize_fact" -> "Note"
+        "记录", "备注" -> "Note"
+        "key" -> "Key"
         else -> action.trim()
     }
 
@@ -274,6 +361,11 @@ internal object PhoneAgentProtocol {
         }
         return null
     }
+
+    private fun JsonObject.stringArray(key: String): List<String> =
+        (get(key) as? JsonArray)
+            ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            .orEmpty()
 
     private fun JsonObject.coordinates(vararg keys: String): Pair<Int, Int>? {
         keys.forEach { key ->
@@ -341,6 +433,10 @@ internal object PhoneAgentProtocol {
         }
         return candidate
     }
+
+    private fun latestCall(source: String, names: Set<String>): Pair<Int, String>? =
+        names.mapNotNull { name -> extractCall(source, name) }
+            .maxByOrNull { it.first }
 
     private fun findMatchingClose(source: String, open: Int): Int {
         if (open !in source.indices) return -1
@@ -456,7 +552,22 @@ internal object PhoneAgentProtocol {
     private fun String?.toProtocolInt(): Int? =
         this?.filter { it.isDigit() || it == '-' }?.toIntOrNull()
 
-    private val ACTION_TOOL_NAMES = setOf("phone_action", "gui_action", "do")
+    private fun androidKeyCodeForFara(key: String): String = when (key.trim().lowercase()) {
+        "enter", "return" -> "KEYCODE_ENTER"
+        "escape", "esc" -> "KEYCODE_ESCAPE"
+        "backspace" -> "KEYCODE_DEL"
+        "delete" -> "KEYCODE_FORWARD_DEL"
+        "tab" -> "KEYCODE_TAB"
+        "arrowup" -> "KEYCODE_DPAD_UP"
+        "arrowdown" -> "KEYCODE_DPAD_DOWN"
+        "arrowleft" -> "KEYCODE_DPAD_LEFT"
+        "arrowright" -> "KEYCODE_DPAD_RIGHT"
+        "pagedown" -> "KEYCODE_PAGE_DOWN"
+        "pageup" -> "KEYCODE_PAGE_UP"
+        else -> key
+    }
+
+    private val ACTION_TOOL_NAMES = setOf("phone_action", "gui_action", "do", "computer_use")
     private val FINISH_TOOL_NAMES = setOf("phone_finish", "finish")
     private val FINISHED_STATES = setOf("finish", "finished", "done", "completed", "complete")
 }

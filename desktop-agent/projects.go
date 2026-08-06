@@ -276,17 +276,32 @@ func (app *DesktopAgentApp) ForgetRecentProject(path string) (PublicDesktopConfi
 }
 
 func (app *DesktopAgentApp) SearchProjectEntries(query string) ([]ProjectEntry, error) {
+	return app.BrowseProjectEntries("", query)
+}
+
+func (app *DesktopAgentApp) BrowseProjectEntries(relativeDirectory, query string) ([]ProjectEntry, error) {
 	workspace, err := newLocalWorkspace(app.store.rawConfig().ProjectPath)
 	if err != nil {
 		return nil, err
 	}
 	query = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(query, "@")))
+	relativeDirectory = strings.TrimSpace(filepath.ToSlash(relativeDirectory))
+	if relativeDirectory == "." {
+		relativeDirectory = ""
+	}
+	base, err := workspace.resolveExisting(relativeDirectory, true)
+	if err != nil {
+		return nil, err
+	}
+	if info, statErr := os.Stat(base); statErr != nil || !info.IsDir() {
+		return nil, errors.New("项目浏览路径不是文件夹")
+	}
 	result := make([]ProjectEntry, 0, 64)
-	err = filepath.WalkDir(workspace.root, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(base, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
-		if path == workspace.root {
+		if path == base {
 			return nil
 		}
 		if entry.IsDir() && generatedDirectoryNames[strings.ToLower(entry.Name())] {
@@ -297,11 +312,18 @@ func (app *DesktopAgentApp) SearchProjectEntries(query string) ([]ProjectEntry, 
 			return nil
 		}
 		relative = filepath.ToSlash(relative)
-		if query == "" && strings.Contains(relative, "/") {
-			if entry.IsDir() {
-				return filepath.SkipDir
+		if query == "" {
+			parentRelative := filepath.ToSlash(filepath.Dir(relative))
+			wantedParent := relativeDirectory
+			if wantedParent == "" {
+				wantedParent = "."
 			}
-			return nil
+			if parentRelative != wantedParent {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
 		}
 		if query != "" && !strings.Contains(strings.ToLower(relative), query) {
 			return nil

@@ -2,6 +2,7 @@ package com.murong.agent.core.tool
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.Log
 import com.murong.agent.common.shell.KeepShellPublic
 import com.murong.agent.core.config.GuiInferenceMode
 import com.murong.agent.core.config.ProviderConfig
@@ -13,6 +14,7 @@ import com.murong.agent.core.provider.OpenAIProvider
 import com.murong.agent.core.provider.ProviderRegistry
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -26,6 +28,10 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
+private val FOREGROUND_ACTIVITY_COMPONENT = Regex(
+    "([A-Za-z0-9._]+)/([A-Za-z0-9._]+)",
+)
+
 /**
  * Unified Android implementation of the cross-platform `gui` tool.
  *
@@ -34,6 +40,8 @@ import kotlinx.serialization.json.put
  */
 class GuiAutomationTool(
     private val progressReporter: (String) -> Unit = {},
+    private val isolatedDisplaySession: PhoneAgentIsolatedDisplaySession? = null,
+    private val retainIsolatedDisplayOnCompletion: Boolean = false,
     private val configProvider: () -> ProviderConfig,
 ) : Tool {
     override val name: String = "gui"
@@ -185,7 +193,7 @@ class GuiAutomationTool(
     override suspend fun execute(args: String): String = executeWithResult(args).output
 
     override suspend fun executeWithResult(args: String): ToolExecutionResult {
-        val response = runCatching {
+        val response = try {
             val obj = json.parseToJsonElement(args) as? JsonObject
                 ?: error("工具参数必须是 JSON 对象")
             val requestedAction = obj.string("action")?.lowercase()
@@ -197,7 +205,12 @@ class GuiAutomationTool(
                 ?: "android"
             require(target == "android") { "Android 端只支持 target=android" }
             executeAction(action, obj)
-        }.getOrElse { error ->
+        } catch (cancelled: CancellationException) {
+            // Cancellation is control flow, not a model/tool failure. Converting it into a
+            // GuiToolResponse leaks messages such as "StandaloneCoroutine was cancelled" into
+            // chat history and lets the cancelled task continue far enough to persist them.
+            throw cancelled
+        } catch (error: Throwable) {
             GuiToolResponse(
                 success = false,
                 action = runCatching {
@@ -326,22 +339,283 @@ class GuiAutomationTool(
                 ?: config.phoneAgentFoodPlatforms,
             quantity = (obj.int("quantity") ?: 1).coerceIn(1, 99)
         )
+        val videoCallIntent = PhoneAgentVideoCallIntent.parse(request.task)
+        if (videoCallIntent != null) {
+            progressReporter("视频通话需要使用主屏摄像头和麦克风，已切换到主屏执行")
+        }
+        var isolatedInfo = isolatedDisplaySession
+            ?.takeIf { videoCallIntent == null }
+            ?.takeIf { it.isAvailable() }
+            ?.let { session ->
+                runCatching { session.start() }
+                    .onSuccess { info ->
+                        progressReporter(
+                            "已启动离屏操作，应用操作不会占用手机主屏",
+                        )
+                    }
+                    .onFailure { error ->
+                        progressReporter(
+                            "隔离屏幕启动失败，已回退主屏：${error.message?.take(120).orEmpty()}",
+                        )
+                    }
+                    .getOrNull()
+            }
+        var activeIsolatedSession = isolatedDisplaySession.takeIf { isolatedInfo != null }
+        val explicitMessage = PhoneAgentMessageIntent.parse(request.task)
+        val mentionedPackage = PhoneAgentApps.packageMentionedIn(request.task)
+        val searchIntent = PhoneAgentSearchIntent.parse(request.task)
+        if (
+            shouldDirectLaunchPhoneAgentTarget(
+                isolatedDisplayActive = isolatedInfo != null,
+                videoCallRequested = videoCallIntent != null,
+                mentionedPackage = mentionedPackage,
+            )
+        ) {
+            progressReporter(
+                "正在主屏直接启动${PhoneAgentApps.labelForPackage(mentionedPackage)}，再核对联系人并发起视频通话",
+            )
+            val launchResult = executeAction(
+                "launch",
+                buildJsonObject {
+                    put("packageName", mentionedPackage!!)
+                    put("prompt", request.task)
+                },
+            )
+            progressReporter(
+                if (launchResult.success) {
+                    "已在主屏启动${PhoneAgentApps.labelForPackage(mentionedPackage)}，无需先让模型识别旧界面"
+                } else {
+                    "主屏启动${PhoneAgentApps.labelForPackage(mentionedPackage)}失败，正在让模型从当前界面恢复"
+                },
+            )
+            delay(900)
+        }
+        val initiallyIsolatedSession = activeIsolatedSession
+        if (
+            initiallyIsolatedSession != null &&
+            mentionedPackage != null &&
+            explicitMessage == null &&
+            searchIntent?.verifiedNativeSearchUri() == null
+        ) {
+            if (initiallyIsolatedSession.launchPackage(mentionedPackage)) {
+                progressReporter(
+                    "已在隔离屏幕直接启动${PhoneAgentApps.labelForPackage(mentionedPackage)}，无需先识别主屏",
+                )
+                delay(900)
+                val isolatedReady = runCatching {
+                    initiallyIsolatedSession.captureScreenshot()
+                }.isSuccess
+                if (!isolatedReady) {
+                    progressReporter(
+                        "目标应用没有向隔离屏输出画面，已自动回退主屏继续执行",
+                    )
+                    runCatching { initiallyIsolatedSession.close() }
+                    activeIsolatedSession = null
+                    isolatedInfo = null
+                    executeAction(
+                        "launch",
+                        buildJsonObject {
+                            put("packageName", mentionedPackage)
+                            put("prompt", request.task)
+                        },
+                    )
+                    delay(900)
+                }
+            }
+        }
+        val shareService = AndroidGuiAccessibilityService.connectedInstance() ?: initialService
+        val searchPrepared = if (
+            searchIntent != null && searchIntent.packageName == mentionedPackage
+        ) {
+            progressReporter("正在通过应用搜索框填写“${searchIntent.query}”")
+            val nativeSearchLaunched = launchVerifiedNativeSearch(
+                searchIntent = searchIntent,
+                isolatedSession = activeIsolatedSession,
+                service = shareService,
+            )
+            if (nativeSearchLaunched) {
+                progressReporter("已通过抖音自身注册的搜索入口直达“${searchIntent.query}”结果页")
+                delay(1_200)
+                var verified = verifySearchQueryVisible(
+                    query = searchIntent.query,
+                    service = shareService,
+                    isolatedSession = activeIsolatedSession,
+                    isolatedInfo = isolatedInfo,
+                )
+                if (!verified) {
+                    // Douyin can consume a cold-start URI before its search router is ready and
+                    // then restore the previous feed. Send the same verified package-scoped URI
+                    // once more after the process has warmed; ADB follows this exact path.
+                    progressReporter("抖音冷启动尚未显示目标搜索词，正在重试自身搜索入口")
+                    delay(900)
+                    val retried = launchVerifiedNativeSearch(
+                        searchIntent = searchIntent,
+                        isolatedSession = activeIsolatedSession,
+                        service = shareService,
+                    )
+                    if (retried) {
+                        delay(1_200)
+                        verified = verifySearchQueryVisible(
+                            query = searchIntent.query,
+                            service = shareService,
+                            isolatedSession = activeIsolatedSession,
+                            isolatedInfo = isolatedInfo,
+                        )
+                    }
+                }
+                progressReporter(
+                    if (verified) {
+                        "已从结果页验证搜索词“${searchIntent.query}”（app-deep-link）"
+                    } else {
+                        "抖音搜索入口未显示目标词，已禁止确定性点赞并交给模型复核"
+                    },
+                )
+                verified
+            } else {
+                var textPrepared = shareService?.prepareSearchQuery(
+                    searchIntent.query,
+                    isolatedInfo?.displayId,
+                ) == true
+                var preparationSource = "accessibility"
+                if (!textPrepared && activeIsolatedSession != null && isolatedInfo != null) {
+                    val screenshot = runCatching { activeIsolatedSession.captureScreenshot() }.getOrNull()
+                    val searchEntry = screenshot
+                        ?.let { OnDeviceScreenOcr.recognize(it) }
+                        ?.likelySearchEntry(
+                            allowGenericTopBar = searchIntent.packageName != PhoneAgentApps.DOUYIN_PACKAGE,
+                        )
+                    if (searchEntry != null) {
+                        progressReporter("当前应用未提供语义控件，已切换屏幕文字识别来定位搜索入口")
+                        val tapped = activeIsolatedSession.tap(
+                            (searchEntry.centerX.toLong() * isolatedInfo.width / 1000L).toInt(),
+                            (searchEntry.centerY.toLong() * isolatedInfo.height / 1000L).toInt(),
+                        )
+                        if (tapped) {
+                            delay(650)
+                            textPrepared = activeIsolatedSession.typeText(searchIntent.query)
+                            preparationSource = "screen-ocr"
+                        }
+                    }
+                }
+                val submitted = if (textPrepared) {
+                    (shareService?.submitFocusedSearch(isolatedInfo?.displayId) == true) ||
+                        activeIsolatedSession?.key("KEYCODE_ENTER") == true
+                } else {
+                    progressReporter("语义控件和屏幕文字暂未定位到搜索入口，正在使用截图视觉模型")
+                    false
+                }
+                if (submitted) {
+                    val verified = verifySearchQueryVisible(
+                        query = searchIntent.query,
+                        service = shareService,
+                        isolatedSession = activeIsolatedSession,
+                        isolatedInfo = isolatedInfo,
+                    )
+                    if (verified) {
+                        progressReporter(
+                            "已提交搜索“${searchIntent.query}”并从界面验证（$preparationSource）",
+                        )
+                    } else {
+                        progressReporter("搜索已提交但界面尚未显示目标词，正在交给模型复核")
+                    }
+                    verified
+                } else {
+                    if (textPrepared) {
+                        progressReporter("搜索词已填写但提交动作失败，正在交给模型继续处理")
+                    }
+                    false
+                }
+            }
+        } else {
+            false
+        }
+        val messagePreparedByShare = explicitMessage != null && mentionedPackage != null && (
+            if (activeIsolatedSession != null) {
+                activeIsolatedSession.launchShareText(mentionedPackage, explicitMessage.body)
+            } else {
+                shareService?.launchShareText(mentionedPackage, explicitMessage.body) == true
+            }
+        )
+        if (messagePreparedByShare) {
+            progressReporter("已通过系统分享能力预填消息，正在选择收件人")
+            delay(1_000)
+        }
         val controller = PhoneAgentController()
-        val result = controller.run(
+        val result = try {
+            if (searchIntent?.searchOnly == true && searchPrepared) {
+                PhoneAgentRunResult(
+                    success = true,
+                    status = "completed",
+                    message = "已在${PhoneAgentApps.labelForPackage(searchIntent.packageName)}搜索${searchIntent.query}",
+                    stepsExecuted = 0,
+                    currentApplication = searchIntent.packageName,
+                    trace = listOf(
+                        PhoneAgentStepRecord(
+                            step = 0,
+                            application = searchIntent.packageName,
+                            action = "structured_search",
+                            success = true,
+                            detail = "已通过语义树或屏幕文字定位搜索框，并填写、提交、验证搜索词",
+                        ),
+                    ),
+                )
+            } else controller.run(
             request = request,
             config = config,
             onProgress = progressReporter,
+            messagePreparedByShare = messagePreparedByShare,
+            searchContextVerified = searchIntent == null || searchPrepared,
             device = object : PhoneAgentDevice {
                 override suspend fun observe(): PhoneAgentScreen {
                     val service = AndroidGuiAccessibilityService.connectedInstance() ?: initialService
-                    val rawScreenshot = captureScreenshot(service, buildJsonObject { })
+                    val rawScreenshot = activeIsolatedSession?.captureScreenshot()
+                        ?: captureScreenshot(service, buildJsonObject { })
                     val screenshot = optimizePhoneAgentScreenshot(rawScreenshot)
-                    val application = service?.observe(maxNodes = 1, includeText = false)?.application
+                    val isolatedPackage = activeIsolatedSession?.let { session ->
+                        runCatching { session.currentPackageName() }.getOrNull()
+                    }
+                    val rawSemanticObservation = service?.observe(
+                        maxNodes = 90,
+                        includeText = true,
+                        displayId = isolatedInfo?.displayId,
+                    )
+                    val semanticObservation = selectPhoneAgentSemanticObservation(
+                        isolatedDisplayActive = isolatedInfo != null,
+                        semanticObservation = rawSemanticObservation,
+                        isolatedPackage = isolatedPackage,
+                    )
+                    val textElements = OnDeviceScreenOcr.recognize(rawScreenshot)
+                    val application = resolvePhoneAgentApplication(
+                        isolatedDisplayActive = isolatedInfo != null,
+                        semanticObservation = semanticObservation,
+                        isolatedPackage = isolatedPackage,
+                        latestPhysicalPackage = service?.latestObservedWindowPackage(),
+                    )
+                    val foregroundActivityClass = if (isolatedInfo == null) {
+                        readForegroundActivityClass(application)
+                    } else {
+                        null
+                    }
                     return PhoneAgentScreen(
                         screenshot = screenshot,
                         application = application,
-                        displayWidth = rawScreenshot.width,
-                        displayHeight = rawScreenshot.height
+                        windowClassName = foregroundActivityClass
+                            ?: semanticObservation
+                                ?.takeIf { it.success }
+                                ?.windowTitle
+                            ?: service
+                                ?.latestObservedWindowClassName(application)
+                                ?.takeIf { isolatedInfo == null },
+                        semanticSummary = listOf(
+                            semanticObservation?.toPhoneAgentSemanticSummary(
+                                displayWidth = isolatedInfo?.width ?: rawScreenshot.width,
+                                displayHeight = isolatedInfo?.height ?: rawScreenshot.height,
+                            ).orEmpty(),
+                            textElements.toPhoneAgentOcrSummary(),
+                        ).filter(String::isNotBlank).joinToString("\n"),
+                        displayWidth = isolatedInfo?.width ?: rawScreenshot.width,
+                        displayHeight = isolatedInfo?.height ?: rawScreenshot.height,
+                        textElements = textElements,
                     )
                 }
 
@@ -350,19 +624,61 @@ class GuiAutomationTool(
                     screen: PhoneAgentScreen
                 ): PhoneAgentDeviceResult {
                     val service = AndroidGuiAccessibilityService.connectedInstance() ?: initialService
-                    val actionResponse = when (command.action.lowercase()) {
-                        "launch" -> executeAction(
+                    val normalizedAction = command.action.lowercase()
+                    val overlaySensitiveAction = normalizedAction in setOf(
+                        "tap", "long press", "double tap", "type", "type_name", "swipe",
+                    )
+                    val hiddenOverlay = if (
+                        activeIsolatedSession == null && overlaySensitiveAction
+                    ) {
+                        service?.hideTaskOverlayForAutomation()
+                    } else {
+                        null
+                    }
+                    val actionResponse = try {
+                        when (normalizedAction) {
+                        "launch" -> if (activeIsolatedSession != null) {
+                            actionResult(
+                                "launch",
+                                activeIsolatedSession.launchPackage(
+                                    PhoneAgentApps.packageFor(command.app.orEmpty()),
+                                ),
+                                "isolated-display",
+                            )
+                        } else executeAction(
                             "launch",
                             buildJsonObject {
                                 put("packageName", PhoneAgentApps.packageFor(command.app.orEmpty()))
                                 put("prompt", command.app.orEmpty())
                             }
                         )
-                        "tap" -> executeAction(
-                            "tap",
-                            pointArgs(command.x, command.y, screen)
-                        )
-                        "long press" -> executeAction(
+                        "tap" -> if (activeIsolatedSession != null) {
+                            val x = scalePhoneCoordinate(command.x, screen.displayWidth, "x")
+                            val y = scalePhoneCoordinate(command.y, screen.displayHeight, "y")
+                            actionResult(
+                                "tap",
+                                activeIsolatedSession.tap(x, y),
+                                "isolated-display",
+                            )
+                        } else if (command.preferRoot && KeepShellPublic.checkRoot()) {
+                            val x = scalePhoneCoordinate(command.x, screen.displayWidth, "x")
+                            val y = scalePhoneCoordinate(command.y, screen.displayHeight, "y")
+                            val (success, detail) = executeShellUidTap(x, y)
+                            actionResult("tap", success, "root").copy(message = detail)
+                        } else {
+                            executeAction(
+                                "tap",
+                                pointArgs(command.x, command.y, screen)
+                            )
+                        }
+                        "long press" -> if (activeIsolatedSession != null) {
+                            val x = scalePhoneCoordinate(command.x, screen.displayWidth, "x")
+                            val y = scalePhoneCoordinate(command.y, screen.displayHeight, "y")
+                            val success = activeIsolatedSession.swipe(
+                                x, y, x, y, command.durationMs ?: 800,
+                            )
+                            actionResult("long_click", success, "isolated-display")
+                        } else executeAction(
                             "tap",
                             pointArgs(
                                 command.x,
@@ -371,7 +687,17 @@ class GuiAutomationTool(
                                 durationMs = command.durationMs ?: 800
                             )
                         )
-                        "double tap" -> {
+                        "double tap" -> if (activeIsolatedSession != null) {
+                            val x = scalePhoneCoordinate(command.x, screen.displayWidth, "x")
+                            val y = scalePhoneCoordinate(command.y, screen.displayHeight, "y")
+                            val first = activeIsolatedSession.tap(x, y)
+                            if (first) delay(90)
+                            actionResult(
+                                "double_tap",
+                                first && activeIsolatedSession.tap(x, y),
+                                "isolated-display",
+                            )
+                        } else {
                             val args = pointArgs(command.x, command.y, screen)
                             val first = executeAction("tap", args)
                             if (first.success) {
@@ -383,26 +709,138 @@ class GuiAutomationTool(
                         }
                         "type", "type_name" -> {
                             val text = command.text ?: error("${command.action} 缺少 text")
-                            val accessibilitySuccess = service?.setFocusedText(text) == true
-                            val success = accessibilitySuccess || (
-                                KeepShellPublic.checkRoot() && executeRootAction(
-                                    "input",
-                                    buildJsonObject { put("text", text) }
-                                ).first
-                                )
+                            val accessibilitySuccess = service?.setFocusedText(
+                                text,
+                                isolatedInfo?.displayId,
+                            ) == true
+                            var usedContextMenuPaste = false
+                            var usedAutomationIme = false
+                            val isolatedInputSuccess = if (
+                                !accessibilitySuccess && activeIsolatedSession != null
+                            ) {
+                                activeIsolatedSession.typeText(text)
+                            } else {
+                                false
+                            }
+                            val automationImeSuccess = if (
+                                !accessibilitySuccess &&
+                                !isolatedInputSuccess &&
+                                activeIsolatedSession == null
+                            ) {
+                                inputTextThroughAutomationIme(
+                                    text = text,
+                                    expectedPackage = screen.application,
+                                ).also {
+                                    usedAutomationIme = it
+                                }
+                            } else {
+                                false
+                            }
+                            val contextPasteSuccess = if (
+                                !accessibilitySuccess &&
+                                !isolatedInputSuccess &&
+                                !automationImeSuccess &&
+                                activeIsolatedSession == null &&
+                                service != null &&
+                                command.x != null &&
+                                command.y != null
+                            ) {
+                                val clipboardSnapshot = service.stageClipboardText(text)
+                                if (clipboardSnapshot != null) {
+                                    try {
+                                        delay(80)
+                                        val x = scalePhoneCoordinate(
+                                            command.x,
+                                            screen.displayWidth,
+                                            "x",
+                                        )
+                                        val y = scalePhoneCoordinate(
+                                            command.y,
+                                            screen.displayHeight,
+                                            "y",
+                                        )
+                                        val menuPaste = service.pasteFromContextMenuAt(x, y)
+                                        usedContextMenuPaste = menuPaste
+                                        if (menuPaste) {
+                                            delay(180)
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    } finally {
+                                        service.restoreClipboard(clipboardSnapshot)
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                            val success = accessibilitySuccess || isolatedInputSuccess ||
+                                contextPasteSuccess || automationImeSuccess
+                            Log.i(
+                                PHONE_INPUT_TAG,
+                                "package=${screen.application.orEmpty()} success=$success " +
+                                    "accessibility=$accessibilitySuccess isolated=$isolatedInputSuccess " +
+                                    "temporaryIme=$automationImeSuccess contextPaste=$contextPasteSuccess",
+                            )
                             actionResult(
                                 action = "input",
                                 success = success,
-                                source = if (accessibilitySuccess) "accessibility" else "root"
+                                source = when {
+                                    accessibilitySuccess -> "accessibility"
+                                    isolatedInputSuccess -> "isolated-display"
+                                    usedContextMenuPaste -> "accessibility-context-paste"
+                                    usedAutomationIme -> "root-temporary-ime"
+                                    else -> "input-unavailable"
+                                }
                             )
                         }
-                        "swipe" -> executeAction(
+                        "swipe" -> if (activeIsolatedSession != null) {
+                            val x1 = scalePhoneCoordinate(command.startX, screen.displayWidth, "startX")
+                            val y1 = scalePhoneCoordinate(command.startY, screen.displayHeight, "startY")
+                            val x2 = scalePhoneCoordinate(command.endX, screen.displayWidth, "endX")
+                            val y2 = scalePhoneCoordinate(command.endY, screen.displayHeight, "endY")
+                            actionResult(
+                                "swipe",
+                                activeIsolatedSession.swipe(
+                                    x1, y1, x2, y2, (command.durationMs ?: 350).coerceIn(50, 5_000),
+                                ),
+                                "isolated-display",
+                            )
+                        } else executeAction(
                             "swipe",
                             swipeArgs(command, screen)
                         )
-                        "back", "home" -> executeAction(
+                        "back", "home" -> if (activeIsolatedSession != null) {
+                            actionResult(
+                                command.action.lowercase(),
+                                activeIsolatedSession.key(
+                                    if (command.action.equals("back", true)) {
+                                        "KEYCODE_BACK"
+                                    } else {
+                                        "KEYCODE_HOME"
+                                    },
+                                ),
+                                "isolated-display",
+                            )
+                        } else executeAction(
                             "key",
                             buildJsonObject { put("key", command.action.lowercase()) }
+                        )
+                        "key" -> if (activeIsolatedSession != null) {
+                            actionResult(
+                                "key",
+                                activeIsolatedSession.key(
+                                    command.text ?: error("Key 动作缺少按键"),
+                                ),
+                                "isolated-display",
+                            )
+                        } else executeAction(
+                            "key",
+                            buildJsonObject {
+                                put("key", command.text ?: error("Key 动作缺少按键"))
+                            },
                         )
                         "wait" -> {
                             delay((command.durationMs ?: 800).coerceIn(200, 3_000).toLong())
@@ -418,6 +856,9 @@ class GuiAutomationTool(
                             action = command.action,
                             error = "不支持的 Phone Agent 动作"
                         )
+                        }
+                    } finally {
+                        service?.restoreTaskOverlayAfterAutomation(hiddenOverlay)
                     }
                     if (actionResponse.success && !command.action.equals("Wait", ignoreCase = true)) {
                         delay(PHONE_ACTION_SETTLE_MS)
@@ -429,6 +870,11 @@ class GuiAutomationTool(
                 }
             }
         )
+        } finally {
+            if (!retainIsolatedDisplayOnCompletion) {
+                runCatching { activeIsolatedSession?.close() }
+            }
+        }
         val accepted = result.success || result.requiresUserAction
         return GuiToolResponse(
             success = accepted,
@@ -790,6 +1236,70 @@ class GuiAutomationTool(
         return response
     }
 
+    private suspend fun launchVerifiedNativeSearch(
+        searchIntent: PhoneAgentSearchIntent,
+        isolatedSession: PhoneAgentIsolatedDisplaySession?,
+        service: AndroidGuiAccessibilityService?,
+    ): Boolean {
+        val uri = searchIntent.verifiedNativeSearchUri() ?: return false
+        return when {
+            isolatedSession != null -> isolatedSession.launchViewUri(searchIntent.packageName, uri)
+            service != null -> service.launchViewUri(searchIntent.packageName, uri)
+            KeepShellPublic.checkRoot() -> launchViewUriWithRoot(searchIntent.packageName, uri)
+            else -> false
+        }
+    }
+
+    private suspend fun launchViewUriWithRoot(packageName: String, uri: String): Boolean =
+        withContext(Dispatchers.IO) {
+            if (!packageName.matches(Regex("[A-Za-z0-9._]+")) ||
+                !uri.matches(Regex("[A-Za-z0-9:/?&=._%+~-]+"))
+            ) {
+                return@withContext false
+            }
+            val output = KeepShellPublic.doCmdSync(
+                "su 2000 -c 'am start -W -a android.intent.action.VIEW " +
+                    "-d \"$uri\" -p $packageName'",
+            ).trim()
+            !output.startsWith("Error:", ignoreCase = true) &&
+                !output.contains("exception", ignoreCase = true) &&
+                !output.contains("unable to resolve", ignoreCase = true) &&
+                !output.contains("denied", ignoreCase = true)
+        }
+
+    private suspend fun verifySearchQueryVisible(
+        query: String,
+        service: AndroidGuiAccessibilityService?,
+        isolatedSession: PhoneAgentIsolatedDisplaySession?,
+        isolatedInfo: PhoneAgentIsolatedDisplayInfo?,
+    ): Boolean {
+        val verificationDeadline = android.os.SystemClock.uptimeMillis() + 4_000L
+        var verified = false
+        while (!verified && android.os.SystemClock.uptimeMillis() < verificationDeadline) {
+            delay(500)
+            val semanticVerified = service?.observe(
+                maxNodes = 100,
+                includeText = true,
+                displayId = isolatedInfo?.displayId,
+            )?.nodes.orEmpty().any { node ->
+                listOf(node.text, node.contentDescription)
+                    .filterNotNull()
+                    .any { value -> value.contains(query, ignoreCase = true) }
+            }
+            val ocrVerified = if (!semanticVerified && isolatedSession != null) {
+                runCatching { isolatedSession.captureScreenshot() }
+                    .getOrNull()
+                    ?.let { OnDeviceScreenOcr.recognize(it) }
+                    .orEmpty()
+                    .any { element -> element.text.contains(query, ignoreCase = true) }
+            } else {
+                false
+            }
+            verified = semanticVerified || ocrVerified
+        }
+        return verified
+    }
+
     private suspend fun executeRootAction(
         action: String,
         obj: JsonObject
@@ -878,6 +1388,98 @@ class GuiAutomationTool(
         val output = AndroidTool().execute(mapped.toString())
         return (!output.startsWith("Error:", ignoreCase = true)) to output
     }
+
+    private suspend fun executeShellUidTap(x: Int, y: Int): Pair<Boolean, String> =
+        withContext(Dispatchers.IO) {
+            val output = KeepShellPublic.doCmdSync(
+                "su 2000 -c 'input tap $x $y'",
+            ).trim()
+            val failed = output.startsWith("Error:", ignoreCase = true) ||
+                output.contains("not found", ignoreCase = true) ||
+                output.contains("denied", ignoreCase = true) ||
+                output.contains("exception", ignoreCase = true)
+            (!failed) to if (failed) output else "Shell UID 点击命令已执行"
+        }
+
+    private suspend fun readForegroundActivityClass(expectedPackage: String?): String? =
+        withContext(Dispatchers.IO) {
+            if (expectedPackage.isNullOrBlank() || !KeepShellPublic.checkRoot()) {
+                return@withContext null
+            }
+            val output = runCatching {
+                KeepShellPublic.doCmdSync(
+                    "dumpsys activity activities | grep -m 1 topResumedActivity",
+                )
+            }.getOrNull().orEmpty()
+            parseForegroundActivityClass(output, expectedPackage)
+        }
+
+    private suspend fun inputTextThroughAutomationIme(
+        text: String,
+        expectedPackage: String?,
+    ): Boolean {
+        if (
+            text.isEmpty() ||
+            expectedPackage.isNullOrBlank()
+        ) {
+            return false
+        }
+        val previousIme = withContext(Dispatchers.IO) {
+            KeepShellPublic.doCmdSync("settings get secure default_input_method").trim()
+        }
+        if (!INPUT_METHOD_COMPONENT.matches(previousIme)) return false
+        val enabledBefore = withContext(Dispatchers.IO) {
+            KeepShellPublic.doCmdSync("ime list -s")
+                .lineSequence()
+                .map(String::trim)
+                .any { it == AUTOMATION_INPUT_METHOD_COMPONENT }
+        }
+        return try {
+            val selected = withContext(Dispatchers.IO) {
+                val enableOutput = KeepShellPublic.doCmdSync(
+                    "ime enable $AUTOMATION_INPUT_METHOD_COMPONENT",
+                )
+                val selectOutput = KeepShellPublic.doCmdSync(
+                    "ime set $AUTOMATION_INPUT_METHOD_COMPONENT",
+                )
+                shellCommandAccepted(enableOutput) && shellCommandAccepted(selectOutput)
+            }
+            if (!selected) {
+                false
+            } else {
+                var committed = false
+                for (attempt in 0 until AUTOMATION_IME_READY_ATTEMPTS) {
+                    delay(AUTOMATION_IME_READY_INTERVAL_MILLIS)
+                    if (
+                        MurongAutomationInputMethodService.commitExactText(
+                            text,
+                            expectedPackage,
+                        )
+                    ) {
+                        committed = true
+                        break
+                    }
+                }
+                if (committed) delay(AUTOMATION_IME_COMMIT_SETTLE_MILLIS)
+                committed
+            }
+        } finally {
+            withContext(Dispatchers.IO) {
+                KeepShellPublic.doCmdSync("ime set $previousIme")
+                if (!enabledBefore) {
+                    KeepShellPublic.doCmdSync(
+                        "ime disable $AUTOMATION_INPUT_METHOD_COMPONENT",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun shellCommandAccepted(output: String): Boolean =
+        !output.contains("error", ignoreCase = true) &&
+            !output.contains("exception", ignoreCase = true) &&
+            !output.contains("denied", ignoreCase = true) &&
+            !output.contains("unknown", ignoreCase = true)
 
     private suspend fun launchApplication(
         service: AndroidGuiAccessibilityService?,
@@ -1073,7 +1675,14 @@ class GuiAutomationTool(
         private const val PHONE_SCREENSHOT_JPEG_QUALITY = 88
         private const val FOREGROUND_VERIFY_ATTEMPTS = 8
         private const val FOREGROUND_VERIFY_INTERVAL_MILLIS = 250L
+        private const val AUTOMATION_INPUT_METHOD_COMPONENT =
+            "com.murong.agent/.core.tool.MurongAutomationInputMethodService"
+        private const val AUTOMATION_IME_READY_ATTEMPTS = 20
+        private const val AUTOMATION_IME_READY_INTERVAL_MILLIS = 100L
+        private const val AUTOMATION_IME_COMMIT_SETTLE_MILLIS = 300L
+        private const val PHONE_INPUT_TAG = "MurongPhoneInput"
         private const val DOUYIN_PACKAGE = "com.ss.android.ugc.aweme"
+        private val INPUT_METHOD_COMPONENT = Regex("[A-Za-z0-9._]+/[A-Za-z0-9._]+")
         private val json = Json {
             ignoreUnknownKeys = true
             encodeDefaults = false
@@ -1083,3 +1692,66 @@ class GuiAutomationTool(
 
 internal fun foregroundPackageMatches(observed: String?, requested: String): Boolean =
     observed?.trim() == requested.trim().takeIf(String::isNotBlank)
+
+internal fun resolvePhoneAgentApplication(
+    isolatedDisplayActive: Boolean,
+    semanticObservation: GuiObservation?,
+    isolatedPackage: String?,
+    latestPhysicalPackage: String?,
+): String? {
+    val managedDisplayPackage = isolatedPackage?.trim()?.takeIf(String::isNotBlank)
+    if (isolatedDisplayActive && managedDisplayPackage != null) {
+        return managedDisplayPackage
+    }
+    val semanticPackage = semanticObservation
+        ?.takeIf { it.success }
+        ?.application
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+    if (semanticPackage != null) return semanticPackage
+    return if (isolatedDisplayActive) {
+        null
+    } else {
+        latestPhysicalPackage?.trim()?.takeIf(String::isNotBlank)
+    }
+}
+
+internal fun selectPhoneAgentSemanticObservation(
+    isolatedDisplayActive: Boolean,
+    semanticObservation: GuiObservation?,
+    isolatedPackage: String?,
+): GuiObservation? {
+    val observation = semanticObservation?.takeIf { it.success } ?: return null
+    if (!isolatedDisplayActive) return observation
+
+    val expectedPackage = isolatedPackage?.trim()?.takeIf(String::isNotBlank)
+    val observedPackage = observation.application?.trim()?.takeIf(String::isNotBlank)
+    if (expectedPackage != null && observedPackage != expectedPackage) return null
+
+    // A stale active-window root can occasionally be reported as a successful one-node tree.
+    // It has no visible screen bounds and must not be supplied to the planner as real semantics.
+    return observation.takeIf { candidate ->
+        candidate.nodes.any { node ->
+            node.visible && node.bounds.width > 0 && node.bounds.height > 0
+        }
+    }
+}
+
+internal fun shouldDirectLaunchPhoneAgentTarget(
+    isolatedDisplayActive: Boolean,
+    videoCallRequested: Boolean,
+    mentionedPackage: String?,
+): Boolean = !isolatedDisplayActive &&
+    videoCallRequested &&
+    !mentionedPackage.isNullOrBlank()
+
+internal fun parseForegroundActivityClass(
+    activityManagerOutput: String,
+    expectedPackage: String,
+): String? {
+    val match = FOREGROUND_ACTIVITY_COMPONENT.find(activityManagerOutput) ?: return null
+    val packageName = match.groupValues[1]
+    if (packageName != expectedPackage) return null
+    val className = match.groupValues[2]
+    return if (className.startsWith('.')) packageName + className else className
+}

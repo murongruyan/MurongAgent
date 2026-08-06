@@ -1,6 +1,7 @@
 package com.murong.agent.ui.settings
 
 import android.Manifest
+import android.app.NotificationManager
 import android.app.role.RoleManager
 import android.content.ComponentName
 import android.content.Context
@@ -27,6 +28,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,11 +37,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.murong.agent.core.tool.AndroidGuiAccessibilityService
+import com.murong.agent.core.tool.AndroidGuiAccessibilityAccess
 import com.murong.agent.core.tool.AndroidExecutionMode
+import com.murong.agent.core.tool.RootAccessibilityEnableResult
 import com.murong.agent.ui.MurongGlassSurface
 import com.murong.agent.shizuku.ShizukuAvailability
 import com.murong.agent.shizuku.ShizukuSystemAccess
 import com.murong.agent.ui.assistant.isMurongVoiceInteractionServiceActive
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 
 /**
  * A single, transparent place for every device capability the agent can actually use.
@@ -55,11 +61,17 @@ internal fun DevicePermissionCenter(
     onCheckRoot: () -> Unit,
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var accessibilityEnabled by remember { mutableStateOf(isMurongAccessibilityEnabled(context)) }
+    var isEnablingAccessibility by remember { mutableStateOf(false) }
+    var accessibilityMessage by remember { mutableStateOf<String?>(null) }
     var overlayEnabled by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     var microphoneGranted by remember { mutableStateOf(hasPermission(context, Manifest.permission.RECORD_AUDIO)) }
     var notificationsGranted by remember {
         mutableStateOf(hasPermission(context, Manifest.permission.POST_NOTIFICATIONS))
+    }
+    var promotedNotificationsAllowed by remember {
+        mutableStateOf(canPostPromotedNotifications(context))
     }
     var allFilesGranted by remember { mutableStateOf(MurongExternalStorageAccess.hasAccess(context)) }
     var assistantRoleHeld by remember { mutableStateOf(isMurongAssistantRoleHeld(context)) }
@@ -79,6 +91,7 @@ internal fun DevicePermissionCenter(
         overlayEnabled = Settings.canDrawOverlays(context)
         microphoneGranted = hasPermission(context, Manifest.permission.RECORD_AUDIO)
         notificationsGranted = hasPermission(context, Manifest.permission.POST_NOTIFICATIONS)
+        promotedNotificationsAllowed = canPostPromotedNotifications(context)
         allFilesGranted = MurongExternalStorageAccess.hasAccess(context)
         assistantRoleHeld = isMurongAssistantRoleHeld(context)
         assistantServiceActive = isMurongVoiceInteractionServiceActive(context)
@@ -98,6 +111,29 @@ internal fun DevicePermissionCenter(
     ) { notificationsGranted = it }
 
     LaunchedEffect(Unit) { refresh() }
+
+    fun enableAccessibilityWithRoot() {
+        if (isEnablingAccessibility) return
+        isEnablingAccessibility = true
+        accessibilityMessage = null
+        coroutineScope.launch {
+            val result = try {
+                AndroidGuiAccessibilityAccess.enableWithRoot(context.applicationContext)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                RootAccessibilityEnableResult(
+                    success = false,
+                    serviceConnected = false,
+                    message = "Root 启用失败：${error.message ?: error.javaClass.simpleName}",
+                )
+            } finally {
+                isEnablingAccessibility = false
+            }
+            accessibilityMessage = result.message
+            refresh()
+        }
+    }
 
     Text(
         text = "设备权限",
@@ -149,18 +185,42 @@ internal fun DevicePermissionCenter(
         onAction = { ShizukuSystemAccess.requestPermissionOrOpen(context) }
     )
     DevicePermissionCard(
-        title = "无障碍自动化",
+        title = "无障碍自动启用",
         description = if (accessibilityEnabled) {
-            "已启用；可读取语义树并执行用户授权的界面操作"
+            "已启用；手机操作任务可读取语义树并执行界面操作"
         } else {
-            "未启用；手机操作 Agent 不能读取界面或点击"
+            if (rootStatus == true) {
+                "未启用；手机操作任务需要读屏时会通过 Root 自动启用，不会覆盖其他服务"
+            } else {
+                "未启用且 Root 不可用；请在系统详情页手动启用"
+            }
         },
         granted = accessibilityEnabled,
-        actionText = if (accessibilityEnabled) "查看设置" else "启用无障碍",
+        actionText = when {
+            accessibilityEnabled -> "查看设置"
+            rootStatus == true -> "立即用 Root 自动启用"
+            else -> "手动启用无障碍"
+        },
         onAction = {
-            settingsLauncher.launch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        }
+            if (!accessibilityEnabled && rootStatus == true) {
+                enableAccessibilityWithRoot()
+            } else {
+                settingsLauncher.launch(murongAccessibilitySettingsIntent(context))
+            }
+        },
+        busy = isEnablingAccessibility,
     )
+    accessibilityMessage?.let { message ->
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (accessibilityEnabled) {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            } else {
+                MaterialTheme.colorScheme.error
+            },
+        )
+    }
     DevicePermissionCard(
         title = "麦克风",
         description = if (microphoneGranted) {
@@ -185,6 +245,21 @@ internal fun DevicePermissionCenter(
         actionEnabled = !notificationsGranted,
         onAction = { notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
     )
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+        DevicePermissionCard(
+            title = "实时活动 / 流体云",
+            description = if (promotedNotificationsAllowed) {
+                "系统已允许提升持续通知；执行中的手机任务可显示为状态栏胶囊、实时进度或厂商实时活动"
+            } else {
+                "任务通知已符合 Android 16 实时活动格式，但还需在系统中允许 Murong 显示提升通知"
+            },
+            granted = promotedNotificationsAllowed,
+            actionText = if (promotedNotificationsAllowed) "管理实时活动" else "开启实时活动",
+            onAction = {
+                settingsLauncher.launch(promotedNotificationSettingsIntent(context))
+            },
+        )
+    }
     DevicePermissionCard(
         title = "悬浮窗",
         description = if (overlayEnabled) {
@@ -353,6 +428,22 @@ private fun DevicePermissionCard(
 private fun hasPermission(context: Context, permission: String): Boolean =
     ContextCompat.checkSelfPermission(context, permission) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
+private fun canPostPromotedNotifications(context: Context): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA) return false
+    return context.getSystemService(NotificationManager::class.java)
+        ?.canPostPromotedNotifications() == true
+}
+
+private fun promotedNotificationSettingsIntent(context: Context): Intent {
+    val promotionSettings = Intent(Settings.ACTION_APP_NOTIFICATION_PROMOTION_SETTINGS)
+        .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+    if (promotionSettings.resolveActivity(context.packageManager) != null) {
+        return promotionSettings
+    }
+    return Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+        .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+}
+
 private fun isMurongAccessibilityEnabled(context: Context): Boolean {
     val expected = ComponentName(context, AndroidGuiAccessibilityService::class.java)
     val services = Settings.Secure.getString(
@@ -362,6 +453,16 @@ private fun isMurongAccessibilityEnabled(context: Context): Boolean {
     return services.split(':')
         .mapNotNull(ComponentName::unflattenFromString)
         .any { it == expected }
+}
+
+private fun murongAccessibilitySettingsIntent(context: Context): Intent {
+    val detailsIntent = Intent(AndroidGuiAccessibilityAccess.DETAILS_SETTINGS_ACTION)
+        .putExtra(
+            Intent.EXTRA_COMPONENT_NAME,
+            AndroidGuiAccessibilityAccess.serviceComponentName(context.applicationContext),
+        )
+    return detailsIntent.takeIf { it.resolveActivity(context.packageManager) != null }
+        ?: Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
 }
 
 private fun isMurongAssistantRoleHeld(context: Context): Boolean {

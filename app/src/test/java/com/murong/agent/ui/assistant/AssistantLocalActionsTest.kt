@@ -74,4 +74,21 @@ class AssistantLocalActionsTest {
         assertEquals("7月28日 09:00", draft.displayTime)
         assertEquals(60 * 60 * 1_000L, draft.endMillis - draft.beginMillis)
     }
+
+    @Test
+    fun `timekeeping command parser distinguishes controls before start`() {
+        assertEquals(TimekeepingCommand.START, parseTimekeepingCommand("开启五分钟倒计时"))
+        assertEquals(TimekeepingCommand.PAUSE, parseTimekeepingCommand("暂停倒计时"))
+        assertEquals(TimekeepingCommand.RESUME, parseTimekeepingCommand("继续倒计时"))
+        assertEquals(TimekeepingCommand.STOP, parseTimekeepingCommand("关闭倒计时"))
+        assertEquals(TimekeepingCommand.RESET, parseTimekeepingCommand("秒表清零"))
+        assertEquals(TimekeepingCommand.STATUS, parseTimekeepingCommand("秒表走了多久"))
+    }
+
+    @Test
+    fun `stopwatch duration formatting keeps tenths`() {
+        assertEquals("00:00.0", formatStopwatchDuration(0L))
+        assertEquals("01:02.3", formatStopwatchDuration(62_345L))
+        assertEquals("1:01:01.2", formatStopwatchDuration(3_661_234L))
+    }
 }

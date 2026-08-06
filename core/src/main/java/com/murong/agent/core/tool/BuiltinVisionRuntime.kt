@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Base64
+import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
@@ -16,10 +17,12 @@ import com.murong.agent.common.shell.KeepShellPublic
 import com.murong.agent.core.provider.ChatImageAttachment
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.math.BigInteger
 import java.net.ServerSocket
 import java.security.MessageDigest
 import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -80,7 +83,9 @@ enum class BuiltinLocalCpuCorePolicy {
 
 data class BuiltinLocalCpuTopology(
     val allCoreIds: List<Int>,
-    val performanceCoreIds: List<Int>
+    val performanceCoreIds: List<Int>,
+    val exclusivePerformanceCoreIds: List<Int> =
+        performanceCoreIds.takeLast(minOf(2, performanceCoreIds.size)),
 ) {
     val logicalCoreCount: Int
         get() = allCoreIds.size.coerceAtLeast(1)
@@ -110,11 +115,33 @@ data class BuiltinLocalRuntimeSettings(
 
 internal class BuiltinLocalGenerationCancellation {
     private val cancelled = AtomicBoolean(false)
+    private val cancellationAction = AtomicReference<(() -> Unit)?>(null)
 
     val isCancelled: Boolean
         get() = cancelled.get()
 
-    fun cancel(): Boolean = cancelled.compareAndSet(false, true)
+    fun cancel(): Boolean {
+        if (!cancelled.compareAndSet(false, true)) return false
+        cancellationAction.getAndSet(null)?.invoke()
+        return true
+    }
+
+    fun invokeOnCancel(action: () -> Unit) {
+        if (cancelled.get()) {
+            action()
+            return
+        }
+        check(cancellationAction.compareAndSet(null, action)) {
+            "本地模型取消回调已注册"
+        }
+        if (cancelled.get()) {
+            cancellationAction.getAndSet(null)?.invoke()
+        }
+    }
+
+    fun clearCancellationAction() {
+        cancellationAction.set(null)
+    }
 }
 
 /**
@@ -213,6 +240,7 @@ object BuiltinVisionRuntime {
         .build()
     private val activeGeneration =
         AtomicReference<BuiltinLocalGenerationCancellation?>(null)
+    private val generationCancellationEpoch = AtomicLong(0L)
 
     fun initialize(context: Context) {
         appContext = context.applicationContext
@@ -239,8 +267,10 @@ object BuiltinVisionRuntime {
 
     fun cpuTopology(): BuiltinLocalCpuTopology = detectBuiltinLocalCpuTopology()
 
-    fun cancelActiveGeneration(): Boolean =
-        activeGeneration.get()?.cancel() == true
+    fun cancelActiveGeneration(): Boolean {
+        generationCancellationEpoch.incrementAndGet()
+        return activeGeneration.get()?.cancel() == true
+    }
 
     fun runtimeSettings(context: Context): BuiltinLocalRuntimeSettings {
         val preferences = context.applicationContext.getSharedPreferences(
@@ -363,8 +393,17 @@ object BuiltinVisionRuntime {
         descriptorOverride: BuiltinVisionModelDescriptor? = null,
         onToken: ((BuiltinVisionStreamChunk) -> Unit)? = null
     ): String {
+        val requestCancellationEpoch = generationCancellationEpoch.get()
         mutex.lock()
-        val generationContext = currentCoroutineContext()
+        val requestContext = currentCoroutineContext()
+        if (
+            requestContext[Job]?.isActive == false ||
+            requestCancellationEpoch != generationCancellationEpoch.get()
+        ) {
+            mutex.unlock()
+            throw CancellationException("本地模型请求已在排队期间取消")
+        }
+        val generationContext = requestContext
         val generationJob = generationContext[Job]
         val generationCancellation = BuiltinLocalGenerationCancellation()
         activeGeneration.set(generationCancellation)
@@ -383,9 +422,18 @@ object BuiltinVisionRuntime {
             val resolvedReasoningMode = descriptor.resolveReasoningMode(reasoningMode)
             val enableThinking = resolvedReasoningMode == "on"
             val performanceLease = if (runtimeSettings.forceMaxPerformance) {
-                BuiltinLocalPerformanceController.acquire(runtimeSettings.cpuCorePolicy)
+                BuiltinLocalPerformanceController.acquire(
+                    runtimeSettings.cpuCorePolicy,
+                    runtimeSettings.cpuThreads,
+                )
             } else {
                 null
+            }
+            generationCancellation.invokeOnCancel {
+                performanceLease?.restore()
+            }
+            if (generationCancellation.isCancelled) {
+                throw CancellationException("用户已终止本地模型推理")
             }
             val result = try {
                 when (descriptor.engine) {
@@ -461,6 +509,7 @@ object BuiltinVisionRuntime {
                 }
             } finally {
                 performanceLease?.restore()
+                generationCancellation.clearCancellationAction()
             }
             return result.trim().takeUnless { it.isBlank() }
                 ?: error("内置模型没有返回内容")
@@ -1262,21 +1311,74 @@ private val detectedBuiltinLocalCpuTopology: BuiltinLocalCpuTopology by lazy {
     } else {
         allIds.takeLast(performanceCount)
     }
+    val maximumFrequency = coreMaximumFrequencies.values.maxOrNull()
+    val exclusivePerformanceIds = maximumFrequency?.let { maximum ->
+        allIds.filter { coreMaximumFrequencies[it] == maximum }
+    }.orEmpty().takeIf { it.isNotEmpty() && it.size < allIds.size }
+        ?: allIds.takeLast(minOf(2, allIds.size))
     BuiltinLocalCpuTopology(
         allCoreIds = allIds,
-        performanceCoreIds = performanceIds
+        performanceCoreIds = performanceIds,
+        exclusivePerformanceCoreIds = exclusivePerformanceIds,
     )
 }
 
 private fun detectBuiltinLocalCpuTopology(): BuiltinLocalCpuTopology =
     detectedBuiltinLocalCpuTopology
 
+internal fun builtinLocalWorkerAffinityPlan(
+    topology: BuiltinLocalCpuTopology,
+    cpuCorePolicy: BuiltinLocalCpuCorePolicy,
+    cpuThreads: Int,
+): List<Pair<String, String>> {
+    val eligibleCoreIds = when (cpuCorePolicy) {
+        BuiltinLocalCpuCorePolicy.PERFORMANCE_CLUSTER -> topology.performanceCoreIds
+        BuiltinLocalCpuCorePolicy.ALL_CORES -> topology.allCoreIds
+    }.distinct().sorted()
+    if (eligibleCoreIds.isEmpty()) return emptyList()
+    val threadCount = cpuThreads.coerceIn(1, eligibleCoreIds.size)
+    val exclusiveCoreIds = topology.exclusivePerformanceCoreIds
+        .filter { it in eligibleCoreIds }
+        .distinct()
+        .sortedDescending()
+    val sharedCoreIds = eligibleCoreIds.filterNot { it in exclusiveCoreIds }
+    val plan = exclusiveCoreIds.take(threadCount).map { coreId ->
+        coreId.toString() to BigInteger.ONE.shiftLeft(coreId).toString(16)
+    }.toMutableList()
+    if (plan.size < threadCount && sharedCoreIds.isNotEmpty()) {
+        val sharedLabel = if (sharedCoreIds.zipWithNext().all { (left, right) -> right == left + 1 }) {
+            "${sharedCoreIds.first()}-${sharedCoreIds.last()}"
+        } else {
+            sharedCoreIds.joinToString(separator = ",")
+        }
+        val sharedMask = sharedCoreIds
+            .fold(BigInteger.ZERO) { mask, coreId -> mask.setBit(coreId) }
+            .toString(16)
+        repeat(threadCount - plan.size) {
+            plan += sharedLabel to sharedMask
+        }
+    }
+    return plan
+}
+
 private object BuiltinLocalPerformanceController {
     private val allowedPath = Regex(
-        "^/sys/(devices/system/cpu/cpufreq/policy\\d+|class/(kgsl/kgsl-3d0/devfreq|devfreq/[^/]+))/(scaling_min_freq|min_freq)$"
+        "^(?:" +
+            "/sys/devices/system/cpu/cpufreq/policy\\d+/scaling_(?:min|max)_freq|" +
+            "/sys/kernel/msm_performance/parameters/cpu_max_freq|" +
+            "/proc/sys/walt/(?:sched_high_perf_cluster_freq_cap|sched_max_freq_partial_halt)|" +
+            "/proc/game_opt/disable_cpufreq_limit|" +
+            "/sys/module/cpufreq_bouncing/parameters/enable|" +
+            "/sys/class/(?:kgsl/kgsl-3d0/devfreq|devfreq/[^/]+)/(?:min|max)_freq|" +
+            "/sys/(?:devices/platform/(?:soc/)?[^/]+kgsl-3d0/kgsl/|class/kgsl/)" +
+            "kgsl-3d0/(?:min_clock_mhz|max_clock_mhz|min_pwrlevel|max_pwrlevel)" +
+            ")$"
     )
 
-    fun acquire(cpuCorePolicy: BuiltinLocalCpuCorePolicy): PerformanceLease? {
+    fun acquire(
+        cpuCorePolicy: BuiltinLocalCpuCorePolicy,
+        cpuThreads: Int,
+    ): PerformanceLease? {
         if (!KeepShellPublic.checkRoot()) return null
         val topology = detectBuiltinLocalCpuTopology()
         val selectedCoreIds = when (cpuCorePolicy) {
@@ -1284,34 +1386,254 @@ private object BuiltinLocalPerformanceController {
                 topology.performanceCoreIds
             BuiltinLocalCpuCorePolicy.ALL_CORES ->
                 topology.allCoreIds
-        }.joinToString(separator = " ")
+        }
+        val selectedCoreIdList = selectedCoreIds.joinToString(separator = " ")
+        val workerAffinityPlan = builtinLocalWorkerAffinityPlan(
+            topology = topology,
+            cpuCorePolicy = cpuCorePolicy,
+            cpuThreads = cpuThreads,
+        )
         val output = runCatching {
             KeepShellPublic.doCmdSync(
                 """
-                selected_cores=' $selectedCoreIds '
+                selected_cores=' $selectedCoreIdList '
+                game_cpufreq_limit=/proc/game_opt/disable_cpufreq_limit
+                if [ -r "${'$'}game_cpufreq_limit" ] && [ -w "${'$'}game_cpufreq_limit" ]; then
+                  old_game_cpufreq_limit=${'$'}(cat "${'$'}game_cpufreq_limit" 2>/dev/null)
+                  case "${'$'}old_game_cpufreq_limit" in
+                    *[!0-9]*|'') ;;
+                    *)
+                      printf 'MURONG_FREQ|%s|%s\n' "${'$'}game_cpufreq_limit" "${'$'}old_game_cpufreq_limit"
+                      printf 'MURONG_ENFORCE|%s|%s\n' "${'$'}game_cpufreq_limit" 1
+                      printf '%s' 1 > "${'$'}game_cpufreq_limit" 2>/dev/null
+                      applied_game_cpufreq_limit=${'$'}(cat "${'$'}game_cpufreq_limit" 2>/dev/null)
+                      [ "${'$'}applied_game_cpufreq_limit" = 1 ] &&
+                        printf 'MURONG_APPLIED|%s|%s\n' "${'$'}game_cpufreq_limit" 1
+                      ;;
+                  esac
+                fi
+                bouncing_path=/sys/module/cpufreq_bouncing/parameters/enable
+                if [ -r "${'$'}bouncing_path" ] && [ -w "${'$'}bouncing_path" ]; then
+                  old_bouncing=${'$'}(cat "${'$'}bouncing_path" 2>/dev/null)
+                  case "${'$'}old_bouncing" in
+                    *[!0-9]*|'') ;;
+                    *)
+                      printf 'MURONG_FREQ|%s|%s\n' "${'$'}bouncing_path" "${'$'}old_bouncing"
+                      printf 'MURONG_ENFORCE|%s|%s\n' "${'$'}bouncing_path" 0
+                      printf '%s' 0 > "${'$'}bouncing_path" 2>/dev/null
+                      applied_bouncing=${'$'}(cat "${'$'}bouncing_path" 2>/dev/null)
+                      [ "${'$'}applied_bouncing" = 0 ] &&
+                        printf 'MURONG_APPLIED|%s|%s\n' "${'$'}bouncing_path" 0
+                      ;;
+                  esac
+                fi
+                perflock_path=/sys/kernel/msm_performance/parameters/cpu_max_freq
+                if [ -r "${'$'}perflock_path" ] && [ -w "${'$'}perflock_path" ]; then
+                  old_votes=${'$'}(tr '\n' ' ' < "${'$'}perflock_path" 2>/dev/null)
+                  for cpu in $selectedCoreIds; do
+                    old_vote=''
+                    for pair in ${'$'}old_votes; do
+                      case "${'$'}pair" in
+                        "${'$'}cpu:"*) old_vote=${'$'}{pair#*:}; break ;;
+                      esac
+                    done
+                    anchor_cpu=''
+                    anchor_old_vote=''
+                    for pair in ${'$'}old_votes; do
+                      candidate_cpu=${'$'}{pair%%:*}
+                      candidate_vote=${'$'}{pair#*:}
+                      [ "${'$'}candidate_cpu" = "${'$'}cpu" ] && continue
+                      case "${'$'}candidate_cpu:${'$'}candidate_vote" in
+                        *[!0-9:]*|*::*|:*|*:) continue ;;
+                      esac
+                      anchor_cpu=${'$'}candidate_cpu
+                      anchor_old_vote=${'$'}candidate_vote
+                      break
+                    done
+                    case "${'$'}cpu:${'$'}old_vote:${'$'}anchor_cpu:${'$'}anchor_old_vote" in
+                      *[!0-9:]*|*::*|:*|*:) continue ;;
+                    esac
+                    anchor_target_vote=${'$'}anchor_old_vote
+                    case "${'$'}selected_cores" in
+                      *" ${'$'}anchor_cpu "*) anchor_target_vote=4294967295 ;;
+                    esac
+                    # Some Qualcomm kernels only apply the first CPU:value pair
+                    # while still requiring a second valid pair for parsing.
+                    # Per-core two-pair transactions also remain valid on the
+                    # kernels that consume every pair in one write.
+                    printf 'MURONG_FREQ|%s|%s:%s %s:%s\n' \
+                      "${'$'}perflock_path" "${'$'}cpu" "${'$'}old_vote" \
+                      "${'$'}anchor_cpu" "${'$'}anchor_old_vote"
+                    printf 'MURONG_ENFORCE|%s|%s:%s %s:%s\n' \
+                      "${'$'}perflock_path" "${'$'}cpu" 4294967295 \
+                      "${'$'}anchor_cpu" "${'$'}anchor_target_vote"
+                    printf '%s' \
+                      "${'$'}cpu:4294967295 ${'$'}anchor_cpu:${'$'}anchor_target_vote" \
+                      > "${'$'}perflock_path" 2>/dev/null
+                  done
+                fi
+                walt_cluster_cap=/proc/sys/walt/sched_high_perf_cluster_freq_cap
+                if [ -r "${'$'}walt_cluster_cap" ] && [ -w "${'$'}walt_cluster_cap" ]; then
+                  old_cluster_cap=${'$'}(cat "${'$'}walt_cluster_cap" 2>/dev/null)
+                  unlimited_cluster_cap=''
+                  tab=${'$'}(printf '\t')
+                  for ignored in ${'$'}old_cluster_cap; do
+                    [ -z "${'$'}unlimited_cluster_cap" ] || unlimited_cluster_cap="${'$'}unlimited_cluster_cap${'$'}tab"
+                    unlimited_cluster_cap="${'$'}unlimited_cluster_cap"2147483647
+                  done
+                  if [ -n "${'$'}old_cluster_cap" ] && [ -n "${'$'}unlimited_cluster_cap" ]; then
+                    printf 'MURONG_FREQ|%s|%s\n' "${'$'}walt_cluster_cap" "${'$'}old_cluster_cap"
+                    printf 'MURONG_ENFORCE|%s|%s\n' "${'$'}walt_cluster_cap" "${'$'}unlimited_cluster_cap"
+                    printf '%s' "${'$'}unlimited_cluster_cap" > "${'$'}walt_cluster_cap" 2>/dev/null
+                  fi
+                fi
+                walt_partial_cap=/proc/sys/walt/sched_max_freq_partial_halt
+                if [ -r "${'$'}walt_partial_cap" ] && [ -w "${'$'}walt_partial_cap" ]; then
+                  old_partial_cap=${'$'}(cat "${'$'}walt_partial_cap" 2>/dev/null)
+                  case "${'$'}old_partial_cap" in
+                    *[!0-9]*|'') ;;
+                    *)
+                      printf 'MURONG_FREQ|%s|%s\n' "${'$'}walt_partial_cap" "${'$'}old_partial_cap"
+                      printf 'MURONG_ENFORCE|%s|%s\n' "${'$'}walt_partial_cap" 2147483647
+                      printf '%s' 2147483647 > "${'$'}walt_partial_cap" 2>/dev/null
+                      ;;
+                  esac
+                fi
                 for d in /sys/devices/system/cpu/cpufreq/policy[0-9]*; do
                   [ -r "${'$'}d/scaling_min_freq" ] || continue
                   [ -r "${'$'}d/scaling_max_freq" ] || continue
+                  [ -r "${'$'}d/cpuinfo_max_freq" ] || continue
                   use_policy=0
                   for cpu in ${'$'}(cat "${'$'}d/related_cpus" 2>/dev/null); do
                     case "${'$'}selected_cores" in *" ${'$'}cpu "*) use_policy=1 ;; esac
                   done
                   [ "${'$'}use_policy" = 1 ] || continue
-                  old=${'$'}(cat "${'$'}d/scaling_min_freq" 2>/dev/null)
-                  max=${'$'}(cat "${'$'}d/scaling_max_freq" 2>/dev/null)
-                  case "${'$'}old:${'$'}max" in *[!0-9:]*|:|*:) continue ;; esac
-                  printf 'MURONG_FREQ|%s|%s\n' "${'$'}d/scaling_min_freq" "${'$'}old"
-                  printf '%s' "${'$'}max" > "${'$'}d/scaling_min_freq" 2>/dev/null
+                  old_min=${'$'}(cat "${'$'}d/scaling_min_freq" 2>/dev/null)
+                  old_max=${'$'}(cat "${'$'}d/scaling_max_freq" 2>/dev/null)
+                  hardware_max=${'$'}(cat "${'$'}d/cpuinfo_max_freq" 2>/dev/null)
+                  case "${'$'}old_min:${'$'}old_max:${'$'}hardware_max" in
+                    *[!0-9:]*|*::*|:*|*:) continue ;;
+                  esac
+                  printf 'MURONG_FREQ|%s|%s\n' "${'$'}d/scaling_min_freq" "${'$'}old_min"
+                  printf 'MURONG_FREQ|%s|%s\n' "${'$'}d/scaling_max_freq" "${'$'}old_max"
+                  printf '%s' "${'$'}hardware_max" > "${'$'}d/scaling_max_freq" 2>/dev/null
+                  printf '%s' "${'$'}hardware_max" > "${'$'}d/scaling_min_freq" 2>/dev/null
+                  applied_min=${'$'}(cat "${'$'}d/scaling_min_freq" 2>/dev/null)
+                  applied_max=${'$'}(cat "${'$'}d/scaling_max_freq" 2>/dev/null)
+                  case "${'$'}applied_min:${'$'}applied_max" in
+                    *[!0-9:]*|*::*|:*|*:) applied_min=0; applied_max=0 ;;
+                  esac
+                  if [ "${'$'}applied_min" -gt 0 ] &&
+                     [ "${'$'}applied_min" = "${'$'}applied_max" ]; then
+                    printf 'MURONG_APPLIED|%s|%s\n' "${'$'}d/scaling_min_freq" "${'$'}applied_min"
+                    printf 'MURONG_APPLIED|%s|%s\n' "${'$'}d/scaling_max_freq" "${'$'}applied_max"
+                    printf 'MURONG_ENFORCE|%s|%s\n' "${'$'}d/scaling_max_freq" "${'$'}hardware_max"
+                    printf 'MURONG_ENFORCE|%s|%s\n' "${'$'}d/scaling_min_freq" "${'$'}hardware_max"
+                  else
+                    printf '%s' "${'$'}old_min" > "${'$'}d/scaling_min_freq" 2>/dev/null
+                    printf '%s' "${'$'}old_max" > "${'$'}d/scaling_max_freq" 2>/dev/null
+                    printf '%s' "${'$'}old_min" > "${'$'}d/scaling_min_freq" 2>/dev/null
+                  fi
                 done
                 for d in /sys/class/kgsl/kgsl-3d0/devfreq /sys/class/devfreq/*; do
                   case "${'$'}d" in *kgsl*|*gpu*|*GPU*) ;; *) continue ;; esac
                   [ -r "${'$'}d/min_freq" ] || continue
                   [ -r "${'$'}d/max_freq" ] || continue
-                  old=${'$'}(cat "${'$'}d/min_freq" 2>/dev/null)
-                  max=${'$'}(cat "${'$'}d/max_freq" 2>/dev/null)
-                  case "${'$'}old:${'$'}max" in *[!0-9:]*|:|*:) continue ;; esac
-                  printf 'MURONG_FREQ|%s|%s\n' "${'$'}d/min_freq" "${'$'}old"
-                  printf '%s' "${'$'}max" > "${'$'}d/min_freq" 2>/dev/null
+                  old_min=${'$'}(cat "${'$'}d/min_freq" 2>/dev/null)
+                  old_max=${'$'}(cat "${'$'}d/max_freq" 2>/dev/null)
+                  target=${'$'}old_max
+                  for frequency in ${'$'}(cat "${'$'}d/available_frequencies" 2>/dev/null); do
+                    case "${'$'}frequency" in *[!0-9]*|'') continue ;; esac
+                    [ "${'$'}frequency" -gt "${'$'}target" ] && target=${'$'}frequency
+                  done
+                  case "${'$'}old_min:${'$'}old_max:${'$'}target" in
+                    *[!0-9:]*|*::*|:*|*:) continue ;;
+                  esac
+                  printf 'MURONG_FREQ|%s|%s\n' "${'$'}d/min_freq" "${'$'}old_min"
+                  printf 'MURONG_FREQ|%s|%s\n' "${'$'}d/max_freq" "${'$'}old_max"
+                  printf '%s' "${'$'}target" > "${'$'}d/max_freq" 2>/dev/null
+                  printf '%s' "${'$'}target" > "${'$'}d/min_freq" 2>/dev/null
+                  applied_min=${'$'}(cat "${'$'}d/min_freq" 2>/dev/null)
+                  applied_max=${'$'}(cat "${'$'}d/max_freq" 2>/dev/null)
+                  case "${'$'}applied_min:${'$'}applied_max" in
+                    *[!0-9:]*|*::*|:*|*:) applied_min=0; applied_max=0 ;;
+                  esac
+                  if [ "${'$'}applied_min" -ge "${'$'}old_min" ] &&
+                     [ "${'$'}applied_min" -le "${'$'}applied_max" ]; then
+                    printf 'MURONG_APPLIED|%s|%s\n' "${'$'}d/min_freq" "${'$'}applied_min"
+                    printf 'MURONG_APPLIED|%s|%s\n' "${'$'}d/max_freq" "${'$'}applied_max"
+                    printf 'MURONG_ENFORCE|%s|%s\n' "${'$'}d/max_freq" "${'$'}target"
+                    printf 'MURONG_ENFORCE|%s|%s\n' "${'$'}d/min_freq" "${'$'}target"
+                  else
+                    printf '%s' "${'$'}old_min" > "${'$'}d/min_freq" 2>/dev/null
+                    printf '%s' "${'$'}old_max" > "${'$'}d/max_freq" 2>/dev/null
+                    printf '%s' "${'$'}old_min" > "${'$'}d/min_freq" 2>/dev/null
+                  fi
+                done
+                seen_kgsl=' '
+                for d in /sys/devices/platform/soc/*kgsl-3d0/kgsl/kgsl-3d0 \
+                         /sys/devices/platform/*kgsl-3d0/kgsl/kgsl-3d0 \
+                         /sys/class/kgsl/kgsl-3d0; do
+                  resolved=${'$'}(readlink -f "${'$'}d" 2>/dev/null)
+                  [ -n "${'$'}resolved" ] || continue
+                  case "${'$'}seen_kgsl" in *" ${'$'}resolved "*) continue ;; esac
+                  seen_kgsl="${'$'}seen_kgsl${'$'}resolved "
+                  d=${'$'}resolved
+                  [ -r "${'$'}d/min_clock_mhz" ] || continue
+                  [ -r "${'$'}d/max_clock_mhz" ] || continue
+                  old_min=${'$'}(cat "${'$'}d/min_clock_mhz" 2>/dev/null)
+                  old_max=${'$'}(cat "${'$'}d/max_clock_mhz" 2>/dev/null)
+                  old_min_level=${'$'}(cat "${'$'}d/min_pwrlevel" 2>/dev/null)
+                  old_max_level=${'$'}(cat "${'$'}d/max_pwrlevel" 2>/dev/null)
+                  target_hz=${'$'}(cat "${'$'}d/max_gpuclk" 2>/dev/null)
+                  case "${'$'}target_hz" in
+                    *[!0-9]*|'') target=${'$'}old_max ;;
+                    *) target=${'$'}((target_hz / 1000000)) ;;
+                  esac
+                  case "${'$'}old_min:${'$'}old_max:${'$'}target:${'$'}old_min_level:${'$'}old_max_level" in
+                    *[!0-9:]*|*::*|:*|*:) continue ;;
+                  esac
+                  printf 'MURONG_FREQ|%s|%s\n' "${'$'}d/min_clock_mhz" "${'$'}old_min"
+                  printf 'MURONG_FREQ|%s|%s\n' "${'$'}d/max_clock_mhz" "${'$'}old_max"
+                  printf 'MURONG_FREQ|%s|%s\n' "${'$'}d/min_pwrlevel" "${'$'}old_min_level"
+                  printf 'MURONG_FREQ|%s|%s\n' "${'$'}d/max_pwrlevel" "${'$'}old_max_level"
+                  # KGSL pwrlevel 0 is the highest OPP. Keep the previous
+                  # ceiling as a temporary floor, matching the scheduler's
+                  # high_level/low_level range instead of pinning an idle GPU.
+                  printf '%s' 0 > "${'$'}d/max_pwrlevel" 2>/dev/null
+                  printf '%s' "${'$'}old_max_level" > "${'$'}d/min_pwrlevel" 2>/dev/null
+                  printf '%s' "${'$'}target" > "${'$'}d/max_clock_mhz" 2>/dev/null
+                  applied_min=${'$'}(cat "${'$'}d/min_clock_mhz" 2>/dev/null)
+                  applied_max=${'$'}(cat "${'$'}d/max_clock_mhz" 2>/dev/null)
+                  applied_min_level=${'$'}(cat "${'$'}d/min_pwrlevel" 2>/dev/null)
+                  applied_max_level=${'$'}(cat "${'$'}d/max_pwrlevel" 2>/dev/null)
+                  case "${'$'}applied_min:${'$'}applied_max:${'$'}applied_min_level:${'$'}applied_max_level" in
+                    *[!0-9:]*|*::*|:*|*:) applied_min=0; applied_max=0; applied_min_level=-1; applied_max_level=-1 ;;
+                  esac
+                  if [ "${'$'}applied_min" -ge "${'$'}old_min" ] &&
+                     [ "${'$'}applied_min" -le "${'$'}applied_max" ]; then
+                    printf 'MURONG_APPLIED|%s|%s\n' "${'$'}d/min_clock_mhz" "${'$'}applied_min"
+                    printf 'MURONG_APPLIED|%s|%s\n' "${'$'}d/max_clock_mhz" "${'$'}applied_max"
+                    printf 'MURONG_ENFORCE|%s|%s\n' "${'$'}d/max_clock_mhz" "${'$'}target"
+                  fi
+                  if [ "${'$'}applied_max_level" = 0 ]; then
+                    printf 'MURONG_APPLIED|%s|%s\n' "${'$'}d/max_pwrlevel" "${'$'}applied_max_level"
+                    printf 'MURONG_ENFORCE|%s|%s\n' "${'$'}d/max_pwrlevel" 0
+                  fi
+                  if [ "${'$'}applied_min_level" = "${'$'}old_max_level" ]; then
+                    printf 'MURONG_APPLIED|%s|%s\n' "${'$'}d/min_pwrlevel" "${'$'}applied_min_level"
+                    printf 'MURONG_ENFORCE|%s|%s\n' "${'$'}d/min_pwrlevel" "${'$'}old_max_level"
+                  fi
+                  if [ "${'$'}applied_min" -lt "${'$'}old_min" ] ||
+                     [ "${'$'}applied_max_level" != 0 ]; then
+                    printf '%s' "${'$'}old_min" > "${'$'}d/min_clock_mhz" 2>/dev/null
+                    printf '%s' "${'$'}old_max" > "${'$'}d/max_clock_mhz" 2>/dev/null
+                    printf '%s' "${'$'}old_min" > "${'$'}d/min_clock_mhz" 2>/dev/null
+                    printf '%s' "${'$'}old_min_level" > "${'$'}d/min_pwrlevel" 2>/dev/null
+                    printf '%s' "${'$'}old_max_level" > "${'$'}d/max_pwrlevel" 2>/dev/null
+                  else
+                    :
+                  fi
                 done
                 """.trimIndent()
             )
@@ -1321,25 +1643,340 @@ private object BuiltinLocalPerformanceController {
             if (parts.size != 3 || parts[0] != "MURONG_FREQ") return@mapNotNull null
             val path = parts[1]
             val value = parts[2]
-            if (!allowedPath.matches(path) || value.any { !it.isDigit() }) {
+            if (!allowedPath.matches(path) || !isAllowedValue(path, value)) {
                 return@mapNotNull null
             }
             path to value
-        }.distinctBy { it.first }.toList()
-        return values.takeIf { it.isNotEmpty() }?.let(::PerformanceLease)
+        }.distinctBy { (path, value) ->
+            if (path == "/sys/kernel/msm_performance/parameters/cpu_max_freq") {
+                "$path|$value"
+            } else {
+                path
+            }
+        }.toList()
+        val appliedValues = output.lineSequence().mapNotNull { line ->
+            val parts = line.trim().split('|')
+            if (parts.size != 3 || parts[0] != "MURONG_APPLIED") return@mapNotNull null
+            val path = parts[1]
+            val value = parts[2]
+            path.takeIf { allowedPath.matches(it) && isAllowedValue(it, value) }
+                ?.let { it to value }
+        }.distinctBy { it.first }.toMap()
+        val enforcementValues = output.lineSequence().mapNotNull { line ->
+            val parts = line.trim().split('|')
+            if (parts.size != 3 || parts[0] != "MURONG_ENFORCE") return@mapNotNull null
+            val path = parts[1]
+            val value = parts[2]
+            path.takeIf { allowedPath.matches(it) && isAllowedValue(it, value) }
+                ?.let { it to value }
+        }.distinctBy { (path, value) ->
+            if (path == "/sys/kernel/msm_performance/parameters/cpu_max_freq") {
+                "$path|$value"
+            } else {
+                path
+            }
+        }.toList()
+        val lease = values.takeIf { it.isNotEmpty() }
+            ?.let { PerformanceLease(it, enforcementValues, workerAffinityPlan) }
+            ?: return null
+        if (appliedValues.isEmpty()) {
+            Log.w(PERFORMANCE_TAG, "Root 满频请求未被任何 CPU/GPU 节点接受")
+            lease.restore()
+            return null
+        }
+        Log.i(
+            PERFORMANCE_TAG,
+            appliedValues.entries.joinToString(
+                prefix = "已按内核回读值提升频率: ",
+                separator = ", ",
+            ) { (path, value) -> "${path.substringAfterLast('/')}=$value" },
+        )
+        lease.startEnforcing()
+        return lease
+    }
+
+    private fun isAllowedValue(path: String, value: String): Boolean = when (path) {
+        "/sys/kernel/msm_performance/parameters/cpu_max_freq" ->
+            value.matches(Regex("(?:\\d+:\\d+\\s*)+"))
+        "/proc/sys/walt/sched_high_perf_cluster_freq_cap" ->
+            value.matches(Regex("\\d+(?:\\s+\\d+)*"))
+        else -> value.isNotEmpty() && value.all(Char::isDigit)
     }
 
     class PerformanceLease(
-        private val originalValues: List<Pair<String, String>>
+        private val originalValues: List<Pair<String, String>>,
+        private val enforcementValues: List<Pair<String, String>>,
+        private val workerAffinityPlan: List<Pair<String, String>>,
     ) {
-        fun restore() {
-            if (originalValues.isEmpty() || !KeepShellPublic.checkRoot()) return
-            val command = originalValues.joinToString(separator = "\n") { (path, value) ->
-                "printf '%s' '$value' > '$path' 2>/dev/null"
+        private val restored = AtomicBoolean(false)
+        private val enforcementFailureLogged = AtomicBoolean(false)
+        private val shellLock = Any()
+        private val appPid = android.os.Process.myPid()
+        private val enforcerToken =
+            "murong-local-perf-$appPid-${System.nanoTime().toString(16)}"
+        private val affinitySnapshotPath = "/data/local/tmp/$enforcerToken.affinity"
+        private val affinityAssignmentsPath = "/data/local/tmp/$enforcerToken.bindings"
+        private val previousTicksPath = "/data/local/tmp/$enforcerToken.ticks"
+        private val currentTicksPath = "/data/local/tmp/$enforcerToken.ticks-current"
+        private val rankedThreadsPath = "/data/local/tmp/$enforcerToken.ranked"
+        @Volatile
+        private var enforcerPid: Int? = null
+
+        fun startEnforcing() {
+            if (enforcementValues.isEmpty() || restored.get() || enforcerPid != null) return
+            val enforceCommand = buildWriteCommand(enforcementValues)
+            val restoreCommand = buildWriteCommand(orderedOriginalValues())
+            val restoreAffinityCommand = buildRestoreAffinityCommand()
+            val workerPlans = workerAffinityPlan.joinToString(separator = " ") {
+                (coreLabel, mask) -> "$coreLabel:$mask"
             }
-            runCatching { KeepShellPublic.doCmdSync(command) }
+            val helperScript =
+                """
+                affinity_file=${shellQuote(affinitySnapshotPath)}
+                bindings_file=${shellQuote(affinityAssignmentsPath)}
+                previous_ticks_file=${shellQuote(previousTicksPath)}
+                current_ticks_file=${shellQuote(currentTicksPath)}
+                ranked_threads_file=${shellQuote(rankedThreadsPath)}
+                worker_plans=${shellQuote(workerPlans)}
+                worker_count=${workerAffinityPlan.size}
+                minimum_worker_ticks=$MINIMUM_ACTIVE_WORKER_TICKS
+                umask 077
+                : > "${'$'}affinity_file"
+                : > "${'$'}bindings_file"
+                : > "${'$'}previous_ticks_file"
+                : > "${'$'}current_ticks_file"
+                : > "${'$'}ranked_threads_file"
+                write_thread_ticks() {
+                  target_file=${'$'}1
+                  : > "${'$'}target_file"
+                  for stat_file in "/proc/$appPid"/task/*/stat; do
+                    [ -r "${'$'}stat_file" ] || continue
+                    tid_path=${'$'}{stat_file%/stat}
+                    tid=${'$'}{tid_path##*/}
+                    [ "${'$'}tid" = "$appPid" ] && continue
+                    stat_line=${'$'}(cat "${'$'}stat_file" 2>/dev/null) || continue
+                    stat_tail=${'$'}{stat_line##*) }
+                    set -- ${'$'}stat_tail
+                    user_ticks=${'$'}{12}
+                    system_ticks=${'$'}{13}
+                    case "${'$'}tid:${'$'}user_ticks:${'$'}system_ticks" in
+                      *[!0-9:]*|*::*|:*|*:) continue ;;
+                    esac
+                    printf '%s %s\n' "${'$'}tid" "${'$'}((user_ticks + system_ticks))" \
+                      >> "${'$'}target_file"
+                  done
+                }
+                rank_active_workers() {
+                  write_thread_ticks "${'$'}current_ticks_file"
+                  : > "${'$'}ranked_threads_file"
+                  if [ -s "${'$'}previous_ticks_file" ]; then
+                    while read -r tid current_ticks; do
+                      case "${'$'}tid:${'$'}current_ticks" in
+                        *[!0-9:]*|*::*|:*|*:) continue ;;
+                      esac
+                      old_ticks=${'$'}(awk -v target="${'$'}tid" \
+                        '${'$'}1 == target { print ${'$'}2; exit }' \
+                        "${'$'}previous_ticks_file" 2>/dev/null)
+                      case "${'$'}old_ticks" in *[!0-9]*|'') continue ;; esac
+                      [ "${'$'}current_ticks" -ge "${'$'}old_ticks" ] || continue
+                      delta=${'$'}((current_ticks - old_ticks))
+                      [ "${'$'}delta" -ge "${'$'}minimum_worker_ticks" ] || continue
+                      printf '%s %s\n' "${'$'}delta" "${'$'}tid" \
+                        >> "${'$'}ranked_threads_file"
+                    done < "${'$'}current_ticks_file"
+                    sort -nr -k1,1 "${'$'}ranked_threads_file" \
+                      > "${'$'}ranked_threads_file.sorted" 2>/dev/null
+                    mv "${'$'}ranked_threads_file.sorted" \
+                      "${'$'}ranked_threads_file" 2>/dev/null
+                  fi
+                  mv "${'$'}current_ticks_file" "${'$'}previous_ticks_file" 2>/dev/null
+                }
+                restore_current_bindings() {
+                  while read -r tid ignored_core ignored_mask; do
+                    case "${'$'}tid" in *[!0-9]*|'') continue ;; esac
+                    old_mask=${'$'}(awk -v target="${'$'}tid" \
+                      '${'$'}1 == target { print ${'$'}2; exit }' \
+                      "${'$'}affinity_file" 2>/dev/null)
+                    case "${'$'}old_mask" in *[!0-9a-fA-F]*|'') continue ;; esac
+                    [ -d "/proc/$appPid/task/${'$'}tid" ] &&
+                      taskset -p "${'$'}old_mask" "${'$'}tid" >/dev/null 2>&1
+                  done < "${'$'}bindings_file"
+                  : > "${'$'}bindings_file"
+                }
+                bind_active_workers() {
+                  rank_active_workers
+                  [ -s "${'$'}ranked_threads_file" ] || return
+                  ranked_tids=${'$'}(awk '${'$'}1 > 0 { print ${'$'}2 }' \
+                    "${'$'}ranked_threads_file" 2>/dev/null |
+                    head -n "${'$'}worker_count" | tr '\n' ' ')
+                  [ -n "${'$'}ranked_tids" ] || return
+                  restore_current_bindings
+                  set -- ${'$'}ranked_tids
+                  for plan in ${'$'}worker_plans; do
+                    [ "${'$'}#" -gt 0 ] || break
+                    tid=${'$'}1
+                    shift
+                    core_label=${'$'}{plan%%:*}
+                    mask=${'$'}{plan#*:}
+                    case "${'$'}tid:${'$'}mask" in
+                      *[!0-9a-fA-F:]*|*::*|:*|*:) continue ;;
+                    esac
+                    [ -d "/proc/$appPid/task/${'$'}tid" ] || continue
+                    if ! awk -v target="${'$'}tid" \
+                      '${'$'}1 == target { found = 1 } END { exit !found }' \
+                      "${'$'}affinity_file" 2>/dev/null; then
+                      old_mask=${'$'}(taskset -p "${'$'}tid" 2>/dev/null |
+                        sed -n 's/.*: //p' | tail -n 1)
+                      case "${'$'}old_mask" in *[!0-9a-fA-F]*|'') continue ;; esac
+                      printf '%s %s\n' "${'$'}tid" "${'$'}old_mask" \
+                        >> "${'$'}affinity_file"
+                    fi
+                    if taskset -p "${'$'}mask" "${'$'}tid" >/dev/null 2>&1; then
+                      printf '%s %s %s\n' "${'$'}tid" "${'$'}core_label" "${'$'}mask" \
+                        >> "${'$'}bindings_file"
+                    fi
+                  done
+                }
+                restore_affinity() {
+                  $restoreAffinityCommand
+                }
+                restore_values() {
+                  $restoreCommand
+                }
+                stop_and_restore() {
+                  trap - EXIT HUP INT TERM
+                  restore_affinity
+                  restore_values
+                  exit 0
+                }
+                trap stop_and_restore EXIT HUP INT TERM
+                affinity_tick=0
+                while [ -r "/proc/$appPid/cmdline" ] &&
+                      grep -aFq "com.murong.agent" "/proc/$appPid/cmdline" 2>/dev/null; do
+                  if [ "${'$'}affinity_tick" -eq 0 ]; then
+                    bind_active_workers
+                  fi
+                  $enforceCommand
+                  affinity_tick=${'$'}(((affinity_tick + 1) % 20))
+                  sleep $PERFORMANCE_ENFORCEMENT_SLEEP_SECONDS
+                done
+                stop_and_restore
+                """.trimIndent()
+            val launchCommand =
+                """
+                /system/bin/sh -c ${shellQuote(helperScript)} ${shellQuote(enforcerToken)} \
+                  >/dev/null 2>&1 &
+                helper_pid=${'$'}!
+                printf 'MURONG_ENFORCER_PID|%s\n' "${'$'}helper_pid"
+                """.trimIndent()
+            synchronized(shellLock) {
+                if (restored.get()) return
+                runCatching { KeepShellPublic.doCmdSync(launchCommand) }
+                    .mapCatching { output ->
+                        output.lineSequence()
+                            .firstNotNullOfOrNull { line ->
+                                line.substringAfter("MURONG_ENFORCER_PID|", "")
+                                    .trim()
+                                    .toIntOrNull()
+                            }
+                            ?.takeIf { it > 1 }
+                            ?: error("Root 满频守护进程未返回有效 PID")
+                    }
+                    .onSuccess { pid -> enforcerPid = pid }
+                    .onFailure {
+                        if (enforcementFailureLogged.compareAndSet(false, true)) {
+                            Log.w(PERFORMANCE_TAG, "推理满频守护进程启动失败", it)
+                        }
+                    }
+            }
+            enforcerPid?.let { pid ->
+                Log.i(
+                    PERFORMANCE_TAG,
+                    "推理满频 Root 守护进程已启动: pid=$pid，每 ${PERFORMANCE_ENFORCEMENT_INTERVAL_MILLIS}ms 重申目标值；大核 worker 独占、小核 worker 共享=${workerAffinityPlan.joinToString { (cores, mask) -> "CPU$cores/$mask" }}",
+                )
+            }
         }
+
+        fun restore() {
+            if (!restored.compareAndSet(false, true)) return
+            if (originalValues.isEmpty() || !KeepShellPublic.checkRoot()) return
+            val pid = enforcerPid
+            enforcerPid = null
+            val stopCommand = pid?.let {
+                """
+                helper_pid=$it
+                helper_token=${shellQuote(enforcerToken)}
+                if [ -r "/proc/${'$'}helper_pid/cmdline" ] &&
+                   grep -aFq "${'$'}helper_token" "/proc/${'$'}helper_pid/cmdline" 2>/dev/null; then
+                  kill -TERM "${'$'}helper_pid" 2>/dev/null
+                fi
+                wait_count=0
+                while [ -d "/proc/${'$'}helper_pid" ] && [ "${'$'}wait_count" -lt 10 ]; do
+                  sleep 0.05
+                  wait_count=${'$'}((wait_count + 1))
+                done
+                if [ -r "/proc/${'$'}helper_pid/cmdline" ] &&
+                   grep -aFq "${'$'}helper_token" "/proc/${'$'}helper_pid/cmdline" 2>/dev/null; then
+                  kill -KILL "${'$'}helper_pid" 2>/dev/null
+                fi
+                ${buildRestoreAffinityCommand()}
+                """.trimIndent()
+            }.orEmpty()
+            val command = listOf(stopCommand, buildWriteCommand(orderedOriginalValues()))
+                .filter(String::isNotBlank)
+                .joinToString(separator = "\n")
+            synchronized(shellLock) {
+                runCatching { KeepShellPublic.doCmdSync(command) }
+                    .onSuccess { Log.i(PERFORMANCE_TAG, "本地推理结束，已停止满频守护并恢复 CPU/GPU 原值") }
+                    .onFailure {
+                        Log.w(PERFORMANCE_TAG, "CPU/GPU 频率原值已逐项回写，但 Root 命令返回了错误")
+                    }
+            }
+        }
+
+        private fun orderedOriginalValues(): List<Pair<String, String>> =
+            originalValues.sortedBy { (path, _) ->
+                when {
+                    path.endsWith("min_freq") || path.endsWith("min_clock_mhz") -> 0
+                    path.endsWith("max_freq") || path.endsWith("max_clock_mhz") -> 1
+                    path == "/proc/game_opt/disable_cpufreq_limit" ||
+                        path == "/sys/module/cpufreq_bouncing/parameters/enable" -> 3
+                    else -> 2
+                }
+            }
+
+        private fun buildWriteCommand(values: List<Pair<String, String>>): String =
+            values.joinToString(separator = "\n") { (path, value) ->
+                "printf '%s' ${shellQuote(value)} > ${shellQuote(path)} 2>/dev/null"
+            }
+
+        private fun buildRestoreAffinityCommand(): String =
+            """
+            if [ -r ${shellQuote(affinitySnapshotPath)} ]; then
+              while read -r tid old_mask; do
+                case "${'$'}tid:${'$'}old_mask" in
+                  *[!0-9a-fA-F:]*|*::*|:*|*:) continue ;;
+                esac
+                [ -d "/proc/$appPid/task/${'$'}tid" ] &&
+                  taskset -p "${'$'}old_mask" "${'$'}tid" >/dev/null 2>&1
+              done < ${shellQuote(affinitySnapshotPath)}
+            fi
+            rm -f ${shellQuote(affinitySnapshotPath)} \
+              ${shellQuote(affinityAssignmentsPath)} \
+              ${shellQuote(previousTicksPath)} \
+              ${shellQuote(currentTicksPath)} \
+              ${shellQuote(rankedThreadsPath)} \
+              ${shellQuote("$rankedThreadsPath.sorted")}
+            """.trimIndent()
+
+        private fun shellQuote(value: String): String =
+            "'${value.replace("'", "'\"'\"'")}'"
     }
+
+    private const val PERFORMANCE_TAG = "MurongLocalPerf"
+    private const val PERFORMANCE_ENFORCEMENT_INTERVAL_MILLIS = 50L
+    private const val PERFORMANCE_ENFORCEMENT_SLEEP_SECONDS = "0.05"
+    private const val MINIMUM_ACTIVE_WORKER_TICKS = 20
 }
 
 internal object BuiltinVisionNative {

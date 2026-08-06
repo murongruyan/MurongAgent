@@ -201,6 +201,16 @@ func terminalByID(backends []TerminalBackend, id string) (TerminalBackend, bool)
 }
 
 func buildTerminalCommand(ctx context.Context, backend TerminalBackend, directory, commandText string) (*exec.Cmd, error) {
+	configure := func(command *exec.Cmd) *exec.Cmd {
+		command.Dir = directory
+		command.Env = append(os.Environ(),
+			"GIT_TERMINAL_PROMPT=0",
+			"GCM_INTERACTIVE=Never",
+			"GIT_EDITOR=true",
+			"GIT_SEQUENCE_EDITOR=true",
+		)
+		return command
+	}
 	switch backend.Kind {
 	case terminalPowerShell7, terminalWindowsPowerShell:
 		prefix := "$ProgressPreference='SilentlyContinue';" +
@@ -211,24 +221,16 @@ func buildTerminalCommand(ctx context.Context, backend TerminalBackend, director
 			arguments = append(arguments, "-ExecutionPolicy", "Bypass")
 		}
 		arguments = append(arguments, "-Command", prefix+commandText)
-		command := exec.CommandContext(ctx, backend.Executable, arguments...)
-		command.Dir = directory
-		return command, nil
+		return configure(exec.CommandContext(ctx, backend.Executable, arguments...)), nil
 	case terminalCMD:
-		command := exec.CommandContext(ctx, backend.Executable, "/d", "/s", "/c", "chcp 65001>nul & "+commandText)
-		command.Dir = directory
-		return command, nil
+		return configure(exec.CommandContext(ctx, backend.Executable, "/d", "/s", "/c", "chcp 65001>nul & "+commandText)), nil
 	case "wsl":
 		if strings.TrimSpace(backend.Distribution) == "" {
 			return nil, errors.New("WSL 发行版为空")
 		}
-		command := exec.CommandContext(ctx, backend.Executable, "-d", backend.Distribution, "--cd", directory, "--exec", "sh", "-lc", commandText)
-		command.Dir = directory
-		return command, nil
+		return configure(exec.CommandContext(ctx, backend.Executable, "-d", backend.Distribution, "--cd", directory, "--exec", "sh", "-lc", commandText)), nil
 	case "posix-shell":
-		command := exec.CommandContext(ctx, backend.Executable, "-lc", commandText)
-		command.Dir = directory
-		return command, nil
+		return configure(exec.CommandContext(ctx, backend.Executable, "-lc", commandText)), nil
 	default:
 		return nil, fmt.Errorf("不支持的终端类型：%s", backend.Kind)
 	}

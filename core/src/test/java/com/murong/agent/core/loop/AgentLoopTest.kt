@@ -22,6 +22,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class AgentLoopTest {
@@ -1021,8 +1022,8 @@ class AgentLoopTest {
         val errorEvent = events.filterIsInstance<AgentEvent.Error>().lastOrNull()
         assertNotNull(errorEvent)
         assertTrue(errorEvent.message.contains("跨轮次计划仍未完成"))
-        assertNotNull(errorEvent.userVisibleMessage)
-        assertTrue(errorEvent.userVisibleMessage.contains("当前执行已暂停"))
+        assertNull(errorEvent.userVisibleMessage)
+        assertTrue(events.filterIsInstance<AgentEvent.ReadinessAudit>().isNotEmpty())
         assertEquals(
             FinalReadinessReceiptKind.INCOMPLETE_CANONICAL_WORKFLOW,
             errorEvent.finalReadinessReceipt?.kind
@@ -1072,8 +1073,8 @@ class AgentLoopTest {
         assertTrue(reminder.contains("complete_step"))
         val errorEvent = events.filterIsInstance<AgentEvent.Error>().lastOrNull()
         assertNotNull(errorEvent)
-        assertNotNull(errorEvent.userVisibleMessage)
-        assertTrue(errorEvent.userVisibleMessage.contains("当前执行已暂停"))
+        assertNull(errorEvent.userVisibleMessage)
+        assertTrue(events.filterIsInstance<AgentEvent.ReadinessAudit>().isNotEmpty())
         assertEquals(
             FinalReadinessReceiptKind.MISSING_COMPLETE_STEP_AFTER_WRITE,
             errorEvent.finalReadinessReceipt?.kind

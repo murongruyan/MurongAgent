@@ -37,6 +37,7 @@ func TestWindowsVLMBuildSelectsInstalledVisualStudioAndARM64ClangCL(t *testing.T
 	}
 	text := string(script)
 	for _, marker := range []string{
+		`$buildRoot = Join-Path $cacheRoot "desktop-vlm-build\$Architecture"`,
 		"Get-CMakeVisualStudioArguments $Architecture",
 		"18 { \"Visual Studio 18 2026\" }",
 		"$arguments += @(\"-T\", \"ClangCL\")",
@@ -53,6 +54,9 @@ func TestWindowsVLMBuildSelectsInstalledVisualStudioAndARM64ClangCL(t *testing.T
 	}
 	if strings.Contains(text, "-G \"Visual Studio 17 2022\"") {
 		t.Fatal("Windows VLM CMake invocation still hardcodes Visual Studio 2022")
+	}
+	if strings.Contains(text, `$buildRoot = Join-Path $desktopRoot "build\vlm`) {
+		t.Fatal("downloaded MNN sources must stay outside the Go module or Wails will scan their sample packages")
 	}
 }
 

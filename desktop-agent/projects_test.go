@@ -117,4 +117,21 @@ func TestSearchProjectEntriesUsesCurrentProjectAndSkipsGeneratedDirectories(t *t
 	if len(matching) != 1 || matching[0].Path != "src/feature/Target.kt" {
 		t.Fatalf("generated entries were not excluded: %#v", matching)
 	}
+	nested, err := app.BrowseProjectEntries("src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nested) != 1 || !nested[0].Directory || nested[0].Path != "src/feature" || nested[0].Name != "feature" {
+		t.Fatalf("nested folder browsing returned unexpected entries: %#v", nested)
+	}
+	leaf, err := app.BrowseProjectEntries("src/feature", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leaf) != 1 || leaf[0].Directory || leaf[0].Path != "src/feature/Target.kt" || leaf[0].Name != "Target.kt" {
+		t.Fatalf("nested file browsing returned unexpected entries: %#v", leaf)
+	}
+	if _, err := app.BrowseProjectEntries("../", ""); err == nil {
+		t.Fatal("project browser accepted a path outside the active project")
+	}
 }

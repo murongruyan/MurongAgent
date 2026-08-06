@@ -3,6 +3,9 @@ package com.murong.agent.core.tool
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityService.ScreenshotResult
 import android.accessibilityservice.GestureDescription
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.ComponentName
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -11,7 +14,9 @@ import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.os.Handler
 import android.os.Looper
 import android.view.KeyEvent
@@ -20,16 +25,36 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.io.ByteArrayOutputStream
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeout
+
+internal data class GuiClipboardSnapshot(
+    val previous: ClipData?,
+    val wasReadable: Boolean,
+)
+
+private val TASK_OVERLAY_STEP_PATTERN = Regex("第\\s*(\\d+)\\s*/\\s*(\\d+)\\s*步")
+
+fun taskOverlayCapsuleLabel(detail: String, completed: Boolean): String {
+    if (completed) return "Murong · 待确认"
+    val step = TASK_OVERLAY_STEP_PATTERN.find(detail)?.let { match ->
+        "${match.groupValues[1]}/${match.groupValues[2]}"
+    }
+    return if (step == null) "Murong · 执行中" else "Murong · $step"
+}
 
 /**
  * Semantic-first Android GUI adapter.
@@ -52,15 +77,31 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
     private var taskOverlayView: View? = null
     private var taskOverlayTitle: TextView? = null
     private var taskOverlayDetail: TextView? = null
+    private var taskOverlayCapsuleText: TextView? = null
     private var taskOverlayParams: WindowManager.LayoutParams? = null
     private var taskOverlayId: String? = null
     private var taskOverlayHiddenByUser = false
+    private var taskOverlayExpanded = false
+    private var taskOverlayCompleted = false
+    private val latestWindowClassByPackage = ConcurrentHashMap<String, String>()
+    @Volatile private var latestWindowPackage: String? = null
 
     override fun onServiceConnected() {
         instance = this
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        val eventPackage = event.packageName?.toString()?.trim().orEmpty()
+        val eventClass = event.className?.toString()?.trim().orEmpty()
+        if (eventPackage.isBlank() || eventClass.isBlank()) return
+        // Opening an IME also produces a window-state event. Keep it in the package map for
+        // diagnostics, but do not let a keyboard replace the foreground app/activity used by
+        // phone-task recovery.
+        if (eventClass.contains("SoftInputWindow", ignoreCase = true)) return
+        latestWindowClassByPackage[eventPackage] = eventClass
+        latestWindowPackage = eventPackage
+    }
 
     override fun onInterrupt() = Unit
 
@@ -80,7 +121,13 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
             ensureTaskProgressOverlay()
             taskOverlayTitle?.text = if (completed) "$title · 已结束" else title
             taskOverlayDetail?.text = detail
-            taskOverlayView?.background = taskOverlayBackground(completed)
+            taskOverlayCapsuleText?.text = taskOverlayCapsuleLabel(detail, completed)
+            taskOverlayCompleted = completed
+            taskOverlayView?.background = if (taskOverlayExpanded) {
+                taskOverlayBackground(completed)
+            } else {
+                taskOverlayCapsuleBackground(completed)
+            }
         }
     }
 
@@ -129,6 +176,35 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
             isVerticalScrollBarEnabled = true
             movementMethod = android.text.method.ScrollingMovementMethod.getInstance()
         }
+        val fullContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        val minimizedCapsule = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            contentDescription = "展开手机操作进度"
+            setPadding(dp(12), 0, dp(10), 0)
+        }
+        val capsuleDot = TextView(this).apply {
+            text = "●"
+            setTextColor(Color.rgb(255, 107, 190))
+            textSize = 18f
+            gravity = Gravity.CENTER
+        }
+        val capsuleText = TextView(this).apply {
+            text = "Murong · 执行中"
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            maxLines = 1
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val capsuleExpand = TextView(this).apply {
+            text = "›"
+            setTextColor(Color.rgb(255, 174, 218))
+            textSize = 22f
+            gravity = Gravity.CENTER
+        }
         header.addView(
             title,
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
@@ -141,34 +217,49 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
             close,
             LinearLayout.LayoutParams(dp(44), ViewGroup.LayoutParams.WRAP_CONTENT),
         )
-        root.addView(
+        fullContent.addView(
             header,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ),
         )
-        root.addView(
+        fullContent.addView(
             detail,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ),
         )
-        collapse.setOnClickListener {
-            val collapsed = detail.visibility == View.VISIBLE
-            detail.visibility = if (collapsed) View.GONE else View.VISIBLE
-            collapse.text = if (collapsed) "＋" else "—"
-        }
+        minimizedCapsule.addView(
+            capsuleDot,
+            LinearLayout.LayoutParams(dp(24), ViewGroup.LayoutParams.MATCH_PARENT),
+        )
+        minimizedCapsule.addView(
+            capsuleText,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f),
+        )
+        minimizedCapsule.addView(
+            capsuleExpand,
+            LinearLayout.LayoutParams(dp(20), ViewGroup.LayoutParams.MATCH_PARENT),
+        )
+        fullContent.visibility = View.GONE
+        root.setPadding(0, 0, 0, 0)
+        root.addView(fullContent)
+        root.addView(
+            minimizedCapsule,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)),
+        )
         close.setOnClickListener {
             taskOverlayHiddenByUser = true
             removeTaskProgressOverlayInternal(keepTaskIdentity = true)
         }
         attachOverlayDrag(title, root, windowManager)
+        attachOverlayDrag(minimizedCapsule, root, windowManager)
 
         val params = WindowManager.LayoutParams(
-            dp(330),
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            dp(184),
+            dp(48),
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -179,12 +270,35 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
             x = dp(14)
             y = dp(70)
         }
+        collapse.contentDescription = "收起为悬浮胶囊"
+        collapse.setOnClickListener {
+            fullContent.visibility = View.GONE
+            minimizedCapsule.visibility = View.VISIBLE
+            taskOverlayExpanded = false
+            root.setPadding(0, 0, 0, 0)
+            params.width = dp(184)
+            params.height = dp(48)
+            root.background = taskOverlayCapsuleBackground(taskOverlayCompleted)
+            runCatching { windowManager.updateViewLayout(root, params) }
+        }
+        minimizedCapsule.setOnClickListener {
+            minimizedCapsule.visibility = View.GONE
+            fullContent.visibility = View.VISIBLE
+            taskOverlayExpanded = true
+            root.setPadding(dp(14), dp(10), dp(10), dp(10))
+            params.width = dp(330)
+            params.height = WindowManager.LayoutParams.WRAP_CONTENT
+            root.background = taskOverlayBackground(taskOverlayCompleted)
+            runCatching { windowManager.updateViewLayout(root, params) }
+        }
         runCatching { windowManager.addView(root, params) }
             .onFailure { return }
         taskOverlayView = root
         taskOverlayTitle = title
         taskOverlayDetail = detail
+        taskOverlayCapsuleText = capsuleText
         taskOverlayParams = params
+        taskOverlayExpanded = false
     }
 
     private fun attachOverlayDrag(
@@ -192,10 +306,12 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
         overlay: View,
         windowManager: WindowManager,
     ) {
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop.toFloat()
         var downX = 0f
         var downY = 0f
         var startX = 0
         var startY = 0
+        var dragging = false
         dragHandle.setOnTouchListener { _, event ->
             val params = taskOverlayParams
             when (event.actionMasked) {
@@ -204,9 +320,16 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
                     downY = event.rawY
                     startX = params?.x ?: 0
                     startY = params?.y ?: 0
+                    dragging = false
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    if (
+                        kotlin.math.abs(event.rawX - downX) >= touchSlop ||
+                        kotlin.math.abs(event.rawY - downY) >= touchSlop
+                    ) {
+                        dragging = true
+                    }
                     if (params != null) {
                         params.x = (startX + event.rawX - downX).toInt().coerceAtLeast(0)
                         params.y = (startY + event.rawY - downY).toInt().coerceAtLeast(0)
@@ -214,7 +337,12 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
                     }
                     true
                 }
-                else -> false
+                MotionEvent.ACTION_UP -> {
+                    if (!dragging) dragHandle.performClick()
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> true
+                else -> true
             }
         }
     }
@@ -229,7 +357,10 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
         taskOverlayView = null
         taskOverlayTitle = null
         taskOverlayDetail = null
+        taskOverlayCapsuleText = null
         taskOverlayParams = null
+        taskOverlayExpanded = false
+        taskOverlayCompleted = false
         if (!keepTaskIdentity) taskOverlayId = null
     }
 
@@ -245,6 +376,17 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
                 },
             )
             setStroke(dp(1), Color.argb(110, 255, 255, 255))
+        }
+
+    private fun taskOverlayCapsuleBackground(completed: Boolean): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(24).toFloat()
+            setColor(
+                if (completed) Color.argb(246, 31, 94, 72)
+                else Color.argb(246, 31, 35, 48),
+            )
+            setStroke(dp(2), Color.rgb(255, 107, 190))
         }
 
     private fun dp(value: Int): Int =
@@ -301,12 +443,18 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
-    fun observe(maxNodes: Int, includeText: Boolean): GuiObservation {
-        val root = rootInActiveWindow
+    fun observe(
+        maxNodes: Int,
+        includeText: Boolean,
+        displayId: Int? = null,
+    ): GuiObservation {
+        val root = rootForDisplay(displayId)
             ?: return GuiObservation(
                 success = false,
                 target = "android",
                 observationId = "",
+                application = latestWindowPackage,
+                windowTitle = latestObservedWindowClassName(latestWindowPackage),
                 source = "accessibility",
                 error = "当前窗口没有可访问的语义树"
             )
@@ -384,14 +532,18 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
             nodePaths.putAll(freshPaths)
         }
         val display = resources.displayMetrics
+        val rootPackage = root.packageName?.toString()?.trim()?.takeIf(String::isNotBlank)
         return GuiObservation(
             target = "android",
             observationId = prefix,
-            application = root.packageName?.toString(),
+            application = rootPackage,
             windowTitle = if (includeText) {
-                root.paneTitle?.toString() ?: root.className?.toString()
+                root.paneTitle?.toString()?.takeIf(String::isNotBlank)
+                    ?: root.className?.toString()?.takeIf(String::isNotBlank)
+                    ?: latestObservedWindowClassName(rootPackage)
             } else {
-                root.className?.toString()
+                root.className?.toString()?.takeIf(String::isNotBlank)
+                    ?: latestObservedWindowClassName(rootPackage)
             },
             width = display.widthPixels,
             height = display.heightPixels,
@@ -401,6 +553,11 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
             source = "accessibility"
         )
     }
+
+    fun latestObservedWindowPackage(): String? = latestWindowPackage
+
+    fun latestObservedWindowClassName(packageName: String? = latestWindowPackage): String? =
+        packageName?.let(latestWindowClassByPackage::get)
 
     fun click(nodeId: String, longClick: Boolean): Boolean {
         val node = resolveNode(nodeId) ?: return false
@@ -428,8 +585,8 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
         return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
     }
 
-    fun setFocusedText(text: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+    suspend fun setFocusedText(text: String, displayId: Int? = null): Boolean {
+        val root = rootForDisplay(displayId) ?: return false
         val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
             ?: findFirstEditable(root)
             ?: return false
@@ -439,7 +596,261 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
         val arguments = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
         }
-        return focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+        if (!focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) return false
+
+        // Some custom text fields (notably search pages rendered outside the normal Android
+        // widget tree) accept ACTION_SET_TEXT but silently discard the value. Treat the action
+        // result as an acknowledgement only; verify the refreshed focused/editable node before
+        // reporting success so the caller can fall back to an InputConnection when necessary.
+        val deadline = SystemClock.uptimeMillis() + FOCUSED_TEXT_VERIFY_TIMEOUT_MS
+        do {
+            delay(FOCUSED_TEXT_VERIFY_INTERVAL_MS)
+            val refreshedRoot = rootForDisplay(displayId)
+            val refreshed = refreshedRoot?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                ?: refreshedRoot?.let(::findFirstEditable)
+            if (refreshed?.text?.toString() == text) return true
+        } while (SystemClock.uptimeMillis() < deadline)
+        return false
+    }
+
+    /**
+     * Opens an app's own search entry and replaces any stale query through its semantic tree.
+     * This is intentionally app-agnostic: no activity, resource id, or coordinate is hardcoded.
+     */
+    suspend fun prepareSearchQuery(query: String, displayId: Int? = null): Boolean {
+        if (query.isBlank()) return false
+        val entryDeadline = SystemClock.uptimeMillis() + SEARCH_CONTROL_TIMEOUT_MS
+        var root: AccessibilityNodeInfo? = null
+        var searchEntry: AccessibilityNodeInfo? = null
+        while (SystemClock.uptimeMillis() < entryDeadline) {
+            root = rootForDisplay(displayId)
+            val editable = root?.let(::findFirstEditable)
+            if (editable != null) {
+                searchEntry = editable
+                break
+            }
+            searchEntry = root?.let(::findBestSearchEntry)
+            if (searchEntry != null) break
+            delay(180)
+        }
+        val initialRoot = root ?: return false
+        if (findFirstEditable(initialRoot) == null) {
+            val entry = searchEntry ?: return false
+            if (!clickNodeOrAncestor(entry)) return false
+        }
+        val editableDeadline = SystemClock.uptimeMillis() + SEARCH_CONTROL_TIMEOUT_MS
+        var editable: AccessibilityNodeInfo? = null
+        while (SystemClock.uptimeMillis() < editableDeadline) {
+            val freshRoot = rootForDisplay(displayId)
+            editable = freshRoot?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                ?: freshRoot?.let(::findFirstEditable)
+            if (editable != null) break
+            delay(180)
+        }
+        val target = editable ?: return false
+        target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        target.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        val arguments = Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, query)
+        }
+        return target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+    }
+
+    fun submitFocusedSearch(displayId: Int? = null): Boolean {
+        val root = rootForDisplay(displayId) ?: return false
+        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            ?: findFirstEditable(root)
+        if (focused != null && focused.performAction(
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id,
+            )
+        ) {
+            return true
+        }
+        val searchButton = findExactSearchButton(root) ?: return false
+        return clickNodeOrAncestor(searchButton)
+    }
+
+    private fun rootForDisplay(displayId: Int?): AccessibilityNodeInfo? {
+        val targetDisplayId = displayId ?: Display.DEFAULT_DISPLAY
+        val applicationRoot = windows
+            .asSequence()
+            .filter { window -> window.displayId == targetDisplayId }
+            // A Murong accessibility overlay and the IME can both sit above the target app.
+            // Phone observation/actions must use the real application window underneath.
+            .filter { window -> window.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+            .sortedByDescending { window -> window.layer }
+            .mapNotNull { window -> window.root }
+            .firstOrNull()
+        // rootInActiveWindow belongs to whichever display currently has accessibility focus.
+        // Falling back to it for an explicitly requested secondary display can pair a virtual
+        // display screenshot with the physical display's semantic tree and, worse, execute an
+        // action on the physical app. Only the default display may use that fallback.
+        return applicationRoot ?: if (targetDisplayId == Display.DEFAULT_DISPLAY) {
+            rootInActiveWindow
+        } else {
+            null
+        }
+    }
+
+    private fun findBestSearchEntry(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var best: AccessibilityNodeInfo? = null
+        var bestScore = 0
+        val rootBounds = Rect().also(root::getBoundsInScreen)
+        val rootWidth = rootBounds.width().coerceAtLeast(resources.displayMetrics.widthPixels)
+        val rootHeight = rootBounds.height().coerceAtLeast(resources.displayMetrics.heightPixels)
+        fun visit(node: AccessibilityNodeInfo) {
+            val text = node.text?.toString().orEmpty().lowercase()
+            val description = node.contentDescription?.toString().orEmpty().lowercase()
+            val resourceId = node.viewIdResourceName.orEmpty().lowercase()
+            val className = node.className?.toString().orEmpty().lowercase()
+            val bounds = Rect().also(node::getBoundsInScreen)
+            val resemblesTopSearchBar = bounds.top <= rootBounds.top + rootHeight * 28 / 100 &&
+                bounds.width() >= rootWidth * 35 / 100 &&
+                bounds.height() in 1..(rootHeight * 16 / 100) &&
+                (text.isNotBlank() || description.isNotBlank() || node.isClickable)
+            var score = 0
+            if (node.isEditable) score += 100
+            if ("search" in resourceId) score += 90
+            if ("搜索" in text || "搜索" in description) score += 80
+            if ("search" in text || "search" in description) score += 75
+            if ("edittext" in className) score += 70
+            if (resemblesTopSearchBar) score += 55
+            if (resemblesTopSearchBar && "text" in className) score += 10
+            if (node.isVisibleToUser && node.isEnabled && score > bestScore) {
+                best = node
+                bestScore = score
+            }
+            for (index in 0 until node.childCount) {
+                node.getChild(index)?.let(::visit)
+            }
+        }
+        visit(root)
+        return best
+    }
+
+    private fun findExactSearchButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val text = root.text?.toString()?.trim().orEmpty()
+        val description = root.contentDescription?.toString()?.trim().orEmpty()
+        if (root.isVisibleToUser && root.isEnabled &&
+            (text.equals("搜索", true) || description.equals("搜索", true) ||
+                text.equals("search", true) || description.equals("search", true))
+        ) {
+            return root
+        }
+        for (index in 0 until root.childCount) {
+            findExactSearchButton(root.getChild(index) ?: continue)?.let { return it }
+        }
+        return null
+    }
+
+    private fun clickNodeOrAncestor(node: AccessibilityNodeInfo): Boolean {
+        var current: AccessibilityNodeInfo? = node
+        repeat(MAX_ACTION_ANCESTORS) {
+            val candidate = current ?: return@repeat
+            if (candidate.isClickable && candidate.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                return true
+            }
+            current = candidate.parent
+        }
+        return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+    }
+
+    /**
+     * Opens an app's standard text-sharing surface with the body already populated. This removes
+     * fragile navigation and Unicode keyboard input from explicit "send a message" tasks. The
+     * target activity is resolved from Android's exported SEND handlers instead of an app-specific
+     * activity name; collection/favourite handlers are deprioritized when an app exposes several.
+     */
+    fun launchShareText(packageName: String, text: String): Boolean {
+        if (packageName.isBlank() || text.isBlank()) return false
+        val implicit = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            setPackage(packageName)
+            putExtra(Intent.EXTRA_TEXT, text)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val resolved = packageManager.queryIntentActivities(
+            implicit,
+            android.content.pm.PackageManager.MATCH_DEFAULT_ONLY,
+        ).sortedBy { candidate ->
+            val name = candidate.activityInfo.name.lowercase()
+            when {
+                listOf("favorite", "favourite", "collect", "addfavorite").any(name::contains) -> 2
+                "share" in name || "send" in name -> 0
+                else -> 1
+            }
+        }.firstOrNull() ?: return false
+        val explicit = Intent(implicit).apply {
+            component = ComponentName(resolved.activityInfo.packageName, resolved.activityInfo.name)
+        }
+        return runCatching {
+            startActivity(explicit)
+            true
+        }.getOrDefault(false)
+    }
+
+    /** Opens a package-owned deep link after Android confirms that the package resolves it. */
+    fun launchViewUri(packageName: String, uri: String): Boolean {
+        if (packageName.isBlank() || uri.isBlank()) return false
+        val implicit = Intent(Intent.ACTION_VIEW, Uri.parse(uri)).apply {
+            setPackage(packageName)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val resolved = packageManager.resolveActivity(
+            implicit,
+            android.content.pm.PackageManager.MATCH_DEFAULT_ONLY,
+        ) ?: return false
+        val explicit = Intent(implicit).apply {
+            component = ComponentName(resolved.activityInfo.packageName, resolved.activityInfo.name)
+        }
+        return runCatching {
+            startActivity(explicit)
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Last-resort Unicode input for apps that hide their editable node from accessibility.
+     * The caller must supply a positively verified field location. Android's paste toolbar is
+     * then found semantically by label, so neither an unrelated field nor the popup is guessed.
+     */
+    suspend fun pasteFromContextMenuAt(x: Int, y: Int): Boolean {
+        if (!tap(x, y, durationMillis = 700L)) return false
+        delay(350)
+        val pasteNode = findFirstNodeByLabels(
+            rootInActiveWindow,
+            setOf("粘贴", "paste"),
+        ) ?: return false
+        var current: AccessibilityNodeInfo? = pasteNode
+        repeat(MAX_ACTION_ANCESTORS) {
+            val candidate = current ?: return@repeat
+            if (candidate.isClickable && candidate.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                return true
+            }
+            current = candidate.parent
+        }
+        return pasteNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+    }
+
+    internal fun stageClipboardText(text: String): GuiClipboardSnapshot? {
+        val clipboard = getSystemService(ClipboardManager::class.java) ?: return null
+        val previous = runCatching { clipboard.primaryClip }
+        val staged = runCatching {
+            clipboard.setPrimaryClip(ClipData.newPlainText("Murong phone input", text))
+        }.isSuccess
+        if (!staged) return null
+        return GuiClipboardSnapshot(
+            previous = previous.getOrNull(),
+            wasReadable = previous.isSuccess,
+        )
+    }
+
+    internal fun restoreClipboard(snapshot: GuiClipboardSnapshot) {
+        if (!snapshot.wasReadable) return
+        val clipboard = getSystemService(ClipboardManager::class.java) ?: return
+        runCatching {
+            snapshot.previous?.let(clipboard::setPrimaryClip) ?: clipboard.clearPrimaryClip()
+        }
     }
 
     fun scroll(nodeId: String?, forward: Boolean): Boolean {
@@ -496,7 +907,52 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
         }
     )
 
-    suspend fun captureScreenshot(): GuiScreenshot = suspendCancellableCoroutine { continuation ->
+    suspend fun captureScreenshot(): GuiScreenshot {
+        val hiddenOverlay = hideTaskOverlayForAutomation()
+        return try {
+            withTimeout(SCREENSHOT_CAPTURE_TIMEOUT_MS) {
+                captureScreenshotWithoutTaskOverlay()
+            }
+        } finally {
+            restoreTaskOverlayAfterAutomation(hiddenOverlay)
+        }
+    }
+
+    internal suspend fun hideTaskOverlayForAutomation(): View? =
+        suspendCancellableCoroutine { continuation ->
+            mainHandler.post {
+                val overlay = taskOverlayView?.takeIf { view ->
+                    view.visibility == View.VISIBLE
+                }
+                if (overlay == null) {
+                    if (continuation.isActive) continuation.resume(null)
+                    return@post
+                }
+                overlay.visibility = View.INVISIBLE
+                // An INVISIBLE view no longer schedules its own draw callbacks. Give the
+                // compositor two display frames from the main handler instead of waiting on
+                // postOnAnimation, which would otherwise suspend forever.
+                mainHandler.postDelayed({
+                    if (continuation.isActive) continuation.resume(overlay)
+                }, SCREENSHOT_OVERLAY_HIDE_DELAY_MS)
+            }
+        }
+
+    internal fun restoreTaskOverlayAfterAutomation(hiddenOverlay: View?) {
+        hiddenOverlay ?: return
+        mainHandler.post {
+            if (
+                taskOverlayView === hiddenOverlay &&
+                !taskOverlayHiddenByUser &&
+                hiddenOverlay.isAttachedToWindow
+            ) {
+                hiddenOverlay.visibility = View.VISIBLE
+            }
+        }
+    }
+
+    private suspend fun captureScreenshotWithoutTaskOverlay(): GuiScreenshot =
+        suspendCancellableCoroutine { continuation ->
         takeScreenshot(
             Display.DEFAULT_DISPLAY,
             Executor { command -> mainExecutor.execute(command) },
@@ -596,6 +1052,20 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
         return null
     }
 
+    private fun findFirstNodeByLabels(
+        node: AccessibilityNodeInfo?,
+        labels: Set<String>,
+    ): AccessibilityNodeInfo? {
+        node ?: return null
+        val text = node.text?.toString()?.trim()?.lowercase().orEmpty()
+        val description = node.contentDescription?.toString()?.trim()?.lowercase().orEmpty()
+        if (text in labels || description in labels) return node
+        for (index in 0 until node.childCount) {
+            findFirstNodeByLabels(node.getChild(index), labels)?.let { return it }
+        }
+        return null
+    }
+
     private fun clearConnection() {
         removeTaskProgressOverlayInternal()
         if (instance === this) instance = null
@@ -622,6 +1092,11 @@ class AndroidGuiAccessibilityService : AccessibilityService() {
         private const val MAX_TRAVERSED_NODES = 5_000
         private const val MAX_NODE_TEXT_CHARS = 500
         private const val MAX_ACTION_ANCESTORS = 8
+        private const val SEARCH_CONTROL_TIMEOUT_MS = 4_000L
+        private const val FOCUSED_TEXT_VERIFY_TIMEOUT_MS = 360L
+        private const val FOCUSED_TEXT_VERIFY_INTERVAL_MS = 60L
+        private const val SCREENSHOT_OVERLAY_HIDE_DELAY_MS = 40L
+        private const val SCREENSHOT_CAPTURE_TIMEOUT_MS = 10_000L
         private const val ASSISTANT_PREFERENCES_NAME = "assistant_invocation"
         private const val KEY_VOLUME_CHORD_TRIPLE = "volume_chord_triple"
         private const val LEGACY_KEY_DOUBLE_VOLUME_UP = "double_volume_up"

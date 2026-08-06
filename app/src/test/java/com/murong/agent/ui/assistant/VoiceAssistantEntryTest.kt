@@ -15,4 +15,19 @@ class VoiceAssistantEntryTest {
             voiceAssistantLaunchAction(microphoneGranted = false)
         )
     }
+
+    @Test
+    fun `food delivery voice answer keeps original phone task context`() {
+        val continued = assistantFollowUpTaskText(
+            userText = "你自己看哪些好喝，点那个",
+            taskContext = "打开美团把地址更改到江苏省张家港市德积镇的地址点一杯蜜雪冰城",
+        )
+
+        assert(continued.contains("打开美团"))
+        assert(continued.contains("外卖续接选择：你自己看哪些好喝，点那个"))
+        assertEquals(
+            AssistantTaskKind.PHONE_FOREGROUND,
+            AssistantRequestRouter.classify(continued).kind,
+        )
+    }
 }

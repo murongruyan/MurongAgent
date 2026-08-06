@@ -89,7 +89,7 @@ internal fun WorkflowPlanPromptCard(
     isProcessing: Boolean,
     onFork: () -> Unit,
     onExecute: () -> Unit,
-    onModify: () -> Unit,
+    onModify: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     val chromeColor = rememberMurongChromeColor()
@@ -97,6 +97,8 @@ internal fun WorkflowPlanPromptCard(
     var localInteractionState by remember(presentation.requestId) {
         mutableStateOf(buildInitialWorkflowPlanInteractionState())
     }
+    var showModifyEditor by remember(presentation.requestId) { mutableStateOf(false) }
+    var modifyDraft by remember(presentation.requestId) { mutableStateOf("") }
     val currentInteractionState = interactionState ?: localInteractionState
     val updateInteractionState: (WorkflowPlanInteractionState) -> Unit = remember(
         onInteractionStateChange
@@ -124,55 +126,92 @@ internal fun WorkflowPlanPromptCard(
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         surfaceColorOverride = chromeColor.copy(alpha = 0.72f)
     ) {
-        if (sessionPresentation.collapsed) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "📋 执行计划",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = "${presentation.statusLabel} · ${presentation.progressLabel}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = mutedTextColor,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                MurongTagButton(
-                    text = "查看",
-                    onClick = {
-                        updateInteractionState(toggleWorkflowPlanCollapsed(currentInteractionState))
-                    }
-                )
-                MurongTagButton(
-                    text = "修改",
-                    onClick = { if (!isProcessing) onModify() }
-                )
-                Button(
-                    onClick = onExecute,
-                    enabled = !isProcessing,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (sessionPresentation.collapsed) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("✓ 确认执行", fontSize = 12.sp)
+                    Text(
+                        text = "📋 执行计划",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "${presentation.statusLabel} · ${presentation.progressLabel}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = mutedTextColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    MurongTagButton(
+                        text = "查看",
+                        onClick = {
+                            updateInteractionState(toggleWorkflowPlanCollapsed(currentInteractionState))
+                        }
+                    )
+                    MurongTagButton(
+                        text = "修改",
+                        onClick = { if (!isProcessing) showModifyEditor = !showModifyEditor }
+                    )
+                    Button(
+                        onClick = onExecute,
+                        enabled = !isProcessing,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                    ) {
+                        Text("✓ 确认执行", fontSize = 12.sp)
+                    }
+                }
+            } else {
+                WorkflowPlanPromptContent(
+                    presentation = presentation,
+                    interactionState = currentInteractionState,
+                    onInteractionStateChange = onInteractionStateChange,
+                    showDetailedHistory = false,
+                    isProcessing = isProcessing,
+                    onFork = onFork,
+                    onExecute = onExecute,
+                    onModify = { if (!isProcessing) showModifyEditor = !showModifyEditor },
+                    onDismiss = onDismiss
+                )
+            }
+            AnimatedVisibility(visible = showModifyEditor) {
+                Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    OutlinedTextField(
+                        value = modifyDraft,
+                        onValueChange = { modifyDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 2,
+                        maxLines = 4,
+                        placeholder = { Text("告诉模型要调整哪些步骤或目标…") }
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        MurongOutlinedActionButton(
+                            text = "收起",
+                            onClick = { showModifyEditor = false }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                val feedback = modifyDraft.trim()
+                                if (feedback.isNotBlank()) {
+                                    showModifyEditor = false
+                                    modifyDraft = ""
+                                    onModify(feedback)
+                                }
+                            },
+                            enabled = !isProcessing && modifyDraft.isNotBlank()
+                        ) {
+                            Text("重新生成计划")
+                        }
+                    }
                 }
             }
-        } else {
-            WorkflowPlanPromptContent(
-                presentation = presentation,
-                interactionState = currentInteractionState,
-                onInteractionStateChange = onInteractionStateChange,
-                showDetailedHistory = false,
-                isProcessing = isProcessing,
-                onFork = onFork,
-                onExecute = onExecute,
-                onModify = onModify,
-                onDismiss = onDismiss
-            )
         }
     }
 }
@@ -193,6 +232,7 @@ private fun WorkflowPlanPromptContainer(
         MurongGlassSurface(
             modifier = Modifier
                 .fillMaxWidth()
+                .weight(1f)
                 .padding(16.dp),
             shape = MaterialTheme.shapes.large,
             contentPadding = PaddingValues(16.dp)
@@ -202,6 +242,7 @@ private fun WorkflowPlanPromptContainer(
                 interactionState = interactionState,
                 onInteractionStateChange = onInteractionStateChange,
                 showDetailedHistory = showDetailedHistory,
+                allowContentScroll = true,
                 isProcessing = isProcessing,
                 onFork = onFork,
                 onExecute = onExecute,
@@ -218,6 +259,7 @@ private fun WorkflowPlanPromptContent(
     interactionState: WorkflowPlanInteractionState? = null,
     onInteractionStateChange: ((WorkflowPlanInteractionState) -> Unit)? = null,
     showDetailedHistory: Boolean,
+    allowContentScroll: Boolean = false,
     isProcessing: Boolean,
     onFork: () -> Unit,
     onExecute: () -> Unit,
@@ -250,7 +292,15 @@ private fun WorkflowPlanPromptContent(
     val surfaceColor = rememberMurongSurfaceColor()
     val mutedTextColor = rememberMurongMutedTextColor()
 
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val contentModifier = if (allowContentScroll) {
+        Modifier.verticalScroll(rememberScrollState())
+    } else {
+        Modifier
+    }
+    Column(
+        modifier = contentModifier,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -553,6 +603,7 @@ private fun ClarificationPromptContainer(
         MurongGlassSurface(
             modifier = Modifier
                 .fillMaxWidth()
+                .weight(1f)
                 .padding(16.dp),
             shape = MaterialTheme.shapes.large,
             contentPadding = PaddingValues(16.dp)
@@ -562,6 +613,7 @@ private fun ClarificationPromptContainer(
                 interactionState = interactionState,
                 onInteractionStateChange = onInteractionStateChange,
                 showDetailedHistory = showDetailedHistory,
+                allowContentScroll = true,
                 isProcessing = isProcessing,
                 onSubmit = onSubmit,
                 onDismiss = onDismiss
@@ -576,6 +628,7 @@ private fun ClarificationPromptContent(
     interactionState: ClarificationInteractionState? = null,
     onInteractionStateChange: ((ClarificationInteractionState) -> Unit)? = null,
     showDetailedHistory: Boolean,
+    allowContentScroll: Boolean = false,
     isProcessing: Boolean,
     onSubmit: (String) -> Unit,
     onDismiss: () -> Unit
@@ -606,7 +659,15 @@ private fun ClarificationPromptContent(
     val surfaceColor = rememberMurongSurfaceColor()
     val mutedTextColor = rememberMurongMutedTextColor()
 
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val contentModifier = if (allowContentScroll) {
+        Modifier.verticalScroll(rememberScrollState())
+    } else {
+        Modifier
+    }
+    Column(
+        modifier = contentModifier,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
         Text(
             text = presentation.title,
             style = MaterialTheme.typography.titleMedium,

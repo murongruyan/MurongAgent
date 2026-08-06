@@ -7,10 +7,10 @@ $ErrorActionPreference = "Stop"
 
 $desktopRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $sourceRoot = Join-Path $desktopRoot "vlm-runtime"
-$buildRoot = Join-Path $desktopRoot "build\vlm\$Architecture"
 $generatedRoot = Join-Path $desktopRoot "generated\vlm"
 $cacheBase = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { [System.IO.Path]::GetTempPath() }
 $cacheRoot = if ($env:MURONG_BUILD_CACHE) { $env:MURONG_BUILD_CACHE } else { Join-Path $cacheBase "MurongBuildCache" }
+$buildRoot = Join-Path $cacheRoot "desktop-vlm-build\$Architecture"
 $downloadRoot = Join-Path $cacheRoot "vlm"
 
 $mnnVersion = "3.5.0"

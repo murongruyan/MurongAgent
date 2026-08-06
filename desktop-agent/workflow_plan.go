@@ -23,7 +23,8 @@ const (
 	completeStepToolName  = "complete_step"
 )
 
-var workflowStepLinePattern = regexp.MustCompile(`^\s*(?:\d+[.)]|[-*•]|\[[ xX]\])\s+(.+?)\s*$`)
+var workflowNumberedStepLinePattern = regexp.MustCompile(`^\s*\d+[.)]\s+(.+?)\s*$`)
+var workflowFallbackStepLinePattern = regexp.MustCompile(`^\s*(?:[-*•]|\[[ xX]\])\s+(.+?)\s*$`)
 
 func parseDesktopWorkflowPlan(goal, rawPlan, sourceMessageID string, now int64) (*DesktopWorkflowPlan, error) {
 	goal = strings.TrimSpace(goal)
@@ -39,20 +40,30 @@ func parseDesktopWorkflowPlan(goal, rawPlan, sourceMessageID string, now int64) 
 		return nil, errors.New("计划缺少来源消息")
 	}
 	lines := strings.Split(rawPlan, "\n")
-	steps := []string{}
+	topLevelSteps := []string{}
+	fallbackSteps := []string{}
+	hasNumberedSteps := false
 	summary := ""
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
 		}
-		if match := workflowStepLinePattern.FindStringSubmatch(trimmed); len(match) == 2 {
+		if match := workflowNumberedStepLinePattern.FindStringSubmatch(line); len(match) == 2 {
+			hasNumberedSteps = true
 			step := truncateRunes(stripWorkflowMarkdown(match[1]), 500)
-			if step != "" && !containsFold(steps, step) {
-				steps = append(steps, step)
-				if len(steps) >= maxWorkflowPlanSteps {
-					break
-				}
+			if step != "" && !containsFold(topLevelSteps, step) && len(topLevelSteps) < maxWorkflowPlanSteps {
+				topLevelSteps = append(topLevelSteps, step)
+			}
+			continue
+		}
+		if match := workflowFallbackStepLinePattern.FindStringSubmatch(line); len(match) == 2 {
+			step := truncateRunes(stripWorkflowMarkdown(match[1]), 500)
+			if step != "" && !containsFold(fallbackSteps, step) && len(fallbackSteps) < maxWorkflowPlanSteps {
+				fallbackSteps = append(fallbackSteps, step)
+			}
+			if len(line) == len(strings.TrimLeft(line, " \t")) && step != "" && !containsFold(topLevelSteps, step) && len(topLevelSteps) < maxWorkflowPlanSteps {
+				topLevelSteps = append(topLevelSteps, step)
 			}
 			continue
 		}
@@ -68,6 +79,10 @@ func parseDesktopWorkflowPlan(goal, rawPlan, sourceMessageID string, now int64) 
 	}
 	if summary == "" {
 		summary = "按当前目标生成的执行计划"
+	}
+	steps := topLevelSteps
+	if !hasNumberedSteps {
+		steps = fallbackSteps
 	}
 	if len(steps) == 0 {
 		steps = []string{truncateRunes(summary, 500)}

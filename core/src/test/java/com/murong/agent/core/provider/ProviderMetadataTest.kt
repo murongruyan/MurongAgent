@@ -64,4 +64,14 @@ class ProviderMetadataTest {
         assertEquals("超高推理", provider.formatReasoningDisplayName("xhigh"))
         assertEquals("最大推理", provider.formatReasoningDisplayName("max"))
     }
+
+    @Test
+    fun modelScopeVisionPreset_matchesDocumentedVisionMcpEndpoint() {
+        val provider = ProviderRegistry.getProvider("modelscope-vision")
+            ?: error("ModelScope Vision provider missing")
+
+        assertEquals("魔搭 ModelScope Vision", provider.name)
+        assertEquals("https://api-inference.modelscope.cn/v1", provider.defaultBaseUrl)
+        assertEquals("Qwen/Qwen3-VL-30B-A3B-Instruct", provider.defaultModel)
+    }
 }

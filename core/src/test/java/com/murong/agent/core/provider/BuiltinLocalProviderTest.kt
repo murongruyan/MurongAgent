@@ -46,4 +46,63 @@ class BuiltinLocalProviderTest {
         assertFalse(prompt.contains("Android 的 gui 启动应用必须用"))
         assertFalse(prompt.contains("[AVAILABLE TOOLS]"))
     }
+
+    @Test
+    fun `tool request keeps the complete phone action system protocol`() {
+        val provider = BuiltinLocalProvider()
+        val method = BuiltinLocalProvider::class.java.getDeclaredMethod(
+            "buildLocalPrompt",
+            ChatRequest::class.java,
+        ).apply { isAccessible = true }
+        val protocolTail = "PHONE_PROTOCOL_TAIL"
+        val prompt = method.invoke(
+            provider,
+            ChatRequest(
+                messages = listOf(
+                    ChatMessage(
+                        role = "system",
+                        content = "x".repeat(1_500) + protocolTail,
+                    ),
+                    ChatMessage(role = "user", content = "操作手机"),
+                ),
+                model = "glm-edge-1.5b-chat",
+                tools = """[{"type":"function","function":{"name":"phone_action"}}]""",
+            ),
+        ) as String
+
+        assertTrue(prompt.contains(protocolTail))
+        assertTrue(prompt.contains("[AVAILABLE TOOLS]"))
+        assertTrue(prompt.contains("手机单步动作执行器"))
+        assertTrue(prompt.contains("这句话会原样显示给用户"))
+        assertTrue(prompt.contains("\"message\":\"看到目标按钮，准备点击\""))
+        assertFalse(prompt.contains("Android 的 gui 启动应用必须用"))
+    }
+
+    @Test
+    fun `phone action history keeps original task ahead of long observations`() {
+        val provider = BuiltinLocalProvider()
+        val method = BuiltinLocalProvider::class.java.getDeclaredMethod(
+            "buildLocalPrompt",
+            ChatRequest::class.java,
+        ).apply { isAccessible = true }
+        val task = "打开微信给慕容茹艳发送你好"
+        val prompt = method.invoke(
+            provider,
+            ChatRequest(
+                messages = listOf(
+                    ChatMessage(role = "system", content = "手机协议"),
+                    ChatMessage(role = "user", content = task),
+                    ChatMessage(
+                        role = "user",
+                        content = "第 2 步。当前应用：微信。\n" + "控件摘要".repeat(2_000),
+                    ),
+                ),
+                model = "qwen3.5-4b-pro",
+                tools = """[{"type":"function","function":{"name":"phone_action"}}]""",
+            ),
+        ) as String
+
+        assertTrue(prompt.contains(task))
+        assertTrue(prompt.contains("第 2 步。当前应用：微信"))
+    }
 }

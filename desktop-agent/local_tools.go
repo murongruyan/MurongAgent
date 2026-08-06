@@ -381,8 +381,14 @@ func runLocalTerminal(ctx context.Context, workspace *localWorkspace, backend Te
 		Stdout:   decodeCommandBytes(stdout.data),
 		Stderr:   decodeCommandBytes(stderr.data),
 	}
+	if result.TimedOut {
+		return result, fmt.Errorf("终端命令超过 %d 秒仍未结束，已停止；可拆分命令或显式提高 timeout_seconds", timeoutSeconds)
+	}
 	if runErr != nil && command.ProcessState == nil {
 		return result, runErr
+	}
+	if result.ExitCode != 0 {
+		return result, fmt.Errorf("终端命令退出码为 %d", result.ExitCode)
 	}
 	return result, nil
 }

@@ -229,3 +229,26 @@ func TestSessionMarkdownIsReadableAndExplicitlyNotImportFormat(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionExportsRedactCredentialsFromMessagesAndReasoning(t *testing.T) {
+	secret := "github" + "_pat_" + "abcdefghijklmnopqrstuvwxyz0123456789"
+	session := &ChatSession{ID: "session", Title: "脱敏", Messages: []ChatMessage{
+		{ID: "user", Role: "user", Content: "token=" + secret, CreatedAt: 1},
+		{ID: "assistant", Role: "assistant", Content: "已处理", Reasoning: "Authorization: Bearer " + secret, CreatedAt: 2},
+	}}
+	for name, export := range map[string]func(*ChatSession) ([]byte, error){
+		"json":           encodePortableSession,
+		"markdown":       exportSessionMarkdown,
+		"cross-platform": encodeCrossPlatformSession,
+	} {
+		t.Run(name, func(t *testing.T) {
+			data, err := export(session)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), secret) || !strings.Contains(string(data), "已脱敏") {
+				t.Fatalf("%s export did not redact credential material", name)
+			}
+		})
+	}
+}
