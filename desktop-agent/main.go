@@ -21,6 +21,9 @@ var applicationIcon []byte
 
 func main() {
 	prepareApplicationIdentity()
+	if err := ensureNativeProviderImportProtocol(); err != nil {
+		log.Printf("Murong 导入协议注册失败：%v", err)
+	}
 	instanceLock, primary, lockErr := acquireApplicationInstance(os.Args[1:])
 	if lockErr != nil {
 		log.Printf("Murong 单实例检查：%v", lockErr)

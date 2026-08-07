@@ -169,6 +169,9 @@ func validateDesktopCrossPlatformBackupState(state desktopCrossPlatformBackupSta
 	if state.DeviceState.CodexAuthJSON != nil {
 		return errors.New("跨端备份不得包含 Codex 登录")
 	}
+	if len(state.DeviceState.CodexAccounts) > 0 || state.DeviceState.CodexAccountSettings != nil || state.DeviceState.ActiveCodexAccountID != "" {
+		return errors.New("跨端备份不得包含 Codex 账号池")
+	}
 	for _, profile := range state.DeviceState.Providers {
 		if profile.APIKey != nil {
 			return errors.New("跨端备份不得包含 API Key")
@@ -176,6 +179,9 @@ func validateDesktopCrossPlatformBackupState(state desktopCrossPlatformBackupSta
 	}
 	if github := state.DeviceState.GitHub; github != nil && (github.Token != nil || strings.TrimSpace(github.ViewerLogin) != "") {
 		return errors.New("跨端备份不得包含 GitHub 登录状态")
+	}
+	if len(state.DeviceState.GitHubAccounts) > 0 || state.DeviceState.ActiveGitHubAccountID != "" {
+		return errors.New("跨端备份不得包含 GitHub 账号池")
 	}
 	if state.DeviceState.MCPCredentialsIncluded {
 		return errors.New("跨端备份不得声明 MCP 凭据")

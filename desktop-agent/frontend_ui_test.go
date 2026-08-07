@@ -6,16 +6,16 @@ import (
 	"testing"
 )
 
-func TestAsyncModelSelectorsCaptureTheEventTargetBeforeAwait(t *testing.T) {
+func TestHierarchicalModelSelectorCapturesTheActionBeforeAwait(t *testing.T) {
 	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	js := strings.ReplaceAll(string(script), "\r\n", "\n")
 	for _, marker := range []string{
-		"async function activateComposerModel(event) {\n  const target = event.currentTarget;",
-		"async function setComposerReasoningEffort(event) {\n  const target = event.currentTarget;",
-		"const selectedLabel = target?.selectedOptions?.[0]?.textContent",
+		"async function handleComposerAIConfigAction(event) {",
+		`const actionButton = event.target.closest("[data-ai-config-action]");`,
+		`const selectedLabel = actionButton?.querySelector("strong")?.textContent`,
 	} {
 		if !strings.Contains(js, marker) {
 			t.Fatalf("async model selector regression guard is missing %q", marker)
@@ -108,30 +108,81 @@ func TestDesktopShowsVersionAndChecksForUpdatesAtStartup(t *testing.T) {
 	}
 }
 
+func TestDesktopGitHubAccountPoolUsesThemedAccountManagement(t *testing.T) {
+	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := frontendAssets.ReadFile("frontend/dist/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, js, css := string(index), string(script), string(styles)
+	for _, marker := range []string{`id="github-account-list"`, `id="add-github-account"`, `id="github-account-remove-modal"`, `id="confirm-github-account-remove"`} {
+		if !strings.Contains(html, marker) {
+			t.Fatalf("desktop GitHub account pool UI is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{"function createGitHubAccountCard(account)", "backend().CreateGitHubAccount", "backend().ActivateGitHubAccount", "backend().RemoveGitHubAccount", "function requestGitHubAccountRemoval(accountId)"} {
+		if !strings.Contains(js, marker) {
+			t.Fatalf("desktop GitHub account pool wiring is missing %q", marker)
+		}
+	}
+	if strings.Contains(js, `window.confirm("移除 GitHub`) {
+		t.Fatal("GitHub account deletion must use the themed confirmation dialog")
+	}
+	for _, marker := range []string{".github-account-pool", ".github-account-card", ".github-account-confirm-panel"} {
+		if !strings.Contains(css, marker) {
+			t.Fatalf("desktop GitHub account pool styling is missing %q", marker)
+		}
+	}
+}
+
 func TestDesktopChatComposerKeepsPrimaryControlsVisible(t *testing.T) {
 	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
 	if err != nil {
 		t.Fatal(err)
 	}
-	html := string(index)
+	styles, err := frontendAssets.ReadFile("frontend/dist/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, css, js := string(index), string(styles), string(script)
 	for _, marker := range []string{
 		`id="toggle-summary-rail"`,
 		`id="toggle-bottom-terminal"`,
 		`id="toggle-workbench"`,
 		`id="composer-add"`,
-		`composer-model-control`,
-		`<span>模型</span>`,
-		`id="composer-model-select"`,
-		`composer-reasoning-control`,
-		`<span>推理</span>`,
-		`id="composer-reasoning-select"`,
+		`id="composer-ai-config-trigger"`,
+		`id="composer-ai-config-menu"`,
+		`id="composer-ai-config-back"`,
+		`id="composer-ai-config-list"`,
+		`id="composer-ai-config-summary"`,
 	} {
 		if !strings.Contains(html, marker) {
 			t.Fatalf("desktop chat UI is missing %q", marker)
 		}
 	}
-	if !strings.Contains(html, `<option value="xhigh">超高</option>`) || !strings.Contains(html, `<option value="max">最大</option>`) {
-		t.Fatal("desktop composer reasoning control is missing the full effort range")
+	for _, marker := range []string{`category: "connection", title: "后端与连接"`, `category: "model", title: "模型"`, `category: "reasoning"`, `function reasoningOptionsForProfile`, `supportedReasoningEfforts`, `backend().ActivateCodexAccount`} {
+		if !strings.Contains(js, marker) {
+			t.Fatalf("desktop hierarchical model selector wiring is missing %q", marker)
+		}
+	}
+	for _, marker := range []string{".composer-ai-config-trigger", ".composer-ai-config-menu", ".composer-ai-config-row"} {
+		if !strings.Contains(css, marker) {
+			t.Fatalf("desktop hierarchical model selector styling is missing %q", marker)
+		}
+	}
+	if strings.Contains(html, `id="composer-model-select"`) || strings.Contains(html, `id="composer-reasoning-select"`) {
+		t.Fatal("desktop composer must not keep the old flat native model selectors")
 	}
 	if strings.Contains(html, `data-composer-picker="files"`) {
 		t.Fatal("file and folder selection must live inside the plus menu, not beside it")
@@ -292,6 +343,33 @@ func TestDesktopOfficialProvidersAndWorkbenchFilesAreNativeAndUsable(t *testing.
 	} {
 		if !strings.Contains(all, marker) {
 			t.Fatalf("official provider or workbench UI is missing %q", marker)
+		}
+	}
+}
+
+func TestDesktopProviderImportRequiresPreviewAndShowsRestrictedUsageState(t *testing.T) {
+	index, err := frontendAssets.ReadFile("frontend/dist/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := frontendAssets.ReadFile("frontend/dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := frontendAssets.ReadFile("frontend/dist/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := string(index) + "\n" + string(script) + "\n" + string(styles)
+	for _, marker := range []string{
+		`id="provider-import-modal"`, `id="ccswitch-protocol-compatibility"`,
+		`id="provider-import-enable-usage"`, `id="provider-usage-summary"`,
+		`backend().GetPendingProviderImport()`, `backend().ConfirmProviderImport({`,
+		`backend().SetCCSwitchProtocolCompatibility`, `backend().RefreshProviderUsage`,
+		`原 JavaScript 不会执行`, `.provider-import-panel`,
+	} {
+		if !strings.Contains(all, marker) {
+			t.Fatalf("desktop provider import UI is missing %q", marker)
 		}
 	}
 }
@@ -602,7 +680,8 @@ func TestDesktopCodexProviderUsesBuiltinRuntimeAndReasoningControl(t *testing.T)
 	html, js := string(index), string(script)
 	for _, marker := range []string{
 		`value="codex-chatgpt"`, `Codex 运行时按需安装`, `id="start-codex-login"`,
-		`高级：使用外部 Codex CLI`, `id="reasoning-effort"`,
+		`高级：使用外部 Codex CLI`, `id="reasoning-effort"`, `id="codex-account-list"`,
+		`id="codex-auto-switch"`, `id="pin-session-codex-account"`,
 	} {
 		if !strings.Contains(html, marker) {
 			t.Fatalf("desktop Codex provider UI is missing %q", marker)
@@ -610,6 +689,8 @@ func TestDesktopCodexProviderUsesBuiltinRuntimeAndReasoningControl(t *testing.T)
 	}
 	for _, marker := range []string{
 		`backend().RefreshCodexStatus`, `backend().StartCodexDeviceLogin`,
+		`backend().CreateCodexAccount`, `backend().ActivateCodexAccount`,
+		`backend().UpdateCodexAccountPoolSettings`, `backend().SetSessionCodexAccountPinned`,
 		`window.runtime.EventsOn("codex:changed"`, `executablePath: profile.executablePath`, `formatCodexRateLimits`,
 		`function activeProviderSendProblem()`, `profile.providerId === "codex-chatgpt"`,
 		`const providerProblem = activeProviderSendProblem()`,

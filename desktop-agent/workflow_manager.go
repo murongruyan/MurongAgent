@@ -96,6 +96,39 @@ func (manager *savedWorkflowManager) SaveGitHubConfig(request SaveGitHubConfigRe
 	return manager.State(), nil
 }
 
+func (manager *savedWorkflowManager) CreateGitHubAccount(label string) (SavedWorkflowState, error) {
+	if err := manager.store.createGitHubAccount(label); err != nil {
+		return manager.State(), err
+	}
+	manager.mu.Lock()
+	manager.viewer = ""
+	manager.mu.Unlock()
+	manager.emitChanged()
+	return manager.State(), nil
+}
+
+func (manager *savedWorkflowManager) ActivateGitHubAccount(accountID string) (SavedWorkflowState, error) {
+	if err := manager.store.activateGitHubAccount(accountID); err != nil {
+		return manager.State(), err
+	}
+	manager.mu.Lock()
+	manager.viewer = ""
+	manager.mu.Unlock()
+	manager.emitChanged()
+	return manager.State(), nil
+}
+
+func (manager *savedWorkflowManager) RemoveGitHubAccount(accountID string) (SavedWorkflowState, error) {
+	if err := manager.store.removeGitHubAccount(accountID); err != nil {
+		return manager.State(), err
+	}
+	manager.mu.Lock()
+	manager.viewer = ""
+	manager.mu.Unlock()
+	manager.emitChanged()
+	return manager.State(), nil
+}
+
 func (manager *savedWorkflowManager) TestGitHubConnection() (SavedWorkflowState, error) {
 	config, err := manager.store.runtimeGitHub()
 	if err != nil {
@@ -105,6 +138,9 @@ func (manager *savedWorkflowManager) TestGitHubConnection() (SavedWorkflowState,
 	defer cancel()
 	viewer, err := testGitHubConnection(ctx, manager.githubHTTP, config)
 	if err != nil {
+		return manager.State(), err
+	}
+	if err := manager.store.updateActiveGitHubLogin(viewer); err != nil {
 		return manager.State(), err
 	}
 	manager.mu.Lock()

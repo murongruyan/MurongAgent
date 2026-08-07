@@ -119,3 +119,110 @@ func TestSavedWorkflowStoreValidatesTargetsAndIntervals(t *testing.T) {
 		t.Fatal("non-HTTPS GitHub API URL was accepted")
 	}
 }
+
+func TestSavedWorkflowStoreMigratesLegacyGitHubCredential(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "workflows.json")
+	protected, err := protectSecret([]byte("legacy-github-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := savedWorkflowDocument{
+		SchemaVersion: savedWorkflowSchemaVersion,
+		GitHub: savedGitHubConfig{
+			APIBaseURL:     "https://github.example/api/v3",
+			ProtectedToken: protected,
+		},
+		Workflows: []SavedWorkflowDefinition{},
+	}
+	if err := writeJSONAtomic(path, legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := newSavedWorkflowStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := store.state("")
+	if len(state.GitHubAccounts) != 1 || state.ActiveGitHubAccount != defaultGitHubAccountID || !state.GitHubAccounts[0].HasToken {
+		t.Fatalf("legacy GitHub credential was not migrated: %#v", state)
+	}
+	runtimeConfig, err := store.runtimeGitHub()
+	if err != nil || runtimeConfig.Token != "legacy-github-token" || runtimeConfig.APIBaseURL != "https://github.example/api/v3" {
+		t.Fatalf("migrated GitHub credential is unusable: %#v, %v", runtimeConfig, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "githubAccounts") || strings.Contains(string(data), "legacy-github-token") {
+		t.Fatalf("migrated file is incomplete or leaked plaintext: %s", data)
+	}
+}
+
+func TestSavedWorkflowStoreSwitchesAndRemovesGitHubAccounts(t *testing.T) {
+	store, err := newSavedWorkflowStore(filepath.Join(t.TempDir(), "workflows.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.saveGitHub(SaveGitHubConfigRequest{APIBaseURL: "https://api.github.com", Token: "token-one"}); err != nil {
+		t.Fatal(err)
+	}
+	firstID := store.state("").ActiveGitHubAccount
+	if err := store.createGitHubAccount("工作账号"); err != nil {
+		t.Fatal(err)
+	}
+	secondID := store.state("").ActiveGitHubAccount
+	if firstID == secondID {
+		t.Fatal("creating a GitHub account did not select a new account")
+	}
+	if err := store.saveGitHub(SaveGitHubConfigRequest{APIBaseURL: "https://github.example/api/v3", Token: "token-two"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.activateGitHubAccount(firstID); err != nil {
+		t.Fatal(err)
+	}
+	if config, err := store.runtimeGitHub(); err != nil || config.Token != "token-one" || config.APIBaseURL != "https://api.github.com" {
+		t.Fatalf("switching to the first account selected the wrong credential: %#v, %v", config, err)
+	}
+	if err := store.removeGitHubAccount(firstID); err != nil {
+		t.Fatal(err)
+	}
+	state := store.state("")
+	if len(state.GitHubAccounts) != 1 || state.ActiveGitHubAccount != secondID {
+		t.Fatalf("removing the active account did not select the remaining login: %#v", state)
+	}
+	if config, err := store.runtimeGitHub(); err != nil || config.Token != "token-two" {
+		t.Fatalf("remaining account credential was lost: %#v, %v", config, err)
+	}
+}
+
+func TestSavedWorkflowStoreImportsGitHubPoolIntoLocalProtection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "workflows.json")
+	store, err := newSavedWorkflowStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstToken := "synced-token-one"
+	secondToken := "synced-token-two"
+	imported, err := store.importGitHubAccounts([]githubAccountTransfer{
+		{ID: "github-sync-one", Label: "个人", Login: "murong-one", APIBaseURL: "https://api.github.com", Token: &firstToken},
+		{ID: "github-sync-two", Label: "工作", Login: "murong-two", APIBaseURL: "https://github.example/api/v3", Token: &secondToken},
+	}, "github-sync-two")
+	if err != nil || !imported {
+		t.Fatalf("GitHub account pool import failed: imported=%t err=%v", imported, err)
+	}
+	state := store.state("")
+	if len(state.GitHubAccounts) != 3 || state.ActiveGitHubAccount != "github-sync-two" {
+		t.Fatalf("GitHub account pool was not merged: %#v", state)
+	}
+	if config, err := store.runtimeGitHub(); err != nil || config.Token != secondToken || config.APIBaseURL != "https://github.example/api/v3" {
+		t.Fatalf("imported active account is unusable: %#v, %v", config, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), firstToken) || strings.Contains(string(data), secondToken) {
+		t.Fatal("synced GitHub tokens were persisted as plaintext")
+	}
+}

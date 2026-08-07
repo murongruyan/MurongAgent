@@ -3,7 +3,7 @@ package main
 import desktopbridge "github.com/murong-agent/desktop-bridge"
 
 const (
-	desktopAgentVersion = "1.37"
+	desktopAgentVersion = "1.38"
 	approvalReadOnly    = "readonly"
 	approvalAskAll      = "ask"
 	approvalAllowlist   = "allowlist"
@@ -11,42 +11,60 @@ const (
 )
 
 type desktopConfig struct {
-	SchemaVersion             int                         `json:"schemaVersion"`
-	ProjectPath               string                      `json:"projectPath"`
-	BaseURL                   string                      `json:"baseUrl"`
-	Model                     string                      `json:"model"`
-	ProtectedAPIKey           string                      `json:"protectedApiKey,omitempty"`
-	ApprovalMode              string                      `json:"approvalMode"`
-	Allowlist                 []string                    `json:"allowlist,omitempty"`
-	MaxToolIterations         int                         `json:"maxToolIterations"`
-	SystemPrompt              string                      `json:"systemPrompt"`
-	ResponseVerbosity         string                      `json:"responseVerbosity"`
-	Temperature               float64                     `json:"temperature"`
-	MaxTokens                 int                         `json:"maxTokens"`
-	EnableMultimodalMessages  bool                        `json:"enableMultimodalMessages"`
-	GuiInferenceMode          string                      `json:"guiInferenceMode"`
-	GuiLocalBaseURL           string                      `json:"guiLocalBaseUrl"`
-	GuiLocalModel             string                      `json:"guiLocalModel"`
-	GuiAllowRemoteSemantic    bool                        `json:"guiAllowRemoteSemanticTree"`
-	GuiAllowRemoteScreenshots bool                        `json:"guiAllowRemoteScreenshots"`
-	GuiAllowRemoteFullScreen  bool                        `json:"guiAllowRemoteFullScreen"`
-	PlannerProfileEnabled     bool                        `json:"plannerProfileEnabled"`
-	PlannerModel              string                      `json:"plannerModel,omitempty"`
-	PlannerReasoningEffort    string                      `json:"plannerReasoningEffort,omitempty"`
-	SubagentProfileEnabled    bool                        `json:"subagentDefaultProfileEnabled"`
-	SubagentModel             string                      `json:"subagentDefaultModel,omitempty"`
-	SubagentReasoningEffort   string                      `json:"subagentDefaultReasoningEffort,omitempty"`
-	GlobalRules               []GlobalRule                `json:"globalRules,omitempty"`
-	GlobalMemories            []GlobalMemory              `json:"globalMemories,omitempty"`
-	GlobalSkills              []GlobalSkill               `json:"globalSkills,omitempty"`
-	ProjectKnowledge          map[string]KnowledgeLibrary `json:"projectKnowledge,omitempty"`
-	ActiveProviderProfileID   string                      `json:"activeProviderProfileId"`
-	ProviderProfiles          []ProviderProfile           `json:"providerProfiles,omitempty"`
-	EnabledBuiltinTools       []string                    `json:"enabledBuiltinTools"`
-	EnabledFileOperations     []string                    `json:"enabledFileOperations"`
-	ProjectToolPreferences    map[string]ToolPreferences  `json:"projectToolPreferences,omitempty"`
-	RecentProjects            []RecentProjectRecord       `json:"recentProjects,omitempty"`
-	MCPServers                []MCPServerConfig           `json:"mcpServers,omitempty"`
+	SchemaVersion                    int                         `json:"schemaVersion"`
+	ProjectPath                      string                      `json:"projectPath"`
+	BaseURL                          string                      `json:"baseUrl"`
+	Model                            string                      `json:"model"`
+	ProtectedAPIKey                  string                      `json:"protectedApiKey,omitempty"`
+	ApprovalMode                     string                      `json:"approvalMode"`
+	Allowlist                        []string                    `json:"allowlist,omitempty"`
+	MaxToolIterations                int                         `json:"maxToolIterations"`
+	SystemPrompt                     string                      `json:"systemPrompt"`
+	ResponseVerbosity                string                      `json:"responseVerbosity"`
+	Temperature                      float64                     `json:"temperature"`
+	MaxTokens                        int                         `json:"maxTokens"`
+	EnableMultimodalMessages         bool                        `json:"enableMultimodalMessages"`
+	GuiInferenceMode                 string                      `json:"guiInferenceMode"`
+	GuiLocalBaseURL                  string                      `json:"guiLocalBaseUrl"`
+	GuiLocalModel                    string                      `json:"guiLocalModel"`
+	GuiAllowRemoteSemantic           bool                        `json:"guiAllowRemoteSemanticTree"`
+	GuiAllowRemoteScreenshots        bool                        `json:"guiAllowRemoteScreenshots"`
+	GuiAllowRemoteFullScreen         bool                        `json:"guiAllowRemoteFullScreen"`
+	VisionRoutingEnabled             bool                        `json:"visionRoutingEnabled"`
+	VisionProviderProfileID          string                      `json:"visionProviderProfileId,omitempty"`
+	VisionModel                      string                      `json:"visionModel,omitempty"`
+	VisionCustomBaseURL              string                      `json:"visionCustomBaseUrl,omitempty"`
+	ProtectedVisionAPIKey            string                      `json:"protectedVisionApiKey,omitempty"`
+	ImageGenerationProviderProfileID string                      `json:"imageGenerationProviderProfileId,omitempty"`
+	ImageGenerationModel             string                      `json:"imageGenerationModel,omitempty"`
+	ImageGenerationCustomBaseURL     string                      `json:"imageGenerationCustomBaseUrl,omitempty"`
+	ProtectedImageGenerationAPIKey   string                      `json:"protectedImageGenerationApiKey,omitempty"`
+	ImageGenerationSize              string                      `json:"imageGenerationSize,omitempty"`
+	ImageGenerationQuality           string                      `json:"imageGenerationQuality,omitempty"`
+	ImageGenerationFormat            string                      `json:"imageGenerationFormat,omitempty"`
+	ImageGenerationCompression       int                         `json:"imageGenerationCompression,omitempty"`
+	ImageGenerationPartialImages     int                         `json:"imageGenerationPartialImages,omitempty"`
+	ImageUpscaleBaseURL              string                      `json:"imageUpscaleBaseUrl,omitempty"`
+	ImageUpscaleModel                string                      `json:"imageUpscaleModel,omitempty"`
+	ProtectedImageUpscaleAPIKey      string                      `json:"protectedImageUpscaleApiKey,omitempty"`
+	ImageUpscaleScale                int                         `json:"imageUpscaleScale,omitempty"`
+	PlannerProfileEnabled            bool                        `json:"plannerProfileEnabled"`
+	PlannerModel                     string                      `json:"plannerModel,omitempty"`
+	PlannerReasoningEffort           string                      `json:"plannerReasoningEffort,omitempty"`
+	SubagentProfileEnabled           bool                        `json:"subagentDefaultProfileEnabled"`
+	SubagentModel                    string                      `json:"subagentDefaultModel,omitempty"`
+	SubagentReasoningEffort          string                      `json:"subagentDefaultReasoningEffort,omitempty"`
+	GlobalRules                      []GlobalRule                `json:"globalRules,omitempty"`
+	GlobalMemories                   []GlobalMemory              `json:"globalMemories,omitempty"`
+	GlobalSkills                     []GlobalSkill               `json:"globalSkills,omitempty"`
+	ProjectKnowledge                 map[string]KnowledgeLibrary `json:"projectKnowledge,omitempty"`
+	ActiveProviderProfileID          string                      `json:"activeProviderProfileId"`
+	ProviderProfiles                 []ProviderProfile           `json:"providerProfiles,omitempty"`
+	EnabledBuiltinTools              []string                    `json:"enabledBuiltinTools"`
+	EnabledFileOperations            []string                    `json:"enabledFileOperations"`
+	ProjectToolPreferences           map[string]ToolPreferences  `json:"projectToolPreferences,omitempty"`
+	RecentProjects                   []RecentProjectRecord       `json:"recentProjects,omitempty"`
+	MCPServers                       []MCPServerConfig           `json:"mcpServers,omitempty"`
 }
 
 const (
@@ -327,70 +345,109 @@ type ProjectKnowledgeSnapshot struct {
 }
 
 type PublicDesktopConfig struct {
-	ProjectPath               string                  `json:"projectPath"`
-	BaseURL                   string                  `json:"baseUrl"`
-	Model                     string                  `json:"model"`
-	HasAPIKey                 bool                    `json:"hasApiKey"`
-	ApprovalMode              string                  `json:"approvalMode"`
-	Allowlist                 []string                `json:"allowlist"`
-	MaxToolIterations         int                     `json:"maxToolIterations"`
-	SystemPrompt              string                  `json:"systemPrompt"`
-	ResponseVerbosity         string                  `json:"responseVerbosity"`
-	Temperature               float64                 `json:"temperature"`
-	MaxTokens                 int                     `json:"maxTokens"`
-	EnableMultimodalMessages  bool                    `json:"enableMultimodalMessages"`
-	GuiInferenceMode          string                  `json:"guiInferenceMode"`
-	GuiLocalBaseURL           string                  `json:"guiLocalBaseUrl"`
-	GuiLocalModel             string                  `json:"guiLocalModel"`
-	GuiAllowRemoteSemantic    bool                    `json:"guiAllowRemoteSemanticTree"`
-	GuiAllowRemoteScreenshots bool                    `json:"guiAllowRemoteScreenshots"`
-	GuiAllowRemoteFullScreen  bool                    `json:"guiAllowRemoteFullScreen"`
-	PlannerProfileEnabled     bool                    `json:"plannerProfileEnabled"`
-	PlannerModel              string                  `json:"plannerModel"`
-	PlannerReasoningEffort    string                  `json:"plannerReasoningEffort"`
-	SubagentProfileEnabled    bool                    `json:"subagentDefaultProfileEnabled"`
-	SubagentModel             string                  `json:"subagentDefaultModel"`
-	SubagentReasoningEffort   string                  `json:"subagentDefaultReasoningEffort"`
-	ActiveProviderProfileID   string                  `json:"activeProviderProfileId"`
-	ProviderProfiles          []PublicProviderProfile `json:"providerProfiles"`
-	EnabledBuiltinTools       []string                `json:"enabledBuiltinTools"`
-	EnabledFileOperations     []string                `json:"enabledFileOperations"`
-	RecentProjects            []RecentProject         `json:"recentProjects"`
+	ProjectPath                      string                  `json:"projectPath"`
+	BaseURL                          string                  `json:"baseUrl"`
+	Model                            string                  `json:"model"`
+	HasAPIKey                        bool                    `json:"hasApiKey"`
+	ApprovalMode                     string                  `json:"approvalMode"`
+	Allowlist                        []string                `json:"allowlist"`
+	MaxToolIterations                int                     `json:"maxToolIterations"`
+	SystemPrompt                     string                  `json:"systemPrompt"`
+	ResponseVerbosity                string                  `json:"responseVerbosity"`
+	Temperature                      float64                 `json:"temperature"`
+	MaxTokens                        int                     `json:"maxTokens"`
+	EnableMultimodalMessages         bool                    `json:"enableMultimodalMessages"`
+	GuiInferenceMode                 string                  `json:"guiInferenceMode"`
+	GuiLocalBaseURL                  string                  `json:"guiLocalBaseUrl"`
+	GuiLocalModel                    string                  `json:"guiLocalModel"`
+	GuiAllowRemoteSemantic           bool                    `json:"guiAllowRemoteSemanticTree"`
+	GuiAllowRemoteScreenshots        bool                    `json:"guiAllowRemoteScreenshots"`
+	GuiAllowRemoteFullScreen         bool                    `json:"guiAllowRemoteFullScreen"`
+	VisionRoutingEnabled             bool                    `json:"visionRoutingEnabled"`
+	VisionProviderProfileID          string                  `json:"visionProviderProfileId,omitempty"`
+	VisionModel                      string                  `json:"visionModel,omitempty"`
+	VisionCustomBaseURL              string                  `json:"visionCustomBaseUrl,omitempty"`
+	VisionHasAPIKey                  bool                    `json:"visionHasApiKey"`
+	ImageGenerationProviderProfileID string                  `json:"imageGenerationProviderProfileId,omitempty"`
+	ImageGenerationModel             string                  `json:"imageGenerationModel,omitempty"`
+	ImageGenerationCustomBaseURL     string                  `json:"imageGenerationCustomBaseUrl,omitempty"`
+	ImageGenerationHasAPIKey         bool                    `json:"imageGenerationHasApiKey"`
+	ImageGenerationSize              string                  `json:"imageGenerationSize,omitempty"`
+	ImageGenerationQuality           string                  `json:"imageGenerationQuality,omitempty"`
+	ImageGenerationFormat            string                  `json:"imageGenerationFormat,omitempty"`
+	ImageGenerationCompression       int                     `json:"imageGenerationCompression,omitempty"`
+	ImageGenerationPartialImages     int                     `json:"imageGenerationPartialImages,omitempty"`
+	ImageUpscaleBaseURL              string                  `json:"imageUpscaleBaseUrl,omitempty"`
+	ImageUpscaleModel                string                  `json:"imageUpscaleModel,omitempty"`
+	ImageUpscaleHasAPIKey            bool                    `json:"imageUpscaleHasApiKey"`
+	ImageUpscaleScale                int                     `json:"imageUpscaleScale,omitempty"`
+	PlannerProfileEnabled            bool                    `json:"plannerProfileEnabled"`
+	PlannerModel                     string                  `json:"plannerModel"`
+	PlannerReasoningEffort           string                  `json:"plannerReasoningEffort"`
+	SubagentProfileEnabled           bool                    `json:"subagentDefaultProfileEnabled"`
+	SubagentModel                    string                  `json:"subagentDefaultModel"`
+	SubagentReasoningEffort          string                  `json:"subagentDefaultReasoningEffort"`
+	ActiveProviderProfileID          string                  `json:"activeProviderProfileId"`
+	ProviderProfiles                 []PublicProviderProfile `json:"providerProfiles"`
+	EnabledBuiltinTools              []string                `json:"enabledBuiltinTools"`
+	EnabledFileOperations            []string                `json:"enabledFileOperations"`
+	RecentProjects                   []RecentProject         `json:"recentProjects"`
 }
 
 type SaveSettingsRequest struct {
-	ProjectPath                string                `json:"projectPath"`
-	BaseURL                    string                `json:"baseUrl"`
-	Model                      string                `json:"model"`
-	APIKey                     string                `json:"apiKey"`
-	ClearAPIKey                bool                  `json:"clearApiKey"`
-	ApprovalMode               string                `json:"approvalMode"`
-	Allowlist                  []string              `json:"allowlist"`
-	MaxToolIterations          int                   `json:"maxToolIterations"`
-	SystemPrompt               string                `json:"systemPrompt"`
-	ResponseVerbosity          string                `json:"responseVerbosity"`
-	Temperature                float64               `json:"temperature"`
-	MaxTokens                  int                   `json:"maxTokens"`
-	EnableMultimodalMessages   bool                  `json:"enableMultimodalMessages"`
-	GuiInferenceMode           *string               `json:"guiInferenceMode,omitempty"`
-	GuiLocalBaseURL            *string               `json:"guiLocalBaseUrl,omitempty"`
-	GuiLocalModel              *string               `json:"guiLocalModel,omitempty"`
-	GuiAllowRemoteSemantic     *bool                 `json:"guiAllowRemoteSemanticTree,omitempty"`
-	GuiAllowRemoteScreenshots  *bool                 `json:"guiAllowRemoteScreenshots,omitempty"`
-	GuiAllowRemoteFullScreen   *bool                 `json:"guiAllowRemoteFullScreen,omitempty"`
-	PlannerProfileEnabled      bool                  `json:"plannerProfileEnabled"`
-	PlannerModel               string                `json:"plannerModel"`
-	PlannerReasoningEffort     string                `json:"plannerReasoningEffort"`
-	SubagentProfileEnabled     bool                  `json:"subagentDefaultProfileEnabled"`
-	SubagentModel              string                `json:"subagentDefaultModel"`
-	SubagentReasoningEffort    string                `json:"subagentDefaultReasoningEffort"`
-	ActiveProviderProfileID    string                `json:"activeProviderProfileId"`
-	ProviderProfiles           []SaveProviderProfile `json:"providerProfiles"`
-	EnabledBuiltinTools        []string              `json:"enabledBuiltinTools"`
-	EnabledFileOperations      []string              `json:"enabledFileOperations"`
-	SaveProjectToolPreferences bool                  `json:"saveProjectToolPreferences"`
-	UseGlobalProjectTools      bool                  `json:"useGlobalProjectTools"`
-	ProjectTools               ToolPreferences       `json:"projectTools"`
+	ProjectPath                      string                `json:"projectPath"`
+	BaseURL                          string                `json:"baseUrl"`
+	Model                            string                `json:"model"`
+	APIKey                           string                `json:"apiKey"`
+	ClearAPIKey                      bool                  `json:"clearApiKey"`
+	ApprovalMode                     string                `json:"approvalMode"`
+	Allowlist                        []string              `json:"allowlist"`
+	MaxToolIterations                int                   `json:"maxToolIterations"`
+	SystemPrompt                     string                `json:"systemPrompt"`
+	ResponseVerbosity                string                `json:"responseVerbosity"`
+	Temperature                      float64               `json:"temperature"`
+	MaxTokens                        int                   `json:"maxTokens"`
+	EnableMultimodalMessages         bool                  `json:"enableMultimodalMessages"`
+	GuiInferenceMode                 *string               `json:"guiInferenceMode,omitempty"`
+	GuiLocalBaseURL                  *string               `json:"guiLocalBaseUrl,omitempty"`
+	GuiLocalModel                    *string               `json:"guiLocalModel,omitempty"`
+	GuiAllowRemoteSemantic           *bool                 `json:"guiAllowRemoteSemanticTree,omitempty"`
+	GuiAllowRemoteScreenshots        *bool                 `json:"guiAllowRemoteScreenshots,omitempty"`
+	GuiAllowRemoteFullScreen         *bool                 `json:"guiAllowRemoteFullScreen,omitempty"`
+	VisionRoutingEnabled             *bool                 `json:"visionRoutingEnabled,omitempty"`
+	VisionProviderProfileID          *string               `json:"visionProviderProfileId,omitempty"`
+	VisionModel                      *string               `json:"visionModel,omitempty"`
+	VisionCustomBaseURL              *string               `json:"visionCustomBaseUrl,omitempty"`
+	VisionAPIKey                     string                `json:"visionApiKey,omitempty"`
+	ClearVisionAPIKey                bool                  `json:"clearVisionApiKey,omitempty"`
+	ImageGenerationProviderProfileID *string               `json:"imageGenerationProviderProfileId,omitempty"`
+	ImageGenerationModel             *string               `json:"imageGenerationModel,omitempty"`
+	ImageGenerationCustomBaseURL     *string               `json:"imageGenerationCustomBaseUrl,omitempty"`
+	ImageGenerationAPIKey            string                `json:"imageGenerationApiKey,omitempty"`
+	ClearImageGenerationAPIKey       bool                  `json:"clearImageGenerationApiKey,omitempty"`
+	ImageGenerationSize              *string               `json:"imageGenerationSize,omitempty"`
+	ImageGenerationQuality           *string               `json:"imageGenerationQuality,omitempty"`
+	ImageGenerationFormat            *string               `json:"imageGenerationFormat,omitempty"`
+	ImageGenerationCompression       *int                  `json:"imageGenerationCompression,omitempty"`
+	ImageGenerationPartialImages     *int                  `json:"imageGenerationPartialImages,omitempty"`
+	ImageUpscaleBaseURL              *string               `json:"imageUpscaleBaseUrl,omitempty"`
+	ImageUpscaleModel                *string               `json:"imageUpscaleModel,omitempty"`
+	ImageUpscaleAPIKey               string                `json:"imageUpscaleApiKey,omitempty"`
+	ClearImageUpscaleAPIKey          bool                  `json:"clearImageUpscaleApiKey,omitempty"`
+	ImageUpscaleScale                *int                  `json:"imageUpscaleScale,omitempty"`
+	PlannerProfileEnabled            bool                  `json:"plannerProfileEnabled"`
+	PlannerModel                     string                `json:"plannerModel"`
+	PlannerReasoningEffort           string                `json:"plannerReasoningEffort"`
+	SubagentProfileEnabled           bool                  `json:"subagentDefaultProfileEnabled"`
+	SubagentModel                    string                `json:"subagentDefaultModel"`
+	SubagentReasoningEffort          string                `json:"subagentDefaultReasoningEffort"`
+	ActiveProviderProfileID          string                `json:"activeProviderProfileId"`
+	ProviderProfiles                 []SaveProviderProfile `json:"providerProfiles"`
+	EnabledBuiltinTools              []string              `json:"enabledBuiltinTools"`
+	EnabledFileOperations            []string              `json:"enabledFileOperations"`
+	SaveProjectToolPreferences       bool                  `json:"saveProjectToolPreferences"`
+	UseGlobalProjectTools            bool                  `json:"useGlobalProjectTools"`
+	ProjectTools                     ToolPreferences       `json:"projectTools"`
 }
 
 type ChatMessage struct {
@@ -400,6 +457,8 @@ type ChatMessage struct {
 	Goal                    string                   `json:"goal,omitempty"`
 	Reasoning               string                   `json:"reasoning,omitempty"`
 	ImageAttachments        []MessageImageAttachment `json:"imageAttachments,omitempty"`
+	ImageAnalysis           string                   `json:"imageAnalysis,omitempty"`
+	ImageGeneration         *ImageGenerationMessage  `json:"imageGeneration,omitempty"`
 	CreatedAt               int64                    `json:"createdAt"`
 	Kind                    string                   `json:"kind,omitempty"`
 	ToolName                string                   `json:"toolName,omitempty"`
@@ -413,14 +472,37 @@ type ChatMessage struct {
 	WorkspaceReview         *WorkspaceReview         `json:"workspaceReview,omitempty"`
 }
 
+type ImageGenerationMessage struct {
+	Prompt            string `json:"prompt"`
+	ProviderProfileID string `json:"providerProfileId,omitempty"`
+	Model             string `json:"model,omitempty"`
+	Status            string `json:"status"`
+	Stage             string `json:"stage,omitempty"`
+	Error             string `json:"error,omitempty"`
+	Operation         string `json:"operation,omitempty"`
+	SourceMessageID   string `json:"sourceMessageId,omitempty"`
+	CreatedAt         int64  `json:"createdAt"`
+}
+
+type GenerateImageRequest struct {
+	SessionID string `json:"sessionId"`
+	Prompt    string `json:"prompt"`
+}
+
+type UpscaleImageRequest struct {
+	SessionID string `json:"sessionId"`
+	MessageID string `json:"messageId"`
+}
+
 type MessageImageAttachment struct {
-	ID        string `json:"id"`
-	FileName  string `json:"fileName"`
-	MimeType  string `json:"mimeType"`
-	CacheFile string `json:"cacheFile"`
-	Width     int    `json:"width,omitempty"`
-	Height    int    `json:"height,omitempty"`
-	SizeBytes int64  `json:"sizeBytes"`
+	ID             string `json:"id"`
+	FileName       string `json:"fileName"`
+	MimeType       string `json:"mimeType"`
+	CacheFile      string `json:"cacheFile"`
+	Width          int    `json:"width,omitempty"`
+	Height         int    `json:"height,omitempty"`
+	SizeBytes      int64  `json:"sizeBytes"`
+	HighResolution bool   `json:"highResolution,omitempty"`
 }
 
 type SelectedChatImage struct {
@@ -538,6 +620,8 @@ type ChatSession struct {
 	CodexThreadID          string                  `json:"codexThreadId,omitempty"`
 	CodexSyncedID          string                  `json:"codexSyncedMessageId,omitempty"`
 	CodexToolsVersion      int                     `json:"codexToolsVersion,omitempty"`
+	CodexAccountID         string                  `json:"codexAccountId,omitempty"`
+	CodexAccountPinned     bool                    `json:"codexAccountPinned,omitempty"`
 	Messages               []ChatMessage           `json:"messages"`
 	BackgroundSubagentJobs []SubagentBackgroundJob `json:"backgroundSubagentJobs,omitempty"`
 	ExecutionHandoff       SessionExecutionHandoff `json:"executionHandoff,omitempty"`
@@ -592,6 +676,17 @@ type CodexRuntimeRequest struct {
 	ExecutablePath string `json:"executablePath"`
 }
 
+type CodexAccountRuntimeRequest struct {
+	ExecutablePath string `json:"executablePath"`
+	AccountID      string `json:"accountId,omitempty"`
+	Label          string `json:"label,omitempty"`
+}
+
+type CodexSessionAccountPinRequest struct {
+	SessionID string `json:"sessionId"`
+	Pinned    bool   `json:"pinned"`
+}
+
 type CodexLoginInfo struct {
 	LoginID         string `json:"loginId,omitempty"`
 	VerificationURL string `json:"verificationUrl,omitempty"`
@@ -631,21 +726,23 @@ type CodexRateLimitInfo struct {
 }
 
 type CodexRuntimeStatus struct {
-	Available      bool                 `json:"available"`
-	Builtin        bool                 `json:"builtin"`
-	Running        bool                 `json:"running"`
-	ExecutablePath string               `json:"executablePath,omitempty"`
-	Version        string               `json:"version,omitempty"`
-	LoggedIn       bool                 `json:"loggedIn"`
-	AccountType    string               `json:"accountType,omitempty"`
-	Email          string               `json:"email,omitempty"`
-	PlanType       string               `json:"planType,omitempty"`
-	RequiresAuth   bool                 `json:"requiresAuth"`
-	Models         []CodexModelInfo     `json:"models"`
-	RateLimits     []CodexRateLimitInfo `json:"rateLimits"`
-	RateLimitError string               `json:"rateLimitError,omitempty"`
-	Login          CodexLoginInfo       `json:"login"`
-	Error          string               `json:"error,omitempty"`
+	Available            bool                  `json:"available"`
+	Builtin              bool                  `json:"builtin"`
+	Running              bool                  `json:"running"`
+	ExecutablePath       string                `json:"executablePath,omitempty"`
+	Version              string                `json:"version,omitempty"`
+	LoggedIn             bool                  `json:"loggedIn"`
+	AccountType          string                `json:"accountType,omitempty"`
+	Email                string                `json:"email,omitempty"`
+	PlanType             string                `json:"planType,omitempty"`
+	RequiresAuth         bool                  `json:"requiresAuth"`
+	Models               []CodexModelInfo      `json:"models"`
+	RateLimits           []CodexRateLimitInfo  `json:"rateLimits"`
+	RateLimitError       string                `json:"rateLimitError,omitempty"`
+	AccountPool          CodexAccountPoolState `json:"accountPool"`
+	AccountSwitchMessage string                `json:"accountSwitchMessage,omitempty"`
+	Login                CodexLoginInfo        `json:"login"`
+	Error                string                `json:"error,omitempty"`
 }
 
 type StartRemoteNodeRequest struct {

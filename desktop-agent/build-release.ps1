@@ -7,15 +7,15 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dist = Join-Path $root "dist"
-$codexVersion = "0.144.6"
+$codexVersion = "0.147.0"
 $platforms = @{
     amd64 = @{
         NpmPlatform = "win32-x64"
-        Sha256 = "E04AFBE9841BE306455D075AD414993A946C94A399E55D7F9EC223F734CD4101"
+        Sha256 = "299D8603750CAAFFC24F218789D989F77CF157070BD42451D352F5578A800766"
     }
     arm64 = @{
         NpmPlatform = "win32-arm64"
-        Sha256 = "92774896D0D293DB1C1808E77085B5A068E5AA70825D0D656E29BD4CA276E651"
+        Sha256 = "0B20F97A8A6D55EA3C0DCD16B05CA623639AAE9D520DC9F6AC636903677964C8"
     }
 }
 $platform = $platforms[$Architecture]

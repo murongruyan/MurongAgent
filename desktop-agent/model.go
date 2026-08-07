@@ -160,7 +160,7 @@ func (client *modelClient) streamChat(
 	if profile.ProviderID == providerGemini {
 		return client.streamGemini(ctx, profile, apiKey, messages, tools, onDelta)
 	}
-	if profile.ProviderID == providerClaude {
+	if profile.APIMode == "messages" || (profile.ProviderID == providerClaude && profile.APIMode == "") {
 		return client.streamAnthropicMessages(ctx, profile, apiKey, messages, tools, onDelta)
 	}
 	if shouldUseOpenAIResponses(profile) {
@@ -200,7 +200,11 @@ func (client *modelClient) streamOpenAIChat(
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream")
 	if strings.TrimSpace(apiKey) != "" {
-		request.Header.Set("Authorization", "Bearer "+apiKey)
+		if strings.Contains(strings.ToLower(profile.BaseURL), ".openai.azure.com") {
+			request.Header.Set("api-key", apiKey)
+		} else {
+			request.Header.Set("Authorization", "Bearer "+apiKey)
+		}
 	}
 	request.Header.Set("User-Agent", "Murong-Desktop-Agent/0.1")
 	response, err := client.httpClient.Do(request)

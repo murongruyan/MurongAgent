@@ -128,6 +128,10 @@ interface Tool {
     /** JSON Schema 参数定义 */
     val parameters: Map<String, Any>
 
+    /** A successful call completes the current agent turn immediately. */
+    val terminatesTurnOnSuccess: Boolean
+        get() = false
+
     /**
      * 执行工具
      * @param args JSON 格式的参数

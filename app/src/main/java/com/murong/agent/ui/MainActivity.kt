@@ -1442,6 +1442,7 @@ internal fun MainScreen(
                                 activeProviderModelCatalog = providerModelCatalogs[effectiveChatConfig.activeProviderId],
                                 codexUsage = codexUsage,
                                 codexModelCatalog = codexModelCatalog,
+                                codexAccountPool = codexChatGptState.accountPool,
                                 globalApprovalMode = settingsConfig.approvalMode,
                                 projectKnowledgePaths = chatState.projectKnowledgePaths,
                                 externalShareDraft = pendingExternalShares.firstOrNull(),
@@ -1469,9 +1470,14 @@ internal fun MainScreen(
                                 onSpeakAssistantMessage = chatVm::speakAssistantMessage,
                                 onPauseVoicePlayback = chatVm::pauseVoicePlayback,
                                 onResumeVoicePlayback = chatVm::resumeVoicePlayback,
-                                onSend = { text, mentions, images, skills ->
-                                    chatVm.sendMessage(text, mentions, images, skills)
-                                },
+                                 onSend = { text, mentions, images, skills ->
+                                     chatVm.sendMessage(text, mentions, images, skills)
+                                 },
+                                 onGenerateImage = { prompt ->
+                                     chatVm.generateImage(prompt)
+                                 },
+                                 onRetryImageGeneration = chatVm::retryImageGeneration,
+                                 onSaveGeneratedImage = chatVm::saveGeneratedImage,
                                 onSetSessionGoal = { goal ->
                                     chatVm.setCurrentSessionGoal(goal)
                                 },
@@ -1520,6 +1526,9 @@ internal fun MainScreen(
                                 },
                                 onRefreshCodexModelCatalog = {
                                     chatVm.refreshCodexModelCatalog()
+                                },
+                                onActivateCodexAccount = { accountId ->
+                                    settingsVm.activateCodexChatGptAccount(accountId)
                                 },
                                 onUpdateProjectToolPreferences = { preferences ->
                                     chatVm.updateProjectToolPreferences(
@@ -1958,6 +1967,18 @@ internal fun MainScreen(
                             onSelectAgentBackend = { settingsVm.selectAgentBackend(it) },
                             onRefreshCodexChatGptStatus = { settingsVm.refreshCodexChatGptStatus() },
                             onStartCodexChatGptLogin = { settingsVm.startCodexChatGptLogin() },
+                            onAddCodexChatGptAccount = { settingsVm.addCodexChatGptAccount() },
+                            onActivateCodexChatGptAccount = { settingsVm.activateCodexChatGptAccount(it) },
+                            onRemoveCodexChatGptAccount = { settingsVm.removeCodexChatGptAccount(it) },
+                            onSetCodexChatGptAccountEnabled = { accountId, enabled ->
+                                settingsVm.setCodexChatGptAccountEnabled(accountId, enabled)
+                            },
+                            onUpdateCodexAccountPoolSettings = { autoSwitch, reservePercent, cooldownMinutes ->
+                                settingsVm.updateCodexAccountPoolSettings(autoSwitch, reservePercent, cooldownMinutes)
+                            },
+                            onSetCurrentSessionCodexAccountPinned = {
+                                settingsVm.setCurrentSessionCodexAccountPinned(it)
+                            },
                             onCancelCodexChatGptLogin = { settingsVm.cancelCodexChatGptLogin() },
                             onLogoutCodexChatGpt = { settingsVm.logoutCodexChatGpt() },
                             rootStatus = rootStatus,
@@ -1996,6 +2017,8 @@ internal fun MainScreen(
                             onUpdateDurableGlobalMemory = { settingsVm.updateDurableGlobalMemory(it) },
                             onDeleteDurableGlobalMemory = { settingsVm.deleteDurableGlobalMemory(it) },
                             onStartGitHubOAuthLogin = { settingsVm.startGitHubOAuthLogin() },
+                            onActivateGitHubAccount = { settingsVm.activateGitHubAccount(it) },
+                            onRemoveGitHubAccount = { settingsVm.removeGitHubAccount(it) },
                             onClearGitHubToken = { settingsVm.clearGitHubToken() },
                             onOpenThemePage = {
                                 dispatchSettingsAction(MainScreenSettingsAction.OpenThemePage)

@@ -24,6 +24,7 @@ MurongAgent 不是单纯的聊天壳。Android 端强调随身使用、语音、
 | GitHub 集成 | 支持登录 GitHub、查看仓库、Issue、PR、Actions、Release 等能力 |
 | Root 能力 | 通过持久化 Shell 与 Root 文件访问支撑系统级操作 |
 | 内置本地模型 | Android 与 Windows 可选 Qwen3.5-9B/4B/2B、Qwen2.5-Coder-7B 或 Gemma 4 E4B/E2B；Windows 另有 Gemma 4 12B 实验档。支持真实思考开关、思考过程与逐 token 流式显示，模型私有落盘并做 SHA-256 校验 |
+| 图片理解与生成 | 可将图片交给独立视觉模型并复用观察摘要；支持 OpenAI Images 兼容生图、原生 4K 尺寸、局部预览、取消、重试、保存 / 下载。GPT Image 2 支持到 `3840x2160` / `2160x3840`，实际清晰度仍取决于模型输出 |
 | 数据本地化 | 配置、会话、缓存与项目状态保存在本地设备 |
 | 跨平台桌面端 | 原生支持 Windows、macOS、Linux 的 amd64 与 arm64，不依赖手机在线 |
 | 跨端协作 | 手机可通过稳定本机 ID、同网自动发现、ADB 或局域网地址连接电脑，异网链路端到端加密，并可显式同步配置与所选凭据 |
@@ -197,6 +198,10 @@ Windows 本机构建可使用：
 4. 选择模型名
 5. 配置 GitHub 登录与项目相关能力
 
+### 图片理解与生成
+
+在“设置 → 看图与图片生成”中，视觉模型和生图模型可各自复用一条已保存的连接，也可设置专用地址与 Key。独立视觉开启后会先生成可复用的观察摘要；生图使用 OpenAI Images 兼容的 `POST /v1/images/generations`。`gpt-image-2` 支持 `2048x2048`、`2048x1152`、`3840x2160` 和 `2160x3840` 等原生尺寸，但两边必须是 16 的倍数、总像素和宽高比需符合官方限制；尺寸达到 4K 不等于文字、细节或构图一定完美。非 GPT Image 模型或需要额外放大时，生成结果卡片可进一步调用 Replicate Real-ESRGAN 做 2–4 倍真实超分，只有长边至少 `3840px` 才会标记为“真实 4K 超分完成”。视觉、生图和超分 Token 使用 Android Keystore 或 Windows DPAPI 保存，常规备份、导出与日志不会包含它们。
+
 ## Roadmap
 
 - [x] 多模型 Provider 支持
@@ -215,4 +220,6 @@ Windows 本机构建可使用：
 
 ## 许可证
 
-本项目当前沿用 MIT 许可证，并保持对借鉴项目的来源说明。
+MurongAgent 的原创代码采用 [MIT License](LICENSE) 开源，并保持对借鉴项目的来源说明。
+
+仓库中捆绑、复用或引用的第三方组件仍分别遵循其自身许可证；MIT 许可证不会覆盖这些第三方代码、模型、字体或二进制文件。具体归属以相邻的 `LICENSE`、`NOTICE`、`THIRD_PARTY_NOTICES.md` 和源码头为准。

@@ -25,25 +25,27 @@ type SyncCredentialsRequest struct {
 }
 
 type SyncCredentialsOperationResult struct {
-	Direction           string              `json:"direction"`
-	ImportedSessions    int                 `json:"importedSessions"`
-	ConflictSessions    int                 `json:"conflictSessions"`
-	SkippedSessions     int                 `json:"skippedSessions"`
-	ImportedProviders   int                 `json:"importedProviders"`
-	ImportedAPIKeys     int                 `json:"importedApiKeys"`
-	ImportedCodexLogin  bool                `json:"importedCodexLogin"`
-	ImportedGitHubToken bool                `json:"importedGitHubToken"`
-	AccountEmail        string              `json:"accountEmail,omitempty"`
-	ImportedSettings    bool                `json:"importedSettings"`
-	ImportedRules       int                 `json:"importedRules"`
-	ImportedMemories    int                 `json:"importedMemories"`
-	ImportedSkills      int                 `json:"importedSkills"`
-	ImportedMCPServers  int                 `json:"importedMcpServers"`
-	ImportedWorkflows   int                 `json:"importedWorkflows"`
-	DisabledMCPServers  int                 `json:"disabledMcpServers"`
-	SkippedWorkflows    int                 `json:"skippedWorkflows"`
-	Config              PublicDesktopConfig `json:"config"`
-	Codex               CodexRuntimeStatus  `json:"codex"`
+	Direction              string              `json:"direction"`
+	ImportedSessions       int                 `json:"importedSessions"`
+	ConflictSessions       int                 `json:"conflictSessions"`
+	SkippedSessions        int                 `json:"skippedSessions"`
+	ImportedProviders      int                 `json:"importedProviders"`
+	ImportedAPIKeys        int                 `json:"importedApiKeys"`
+	ImportedCodexLogin     bool                `json:"importedCodexLogin"`
+	ImportedCodexAccounts  int                 `json:"importedCodexAccounts"`
+	ImportedGitHubToken    bool                `json:"importedGitHubToken"`
+	ImportedGitHubAccounts int                 `json:"importedGitHubAccounts"`
+	AccountEmail           string              `json:"accountEmail,omitempty"`
+	ImportedSettings       bool                `json:"importedSettings"`
+	ImportedRules          int                 `json:"importedRules"`
+	ImportedMemories       int                 `json:"importedMemories"`
+	ImportedSkills         int                 `json:"importedSkills"`
+	ImportedMCPServers     int                 `json:"importedMcpServers"`
+	ImportedWorkflows      int                 `json:"importedWorkflows"`
+	DisabledMCPServers     int                 `json:"disabledMcpServers"`
+	SkippedWorkflows       int                 `json:"skippedWorkflows"`
+	Config                 PublicDesktopConfig `json:"config"`
+	Codex                  CodexRuntimeStatus  `json:"codex"`
 }
 
 func (app *DesktopAgentApp) PushCredentialsToPhone(request SyncCredentialsRequest) (SyncCredentialsOperationResult, error) {
@@ -68,8 +70,10 @@ func (app *DesktopAgentApp) PushCredentialsToPhone(request SyncCredentialsReques
 		ConflictSessions: result.ConflictSessions, SkippedSessions: result.SkippedSessions,
 		ImportedProviders: result.ImportedProviders,
 		ImportedAPIKeys:   result.ImportedAPIKeys, ImportedCodexLogin: result.ImportedCodexLogin,
-		ImportedGitHubToken: result.ImportedGitHubToken,
-		AccountEmail:        pointerString(result.AccountEmail), ImportedSettings: result.ImportedSettings,
+		ImportedCodexAccounts:  result.ImportedCodexAccounts,
+		ImportedGitHubToken:    result.ImportedGitHubToken,
+		ImportedGitHubAccounts: result.ImportedGitHubAccounts,
+		AccountEmail:           pointerString(result.AccountEmail), ImportedSettings: result.ImportedSettings,
 		ImportedRules: result.ImportedRules, ImportedMemories: result.ImportedMemories, ImportedSkills: result.ImportedSkills,
 		ImportedMCPServers: result.ImportedMCPServers, ImportedWorkflows: result.ImportedWorkflows,
 		DisabledMCPServers: result.DisabledMCPServers, SkippedWorkflows: result.SkippedWorkflows,
@@ -111,8 +115,10 @@ func (app *DesktopAgentApp) PullCredentialsFromPhone(request SyncCredentialsRequ
 		ConflictSessions: result.ConflictSessions, SkippedSessions: result.SkippedSessions,
 		ImportedProviders: result.ImportedProviders,
 		ImportedAPIKeys:   result.ImportedAPIKeys, ImportedCodexLogin: result.ImportedCodexLogin,
-		ImportedGitHubToken: result.ImportedGitHubToken,
-		AccountEmail:        pointerString(result.AccountEmail), ImportedSettings: result.ImportedSettings,
+		ImportedCodexAccounts:  result.ImportedCodexAccounts,
+		ImportedGitHubToken:    result.ImportedGitHubToken,
+		ImportedGitHubAccounts: result.ImportedGitHubAccounts,
+		AccountEmail:           pointerString(result.AccountEmail), ImportedSettings: result.ImportedSettings,
 		ImportedRules: result.ImportedRules, ImportedMemories: result.ImportedMemories, ImportedSkills: result.ImportedSkills,
 		ImportedMCPServers: result.ImportedMCPServers, ImportedWorkflows: result.ImportedWorkflows,
 		DisabledMCPServers: result.DisabledMCPServers, SkippedWorkflows: result.SkippedWorkflows,
@@ -143,7 +149,7 @@ func (app *DesktopAgentApp) validateCredentialSyncRequest(request SyncCredential
 func (app *DesktopAgentApp) exportCredentialBundle(request SyncCredentialsRequest) (desktopbridge.CredentialSyncBundle, error) {
 	config := app.store.rawConfig()
 	bundle := desktopbridge.CredentialSyncBundle{
-		SchemaVersion: 6, SourcePlatform: desktopSourcePlatform(), GeneratedAt: time.Now().UnixMilli(),
+		SchemaVersion: 8, SourcePlatform: desktopSourcePlatform(), GeneratedAt: time.Now().UnixMilli(),
 		Providers: []desktopbridge.SyncedProviderCredential{},
 	}
 	if request.IncludeSessions {
@@ -194,32 +200,51 @@ func (app *DesktopAgentApp) exportCredentialBundle(request SyncCredentialsReques
 		}
 	}
 	if request.IncludeCodexLogin {
-		if err := ensurePrivateCodexHome(app.codex.codexHome); err != nil {
-			return bundle, err
+		if app.codex.accounts == nil {
+			return bundle, errors.New("Codex 账号库不可用")
 		}
-		auth, err := readCodexAuthJSON(app.codex.codexHome)
-		if err == nil {
-			value := string(auth)
-			clearBytes(auth)
-			bundle.CodexAuthJSON = &value
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return bundle, err
-		}
-	}
-	if request.IncludeGitHubCredentials {
-		github, err := app.workflows.store.runtimeGitHub()
+		accounts, activeID, settings, err := app.codex.accounts.AccountCredentials()
 		if err != nil {
 			return bundle, err
 		}
-		synced := desktopbridge.SyncedGitHubCredential{
-			APIBaseURL:  github.APIBaseURL,
-			ViewerLogin: app.workflows.State().GitHub.Viewer,
+		bundle.ActiveCodexAccountID = activeID
+		bundle.CodexAccountSettings = &desktopbridge.SyncedCodexAccountSettings{
+			AutoSwitch: settings.AutoSwitch, ReservePercent: settings.ReservePercent, CooldownMinutes: settings.CooldownMinutes,
 		}
-		if strings.TrimSpace(github.Token) != "" {
-			value := github.Token
-			synced.Token = &value
+		for _, account := range accounts {
+			synced := desktopbridge.SyncedCodexAccount{
+				ID: account.ID, Label: account.Label, Email: account.Email, PlanType: account.PlanType,
+				Enabled: account.Enabled, AuthJSON: account.AuthJSON, LastUsedAt: account.LastUsedAt,
+			}
+			bundle.CodexAccounts = append(bundle.CodexAccounts, synced)
+			if account.ID == activeID && account.AuthJSON != nil {
+				value := *account.AuthJSON
+				bundle.CodexAuthJSON = &value
+			}
 		}
-		bundle.GitHub = &synced
+	}
+	if request.IncludeGitHubCredentials {
+		accounts, activeID, err := app.workflows.store.githubAccountCredentials()
+		if err != nil {
+			return bundle, err
+		}
+		bundle.ActiveGitHubAccountID = activeID
+		for _, account := range accounts {
+			synced := desktopbridge.SyncedGitHubAccount{
+				ID: account.ID, Label: account.Label, Login: account.Login,
+				APIBaseURL: account.APIBaseURL, Token: account.Token, LastUsedAt: account.LastUsedAt,
+			}
+			bundle.GitHubAccounts = append(bundle.GitHubAccounts, synced)
+			if account.ID == activeID {
+				legacy := desktopbridge.SyncedGitHubCredential{
+					APIBaseURL: account.APIBaseURL, Token: account.Token, ViewerLogin: account.Login,
+				}
+				bundle.GitHub = &legacy
+			}
+		}
+		if bundle.GitHub == nil {
+			bundle.GitHub = &desktopbridge.SyncedGitHubCredential{APIBaseURL: "https://api.github.com"}
+		}
 	}
 	if request.IncludeAgentSettings {
 		temperature := config.Temperature
@@ -237,6 +262,14 @@ func (app *DesktopAgentApp) exportCredentialBundle(request SyncCredentialsReques
 			PlannerProfileEnabled: &plannerEnabled, PlannerModel: &plannerModel, PlannerReasoningEffort: &plannerReasoning,
 			SubagentProfileEnabled: &subagentEnabled, SubagentModel: &subagentModel, SubagentReasoningEffort: &subagentReasoning,
 		}
+		bundle.MediaSettings = syncedMediaSettings(config)
+		if request.IncludeProviderCredentials {
+			credentials, err := syncedMediaCredentials(config)
+			if err != nil {
+				return bundle, err
+			}
+			bundle.MediaCredentials = credentials
+		}
 	}
 	if request.IncludeKnowledge {
 		bundle.Knowledge = exportSyncedKnowledge(config)
@@ -253,6 +286,68 @@ func (app *DesktopAgentApp) exportCredentialBundle(request SyncCredentialsReques
 		bundle.SavedWorkflows = exportSyncedWorkflows(app.workflows.store.backupSnapshot().Document.Workflows)
 	}
 	return bundle, nil
+}
+
+func syncedMediaSettings(config desktopConfig) *desktopbridge.SyncedMediaSettings {
+	visionProfile := findProviderProfile(config.ProviderProfiles, config.VisionProviderProfileID)
+	imageProfile := findProviderProfile(config.ProviderProfiles, config.ImageGenerationProviderProfileID)
+	visionProviderID := ""
+	if visionProfile != nil {
+		visionProviderID = visionProfile.ProviderID
+	}
+	imageProviderID := ""
+	if imageProfile != nil {
+		imageProviderID = imageProfile.ProviderID
+	}
+	return &desktopbridge.SyncedMediaSettings{
+		VisionRoutingEnabled: config.VisionRoutingEnabled,
+		VisionProviderID:     visionProviderID, VisionProfileID: config.VisionProviderProfileID,
+		VisionModel: config.VisionModel, VisionCustomBaseURL: config.VisionCustomBaseURL,
+		ImageGenerationProviderID: imageProviderID, ImageGenerationProfileID: config.ImageGenerationProviderProfileID,
+		ImageGenerationModel: config.ImageGenerationModel, ImageGenerationCustomBaseURL: config.ImageGenerationCustomBaseURL,
+		ImageGenerationSize: config.ImageGenerationSize, ImageGenerationQuality: config.ImageGenerationQuality,
+		ImageGenerationFormat: config.ImageGenerationFormat, ImageGenerationCompression: config.ImageGenerationCompression,
+		ImageGenerationPartialImages: config.ImageGenerationPartialImages,
+		ImageUpscaleBaseURL:          config.ImageUpscaleBaseURL, ImageUpscaleModel: config.ImageUpscaleModel,
+		ImageUpscaleScale: config.ImageUpscaleScale,
+	}
+}
+
+func syncedMediaCredentials(config desktopConfig) (*desktopbridge.SyncedMediaCredentials, error) {
+	credentials := &desktopbridge.SyncedMediaCredentials{}
+	if config.ProtectedVisionAPIKey != "" {
+		plain, err := unprotectSecret(config.ProtectedVisionAPIKey)
+		if err != nil {
+			return nil, fmt.Errorf("无法解密独立看图 API Key：%w", err)
+		}
+		value := string(plain)
+		clearBytes(plain)
+		credentials.VisionCustomAPIKey = &value
+	}
+	if config.ProtectedImageGenerationAPIKey != "" {
+		plain, err := unprotectSecret(config.ProtectedImageGenerationAPIKey)
+		if err != nil {
+			clearCredentialBundle(&desktopbridge.CredentialSyncBundle{MediaCredentials: credentials})
+			return nil, fmt.Errorf("无法解密图片生成 API Key：%w", err)
+		}
+		value := string(plain)
+		clearBytes(plain)
+		credentials.ImageGenerationCustomAPIKey = &value
+	}
+	if config.ProtectedImageUpscaleAPIKey != "" {
+		plain, err := unprotectSecret(config.ProtectedImageUpscaleAPIKey)
+		if err != nil {
+			clearCredentialBundle(&desktopbridge.CredentialSyncBundle{MediaCredentials: credentials})
+			return nil, fmt.Errorf("无法解密 4K 超分 API Key：%w", err)
+		}
+		value := string(plain)
+		clearBytes(plain)
+		credentials.ImageUpscaleAPIKey = &value
+	}
+	if credentials.VisionCustomAPIKey == nil && credentials.ImageGenerationCustomAPIKey == nil && credentials.ImageUpscaleAPIKey == nil {
+		return nil, nil
+	}
+	return credentials, nil
 }
 
 func (app *DesktopAgentApp) importCredentialBundle(
@@ -281,7 +376,7 @@ func (app *DesktopAgentApp) importCredentialBundle(
 	result.DisabledMCPServers = portable.DisabledMCPServers
 	workflowState := previousWorkflows
 	workflowStateChanged := false
-	if bundle.GitHub != nil {
+	if len(bundle.GitHubAccounts) == 0 && bundle.GitHub != nil {
 		var imported bool
 		workflowState, imported, err = importSyncedGitHubCredential(workflowState, *bundle.GitHub)
 		if err != nil {
@@ -304,7 +399,27 @@ func (app *DesktopAgentApp) importCredentialBundle(
 		app.workflows.rescheduleAll()
 		app.workflows.emitChanged()
 	}
-	if bundle.CodexAuthJSON != nil {
+	if len(bundle.GitHubAccounts) > 0 {
+		accounts := make([]githubAccountTransfer, 0, len(bundle.GitHubAccounts))
+		for _, incoming := range bundle.GitHubAccounts {
+			accounts = append(accounts, githubAccountTransfer{
+				ID: incoming.ID, Label: incoming.Label, Login: incoming.Login, APIBaseURL: incoming.APIBaseURL,
+				Token: incoming.Token, LastUsedAt: incoming.LastUsedAt,
+			})
+		}
+		importedToken, importErr := app.workflows.store.importGitHubAccounts(accounts, bundle.ActiveGitHubAccountID)
+		if importErr != nil {
+			return result, app.rollbackDeviceSync(previousConfig, previousWorkflows, importErr)
+		}
+		result.ImportedGitHubAccounts = len(accounts)
+		result.ImportedGitHubToken = importedToken
+		app.workflows.mu.Lock()
+		app.workflows.viewer = app.workflows.store.state("").GitHub.Viewer
+		app.workflows.mu.Unlock()
+		app.workflows.emitChanged()
+		app.refreshRemoteGitHubToken()
+	}
+	if len(bundle.CodexAccounts) == 0 && bundle.CodexAuthJSON != nil {
 		email, err := app.replaceCodexAuthAndVerify(ctx, []byte(*bundle.CodexAuthJSON))
 		if err != nil {
 			return result, app.rollbackDeviceSync(previousConfig, previousWorkflows, err)
@@ -326,11 +441,41 @@ func (app *DesktopAgentApp) importCredentialBundle(
 			app.mcp.ConnectAll(context.Background(), runtimeConfigs, true)
 		}
 	}
-	if bundle.GitHub != nil && result.ImportedGitHubToken {
+	if len(bundle.GitHubAccounts) == 0 && bundle.GitHub != nil && result.ImportedGitHubToken {
 		app.workflows.mu.Lock()
 		app.workflows.viewer = strings.TrimSpace(bundle.GitHub.ViewerLogin)
 		app.workflows.mu.Unlock()
 		app.workflows.emitChanged()
+	}
+	if len(bundle.CodexAccounts) > 0 {
+		accounts := make([]codexAccountTransfer, 0, len(bundle.CodexAccounts))
+		hasAuth := false
+		for _, incoming := range bundle.CodexAccounts {
+			accounts = append(accounts, codexAccountTransfer{
+				ID: incoming.ID, Label: incoming.Label, Email: incoming.Email, PlanType: incoming.PlanType,
+				Enabled: incoming.Enabled, AuthJSON: incoming.AuthJSON, LastUsedAt: incoming.LastUsedAt,
+			})
+			hasAuth = hasAuth || (incoming.AuthJSON != nil && strings.TrimSpace(*incoming.AuthJSON) != "")
+		}
+		var settings *CodexAccountPoolSettings
+		if incoming := bundle.CodexAccountSettings; incoming != nil {
+			value := CodexAccountPoolSettings{
+				AutoSwitch: incoming.AutoSwitch, ReservePercent: incoming.ReservePercent, CooldownMinutes: incoming.CooldownMinutes,
+			}
+			settings = &value
+		}
+		status, imported, importErr := app.codex.ImportAccountPool(accounts, bundle.ActiveCodexAccountID, settings)
+		if importErr != nil {
+			return result, app.rollbackDeviceSync(previousConfig, previousWorkflows, importErr)
+		}
+		result.ImportedCodexAccounts = imported
+		result.ImportedCodexLogin = hasAuth
+		for _, account := range status.AccountPool.Accounts {
+			if account.Active && account.Email != "" {
+				result.AccountEmail = stringPointer(account.Email)
+				break
+			}
+		}
 	}
 	return result, nil
 }
@@ -349,6 +494,7 @@ func (app *DesktopAgentApp) rollbackDeviceSync(
 	} else {
 		app.workflows.rescheduleAll()
 		app.workflows.emitChanged()
+		app.refreshRemoteGitHubToken()
 	}
 	if len(rollbackErrors) == 0 {
 		return cause
@@ -581,6 +727,60 @@ func (store *desktopStore) importSyncedPortableState(
 		result.ImportedSettings = true
 		changed = true
 	}
+	if settings := bundle.MediaSettings; settings != nil {
+		updated.VisionRoutingEnabled = settings.VisionRoutingEnabled
+		updated.VisionProviderProfileID = resolveSyncedMediaProfileID(
+			updated.ProviderProfiles,
+			settings.VisionProviderID,
+			settings.VisionProfileID,
+			updated.VisionProviderProfileID,
+		)
+		updated.VisionModel = strings.TrimSpace(settings.VisionModel)
+		updated.VisionCustomBaseURL = strings.TrimSpace(settings.VisionCustomBaseURL)
+		updated.ImageGenerationProviderProfileID = resolveSyncedMediaProfileID(
+			updated.ProviderProfiles,
+			settings.ImageGenerationProviderID,
+			settings.ImageGenerationProfileID,
+			updated.ImageGenerationProviderProfileID,
+		)
+		updated.ImageGenerationModel = strings.TrimSpace(settings.ImageGenerationModel)
+		updated.ImageGenerationCustomBaseURL = strings.TrimSpace(settings.ImageGenerationCustomBaseURL)
+		updated.ImageGenerationSize = settings.ImageGenerationSize
+		updated.ImageGenerationQuality = settings.ImageGenerationQuality
+		updated.ImageGenerationFormat = settings.ImageGenerationFormat
+		updated.ImageGenerationCompression = settings.ImageGenerationCompression
+		updated.ImageGenerationPartialImages = settings.ImageGenerationPartialImages
+		updated.ImageUpscaleBaseURL = strings.TrimSpace(settings.ImageUpscaleBaseURL)
+		updated.ImageUpscaleModel = strings.TrimSpace(settings.ImageUpscaleModel)
+		updated.ImageUpscaleScale = settings.ImageUpscaleScale
+		result.ImportedSettings = true
+		changed = true
+	}
+	if credentials := bundle.MediaCredentials; credentials != nil {
+		var err error
+		updated.ProtectedVisionAPIKey, err = mergeSyncedProtectedSecret(
+			updated.ProtectedVisionAPIKey,
+			credentials.VisionCustomAPIKey,
+		)
+		if err != nil {
+			return result, fmt.Errorf("无法保护同步的独立看图 API Key：%w", err)
+		}
+		updated.ProtectedImageGenerationAPIKey, err = mergeSyncedProtectedSecret(
+			updated.ProtectedImageGenerationAPIKey,
+			credentials.ImageGenerationCustomAPIKey,
+		)
+		if err != nil {
+			return result, fmt.Errorf("无法保护同步的图片生成 API Key：%w", err)
+		}
+		updated.ProtectedImageUpscaleAPIKey, err = mergeSyncedProtectedSecret(
+			updated.ProtectedImageUpscaleAPIKey,
+			credentials.ImageUpscaleAPIKey,
+		)
+		if err != nil {
+			return result, fmt.Errorf("无法保护同步的 4K 超分 API Key：%w", err)
+		}
+		changed = true
+	}
 	if bundle.Knowledge != nil {
 		updated.GlobalRules = mergeSyncedRules(updated.GlobalRules, bundle.Knowledge.Rules)
 		updated.GlobalMemories = mergeSyncedMemories(updated.GlobalMemories, bundle.Knowledge.Memories)
@@ -612,6 +812,40 @@ func (store *desktopStore) importSyncedPortableState(
 	}
 	store.config = updated
 	return result, nil
+}
+
+func resolveSyncedMediaProfileID(
+	profiles []ProviderProfile,
+	providerID, requestedID, currentID string,
+) string {
+	providerID = normalizeSyncedProviderID(providerID)
+	if requested := findProviderProfile(profiles, requestedID); requested != nil &&
+		(providerID == "" || requested.ProviderID == providerID) {
+		return requested.ID
+	}
+	if current := findProviderProfile(profiles, currentID); current != nil &&
+		(providerID == "" || current.ProviderID == providerID) {
+		return current.ID
+	}
+	if providerID != "" {
+		if candidate := firstProviderByKind(profiles, providerID); candidate != nil {
+			return candidate.ID
+		}
+	}
+	return ""
+}
+
+func mergeSyncedProtectedSecret(current string, incoming *string) (string, error) {
+	if incoming == nil || strings.TrimSpace(*incoming) == "" {
+		return current, nil
+	}
+	plain := []byte(strings.TrimSpace(*incoming))
+	protected, err := protectSecret(plain)
+	clearBytes(plain)
+	if err != nil {
+		return current, err
+	}
+	return protected, nil
 }
 
 func mergeSyncedRules(existing []GlobalRule, incoming []desktopbridge.SyncedRule) []GlobalRule {
@@ -764,6 +998,66 @@ func validateSyncedPortableConfig(config desktopConfig, bundle desktopbridge.Cre
 			return errors.New("设备同步生成参数无效")
 		}
 	}
+	if bundle.MediaSettings != nil {
+		if err := validateSyncedMediaSettings(bundle.MediaSettings); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSyncedMediaSettings(settings *desktopbridge.SyncedMediaSettings) error {
+	if settings == nil {
+		return nil
+	}
+	for label, value := range map[string]string{
+		"独立看图供应商":        settings.VisionProviderID,
+		"独立看图连接":         settings.VisionProfileID,
+		"独立看图模型":         settings.VisionModel,
+		"独立看图 Base URL":  settings.VisionCustomBaseURL,
+		"图片生成供应商":        settings.ImageGenerationProviderID,
+		"图片生成连接":         settings.ImageGenerationProfileID,
+		"图片生成模型":         settings.ImageGenerationModel,
+		"图片生成 Base URL":  settings.ImageGenerationCustomBaseURL,
+		"4K 超分 Base URL": settings.ImageUpscaleBaseURL,
+		"4K 超分模型":        settings.ImageUpscaleModel,
+	} {
+		if value != strings.TrimSpace(value) || len(value) > 500 || strings.ContainsAny(value, "\x00\r\n") {
+			return fmt.Errorf("设备同步%s无效或过长", label)
+		}
+	}
+	for _, providerID := range []string{settings.VisionProviderID, settings.ImageGenerationProviderID} {
+		if providerID != "" && !isSupportedSyncedProviderID(normalizeSyncedProviderID(providerID)) {
+			return errors.New("设备同步媒体供应商无效")
+		}
+	}
+	for label, baseURL := range map[string]string{
+		"独立看图":  settings.VisionCustomBaseURL,
+		"图片生成":  settings.ImageGenerationCustomBaseURL,
+		"4K 超分": settings.ImageUpscaleBaseURL,
+	} {
+		if baseURL != "" {
+			if err := validateBaseURL(baseURL); err != nil {
+				return fmt.Errorf("设备同步%s Base URL：%w", label, err)
+			}
+		}
+	}
+	if normalizeImageGenerationSize(settings.ImageGenerationSize) != strings.ToLower(strings.TrimSpace(settings.ImageGenerationSize)) && settings.ImageGenerationSize != "" {
+		return errors.New("设备同步图片尺寸无效")
+	}
+	if normalizeImageGenerationQuality(settings.ImageGenerationQuality) != strings.ToLower(strings.TrimSpace(settings.ImageGenerationQuality)) && settings.ImageGenerationQuality != "" {
+		return errors.New("设备同步图片质量无效")
+	}
+	if normalizeImageGenerationFormat(settings.ImageGenerationFormat) != strings.ToLower(strings.TrimSpace(settings.ImageGenerationFormat)) && settings.ImageGenerationFormat != "" {
+		return errors.New("设备同步图片格式无效")
+	}
+	if settings.ImageGenerationCompression < 0 || settings.ImageGenerationCompression > 100 ||
+		settings.ImageGenerationPartialImages < 0 || settings.ImageGenerationPartialImages > 3 {
+		return errors.New("设备同步图片生成参数无效")
+	}
+	if settings.ImageUpscaleScale != 0 && (settings.ImageUpscaleScale < 2 || settings.ImageUpscaleScale > 4) {
+		return errors.New("设备同步 4K 超分倍率无效")
+	}
 	return nil
 }
 
@@ -772,11 +1066,20 @@ func importSyncedGitHubCredential(
 	incoming desktopbridge.SyncedGitHubCredential,
 ) (savedWorkflowStoreBackupSnapshot, bool, error) {
 	document := cloneSavedWorkflowDocument(current.Document)
+	reconcileGitHubAccounts(&document)
 	baseURL := normalizeGitHubAPIBaseURL(incoming.APIBaseURL)
 	if err := validateGitHubAPIBaseURL(baseURL); err != nil {
 		return current, false, err
 	}
-	document.GitHub.APIBaseURL = baseURL
+	index := activeGitHubAccountIndex(document)
+	if index < 0 {
+		return current, false, errors.New("当前 GitHub 账号不存在")
+	}
+	document.GitHubAccounts[index].APIBaseURL = baseURL
+	if login := truncateRunes(strings.TrimSpace(incoming.ViewerLogin), 80); login != "" {
+		document.GitHubAccounts[index].Login = login
+		document.GitHubAccounts[index].Label = "@" + login
+	}
 	importedToken := false
 	if incoming.Token != nil && strings.TrimSpace(*incoming.Token) != "" {
 		plain := []byte(strings.TrimSpace(*incoming.Token))
@@ -785,9 +1088,11 @@ func importSyncedGitHubCredential(
 		if err != nil {
 			return current, false, fmt.Errorf("无法保护同步的 GitHub Token：%w", err)
 		}
-		document.GitHub.ProtectedToken = protected
+		document.GitHubAccounts[index].ProtectedToken = protected
 		importedToken = true
 	}
+	document.GitHubAccounts[index].LastUsedAt = time.Now().UnixMilli()
+	document.GitHub = legacyGitHubConfig(document.GitHubAccounts[index])
 	document.SchemaVersion = savedWorkflowSchemaVersion
 	return savedWorkflowStoreBackupSnapshot{Document: document}, importedToken, nil
 }
@@ -906,7 +1211,7 @@ func (app *DesktopAgentApp) preferredCodexExecutable() string {
 }
 
 func validateCredentialBundle(bundle desktopbridge.CredentialSyncBundle) error {
-	if (bundle.SchemaVersion < 1 || bundle.SchemaVersion > 6) || (bundle.SourcePlatform != "android" && !isDesktopSourcePlatform(bundle.SourcePlatform)) {
+	if (bundle.SchemaVersion < 1 || bundle.SchemaVersion > 8) || (bundle.SourcePlatform != "android" && !isDesktopSourcePlatform(bundle.SourcePlatform)) {
 		return errors.New("设备同步格式或来源无效")
 	}
 	now := time.Now().UnixMilli()
@@ -952,6 +1257,54 @@ func validateCredentialBundle(bundle desktopbridge.CredentialSyncBundle) error {
 			return errors.New("设备同步 GitHub 用户名无效")
 		}
 	}
+	if len(bundle.GitHubAccounts) > 20 {
+		return errors.New("设备同步 GitHub 账号数量无效")
+	}
+	seenGitHubAccounts := map[string]bool{}
+	for _, account := range bundle.GitHubAccounts {
+		if !isSafeCodexAccountID(account.ID) || seenGitHubAccounts[account.ID] || strings.TrimSpace(account.Label) == "" || len(account.Label) > 80 ||
+			len(account.Login) > 80 || len(account.Name) > 160 || len(account.AvatarURL) > 2_048 ||
+			strings.ContainsAny(account.Label+account.Login+account.Name+account.AvatarURL, "\x00\r\n") {
+			return errors.New("设备同步 GitHub 账号字段无效")
+		}
+		seenGitHubAccounts[account.ID] = true
+		if err := validateGitHubAPIBaseURL(normalizeGitHubAPIBaseURL(account.APIBaseURL)); err != nil {
+			return err
+		}
+		if account.Token != nil && len(*account.Token) > 16_384 {
+			return errors.New("设备同步 GitHub 账号 Token 过长")
+		}
+	}
+	if len(bundle.GitHubAccounts) > 0 && !seenGitHubAccounts[bundle.ActiveGitHubAccountID] {
+		return errors.New("设备同步当前 GitHub 账号无效")
+	}
+	if len(bundle.CodexAccounts) > 20 {
+		return errors.New("设备同步 Codex 账号数量无效")
+	}
+	seenCodexAccounts := map[string]bool{}
+	for _, account := range bundle.CodexAccounts {
+		if !isSafeCodexAccountID(account.ID) || seenCodexAccounts[account.ID] || strings.TrimSpace(account.Label) == "" || len(account.Label) > 80 ||
+			len(account.Email) > 320 || len(account.PlanType) > 80 || strings.ContainsAny(account.Label+account.Email+account.PlanType, "\x00\r\n") {
+			return errors.New("设备同步 Codex 账号字段无效")
+		}
+		seenCodexAccounts[account.ID] = true
+		if account.AuthJSON != nil {
+			auth := []byte(*account.AuthJSON)
+			if err := validateCodexAuthJSON(auth); err != nil {
+				clearBytes(auth)
+				return err
+			}
+			clearBytes(auth)
+		}
+	}
+	if len(bundle.CodexAccounts) > 0 && !seenCodexAccounts[bundle.ActiveCodexAccountID] {
+		return errors.New("设备同步当前 Codex 账号无效")
+	}
+	if settings := bundle.CodexAccountSettings; settings != nil {
+		if settings.ReservePercent < 1 || settings.ReservePercent > 50 || settings.CooldownMinutes < 1 || settings.CooldownMinutes > 1440 {
+			return errors.New("设备同步 Codex 账号池设置无效")
+		}
+	}
 	if settings := bundle.AgentSettings; settings != nil {
 		if settings.ApprovalMode != approvalReadOnly && settings.ApprovalMode != approvalAskAll &&
 			settings.ApprovalMode != approvalAllowlist && settings.ApprovalMode != approvalYolo {
@@ -981,6 +1334,20 @@ func validateCredentialBundle(bundle desktopbridge.CredentialSyncBundle) error {
 		}
 		if settings.SubagentReasoningEffort != nil && normalizeExecutionProfileReasoning(*settings.SubagentReasoningEffort) != strings.ToLower(strings.TrimSpace(*settings.SubagentReasoningEffort)) {
 			return errors.New("设备同步子代理默认推理强度无效")
+		}
+	}
+	if err := validateSyncedMediaSettings(bundle.MediaSettings); err != nil {
+		return err
+	}
+	if credentials := bundle.MediaCredentials; credentials != nil {
+		if credentials.VisionCustomAPIKey != nil && len(*credentials.VisionCustomAPIKey) > 16_384 {
+			return errors.New("设备同步独立看图 API Key 过长")
+		}
+		if credentials.ImageGenerationCustomAPIKey != nil && len(*credentials.ImageGenerationCustomAPIKey) > 16_384 {
+			return errors.New("设备同步图片生成 API Key 过长")
+		}
+		if credentials.ImageUpscaleAPIKey != nil && len(*credentials.ImageUpscaleAPIKey) > 16_384 {
+			return errors.New("设备同步 4K 超分 API Key 过长")
 		}
 	}
 	if knowledge := bundle.Knowledge; knowledge != nil {
@@ -1100,13 +1467,7 @@ func normalizeSyncedProviderID(value string) string {
 }
 
 func isSupportedSyncedProviderID(value string) bool {
-	switch value {
-	case providerDeepSeek, providerOpenAI, providerClaude, providerKimi, providerGLM, providerQwen,
-		providerMiniMax, providerGrok, providerMiMo, providerHy3, providerGemini:
-		return true
-	default:
-		return false
-	}
+	return isKnownDesktopProviderID(value)
 }
 
 func firstProviderByKind(values []ProviderProfile, kind string) *ProviderProfile {
@@ -1132,9 +1493,35 @@ func clearCredentialBundle(bundle *desktopbridge.CredentialSyncBundle) {
 		*bundle.CodexAuthJSON = ""
 		bundle.CodexAuthJSON = nil
 	}
+	for index := range bundle.CodexAccounts {
+		if bundle.CodexAccounts[index].AuthJSON != nil {
+			*bundle.CodexAccounts[index].AuthJSON = ""
+			bundle.CodexAccounts[index].AuthJSON = nil
+		}
+	}
 	if bundle.GitHub != nil && bundle.GitHub.Token != nil {
 		*bundle.GitHub.Token = ""
 		bundle.GitHub.Token = nil
+	}
+	for index := range bundle.GitHubAccounts {
+		if bundle.GitHubAccounts[index].Token != nil {
+			*bundle.GitHubAccounts[index].Token = ""
+			bundle.GitHubAccounts[index].Token = nil
+		}
+	}
+	if bundle.MediaCredentials != nil {
+		if bundle.MediaCredentials.VisionCustomAPIKey != nil {
+			*bundle.MediaCredentials.VisionCustomAPIKey = ""
+			bundle.MediaCredentials.VisionCustomAPIKey = nil
+		}
+		if bundle.MediaCredentials.ImageGenerationCustomAPIKey != nil {
+			*bundle.MediaCredentials.ImageGenerationCustomAPIKey = ""
+			bundle.MediaCredentials.ImageGenerationCustomAPIKey = nil
+		}
+		if bundle.MediaCredentials.ImageUpscaleAPIKey != nil {
+			*bundle.MediaCredentials.ImageUpscaleAPIKey = ""
+			bundle.MediaCredentials.ImageUpscaleAPIKey = nil
+		}
 	}
 	for index := range bundle.MCPServers {
 		for key := range bundle.MCPServers[index].Environment {

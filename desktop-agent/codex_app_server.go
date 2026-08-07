@@ -96,6 +96,9 @@ type codexRPCClient struct {
 }
 
 func newCodexRPCClient(executable, codexHome string, onNotification func(codexNotification), onServerRequest func(codexServerRequest), onExit func(error)) (*codexRPCClient, error) {
+	if err := ensureCodexFileAuthStorage(codexHome); err != nil {
+		return nil, err
+	}
 	command := exec.Command(executable, "app-server", "--stdio")
 	command.Env = environmentWithValue(os.Environ(), "CODEX_HOME", codexHome)
 	prepareHiddenCommand(command)
@@ -321,26 +324,40 @@ func (client *codexRPCClient) Close() {
 type codexAppServer struct {
 	runtimeRoot string
 	codexHome   string
+	accounts    *codexAccountStore
 
-	lifecycleMu sync.Mutex
-	mu          sync.Mutex
-	client      *codexRPCClient
-	executable  string
-	builtin     bool
-	version     string
-	status      CodexRuntimeStatus
-	listener    func(CodexRuntimeStatus)
-	requester   func(codexServerRequest)
-	subscribers map[string]codexThreadSubscription
+	lifecycleMu     sync.Mutex
+	mu              sync.Mutex
+	client          *codexRPCClient
+	clientAccountID string
+	executable      string
+	builtin         bool
+	version         string
+	status          CodexRuntimeStatus
+	listener        func(CodexRuntimeStatus)
+	requester       func(codexServerRequest)
+	subscribers     map[string]codexThreadSubscription
 }
 
 func newCodexAppServer(runtimeRoot string) *codexAppServer {
+	accountStore, accountErr := newCodexAccountStore(runtimeRoot)
+	codexHome := filepath.Join(runtimeRoot, "codex-home")
+	if accountStore != nil {
+		codexHome = accountStore.ActiveHome()
+	}
 	server := &codexAppServer{
 		runtimeRoot: runtimeRoot,
-		codexHome:   filepath.Join(runtimeRoot, "codex-home"),
+		codexHome:   codexHome,
+		accounts:    accountStore,
 		subscribers: map[string]codexThreadSubscription{},
 	}
 	server.status = server.staticStatus()
+	if accountStore != nil {
+		server.status.AccountPool = accountStore.State()
+	}
+	if accountErr != nil {
+		server.status.Error = truncateRunes(accountErr.Error(), 1200)
+	}
 	return server
 }
 
@@ -397,6 +414,10 @@ func cloneCodexRuntimeStatus(status CodexRuntimeStatus) CodexRuntimeStatus {
 			status.RateLimits[index].Credits = &credits
 		}
 	}
+	status.AccountPool.Accounts = append([]CodexAccountProfile(nil), status.AccountPool.Accounts...)
+	for index := range status.AccountPool.Accounts {
+		status.AccountPool.Accounts[index].RateLimits = cloneCodexRateLimits(status.AccountPool.Accounts[index].RateLimits)
+	}
 	return status
 }
 
@@ -427,8 +448,15 @@ func (server *codexAppServer) ensureStarted(ctx context.Context, preferred strin
 	server.mu.Lock()
 	current := server.client
 	currentPath := server.executable
+	currentAccountID := server.clientAccountID
 	server.mu.Unlock()
-	if current != nil && strings.EqualFold(currentPath, executable) {
+	accountID := ""
+	codexHome := server.codexHome
+	if server.accounts != nil {
+		accountID = server.accounts.ActiveAccountID()
+		codexHome = server.accounts.ActiveHome()
+	}
+	if current != nil && strings.EqualFold(currentPath, executable) && currentAccountID == accountID {
 		select {
 		case <-current.done:
 		default:
@@ -439,10 +467,10 @@ func (server *codexAppServer) ensureStarted(ctx context.Context, preferred strin
 		current.Close()
 	}
 	version := probeCodexVersion(ctx, executable)
-	if err := ensurePrivateCodexHome(server.codexHome); err != nil {
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
 		return nil, err
 	}
-	client, err := newCodexRPCClient(executable, server.codexHome, server.handleNotification, server.handleServerRequest, server.handleExit)
+	client, err := newCodexRPCClient(executable, codexHome, server.handleNotification, server.handleServerRequest, server.handleExit)
 	if err != nil {
 		server.updateStatus(func(status *CodexRuntimeStatus) {
 			status.Error = err.Error()
@@ -455,6 +483,8 @@ func (server *codexAppServer) ensureStarted(ctx context.Context, preferred strin
 	}
 	server.mu.Lock()
 	server.client = client
+	server.clientAccountID = accountID
+	server.codexHome = codexHome
 	server.executable = executable
 	server.builtin = builtin
 	server.version = version
@@ -480,6 +510,9 @@ func (server *codexAppServer) ensureStarted(ctx context.Context, preferred strin
 		status.ExecutablePath = executable
 		status.Version = version
 		status.Error = ""
+		if server.accounts != nil {
+			status.AccountPool = server.accounts.State()
+		}
 	})
 	return client, nil
 }
@@ -551,7 +584,263 @@ func (server *codexAppServer) Refresh(ctx context.Context, preferred string) (Co
 			status.Login = CodexLoginInfo{}
 		}
 	})
+	if server.accounts != nil {
+		if captureErr := server.accounts.CaptureStatus(snapshot); captureErr != nil {
+			return snapshot, captureErr
+		}
+		snapshot = server.updateStatus(func(status *CodexRuntimeStatus) {
+			status.AccountPool = server.accounts.State()
+		})
+	}
 	return snapshot, nil
+}
+
+func (server *codexAppServer) AccountPoolState() CodexAccountPoolState {
+	if server.accounts == nil {
+		return CodexAccountPoolState{Settings: defaultCodexAccountPoolSettings(), Accounts: []CodexAccountProfile{}}
+	}
+	return server.accounts.State()
+}
+
+func (server *codexAppServer) CreateAccount(ctx context.Context, preferred, label string) (CodexRuntimeStatus, error) {
+	if server.accounts == nil {
+		return server.Status(), errors.New("Codex 账号库不可用")
+	}
+	account, err := server.accounts.Create(label)
+	if err != nil {
+		return server.Status(), err
+	}
+	return server.ActivateAccount(ctx, preferred, account.ID)
+}
+
+func (server *codexAppServer) UpdateAccount(request CodexAccountMutationRequest) (CodexRuntimeStatus, error) {
+	if server.accounts == nil {
+		return server.Status(), errors.New("Codex 账号库不可用")
+	}
+	if err := server.accounts.Update(request); err != nil {
+		return server.Status(), err
+	}
+	return server.updateStatus(func(status *CodexRuntimeStatus) {
+		status.AccountPool = server.accounts.State()
+	}), nil
+}
+
+func (server *codexAppServer) UpdateAccountPoolSettings(request CodexAccountPoolSettingsRequest) (CodexRuntimeStatus, error) {
+	if server.accounts == nil {
+		return server.Status(), errors.New("Codex 账号库不可用")
+	}
+	if err := server.accounts.UpdateSettings(request); err != nil {
+		return server.Status(), err
+	}
+	return server.updateStatus(func(status *CodexRuntimeStatus) {
+		status.AccountPool = server.accounts.State()
+	}), nil
+}
+
+func (server *codexAppServer) ActivateAccount(ctx context.Context, preferred, accountID string) (CodexRuntimeStatus, error) {
+	if err := server.activateAccount(accountID); err != nil {
+		return server.Status(), err
+	}
+	return server.Refresh(ctx, preferred)
+}
+
+func (server *codexAppServer) activateAccount(accountID string) error {
+	if server.accounts == nil {
+		return errors.New("Codex 账号库不可用")
+	}
+	server.lifecycleMu.Lock()
+	defer server.lifecycleMu.Unlock()
+	server.mu.Lock()
+	if len(server.subscribers) > 0 {
+		server.mu.Unlock()
+		return errors.New("Codex 正在执行任务；为保护当前上下文，任务完成前不会切换账号")
+	}
+	client := server.client
+	server.client = nil
+	server.clientAccountID = ""
+	server.mu.Unlock()
+	if client != nil {
+		client.Close()
+	}
+	if err := server.accounts.Activate(accountID); err != nil {
+		return err
+	}
+	server.mu.Lock()
+	server.codexHome = server.accounts.ActiveHome()
+	server.mu.Unlock()
+	server.updateStatus(func(status *CodexRuntimeStatus) {
+		status.Running = false
+		status.LoggedIn = false
+		status.AccountType, status.Email, status.PlanType = "", "", ""
+		status.Models = []CodexModelInfo{}
+		status.RateLimits = []CodexRateLimitInfo{}
+		status.RateLimitError = ""
+		status.Login = CodexLoginInfo{}
+		status.AccountPool = server.accounts.State()
+		status.Error = ""
+	})
+	return nil
+}
+
+func (server *codexAppServer) RemoveAccount(accountID string) (CodexRuntimeStatus, error) {
+	if server.accounts == nil {
+		return server.Status(), errors.New("Codex 账号库不可用")
+	}
+	if err := server.accounts.Remove(accountID); err != nil {
+		return server.Status(), err
+	}
+	return server.updateStatus(func(status *CodexRuntimeStatus) {
+		status.AccountPool = server.accounts.State()
+	}), nil
+}
+
+func (server *codexAppServer) ImportAccountPool(
+	accounts []codexAccountTransfer,
+	activeID string,
+	settings *CodexAccountPoolSettings,
+) (CodexRuntimeStatus, int, error) {
+	if server.accounts == nil {
+		return server.Status(), 0, errors.New("Codex 账号库不可用")
+	}
+	server.lifecycleMu.Lock()
+	defer server.lifecycleMu.Unlock()
+	server.mu.Lock()
+	if len(server.subscribers) > 0 {
+		server.mu.Unlock()
+		return server.Status(), 0, errors.New("Codex 正在执行任务；任务完成前不能同步账号池")
+	}
+	client := server.client
+	server.client = nil
+	server.clientAccountID = ""
+	server.mu.Unlock()
+	if client != nil {
+		client.Close()
+	}
+	imported, err := server.accounts.ImportAccounts(accounts, activeID, settings)
+	if err != nil {
+		return server.Status(), 0, err
+	}
+	server.mu.Lock()
+	server.codexHome = server.accounts.ActiveHome()
+	server.mu.Unlock()
+	status := server.updateStatus(func(status *CodexRuntimeStatus) {
+		status.Running = false
+		status.LoggedIn = false
+		status.AccountType, status.Email, status.PlanType = "", "", ""
+		status.Models = []CodexModelInfo{}
+		status.RateLimits = []CodexRateLimitInfo{}
+		status.RateLimitError = ""
+		status.Login = CodexLoginInfo{}
+		status.AccountPool = server.accounts.State()
+		status.Error = ""
+	})
+	return status, imported, nil
+}
+
+// PrepareAccountForTurn applies session affinity first, then checks the live
+// quota and performs bounded failover between turns. It never switches while a
+// thread has an active subscriber, so tool execution and approvals cannot be
+// interrupted by account rotation.
+func (server *codexAppServer) PrepareAccountForTurn(
+	ctx context.Context,
+	preferredExecutable string,
+	preferredAccountID string,
+	pinned bool,
+) (CodexRuntimeStatus, string, bool, error) {
+	if server.accounts == nil {
+		status, err := server.Refresh(ctx, preferredExecutable)
+		return status, "", false, err
+	}
+	originalID := server.accounts.ActiveAccountID()
+	selectedID := originalID
+	switched := false
+	preferredAccountID = strings.TrimSpace(preferredAccountID)
+	if preferredAccountID != "" && preferredAccountID != originalID {
+		candidate := server.accounts.BestAccount(preferredAccountID, "", pinned)
+		if candidate == preferredAccountID {
+			if err := server.activateAccount(candidate); err != nil {
+				if pinned {
+					return server.Status(), originalID, false, err
+				}
+			} else {
+				selectedID, switched = candidate, true
+			}
+		} else if pinned {
+			return server.Status(), originalID, false, errors.New("会话固定的 Codex 账号不可用或处于冷却中")
+		}
+	}
+	status, err := server.Refresh(ctx, preferredExecutable)
+	if err != nil {
+		server.accounts.MarkFailure(selectedID, err)
+		return status, selectedID, switched, err
+	}
+	server.accounts.ClearFailure(selectedID)
+	settings := server.accounts.Settings()
+	if pinned || !settings.AutoSwitch || !server.accounts.IsLowQuota(selectedID) {
+		return status, selectedID, switched, nil
+	}
+
+	tried := map[string]bool{selectedID: true}
+	for attempts := 0; attempts < len(server.accounts.State().Accounts)-1; attempts++ {
+		candidate := server.accounts.BestAccount("", selectedID, false)
+		if candidate == "" || tried[candidate] {
+			break
+		}
+		tried[candidate] = true
+		if switchErr := server.activateAccount(candidate); switchErr != nil {
+			server.accounts.MarkFailure(candidate, switchErr)
+			continue
+		}
+		candidateStatus, refreshErr := server.Refresh(ctx, preferredExecutable)
+		if refreshErr != nil || !candidateStatus.LoggedIn {
+			if refreshErr == nil {
+				refreshErr = errors.New("候选 Codex 账号未登录")
+			}
+			server.accounts.MarkFailure(candidate, refreshErr)
+			selectedID = candidate
+			continue
+		}
+		if server.accounts.IsLowQuota(candidate) {
+			server.accounts.MarkFailure(candidate, errors.New("账号额度已达到保留阈值"))
+			selectedID = candidate
+			continue
+		}
+		server.accounts.ClearFailure(candidate)
+		selectedID, status, switched = candidate, candidateStatus, true
+		message := fmt.Sprintf("当前账号额度不足，已无感切换到 %s", activeCodexAccountLabel(candidateStatus.AccountPool))
+		status = server.updateStatus(func(runtime *CodexRuntimeStatus) {
+			runtime.AccountSwitchMessage = message
+			runtime.AccountPool = server.accounts.State()
+		})
+		return status, selectedID, switched, nil
+	}
+
+	// Every candidate failed verification. Restore the original working account
+	// so a low-but-usable allowance is preferable to an unauthenticated account.
+	if server.accounts.ActiveAccountID() != originalID {
+		if restoreErr := server.activateAccount(originalID); restoreErr == nil {
+			if restored, refreshErr := server.Refresh(ctx, preferredExecutable); refreshErr == nil {
+				status, selectedID = restored, originalID
+			}
+		}
+	}
+	status = server.updateStatus(func(runtime *CodexRuntimeStatus) {
+		runtime.AccountSwitchMessage = "所有备用账号均不可用或额度不足，已保留当前账号"
+		runtime.AccountPool = server.accounts.State()
+	})
+	return status, selectedID, switched, nil
+}
+
+func activeCodexAccountLabel(pool CodexAccountPoolState) string {
+	for _, account := range pool.Accounts {
+		if account.ID == pool.ActiveAccountID {
+			if account.Email != "" {
+				return account.Email
+			}
+			return account.Label
+		}
+	}
+	return "备用账号"
 }
 
 func (server *codexAppServer) readRateLimits(ctx context.Context, client *codexRPCClient) ([]CodexRateLimitInfo, error) {

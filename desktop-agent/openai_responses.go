@@ -27,16 +27,16 @@ type openAIResponsesRequest struct {
 }
 
 func shouldUseOpenAIResponses(profile ProviderProfile) bool {
+	switch profile.APIMode {
+	case "responses":
+		return true
+	case "chat-completions", "messages":
+		return false
+	}
 	if desktopUsesResponses(profile) {
 		return true
 	}
 	if profile.ProviderID != providerOpenAI {
-		return false
-	}
-	switch profile.APIMode {
-	case "responses":
-		return true
-	case "chat-completions":
 		return false
 	}
 	parsed, err := url.Parse(profile.BaseURL)
@@ -87,7 +87,11 @@ func (client *modelClient) streamOpenAIResponses(
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream")
 	if strings.TrimSpace(apiKey) != "" {
-		request.Header.Set("Authorization", "Bearer "+apiKey)
+		if strings.Contains(strings.ToLower(profile.BaseURL), ".openai.azure.com") {
+			request.Header.Set("api-key", apiKey)
+		} else {
+			request.Header.Set("Authorization", "Bearer "+apiKey)
+		}
 	}
 	request.Header.Set("User-Agent", "Murong-Desktop-Agent/0.2")
 	response, err := client.httpClient.Do(request)

@@ -14,7 +14,8 @@ data class ProviderBalanceSnapshot(
     val providerId: String,
     val balance: Double,
     val currency: String,
-    val syncedAt: Long
+    val syncedAt: Long,
+    val source: BalanceDataSource,
 )
 
 class ProviderBalanceService {
@@ -102,7 +103,8 @@ class ProviderBalanceService {
                     providerId = "deepseek",
                     balance = balance,
                     currency = currency,
-                    syncedAt = System.currentTimeMillis()
+                    syncedAt = System.currentTimeMillis(),
+                    source = BalanceDataSource.OFFICIAL_API,
                 )
             }
         }
@@ -182,7 +184,8 @@ class ProviderBalanceService {
             providerId = providerId,
             balance = balanceEntry.balance,
             currency = balanceEntry.currency ?: "USD",
-            syncedAt = System.currentTimeMillis()
+            syncedAt = System.currentTimeMillis(),
+            source = BalanceDataSource.CUSTOM_ENDPOINT,
         )
     }
 
@@ -199,6 +202,7 @@ class ProviderBalanceService {
                     "balance",
                     "credit_balance",
                     "remaining_balance",
+                    "remaining",
                     "availableBalance",
                     "totalBalance",
                     "creditBalance",

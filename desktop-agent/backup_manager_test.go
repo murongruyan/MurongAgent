@@ -46,7 +46,9 @@ func TestDesktopBackupExcludesSecretsAndRestorePreservesLocalCredentials(t *test
 		t.Fatal(err)
 	}
 	workflowCurrent := workflowStore.backupSnapshot()
-	workflowCurrent.Document.GitHub.ProtectedToken = "LOCAL_GITHUB_KEEP"
+	reconcileGitHubAccounts(&workflowCurrent.Document)
+	workflowCurrent.Document.GitHubAccounts[activeGitHubAccountIndex(workflowCurrent.Document)].ProtectedToken = "LOCAL_GITHUB_KEEP"
+	workflowCurrent.Document.GitHub = legacyGitHubConfig(activeGitHubAccount(workflowCurrent.Document))
 	workflowCurrent.Document.Workflows = []SavedWorkflowDefinition{}
 	if err := workflowStore.restoreBackupSnapshot(workflowCurrent); err != nil {
 		t.Fatal(err)
@@ -70,7 +72,7 @@ func TestDesktopBackupExcludesSecretsAndRestorePreservesLocalCredentials(t *test
 		t.Fatalf("sessions were not restored: %#v", got.Sessions)
 	}
 	workflowGot := workflowStore.backupSnapshot()
-	if workflowGot.Document.GitHub.ProtectedToken != "LOCAL_GITHUB_KEEP" || len(workflowGot.Document.Workflows) != 1 || workflowGot.Document.Workflows[0].ID != "workflow-backup" {
+	if workflowGot.Document.GitHub.ProtectedToken != "LOCAL_GITHUB_KEEP" || activeGitHubAccount(workflowGot.Document).ProtectedToken != "LOCAL_GITHUB_KEEP" || len(workflowGot.Document.Workflows) != 1 || workflowGot.Document.Workflows[0].ID != "workflow-backup" {
 		t.Fatalf("workflow restore or GitHub token preservation failed: %#v", workflowGot.Document)
 	}
 	if manager.Status().PreRestoreSnapshotCount != 1 {
@@ -93,6 +95,31 @@ func TestDesktopBackupRejectsTamperingBeforePreRestoreSnapshot(t *testing.T) {
 	}
 	if manager.Status().PreRestoreSnapshotCount != 0 {
 		t.Fatalf("snapshot was created before full validation: %#v", manager.Status())
+	}
+}
+
+func TestDesktopBackupRestorePreservesCompleteGitHubAccountPool(t *testing.T) {
+	current := savedWorkflowStoreBackupSnapshot{Document: savedWorkflowDocument{
+		SchemaVersion: savedWorkflowSchemaVersion,
+		GitHubAccounts: []savedGitHubAccount{
+			{ID: "github-one", Label: "个人", APIBaseURL: "https://api.github.com", ProtectedToken: "protected-one", CreatedAt: 1},
+			{ID: "github-two", Label: "工作", APIBaseURL: "https://github.old/api/v3", ProtectedToken: "protected-two", CreatedAt: 2},
+		},
+		ActiveGitHubAccountID: "github-two",
+	}}
+	reconcileGitHubAccounts(&current.Document)
+	restored := buildRestoredWorkflowSnapshot(current, desktopSavedWorkflowsBackup{
+		GitHubAPIBaseURL: "https://github.restored/api/v3",
+		Workflows:        []SavedWorkflowDefinition{},
+	})
+	if len(restored.Document.GitHubAccounts) != 2 || restored.Document.ActiveGitHubAccountID != "github-two" {
+		t.Fatalf("GitHub account pool was not preserved: %#v", restored.Document)
+	}
+	if restored.Document.GitHubAccounts[0].ProtectedToken != "protected-one" || restored.Document.GitHubAccounts[1].ProtectedToken != "protected-two" {
+		t.Fatalf("GitHub account credentials were not preserved: %#v", restored.Document.GitHubAccounts)
+	}
+	if activeGitHubAccount(restored.Document).APIBaseURL != "https://github.restored/api/v3" {
+		t.Fatalf("portable GitHub API URL was not applied to the active account: %#v", restored.Document)
 	}
 }
 

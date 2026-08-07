@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -43,5 +44,23 @@ func TestEnvironmentWithValueReplacesExistingCodexHome(t *testing.T) {
 	actual := environmentWithValue([]string{"Path=C:\\Windows", "CODEX_HOME=C:\\old"}, "CODEX_HOME", "C:\\murong")
 	if len(actual) != 2 || actual[1] != "CODEX_HOME=C:\\murong" {
 		t.Fatalf("unexpected environment: %#v", actual)
+	}
+}
+
+func TestNormalizeCodexAuthStorageConfigPreservesExistingConfig(t *testing.T) {
+	current := "[features]\nexperimental_api = true\n"
+	updated := normalizeCodexAuthStorageConfig(current)
+	if !strings.HasPrefix(updated, current) {
+		t.Fatalf("existing config was not preserved: %q", updated)
+	}
+	if !strings.Contains(updated, `cli_auth_credentials_store = "file"`) {
+		t.Fatalf("file auth setting missing: %q", updated)
+	}
+}
+
+func TestNormalizeCodexAuthStorageConfigReplacesKeyring(t *testing.T) {
+	updated := normalizeCodexAuthStorageConfig("cli_auth_credentials_store = \"keyring\"\n")
+	if updated != `cli_auth_credentials_store = "file"`+"\n" {
+		t.Fatalf("keyring setting was not normalized: %q", updated)
 	}
 }

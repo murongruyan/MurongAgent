@@ -1,6 +1,52 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+)
+
+func TestParseCompleteGoalArgumentsRequiresResult(t *testing.T) {
+	if _, err := parseCompleteGoalArguments(`{"result":""}`); err == nil {
+		t.Fatal("empty result must be rejected")
+	}
+	payload, err := parseCompleteGoalArguments(`{"result":"已完成并通过验证"}`)
+	if err != nil || payload.Result != "已完成并通过验证" {
+		t.Fatalf("unexpected complete_goal payload: %#v, %v", payload, err)
+	}
+}
+
+func TestCompleteGoalClearsActiveGoalImmediately(t *testing.T) {
+	t.Setenv("MURONG_DESKTOP_DATA_DIR", t.TempDir())
+	store, err := newDesktopStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.createSession("目标测试")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.setSessionGoal(session.ID, "完成目标测试"); err != nil {
+		t.Fatal(err)
+	}
+	app := &DesktopAgentApp{store: store}
+	result, err := app.executeCompleteGoal(context.Background(), session.ID, modelToolCall{
+		Function: modelToolFunction{Arguments: `{"result":"测试已通过"}`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, `"completed":true`) {
+		t.Fatalf("unexpected tool result: %s", result)
+	}
+	updated := store.getSession(session.ID)
+	if updated == nil || updated.Goal != "" || updated.GoalStatus != "" {
+		t.Fatalf("goal was not cleared: %#v", updated)
+	}
+	if len(updated.Messages) == 0 || !strings.Contains(updated.Messages[len(updated.Messages)-1].Content, "测试已通过") {
+		t.Fatalf("completion result was not persisted: %#v", updated.Messages)
+	}
+}
 
 func TestParseGoalControlMarkersPlainReplyReturnsNil(t *testing.T) {
 	if parseGoalControlMarkers("好的，我继续推进。") != nil {

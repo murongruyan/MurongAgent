@@ -45,17 +45,17 @@ func TestCheckDesktopUpdatePrefersManifestVersion(t *testing.T) {
 		switch {
 		case strings.HasSuffix(request.URL.Path, "/releases/latest"):
 			body = `{
-				"html_url":"https://github.com/murongruyan/MurongAgent/releases/tag/murong-suite-v11",
-				"tag_name":"murong-suite-v11",
-				"body":"# MurongAgent 1.32",
+				"html_url":"https://github.com/murongruyan/MurongAgent/releases/tag/murong-suite-v1.39",
+				"tag_name":"murong-suite-v1.39",
+				"body":"# MurongAgent 1.39",
 				"published_at":"2026-07-28T00:00:00Z",
 				"assets":[
-					{"name":"release-manifest.json","browser_download_url":"https://github.com/murongruyan/MurongAgent/releases/download/murong-suite-v11/release-manifest.json"},
-					{"name":"murong-desktop-agent-windows-amd64.exe","browser_download_url":"https://github.com/murongruyan/MurongAgent/releases/download/murong-suite-v11/murong-desktop-agent-windows-amd64.exe"}
+					{"name":"release-manifest.json","browser_download_url":"https://github.com/murongruyan/MurongAgent/releases/download/murong-suite-v1.39/release-manifest.json"},
+					{"name":"murong-desktop-agent-windows-amd64.exe","browser_download_url":"https://github.com/murongruyan/MurongAgent/releases/download/murong-suite-v1.39/murong-desktop-agent-windows-amd64.exe"}
 				]
 			}`
 		case strings.HasSuffix(request.URL.Path, "/release-manifest.json"):
-			body = `{"versions":{"desktopAgent":{"name":"1.38"}}}`
+			body = `{"versions":{"desktopAgent":{"name":"1.39"}}}`
 		default:
 			return &http.Response{
 				StatusCode: http.StatusNotFound,
@@ -79,7 +79,7 @@ func TestCheckDesktopUpdatePrefersManifestVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.LatestVersion != "1.38" || !info.UpdateAvailable {
+	if info.LatestVersion != "1.39" || !info.UpdateAvailable {
 		t.Fatalf("unexpected update info: %#v", info)
 	}
 	if info.PackageName != "murong-desktop-agent-windows-amd64.exe" {

@@ -18,7 +18,7 @@ class LanWebDeviceSyncContractTest {
     }
 
     @Test
-    fun versionSixBundleKeepsSessionsCredentialsPortableCategoriesAndExecutionProfiles() {
+    fun versionEightBundleKeepsAccountPoolsSessionsCredentialsExecutionProfilesAndMediaRoutes() {
         val bundle = LanWebCredentialSyncBundle(
             sourcePlatform = "windows",
             generatedAt = System.currentTimeMillis(),
@@ -33,11 +33,30 @@ class LanWebDeviceSyncContractTest {
                 )
             ),
             codexAuthJson = "{\"auth_mode\":\"chatgpt\",\"tokens\":{}}",
+            codexAccounts = listOf(
+                LanWebSyncedCodexAccount(
+                    id = "codex-account-one",
+                    label = "账号 1",
+                    email = "one@example.com",
+                    authJson = "{\"auth_mode\":\"chatgpt\",\"tokens\":{}}",
+                ),
+            ),
+            activeCodexAccountId = "codex-account-one",
+            codexAccountSettings = LanWebSyncedCodexAccountSettings(reservePercent = 12.0),
             github = LanWebSyncedGitHubCredential(
                 apiBaseUrl = "https://github.example/api/v3",
                 token = "github-token-secret",
                 viewerLogin = "murong-user",
             ),
+            githubAccounts = listOf(
+                LanWebSyncedGitHubAccount(
+                    id = "github-account-one",
+                    label = "@murong-user",
+                    login = "murong-user",
+                    token = "github-token-secret",
+                ),
+            ),
+            activeGitHubAccountId = "github-account-one",
             agentSettings = LanWebSyncedAgentSettings(
                 approvalMode = "yolo",
                 systemPrompt = "prompt",
@@ -51,6 +70,26 @@ class LanWebDeviceSyncContractTest {
                 subagentDefaultProfileEnabled = true,
                 subagentDefaultModel = "child-model",
                 subagentDefaultReasoningEffort = "medium",
+            ),
+            mediaSettings = LanWebSyncedMediaSettings(
+                visionRoutingEnabled = true,
+                visionProviderId = "openai-compatible",
+                visionProfileId = "vision-profile",
+                visionModel = "gpt-5.2",
+                visionCustomBaseUrl = "https://vision.example.test/v1",
+                imageGenerationProviderId = "openai-compatible",
+                imageGenerationProfileId = "image-profile",
+                imageGenerationModel = "gpt-image-2",
+                imageGenerationCustomBaseUrl = "https://images.example.test/v1",
+                imageGenerationSize = "1536x1024",
+                imageGenerationQuality = "high",
+                imageGenerationFormat = "png",
+                imageGenerationCompression = 90,
+                imageGenerationPartialImages = 2,
+            ),
+            mediaCredentials = LanWebSyncedMediaCredentials(
+                visionCustomApiKey = "vision-key-secret",
+                imageGenerationCustomApiKey = "image-key-secret",
             ),
             knowledge = LanWebSyncedKnowledge(
                 memories = listOf(LanWebSyncedMemory("memory", "title", "content", true))
@@ -80,15 +119,20 @@ class LanWebDeviceSyncContractTest {
 
         val restored = json.decodeFromString<LanWebCredentialSyncBundle>(json.encodeToString(bundle))
 
-        assertEquals(6, restored.schemaVersion)
+        assertEquals(8, restored.schemaVersion)
         assertEquals("windows-session-1", restored.sessions.single().sourceSessionId)
         assertEquals("windows", restored.sessions.single().originPlatform)
         assertEquals("windows-session-1", restored.sessions.single().originSessionId)
         assertEquals("murong-portable-session", restored.sessions.single().document["format"]?.toString()?.trim('"'))
         assertEquals("api-key-secret", restored.providers.single().apiKey)
         assertTrue(restored.codexAuthJson!!.contains("tokens"))
+        assertEquals("one@example.com", restored.codexAccounts.single().email)
+        assertEquals("codex-account-one", restored.activeCodexAccountId)
+        assertEquals(12.0, restored.codexAccountSettings?.reservePercent)
         assertEquals("github-token-secret", restored.github?.token)
         assertEquals("murong-user", restored.github?.viewerLogin)
+        assertEquals("github-token-secret", restored.githubAccounts.single().token)
+        assertEquals("github-account-one", restored.activeGitHubAccountId)
         assertEquals("yolo", restored.agentSettings?.approvalMode)
         assertEquals(0.45, restored.agentSettings?.temperature)
         assertEquals(6789, restored.agentSettings?.maxTokens)
@@ -99,6 +143,10 @@ class LanWebDeviceSyncContractTest {
         assertEquals(true, restored.agentSettings?.subagentDefaultProfileEnabled)
         assertEquals("child-model", restored.agentSettings?.subagentDefaultModel)
         assertEquals("medium", restored.agentSettings?.subagentDefaultReasoningEffort)
+        assertTrue(restored.mediaSettings?.visionRoutingEnabled == true)
+        assertEquals("vision-profile", restored.mediaSettings?.visionProfileId)
+        assertEquals("1536x1024", restored.mediaSettings?.imageGenerationSize)
+        assertEquals("image-key-secret", restored.mediaCredentials?.imageGenerationCustomApiKey)
         assertEquals("content", restored.knowledge?.memories?.single()?.content)
         assertEquals("mcp-token", restored.mcpServers.single().headers["Authorization"])
         assertTrue(restored.mcpCredentialsIncluded)

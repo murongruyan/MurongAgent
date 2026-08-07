@@ -1380,7 +1380,7 @@ private fun ProjectEditorSection(
             editorError = "请先配置 API Key，或选择本机模型地址和模型名称"
             return
         }
-        val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
+        val provider = ProviderRegistry.getActiveProvider(config.getActiveRuntimeProviderId())
         val languageName = languageOverride ?: projectLanguageForPath(selectedFilePath) ?: "plain text"
         val cursorLine = currentLineNumber(editorValue.text, editorValue.selection.start)
         val prompt = buildProjectAiCompletionPrompt(

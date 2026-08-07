@@ -23,10 +23,10 @@ val localProperties = Properties().apply {
 
 val appVersionName = (findProperty("APP_VERSION_NAME") as String?)
     ?.takeIf { it.isNotBlank() }
-    ?: "1.37"
+    ?: "1.38"
 val appVersionCode = (findProperty("APP_VERSION_CODE") as String?)
     ?.toIntOrNull()
-    ?: 26080301
+    ?: 26080701
 val defaultNdkVersion = "30.0.14904198"
 val localNdkPath = localProperties.getProperty("murong.ndk.dir")?.replace('\\', '/')
 val resolvedNdkVersion = run {

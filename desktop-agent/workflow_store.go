@@ -16,6 +16,8 @@ import (
 
 const savedWorkflowSchemaVersion = 1
 
+const defaultGitHubAccountID = "github-account-default"
+
 var githubRepositoryPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 
 type savedWorkflowStore struct {
@@ -30,7 +32,12 @@ func newSavedWorkflowStore(path string) (*savedWorkflowStore, error) {
 		document: savedWorkflowDocument{
 			SchemaVersion: savedWorkflowSchemaVersion,
 			GitHub:        savedGitHubConfig{APIBaseURL: "https://api.github.com"},
-			Workflows:     []SavedWorkflowDefinition{},
+			GitHubAccounts: []savedGitHubAccount{{
+				ID: defaultGitHubAccountID, Label: "GitHub 账号 1", APIBaseURL: "https://api.github.com",
+				CreatedAt: time.Now().UnixMilli(),
+			}},
+			ActiveGitHubAccountID: defaultGitHubAccountID,
+			Workflows:             []SavedWorkflowDefinition{},
 		},
 	}
 	if err := store.load(); err != nil {
@@ -55,6 +62,7 @@ func (store *savedWorkflowStore) load() error {
 	}
 	document.SchemaVersion = savedWorkflowSchemaVersion
 	document.GitHub.APIBaseURL = normalizeGitHubAPIBaseURL(document.GitHub.APIBaseURL)
+	gitHubReconciled := reconcileGitHubAccounts(&document)
 	if document.Workflows == nil {
 		document.Workflows = []SavedWorkflowDefinition{}
 	}
@@ -81,7 +89,7 @@ func (store *savedWorkflowStore) load() error {
 		}
 	}
 	store.document = document
-	if reconciled {
+	if reconciled || gitHubReconciled {
 		return store.writeLocked()
 	}
 	return nil
@@ -90,19 +98,45 @@ func (store *savedWorkflowStore) load() error {
 func (store *savedWorkflowStore) state(viewer string) SavedWorkflowState {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	reconcileGitHubAccounts(&store.document)
 	workflows := make([]SavedWorkflowDefinition, 0, len(store.document.Workflows))
 	for _, workflow := range store.document.Workflows {
 		workflows = append(workflows, cloneSavedWorkflow(workflow))
 	}
 	sort.Slice(workflows, func(i, j int) bool { return workflows[i].UpdatedAt > workflows[j].UpdatedAt })
+	publicAccounts := publicGitHubAccounts(store.document)
+	active := activeGitHubAccount(store.document)
+	activeViewer := strings.TrimSpace(viewer)
+	if activeViewer == "" {
+		activeViewer = active.Login
+	}
 	return SavedWorkflowState{
 		GitHub: PublicGitHubConfig{
-			APIBaseURL: normalizeGitHubAPIBaseURL(store.document.GitHub.APIBaseURL),
-			HasToken:   store.document.GitHub.ProtectedToken != "",
-			Viewer:     strings.TrimSpace(viewer),
+			APIBaseURL: normalizeGitHubAPIBaseURL(active.APIBaseURL),
+			HasToken:   active.ProtectedToken != "",
+			Viewer:     activeViewer,
 		},
-		Workflows: workflows,
+		GitHubAccounts:      publicAccounts,
+		ActiveGitHubAccount: store.document.ActiveGitHubAccountID,
+		Workflows:           workflows,
 	}
+}
+
+func (store *savedWorkflowStore) updateActiveGitHubLogin(login string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	reconcileGitHubAccounts(&store.document)
+	index := activeGitHubAccountIndex(store.document)
+	if index < 0 {
+		return errors.New("GitHub 账号不存在")
+	}
+	login = truncateRunes(strings.TrimSpace(login), 80)
+	store.document.GitHubAccounts[index].Login = login
+	if login != "" {
+		store.document.GitHubAccounts[index].Label = "@" + login
+	}
+	store.document.GitHubAccounts[index].LastUsedAt = time.Now().UnixMilli()
+	return store.writeLocked()
 }
 
 func (store *savedWorkflowStore) get(id string) (SavedWorkflowDefinition, bool) {
@@ -232,11 +266,16 @@ func (store *savedWorkflowStore) updateRun(id string, record SavedWorkflowRunRec
 func (store *savedWorkflowStore) saveGitHub(request SaveGitHubConfigRequest) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	reconcileGitHubAccounts(&store.document)
 	baseURL := normalizeGitHubAPIBaseURL(request.APIBaseURL)
 	if err := validateGitHubAPIBaseURL(baseURL); err != nil {
 		return err
 	}
-	updated := store.document.GitHub
+	index := activeGitHubAccountIndex(store.document)
+	if index < 0 {
+		return errors.New("GitHub 账号不存在")
+	}
+	updated := store.document.GitHubAccounts[index]
 	updated.APIBaseURL = baseURL
 	if request.ClearToken {
 		updated.ProtectedToken = ""
@@ -247,18 +286,90 @@ func (store *savedWorkflowStore) saveGitHub(request SaveGitHubConfigRequest) err
 		}
 		updated.ProtectedToken = protected
 	}
-	store.document.GitHub = updated
+	store.document.GitHubAccounts[index] = updated
+	store.document.GitHub = legacyGitHubConfig(updated)
+	return store.writeLocked()
+}
+
+func (store *savedWorkflowStore) createGitHubAccount(label string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	reconcileGitHubAccounts(&store.document)
+	if len(store.document.GitHubAccounts) >= 20 {
+		return errors.New("最多可保存 20 个 GitHub 账号")
+	}
+	label = truncateRunes(strings.TrimSpace(label), 80)
+	if label == "" {
+		label = fmt.Sprintf("GitHub 账号 %d", len(store.document.GitHubAccounts)+1)
+	}
+	id := newID("github-account")
+	store.document.GitHubAccounts = append(store.document.GitHubAccounts, savedGitHubAccount{
+		ID: id, Label: label, APIBaseURL: "https://api.github.com", CreatedAt: time.Now().UnixMilli(),
+	})
+	store.document.ActiveGitHubAccountID = id
+	store.document.GitHub = legacyGitHubConfig(activeGitHubAccount(store.document))
+	return store.writeLocked()
+}
+
+func (store *savedWorkflowStore) activateGitHubAccount(accountID string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	reconcileGitHubAccounts(&store.document)
+	accountID = strings.TrimSpace(accountID)
+	index := githubAccountIndex(store.document.GitHubAccounts, accountID)
+	if index < 0 {
+		return errors.New("GitHub 账号不存在")
+	}
+	if store.document.GitHubAccounts[index].ProtectedToken == "" {
+		return errors.New("该 GitHub 账号尚未登录")
+	}
+	store.document.GitHubAccounts[index].LastUsedAt = time.Now().UnixMilli()
+	store.document.ActiveGitHubAccountID = accountID
+	store.document.GitHub = legacyGitHubConfig(store.document.GitHubAccounts[index])
+	return store.writeLocked()
+}
+
+func (store *savedWorkflowStore) removeGitHubAccount(accountID string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	reconcileGitHubAccounts(&store.document)
+	index := githubAccountIndex(store.document.GitHubAccounts, strings.TrimSpace(accountID))
+	if index < 0 {
+		return errors.New("GitHub 账号不存在")
+	}
+	accounts := append([]savedGitHubAccount{}, store.document.GitHubAccounts[:index]...)
+	accounts = append(accounts, store.document.GitHubAccounts[index+1:]...)
+	if len(accounts) == 0 {
+		accounts = []savedGitHubAccount{{
+			ID: defaultGitHubAccountID, Label: "GitHub 账号 1", APIBaseURL: "https://api.github.com", CreatedAt: time.Now().UnixMilli(),
+		}}
+	}
+	activeID := store.document.ActiveGitHubAccountID
+	if activeID == strings.TrimSpace(accountID) || githubAccountIndex(accounts, activeID) < 0 {
+		activeID = accounts[0].ID
+		for _, candidate := range accounts {
+			if candidate.ProtectedToken != "" {
+				activeID = candidate.ID
+				break
+			}
+		}
+	}
+	store.document.GitHubAccounts = accounts
+	store.document.ActiveGitHubAccountID = activeID
+	store.document.GitHub = legacyGitHubConfig(activeGitHubAccount(store.document))
 	return store.writeLocked()
 }
 
 func (store *savedWorkflowStore) runtimeGitHub() (runtimeGitHubConfig, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	config := runtimeGitHubConfig{APIBaseURL: normalizeGitHubAPIBaseURL(store.document.GitHub.APIBaseURL)}
-	if store.document.GitHub.ProtectedToken == "" {
+	reconcileGitHubAccounts(&store.document)
+	active := activeGitHubAccount(store.document)
+	config := runtimeGitHubConfig{APIBaseURL: normalizeGitHubAPIBaseURL(active.APIBaseURL)}
+	if active.ProtectedToken == "" {
 		return config, nil
 	}
-	plain, err := unprotectSecret(store.document.GitHub.ProtectedToken)
+	plain, err := unprotectSecret(active.ProtectedToken)
 	if err != nil {
 		return runtimeGitHubConfig{}, fmt.Errorf("无法解密 GitHub Token：%w", err)
 	}
@@ -266,12 +377,202 @@ func (store *savedWorkflowStore) runtimeGitHub() (runtimeGitHubConfig, error) {
 	return config, nil
 }
 
+func (store *savedWorkflowStore) githubAccountCredentials() ([]githubAccountTransfer, string, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	reconcileGitHubAccounts(&store.document)
+	accounts := make([]githubAccountTransfer, 0, len(store.document.GitHubAccounts))
+	for _, account := range store.document.GitHubAccounts {
+		transfer := githubAccountTransfer{
+			ID: account.ID, Label: account.Label, Login: account.Login,
+			APIBaseURL: normalizeGitHubAPIBaseURL(account.APIBaseURL), LastUsedAt: account.LastUsedAt,
+		}
+		if account.ProtectedToken != "" {
+			plain, err := unprotectSecret(account.ProtectedToken)
+			if err != nil {
+				return nil, "", fmt.Errorf("无法解密 GitHub 账号 %q：%w", account.Label, err)
+			}
+			value := string(plain)
+			clearBytes(plain)
+			transfer.Token = &value
+		}
+		accounts = append(accounts, transfer)
+	}
+	return accounts, store.document.ActiveGitHubAccountID, nil
+}
+
+func (store *savedWorkflowStore) importGitHubAccounts(accounts []githubAccountTransfer, activeID string) (bool, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	reconcileGitHubAccounts(&store.document)
+	if len(accounts) == 0 {
+		return false, nil
+	}
+	if len(accounts) > 20 {
+		return false, errors.New("同步的 GitHub 账号超过 20 个")
+	}
+	merged := append([]savedGitHubAccount{}, store.document.GitHubAccounts...)
+	imported := false
+	for _, incoming := range accounts {
+		id := strings.TrimSpace(incoming.ID)
+		if !validSyncedID(id) {
+			return false, errors.New("同步的 GitHub 账号 ID 无效")
+		}
+		baseURL := normalizeGitHubAPIBaseURL(incoming.APIBaseURL)
+		if err := validateGitHubAPIBaseURL(baseURL); err != nil {
+			return false, err
+		}
+		index := githubAccountIndex(merged, id)
+		if index < 0 && strings.TrimSpace(incoming.Login) != "" {
+			for candidate, account := range merged {
+				if strings.EqualFold(account.Login, strings.TrimSpace(incoming.Login)) {
+					index = candidate
+					break
+				}
+			}
+		}
+		if index < 0 {
+			if len(merged) >= 20 {
+				return false, errors.New("本机 GitHub 账号已达到 20 个上限")
+			}
+			merged = append(merged, savedGitHubAccount{ID: id, CreatedAt: time.Now().UnixMilli()})
+			index = len(merged) - 1
+		}
+		account := merged[index]
+		account.ID = id
+		account.Label = truncateRunes(strings.TrimSpace(incoming.Label), 80)
+		if account.Label == "" {
+			account.Label = fmt.Sprintf("GitHub 账号 %d", index+1)
+		}
+		account.Login = strings.TrimSpace(incoming.Login)
+		account.APIBaseURL = baseURL
+		account.LastUsedAt = incoming.LastUsedAt
+		if incoming.Token != nil && strings.TrimSpace(*incoming.Token) != "" {
+			protected, err := protectSecret([]byte(strings.TrimSpace(*incoming.Token)))
+			if err != nil {
+				return false, err
+			}
+			account.ProtectedToken = protected
+			imported = true
+		}
+		merged[index] = account
+	}
+	if githubAccountIndex(merged, strings.TrimSpace(activeID)) >= 0 {
+		store.document.ActiveGitHubAccountID = strings.TrimSpace(activeID)
+	}
+	store.document.GitHubAccounts = merged
+	store.document.GitHub = legacyGitHubConfig(activeGitHubAccount(store.document))
+	return imported, store.writeLocked()
+}
+
 func (store *savedWorkflowStore) writeLocked() error {
 	store.document.SchemaVersion = savedWorkflowSchemaVersion
+	reconcileGitHubAccounts(&store.document)
 	if err := os.MkdirAll(filepath.Dir(store.path), 0o700); err != nil {
 		return err
 	}
 	return writeJSONAtomic(store.path, store.document)
+}
+
+func reconcileGitHubAccounts(document *savedWorkflowDocument) bool {
+	if document == nil {
+		return false
+	}
+	changed := false
+	if len(document.GitHubAccounts) == 0 {
+		id := defaultGitHubAccountID
+		if document.ActiveGitHubAccountID != "" {
+			id = strings.TrimSpace(document.ActiveGitHubAccountID)
+		}
+		document.GitHubAccounts = []savedGitHubAccount{{
+			ID: id, Label: "GitHub 账号 1", APIBaseURL: normalizeGitHubAPIBaseURL(document.GitHub.APIBaseURL),
+			ProtectedToken: document.GitHub.ProtectedToken, CreatedAt: time.Now().UnixMilli(),
+		}}
+		if document.ActiveGitHubAccountID == "" {
+			document.ActiveGitHubAccountID = id
+		}
+		changed = true
+	}
+	seen := map[string]bool{}
+	accounts := make([]savedGitHubAccount, 0, len(document.GitHubAccounts))
+	for index, account := range document.GitHubAccounts {
+		account.ID = strings.TrimSpace(account.ID)
+		if account.ID == "" || seen[account.ID] || !validSyncedID(account.ID) {
+			changed = true
+			continue
+		}
+		seen[account.ID] = true
+		account.Label = truncateRunes(strings.TrimSpace(account.Label), 80)
+		if account.Label == "" {
+			account.Label = fmt.Sprintf("GitHub 账号 %d", index+1)
+			changed = true
+		}
+		account.APIBaseURL = normalizeGitHubAPIBaseURL(account.APIBaseURL)
+		accounts = append(accounts, account)
+	}
+	if len(accounts) == 0 {
+		accounts = []savedGitHubAccount{{ID: defaultGitHubAccountID, Label: "GitHub 账号 1", APIBaseURL: "https://api.github.com", CreatedAt: time.Now().UnixMilli()}}
+		changed = true
+	}
+	active := strings.TrimSpace(document.ActiveGitHubAccountID)
+	if githubAccountIndex(accounts, active) < 0 {
+		active = accounts[0].ID
+		for _, account := range accounts {
+			if account.ProtectedToken != "" {
+				active = account.ID
+				break
+			}
+		}
+		changed = true
+	}
+	if len(accounts) != len(document.GitHubAccounts) || active != document.ActiveGitHubAccountID {
+		changed = true
+	}
+	document.GitHubAccounts = accounts
+	document.ActiveGitHubAccountID = active
+	legacy := legacyGitHubConfig(activeGitHubAccount(*document))
+	if legacy != document.GitHub {
+		document.GitHub = legacy
+		changed = true
+	}
+	return changed
+}
+
+func githubAccountIndex(accounts []savedGitHubAccount, id string) int {
+	for index := range accounts {
+		if accounts[index].ID == id {
+			return index
+		}
+	}
+	return -1
+}
+
+func activeGitHubAccountIndex(document savedWorkflowDocument) int {
+	return githubAccountIndex(document.GitHubAccounts, document.ActiveGitHubAccountID)
+}
+
+func activeGitHubAccount(document savedWorkflowDocument) savedGitHubAccount {
+	index := activeGitHubAccountIndex(document)
+	if index >= 0 {
+		return document.GitHubAccounts[index]
+	}
+	return savedGitHubAccount{ID: defaultGitHubAccountID, Label: "GitHub 账号 1", APIBaseURL: "https://api.github.com"}
+}
+
+func legacyGitHubConfig(account savedGitHubAccount) savedGitHubConfig {
+	return savedGitHubConfig{APIBaseURL: normalizeGitHubAPIBaseURL(account.APIBaseURL), ProtectedToken: account.ProtectedToken}
+}
+
+func publicGitHubAccounts(document savedWorkflowDocument) []PublicGitHubAccount {
+	accounts := make([]PublicGitHubAccount, 0, len(document.GitHubAccounts))
+	for _, account := range document.GitHubAccounts {
+		accounts = append(accounts, PublicGitHubAccount{
+			ID: account.ID, Label: account.Label, Login: account.Login,
+			APIBaseURL: normalizeGitHubAPIBaseURL(account.APIBaseURL), HasToken: account.ProtectedToken != "",
+			Active: account.ID == document.ActiveGitHubAccountID, LastUsedAt: account.LastUsedAt,
+		})
+	}
+	return accounts
 }
 
 func normalizeGitHubAPIBaseURL(value string) string {

@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const codexDynamicToolsVersion = 5
+const codexDynamicToolsVersion = 6
 
 type codexDynamicToolCallParams struct {
 	Arguments json.RawMessage `json:"arguments"`
@@ -60,25 +60,42 @@ func (app *DesktopAgentApp) runCodexAgent(ctx context.Context, sessionID string,
 		return
 	}
 	app.emit("agent:status", map[string]any{"sessionId": sessionID, "state": "running", "text": "正在启动内置 Codex"})
-	status, err := app.codex.Refresh(ctx, profile.ExecutablePath)
+	session := app.store.getSession(sessionID)
+	if session == nil {
+		app.failRun(sessionID, errors.New("会话不存在"))
+		return
+	}
+	status, selectedAccountID, accountSwitched, err := app.codex.PrepareAccountForTurn(
+		ctx,
+		profile.ExecutablePath,
+		session.CodexAccountID,
+		session.CodexAccountPinned,
+	)
 	if err != nil {
 		app.failRun(sessionID, err)
 		return
 	}
+	if selectedAccountID != "" && selectedAccountID != session.CodexAccountID {
+		if err := app.store.setCodexAccountBinding(sessionID, selectedAccountID, nil); err != nil {
+			app.failRun(sessionID, err)
+			return
+		}
+		session = app.store.getSession(sessionID)
+		accountSwitched = true
+	}
+	if message := strings.TrimSpace(status.AccountSwitchMessage); message != "" {
+		app.emit("agent:status", map[string]any{"sessionId": sessionID, "state": "running", "text": message})
+	}
 	if !status.LoggedIn {
 		app.failRun(sessionID, errors.New("Codex 尚未登录 ChatGPT；请在“模型连接”中完成一次设备登录"))
-		return
-	}
-	session := app.store.getSession(sessionID)
-	if session == nil {
-		app.failRun(sessionID, errors.New("会话不存在"))
 		return
 	}
 	runMode := latestUserMessageMode(session)
 	planMode := runMode == "plan" || runMode == "goal_plan"
 	baseInstructions := app.systemPrompt(config)
 	if goal := strings.TrimSpace(session.Goal); goal != "" {
-		baseInstructions += "\n\n当前会话长期目标（后续回复必须围绕它推进，除非用户更新或清除）：\n" + goal
+		baseInstructions += "\n\n当前会话长期目标（持续推进，不得用阶段性结论提前结束）：\n" + goal
+		baseInstructions += "\n目标真实达成并完成必要验证后，立即调用 complete_goal；调用成功即结束目标，不要继续追加操作。若尚未达成，不要结束当前工作。"
 	}
 	if planPrompt := workflowExecutionPrompt(session.WorkflowPlan); planPrompt != "" {
 		baseInstructions += "\n\n" + planPrompt
@@ -105,7 +122,7 @@ func (app *DesktopAgentApp) runCodexAgent(ctx context.Context, sessionID string,
 	}
 
 	threadID := strings.TrimSpace(session.CodexThreadID)
-	freshThread := threadID == "" || session.CodexToolsVersion < codexDynamicToolsVersion
+	freshThread := threadID == "" || session.CodexToolsVersion < codexDynamicToolsVersion || accountSwitched
 	if freshThread {
 		threadID = ""
 	}
@@ -465,6 +482,9 @@ func (app *DesktopAgentApp) codexDynamicTools(config desktopConfig, planMode boo
 		if tool, ok := codexDynamicToolFromFunction(completeStepToolDefinition()); ok {
 			tools = append(tools, tool)
 		}
+		if tool, ok := codexDynamicToolFromFunction(completeGoalToolDefinition()); ok {
+			tools = append(tools, tool)
+		}
 	}
 	if isBuiltinToolEnabled(config, "gui") && guiPlatformSupported() {
 		if tool, ok := codexDynamicToolFromFunction(guiToolDefinition()); ok {
@@ -507,20 +527,28 @@ func (app *DesktopAgentApp) persistCodexCompletedItem(sessionID string, item cod
 	switch item.Type {
 	case "agentMessage", "plan":
 		content := strings.TrimSpace(item.Text)
-		if content == "" {
-			return nil
+		markers := parseGoalControlMarkers(content)
+		if markers != nil {
+			content = strings.TrimSpace(markers.RemainingContent)
 		}
 		kind := ""
 		if planMode || item.Type == "plan" {
 			kind = "plan"
 		}
-		updated, err := app.store.appendMessage(sessionID, ChatMessage{Role: "assistant", Content: content, Kind: kind})
-		if err == nil && planMode {
+		var updated *ChatSession
+		var err error
+		if content != "" {
+			updated, err = app.store.appendMessage(sessionID, ChatMessage{Role: "assistant", Content: content, Kind: kind})
+		}
+		if err == nil && planMode && updated != nil {
 			sourceMessageID := updated.Messages[len(updated.Messages)-1].ID
 			updated, err = app.store.captureWorkflowPlan(sessionID, sourceMessageID, content)
 		}
-		if err == nil {
+		if err == nil && updated != nil {
 			app.emitSessionsChanged(updated)
+		}
+		if err == nil && markers != nil {
+			app.applyGoalControlMarkers(sessionID, markers)
 		}
 		return err
 	default:
@@ -726,6 +754,11 @@ func (app *DesktopAgentApp) executeCodexDynamicToolRequestForMode(ctx context.Co
 		if err == nil {
 			app.emitSessionsChanged(app.store.getSession(sessionID))
 		}
+	case completeGoalToolName:
+		if planMode {
+			return failure(errors.New("计划生成模式不允许调用 complete_goal"))
+		}
+		result, err = app.executeCompleteGoal(ctx, sessionID, call)
 	case "gui":
 		resolved := resolvedToolConfig(config)
 		if planMode {
@@ -789,6 +822,31 @@ func (store *desktopStore) setCodexThreadState(sessionID, threadID, syncedMessag
 	session.CodexToolsVersion = toolsVersion
 	if err := store.saveSessionsLocked(); err != nil {
 		session.CodexThreadID, session.CodexSyncedID, session.CodexToolsVersion = previousThreadID, previousSyncedID, previousToolsVersion
+		return err
+	}
+	return nil
+}
+
+func (store *desktopStore) setCodexAccountBinding(sessionID, accountID string, pinned *bool) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	session := store.sessions[strings.TrimSpace(sessionID)]
+	if session == nil {
+		return errors.New("会话不存在")
+	}
+	previous := cloneSession(session)
+	accountID = strings.TrimSpace(accountID)
+	if session.CodexAccountID != accountID {
+		session.CodexAccountID = accountID
+		session.CodexThreadID = ""
+		session.CodexSyncedID = ""
+		session.CodexToolsVersion = 0
+	}
+	if pinned != nil {
+		session.CodexAccountPinned = *pinned
+	}
+	if err := store.saveSessionsLocked(); err != nil {
+		*session = *previous
 		return err
 	}
 	return nil

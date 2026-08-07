@@ -79,6 +79,16 @@ type PublicGitHubConfig struct {
 	Viewer     string `json:"viewer,omitempty"`
 }
 
+type PublicGitHubAccount struct {
+	ID         string `json:"id"`
+	Label      string `json:"label"`
+	Login      string `json:"login,omitempty"`
+	APIBaseURL string `json:"apiBaseUrl"`
+	HasToken   bool   `json:"hasToken"`
+	Active     bool   `json:"active"`
+	LastUsedAt int64  `json:"lastUsedAt,omitempty"`
+}
+
 type SaveGitHubConfigRequest struct {
 	APIBaseURL string `json:"apiBaseUrl"`
 	Token      string `json:"token"`
@@ -86,19 +96,47 @@ type SaveGitHubConfigRequest struct {
 }
 
 type SavedWorkflowState struct {
-	GitHub    PublicGitHubConfig        `json:"github"`
-	Workflows []SavedWorkflowDefinition `json:"workflows"`
+	GitHub              PublicGitHubConfig        `json:"github"`
+	GitHubAccounts      []PublicGitHubAccount     `json:"githubAccounts"`
+	ActiveGitHubAccount string                    `json:"activeGitHubAccount"`
+	Workflows           []SavedWorkflowDefinition `json:"workflows"`
+}
+
+type GitHubAccountRequest struct {
+	AccountID string `json:"accountId,omitempty"`
+	Label     string `json:"label,omitempty"`
 }
 
 type savedWorkflowDocument struct {
-	SchemaVersion int                       `json:"schemaVersion"`
-	GitHub        savedGitHubConfig         `json:"github"`
-	Workflows     []SavedWorkflowDefinition `json:"workflows"`
+	SchemaVersion         int                       `json:"schemaVersion"`
+	GitHub                savedGitHubConfig         `json:"github"`
+	GitHubAccounts        []savedGitHubAccount      `json:"githubAccounts,omitempty"`
+	ActiveGitHubAccountID string                    `json:"activeGitHubAccountId,omitempty"`
+	Workflows             []SavedWorkflowDefinition `json:"workflows"`
 }
 
 type savedGitHubConfig struct {
 	APIBaseURL     string `json:"apiBaseUrl"`
 	ProtectedToken string `json:"protectedToken,omitempty"`
+}
+
+type savedGitHubAccount struct {
+	ID             string `json:"id"`
+	Label          string `json:"label"`
+	Login          string `json:"login,omitempty"`
+	APIBaseURL     string `json:"apiBaseUrl"`
+	ProtectedToken string `json:"protectedToken,omitempty"`
+	CreatedAt      int64  `json:"createdAt"`
+	LastUsedAt     int64  `json:"lastUsedAt,omitempty"`
+}
+
+type githubAccountTransfer struct {
+	ID         string
+	Label      string
+	Login      string
+	APIBaseURL string
+	Token      *string
+	LastUsedAt int64
 }
 
 type runtimeGitHubConfig struct {

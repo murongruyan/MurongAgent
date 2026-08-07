@@ -96,7 +96,11 @@ func fetchProviderModelEndpoint(ctx context.Context, client *http.Client, endpoi
 		req.Header.Set("x-goog-api-key", apiKey)
 	default:
 		if apiKey != "" {
-			req.Header.Set("Authorization", "Bearer "+apiKey)
+			if strings.Contains(strings.ToLower(endpoint), ".openai.azure.com") {
+				req.Header.Set("api-key", apiKey)
+			} else {
+				req.Header.Set("Authorization", "Bearer "+apiKey)
+			}
 		}
 	}
 	response, err := client.Do(req)

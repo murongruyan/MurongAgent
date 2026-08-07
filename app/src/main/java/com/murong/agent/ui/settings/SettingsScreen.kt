@@ -2,10 +2,14 @@ package com.murong.agent.ui.settings
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
@@ -33,11 +37,13 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import com.murong.agent.core.config.GlobalMemory
 import com.murong.agent.core.config.GlobalRule
 import com.murong.agent.core.config.GlobalSkill
 import com.murong.agent.core.config.AgentBackendKind
+import com.murong.agent.core.config.BalanceDataSource
 import com.murong.agent.core.config.ProviderConfig
 import com.murong.agent.core.config.RelayConfig
 import com.murong.agent.core.config.RelayKind
@@ -50,12 +56,15 @@ import com.murong.agent.core.mcp.McpConfigSource
 import com.murong.agent.core.mcp.McpServerStatus
 import com.murong.agent.core.provider.ModelProvider
 import com.murong.agent.core.provider.ProviderRegistry
+import com.murong.agent.core.provider.ProviderPresetCatalog
+import com.murong.agent.core.provider.ProviderWireFormat
 import com.murong.agent.core.voice.VoiceSettings
 import com.murong.agent.backup.MurongBackupSettingsSnapshot
 import com.murong.agent.voice.OfflineVoiceModelUiState
 import com.murong.agent.voice.OfflineTtsModelUiState
 import com.murong.agent.ui.MemoryDraftImportCard
 import com.murong.agent.ui.McpDraftImportCard
+import com.murong.agent.ui.MurongAlertDialog
 import com.murong.agent.ui.MurongDialog
 import com.murong.agent.ui.MurongGlassSurface
 import com.murong.agent.ui.MurongInfoCard
@@ -71,6 +80,9 @@ import com.murong.agent.ui.voice.OfflineVoiceModelSetting
 import com.murong.agent.ui.voice.OfflineTtsModelSetting
 import com.murong.agent.ui.voice.VoiceRecognitionProviderSetting
 import java.util.UUID
+import java.util.Date
+import java.util.Locale
+import java.text.SimpleDateFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -94,6 +106,12 @@ fun SettingsScreen(
     onSelectAgentBackend: (AgentBackendKind) -> Unit = {},
     onRefreshCodexChatGptStatus: () -> Unit = {},
     onStartCodexChatGptLogin: () -> Unit = {},
+    onAddCodexChatGptAccount: () -> Unit = {},
+    onActivateCodexChatGptAccount: (String) -> Unit = {},
+    onRemoveCodexChatGptAccount: (String) -> Unit = {},
+    onSetCodexChatGptAccountEnabled: (String, Boolean) -> Unit = { _, _ -> },
+    onUpdateCodexAccountPoolSettings: (Boolean, Int, Int) -> Unit = { _, _, _ -> },
+    onSetCurrentSessionCodexAccountPinned: (Boolean) -> Unit = {},
     onCancelCodexChatGptLogin: () -> Unit = {},
     onLogoutCodexChatGpt: () -> Unit = {},
     rootStatus: Boolean? = null,
@@ -132,6 +150,8 @@ fun SettingsScreen(
     onUpdateDurableGlobalMemory: (GlobalMemory) -> Unit = {},
     onDeleteDurableGlobalMemory: (String) -> Unit = {},
     onStartGitHubOAuthLogin: () -> Unit = {},
+    onActivateGitHubAccount: (String) -> Unit = {},
+    onRemoveGitHubAccount: (String) -> Unit = {},
     onClearGitHubToken: () -> Unit = {},
     onOpenThemePage: () -> Unit = {},
     onOpenAboutPage: () -> Unit = {},
@@ -169,7 +189,7 @@ fun SettingsScreen(
     LaunchedEffect(gitHubAuthState.authorizationUrl) {
         val uri = gitHubAuthState.authorizationUrl?.trim().orEmpty()
         if (uri.isBlank() || lastOpenedGitHubAuthUrl == uri) return@LaunchedEffect
-        runCatching { uriHandler.openUri(uri) }
+        openAuthUriInFloatingWindow(context, uri)
         lastOpenedGitHubAuthUrl = uri
     }
 
@@ -184,7 +204,7 @@ fun SettingsScreen(
         // the attempt identity, not the URL itself.
         val attempt = codexChatGptState.loginId ?: codexChatGptState.userCode ?: uri
         if (uri.isBlank() || lastOpenedCodexAuthAttempt == attempt) return@LaunchedEffect
-        runCatching { uriHandler.openUri(uri) }
+        openAuthUriInFloatingWindow(context, uri)
         lastOpenedCodexAuthAttempt = attempt
     }
 
@@ -266,125 +286,17 @@ fun SettingsScreen(
             }
 
         if (shows(SettingsFocus.DATA)) {
-        SettingsExpandableSectionCard(
-            title = "GitHub 联动",
-            subtitle = when {
-                gitHubAuthState.isLoading -> "GitHub 登录处理中…"
-                config.isGitHubSignedIn() -> gitHubAuthState.viewerLogin?.let { "已连接 @$it" } ?: "已连接 GitHub"
-                else -> "未连接；需要仓库或工作流联动时再展开"
-            },
+        GitHubAccountSettingsSection(
+            config = config,
+            state = gitHubAuthState,
             expanded = gitHubExpanded,
-            onExpandedChange = { gitHubExpanded = it }
-        ) {
-                Text(
-                    text = "这里的 GitHub 登录会给项目页的 push / pull、workflow 列表和手动触发使用。现在不再需要手动填写 OAuth 参数，直接点按钮就会跳浏览器登录。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            text = "登录状态",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                        Text(
-                            text = if (config.isGitHubSignedIn()) "已连接 GitHub" else "未连接 GitHub",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                        if (config.githubToken.isNotBlank()) {
-                            Text(
-                                text = "GitHub Token 已同步到应用内，可直接用于仓库与工作流功能。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-                gitHubAuthState.viewerLogin?.let { login ->
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text(
-                                text = "当前账号",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.secondary
-                            )
-                            Text(
-                                text = buildString {
-                                    append("@")
-                                    append(login)
-                                    gitHubAuthState.viewerName?.takeIf { it.isNotBlank() }?.let {
-                                        append(" · ")
-                                        append(it)
-                                    }
-                                },
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        }
-                    }
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    FilledTonalButton(
-                        onClick = onStartGitHubOAuthLogin,
-                        enabled = !gitHubAuthState.isLoading
-                    ) {
-                        Text(if (config.isGitHubSignedIn()) "重新登录" else "GitHub 登录", fontSize = 12.sp)
-                    }
-                    OutlinedButton(
-                        onClick = onClearGitHubToken,
-                        enabled = config.isGitHubSignedIn() && !gitHubAuthState.isLoading
-                    ) {
-                        Text("退出登录", fontSize = 12.sp)
-                    }
-                }
-                if (gitHubAuthState.isLoading) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            strokeWidth = 2.dp
-                        )
-                        Text(
-                            text = gitHubAuthState.message ?: "GitHub 登录处理中...",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                gitHubAuthState.message?.takeIf { it.isNotBlank() && !gitHubAuthState.isLoading }?.let {
-                    Text(
-                        text = it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF2E7D32)
-                    )
-                }
-                gitHubAuthState.error?.takeIf { it.isNotBlank() }?.let {
-                    Text(
-                        text = it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-            }
+            onExpandedChange = { gitHubExpanded = it },
+            onAddAccount = onStartGitHubOAuthLogin,
+            onRefresh = onRefreshGitHubAuthStatus,
+            onActivateAccount = onActivateGitHubAccount,
+            onRemoveAccount = onRemoveGitHubAccount,
+            onLogoutCurrent = onClearGitHubToken,
+        )
 
         }
 
@@ -396,7 +308,9 @@ fun SettingsScreen(
         val totalEstimatedCost = activeSessions.sumOf { it.usageSummary.resolvedEstimatedCostAmount() }
         val estimatedCostCurrency = config.getPriceCurrency()
         val activeBalanceCurrency = config.getBalanceCurrency()
-        val remainingBalance = config.getBalanceAmount() - totalEstimatedCost
+        val balanceKnown = config.hasKnownBalance()
+        val balanceSource = config.getBalanceSource()
+        val remainingBalance = config.getBalanceAmount().takeIf { balanceKnown }?.minus(totalEstimatedCost)
 
         Text(
             text = "用量与成本",
@@ -426,9 +340,22 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = "成本 ${formatCurrencyAmount(totalEstimatedCost, estimatedCostCurrency)} · 余额 ${formatBalance(config.getBalanceAmount(), activeBalanceCurrency)} · 剩余 ${formatCurrencyAmount(remainingBalance, activeBalanceCurrency)}",
+                    text = buildString {
+                        append("成本 ${formatCurrencyAmount(totalEstimatedCost, estimatedCostCurrency)}")
+                        if (balanceKnown) {
+                            append(" · 余额 ${formatBalance(config.getBalanceAmount(), activeBalanceCurrency)}")
+                            append(" · 剩余 ${formatCurrencyAmount(remainingBalance ?: 0.0, activeBalanceCurrency)}")
+                        } else {
+                            append(" · 余额未知")
+                        }
+                    },
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (remainingBalance < 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                    color = if (remainingBalance != null && remainingBalance < 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "额度口径：${formatBalanceSource(balanceSource)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -456,6 +383,12 @@ fun SettingsScreen(
             onSelectBackend = onSelectAgentBackend,
             onRefreshStatus = onRefreshCodexChatGptStatus,
             onStartLogin = onStartCodexChatGptLogin,
+            onAddAccount = onAddCodexChatGptAccount,
+            onActivateAccount = onActivateCodexChatGptAccount,
+            onRemoveAccount = onRemoveCodexChatGptAccount,
+            onSetAccountEnabled = onSetCodexChatGptAccountEnabled,
+            onUpdatePoolSettings = onUpdateCodexAccountPoolSettings,
+            onSetSessionPinned = onSetCurrentSessionCodexAccountPinned,
             onCancelLogin = onCancelCodexChatGptLogin,
             onLogout = onLogoutCodexChatGpt,
             expanded = runtimeBackendExpanded,
@@ -506,6 +439,11 @@ fun SettingsScreen(
                     providers = providers,
                     config = config,
                     onConfigChanged = onConfigChanged
+                )
+                AuxiliaryModelsSection(
+                    providers = providers,
+                    config = config,
+                    onConfigChanged = onConfigChanged,
                 )
             }
         }
@@ -811,21 +749,283 @@ private fun SettingsVoiceFloatOptions(
 }
 
 @Composable
+private fun GitHubAccountSettingsSection(
+    config: ProviderConfig,
+    state: GitHubAuthUiState,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onAddAccount: () -> Unit,
+    onRefresh: () -> Unit,
+    onActivateAccount: (String) -> Unit,
+    onRemoveAccount: (String) -> Unit,
+    onLogoutCurrent: () -> Unit,
+) {
+    var removeAccountId by rememberSaveable { mutableStateOf<String?>(null) }
+    val signedInCount = state.accountPool.accounts.count { it.loggedIn }
+    SettingsExpandableSectionCard(
+        title = "GitHub 账号与仓库",
+        subtitle = when {
+            state.isLoading -> "GitHub 登录处理中…"
+            config.isGitHubSignedIn() -> state.viewerLogin?.let { "当前 @$it · $signedInCount 个账号" }
+                ?: "已连接 · $signedInCount 个账号"
+            signedInCount > 0 -> "已保存 $signedInCount 个账号，选择一个即可使用"
+            else -> "未连接；仓库、工作流和 Git 操作共用当前账号"
+        },
+        expanded = expanded,
+        onExpandedChange = onExpandedChange,
+        contentSpacing = 8.dp,
+    ) {
+        Text(
+            text = "每个 GitHub 账号独立保存。切换只改变当前仓库与工作流使用的账号，退出当前账号不会清除其他账号。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilledTonalButton(
+                onClick = onAddAccount,
+                enabled = !state.isLoading,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("添加账号", fontSize = 12.sp)
+            }
+            OutlinedButton(
+                onClick = onRefresh,
+                enabled = config.isGitHubSignedIn() && !state.isLoading,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("校验当前账号", fontSize = 12.sp)
+            }
+        }
+        OutlinedButton(
+            onClick = onLogoutCurrent,
+            enabled = config.isGitHubSignedIn() && !state.isLoading,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("退出当前账号", fontSize = 12.sp)
+        }
+
+        if (state.accountPool.accounts.isNotEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("账号列表", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "$signedInCount / ${state.accountPool.accounts.size} 已登录",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        state.accountPool.accounts.forEach { account ->
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                color = if (account.active) {
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f)
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerLow
+                },
+                border = BorderStroke(
+                    1.dp,
+                    if (account.active) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                    else MaterialTheme.colorScheme.outlineVariant,
+                ),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Surface(
+                        modifier = Modifier.size(38.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = account.login.firstOrNull()?.uppercase() ?: "G",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
+                        }
+                    }
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            text = account.login.takeIf { it.isNotBlank() }?.let { "@$it" } ?: account.label,
+                            style = MaterialTheme.typography.titleSmall,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                        account.name.takeIf { it.isNotBlank() }?.let { name ->
+                            Text(
+                                text = name,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            )
+                        }
+                        Text(
+                            text = when {
+                                account.active && account.loggedIn -> "当前使用"
+                                account.active -> "当前槽位 · 未登录"
+                                account.loggedIn -> "可切换"
+                                else -> "未登录"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (account.loggedIn) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        account.error?.takeIf { it.isNotBlank() }?.let { error ->
+                            Text(
+                                text = error,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                                maxLines = 2,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                    Column(
+                        horizontalAlignment = Alignment.End,
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        if (!account.active && account.loggedIn) {
+                            OutlinedButton(
+                                onClick = { onActivateAccount(account.id) },
+                                enabled = !state.isLoading,
+                                modifier = Modifier.height(32.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                            ) {
+                                Text("切换", style = MaterialTheme.typography.labelSmall)
+                            }
+                        } else if (account.active) {
+                            Text(
+                                text = "当前账号",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        if (!account.active) {
+                            TextButton(
+                                onClick = { removeAccountId = account.id },
+                                enabled = !state.isLoading,
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                            ) {
+                                Text(
+                                    "删除",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (state.isLoading) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                Text(
+                    text = state.message ?: "GitHub 登录处理中...",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        state.message?.takeIf { it.isNotBlank() && !state.isLoading }?.let { message ->
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        state.error?.takeIf { it.isNotBlank() }?.let { error ->
+            Text(
+                text = error,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+
+    removeAccountId?.let { accountId ->
+        AlertDialog(
+            onDismissRequest = { removeAccountId = null },
+            title = { Text("删除 GitHub 账号？") },
+            text = { Text("只删除这个账号的本地加密凭据，不影响其他 GitHub 账号。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onRemoveAccount(accountId)
+                        removeAccountId = null
+                    },
+                ) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { removeAccountId = null }) { Text("取消") }
+            },
+        )
+    }
+}
+
+@Composable
 private fun CodexChatGptBackendCard(
     config: ProviderConfig,
     state: CodexChatGptUiState,
     onSelectBackend: (AgentBackendKind) -> Unit,
     onRefreshStatus: () -> Unit,
     onStartLogin: () -> Unit,
+    onAddAccount: () -> Unit,
+    onActivateAccount: (String) -> Unit,
+    onRemoveAccount: (String) -> Unit,
+    onSetAccountEnabled: (String, Boolean) -> Unit,
+    onUpdatePoolSettings: (Boolean, Int, Int) -> Unit,
+    onSetSessionPinned: (Boolean) -> Unit,
     onCancelLogin: () -> Unit,
     onLogout: () -> Unit,
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
-    val uriHandler = LocalUriHandler.current
+    val authBrowserScope = rememberCoroutineScope()
     var showCancelConfirmation by rememberSaveable { mutableStateOf(false) }
+    var removeAccountId by rememberSaveable { mutableStateOf<String?>(null) }
+    var accountActionsLocked by remember { mutableStateOf(false) }
     var copiedLoginId by remember { mutableStateOf<String?>(null) }
+    var reservePercent by rememberSaveable(state.accountPool.settings.reservePercent) {
+        mutableStateOf(state.accountPool.settings.reservePercent.toString())
+    }
+    var cooldownMinutes by rememberSaveable(state.accountPool.settings.cooldownMinutes) {
+        mutableStateOf(state.accountPool.settings.cooldownMinutes.toString())
+    }
+    var poolPolicyExpanded by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(state.loginId, state.userCode) {
+        val code = state.userCode?.trim().orEmpty()
+        val attempt = state.loginId ?: code
+        if (code.isBlank() || copiedLoginId == attempt) return@LaunchedEffect
+        context.getSystemService(ClipboardManager::class.java)
+            ?.setPrimaryClip(ClipData.newPlainText("Codex device code", code))
+        copiedLoginId = attempt
+    }
     SettingsExpandableSectionCard(
         title = "运行后端",
         subtitle = when {
@@ -836,10 +1036,11 @@ private fun CodexChatGptBackendCard(
             else -> "API Key / 中转"
         },
         expanded = expanded,
-        onExpandedChange = onExpandedChange
+        onExpandedChange = onExpandedChange,
+        contentSpacing = 6.dp,
     ) {
             Text(
-                "ChatGPT / Codex 使用官方设备码登录和 Plus / Pro 的 Codex 权益；不会读取或使用 API Key。",
+                "官方设备码登录，直接使用 ChatGPT Plus / Pro 的 Codex 权益。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -903,7 +1104,9 @@ private fun CodexChatGptBackendCard(
                     TextButton(
                         onClick = {
                             state.verificationUrl?.takeIf { it.isNotBlank() }?.let { uri ->
-                                runCatching { uriHandler.openUri(uri) }
+                                authBrowserScope.launch {
+                                    openAuthUriInFloatingWindow(context, uri)
+                                }
                             }
                         },
                         enabled = !state.verificationUrl.isNullOrBlank(),
@@ -961,6 +1164,237 @@ private fun CodexChatGptBackendCard(
             state.error?.takeIf { it.isNotBlank() }?.let { error ->
                 Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Codex 账号池", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                        "每个账号独立 CODEX_HOME，任务轮次之间安全切换",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                OutlinedButton(onClick = onAddAccount, enabled = !state.isLoading) {
+                    Text("添加账号")
+                }
+            }
+            state.accountPool.accounts.forEachIndexed { index, account ->
+                val remaining = account.quota.primaryUsedPercent?.let { (100 - it).coerceIn(0, 100) }
+                    ?: account.quota.secondaryUsedPercent?.let { (100 - it).coerceIn(0, 100) }
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "#${index + 1} · ${if (account.loggedIn) "已复用认证" else "待登录"}",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            if (account.lastCheckedAt > 0L) {
+                                "${formatCodexAccountTime(account.lastCheckedAt)} · 重置次数 0"
+                            } else {
+                                "尚未检查 · 重置次数 0"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(18.dp),
+                        color = if (account.active) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerLow
+                        },
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                CodexQuotaRing(remaining = remaining)
+                                Spacer(Modifier.width(14.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        account.email ?: account.label,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Text(
+                                            account.planType ?: "PLUS",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                        Text(
+                                            when {
+                                                account.lowQuota -> "已限制"
+                                                account.loggedIn -> "可用"
+                                                else -> "等待登录"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (account.lowQuota) {
+                                                MaterialTheme.colorScheme.error
+                                            } else {
+                                                MaterialTheme.colorScheme.primary
+                                            },
+                                        )
+                                    }
+                                    Text(
+                                        "1 周窗口 · ${formatCodexResetTime(account.quota.primaryResetsAt ?: account.quota.secondaryResetsAt)}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Column(
+                                    horizontalAlignment = Alignment.End,
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
+                                    if (account.active) {
+                                        Text(
+                                            "当前账号",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                    } else {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                        ) {
+                                            TextButton(
+                                                onClick = { removeAccountId = account.id },
+                                                enabled = !state.isLoading && !accountActionsLocked && removeAccountId == null,
+                                                colors = ButtonDefaults.textButtonColors(
+                                                    contentColor = MaterialTheme.colorScheme.error,
+                                                ),
+                                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                            ) { Text("删除", style = MaterialTheme.typography.labelSmall) }
+                                            Switch(
+                                                checked = account.enabled,
+                                                onCheckedChange = { onSetAccountEnabled(account.id, it) },
+                                                enabled = !state.isLoading && !accountActionsLocked && removeAccountId == null,
+                                                modifier = Modifier.size(width = 40.dp, height = 24.dp),
+                                            )
+                                        }
+                                        OutlinedButton(
+                                            onClick = { onActivateAccount(account.id) },
+                                            enabled = account.enabled && !state.isLoading &&
+                                                !accountActionsLocked && removeAccountId == null,
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                            modifier = Modifier.height(30.dp),
+                                        ) { Text("切换", style = MaterialTheme.typography.labelSmall) }
+                                    }
+                                    Text("剩余", style = MaterialTheme.typography.labelSmall)
+                                    Text(
+                                        remaining?.let { "$it%" } ?: "--",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = if (account.lowQuota) {
+                                            MaterialTheme.colorScheme.error
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("切号策略", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        if (state.accountPool.settings.autoSwitch) {
+                            "额度不足时自动切换 · 保留 ${reservePercent}%"
+                        } else {
+                            "自动切号已关闭"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = state.accountPool.settings.autoSwitch,
+                    onCheckedChange = {
+                        onUpdatePoolSettings(
+                            it,
+                            reservePercent.toIntOrNull() ?: 10,
+                            cooldownMinutes.toIntOrNull() ?: 15,
+                        )
+                    },
+                )
+                TextButton(onClick = { poolPolicyExpanded = !poolPolicyExpanded }) {
+                    Text(if (poolPolicyExpanded) "收起" else "设置")
+                }
+            }
+            AnimatedVisibility(visible = poolPolicyExpanded) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedTextField(
+                            value = reservePercent,
+                            onValueChange = { reservePercent = it.filter(Char::isDigit).take(2) },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("保留剩余 %") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                        )
+                        OutlinedTextField(
+                            value = cooldownMinutes,
+                            onValueChange = { cooldownMinutes = it.filter(Char::isDigit).take(4) },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("失败冷却/分钟") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            onUpdatePoolSettings(
+                                state.accountPool.settings.autoSwitch,
+                                reservePercent.toIntOrNull() ?: 10,
+                                cooldownMinutes.toIntOrNull() ?: 15,
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("保存切号策略") }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSetSessionPinned(!state.sessionPinned) },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            checked = state.sessionPinned,
+                            onCheckedChange = onSetSessionPinned,
+                        )
+                        Text("当前会话固定使用已激活账号")
+                    }
+                }
+            }
+            state.accountPool.lastSwitchMessage?.let { message ->
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
     }
     if (showCancelConfirmation) {
         AlertDialog(
@@ -984,6 +1418,64 @@ private fun CodexChatGptBackendCard(
             },
         )
     }
+    removeAccountId?.let { accountId ->
+        MurongAlertDialog(
+            onDismissRequest = { removeAccountId = null },
+            title = { Text("删除 Codex 账号？") },
+            text = { Text("将删除该账号资料和它的私有 CODEX_HOME，不影响其他账号。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    accountActionsLocked = true
+                    onRemoveAccount(accountId)
+                    removeAccountId = null
+                    authBrowserScope.launch {
+                        delay(350)
+                        accountActionsLocked = false
+                    }
+                }) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { removeAccountId = null }) { Text("取消") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun CodexQuotaRing(remaining: Int?) {
+    val fraction = (remaining ?: 0).coerceIn(0, 100) / 100f
+    Box(
+        modifier = Modifier.size(66.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        CircularProgressIndicator(
+            progress = { fraction },
+            modifier = Modifier.fillMaxSize(),
+            color = when {
+                remaining == null -> MaterialTheme.colorScheme.outline
+                remaining == 0 -> MaterialTheme.colorScheme.error
+                else -> MaterialTheme.colorScheme.primary
+            },
+            trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+            strokeWidth = 5.dp,
+        )
+        Text(
+            remaining?.let { "$it%" } ?: "--",
+            style = MaterialTheme.typography.titleSmall,
+        )
+    }
+}
+
+private fun formatCodexAccountTime(value: Long): String {
+    return SimpleDateFormat("yyyy/M/d HH:mm", Locale.getDefault()).format(Date(value))
+}
+
+private fun formatCodexResetTime(value: Long?): String {
+    if (value == null || value <= 0L) return "重置时间待刷新"
+    val millis = if (value < 100_000_000_000L) value * 1_000L else value
+    return "重置于 ${SimpleDateFormat("MM/dd HH:mm", Locale.getDefault()).format(Date(millis))}"
 }
 
 @Composable
@@ -992,6 +1484,7 @@ internal fun SettingsExpandableSectionCard(
     subtitle: String,
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
+    contentSpacing: Dp = 10.dp,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Surface(
@@ -1046,7 +1539,7 @@ internal fun SettingsExpandableSectionCard(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(contentSpacing)
                     ) {
                         content()
                     }
@@ -1335,8 +1828,10 @@ private fun ProviderConfigurationSection(
     var editorTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var creationProviderId by remember { mutableStateOf<String?>(null) }
     var creationKind by remember { mutableStateOf(RelayKind.CUSTOM) }
+    var creationWireFormat by remember { mutableStateOf(ProviderWireFormat.CHAT_COMPLETIONS) }
     var showProtocolPicker by remember { mutableStateOf(false) }
     var showOfficialProviderPicker by remember { mutableStateOf(false) }
+    var officialProviderQuery by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     val activeKey = config.activeProviderId to config.getActiveRelayId(config.activeProviderId)
     val configurations = providers.flatMap { provider ->
@@ -1352,7 +1847,7 @@ private fun ProviderConfigurationSection(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
-                "官方预设只需填写 API Key；自定义项支持 OpenAI Compatible 和 Claude 协议。点卡片切换，点编辑修改详情。",
+                "官方预设只需填写 API Key；自定义项支持 Chat Completions、Responses 和 Anthropic Messages。点卡片切换，点编辑修改详情。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1426,9 +1921,29 @@ private fun ProviderConfigurationSection(
             title = { Text("选择协议") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { showProtocolPicker = false; showOfficialProviderPicker = true }, modifier = Modifier.fillMaxWidth()) { Text("官方 API") }
-                    TextButton(onClick = { showProtocolPicker = false; creationKind = RelayKind.CUSTOM; creationProviderId = "openai-compatible" }, modifier = Modifier.fillMaxWidth()) { Text("OpenAI Compatible") }
-                    TextButton(onClick = { showProtocolPicker = false; creationKind = RelayKind.CUSTOM; creationProviderId = "claude" }, modifier = Modifier.fillMaxWidth()) { Text("Claude") }
+                    TextButton(onClick = {
+                        showProtocolPicker = false
+                        officialProviderQuery = ""
+                        showOfficialProviderPicker = true
+                    }, modifier = Modifier.fillMaxWidth()) { Text("官方 API") }
+                    TextButton(onClick = {
+                        showProtocolPicker = false
+                        creationKind = RelayKind.CUSTOM
+                        creationWireFormat = ProviderWireFormat.CHAT_COMPLETIONS
+                        creationProviderId = "openai-compatible"
+                    }, modifier = Modifier.fillMaxWidth()) { Text("OpenAI Compatible（Chat Completions）") }
+                    TextButton(onClick = {
+                        showProtocolPicker = false
+                        creationKind = RelayKind.CUSTOM
+                        creationWireFormat = ProviderWireFormat.RESPONSES
+                        creationProviderId = "openai-compatible"
+                    }, modifier = Modifier.fillMaxWidth()) { Text("OpenAI Responses") }
+                    TextButton(onClick = {
+                        showProtocolPicker = false
+                        creationKind = RelayKind.CUSTOM
+                        creationWireFormat = ProviderWireFormat.ANTHROPIC_MESSAGES
+                        creationProviderId = "claude"
+                    }, modifier = Modifier.fillMaxWidth()) { Text("Claude（Anthropic Messages）") }
                 }
             },
             confirmButton = {},
@@ -1440,16 +1955,51 @@ private fun ProviderConfigurationSection(
             onDismissRequest = { showOfficialProviderPicker = false },
             title = { Text("选择官方 API") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    providers.forEach { provider ->
+                Column(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = officialProviderQuery,
+                        onValueChange = { officialProviderQuery = it },
+                        label = { Text("搜索供应商或模型") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    providers.filter { provider ->
+                        val preset = ProviderPresetCatalog.get(provider.id) ?: return@filter false
+                        val query = officialProviderQuery.trim()
+                        query.isBlank() || listOf(
+                            provider.name,
+                            provider.id,
+                            provider.defaultModel,
+                            preset.recommendedModels.joinToString(" "),
+                        ).any { it.contains(query, ignoreCase = true) }
+                    }.forEach { provider ->
+                        val preset = ProviderPresetCatalog.get(provider.id)
                         TextButton(
                             onClick = {
                                 showOfficialProviderPicker = false
                                 creationKind = RelayKind.OFFICIAL
+                                creationWireFormat = preset?.defaultWireFormat ?: ProviderWireFormat.CHAT_COMPLETIONS
                                 creationProviderId = provider.id
                             },
                             modifier = Modifier.fillMaxWidth()
-                        ) { Text("官方 ${provider.name}") }
+                        ) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalAlignment = Alignment.Start,
+                            ) {
+                                Text("官方 ${provider.name}")
+                                preset?.let {
+                                    Text(
+                                        "${it.protocol.displayName} · ${provider.defaultModel}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             },
@@ -1475,6 +2025,7 @@ private fun ProviderConfigurationSection(
         NewRelayConfigurationDialog(
             provider = provider,
             kind = creationKind,
+            initialWireFormat = creationWireFormat,
             onDismiss = { creationProviderId = null },
             onSave = { relay ->
                 onConfigChanged(
@@ -1491,17 +2042,237 @@ private fun ProviderConfigurationSection(
 }
 
 @Composable
+private fun AuxiliaryModelsSection(
+    providers: List<ModelProvider>,
+    config: ProviderConfig,
+    onConfigChanged: (ProviderConfig) -> Unit,
+) {
+    val providerLabel: (String) -> String = { id ->
+        providers.firstOrNull { it.id == id }?.name ?: id.ifBlank { "未选择" }
+    }
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("独立看图模型", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "主模型不支持图片时，先把图片交给这里选择的视觉模型，再把文字观察结果交给主模型。已配置供应商会复用原有凭据。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("启用独立看图")
+                Switch(
+                    checked = config.visionRoutingEnabled,
+                    onCheckedChange = { onConfigChanged(config.copy(visionRoutingEnabled = it)) },
+                )
+            }
+            OutlinedTextField(
+                value = config.visionProviderId,
+                onValueChange = { onConfigChanged(config.copy(visionProviderId = it)) },
+                label = { Text("视觉供应商 ID") },
+                supportingText = { Text("例如 openai-compatible、deepseek；当前：${providerLabel(config.visionProviderId)}") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = config.visionRelayId,
+                onValueChange = { onConfigChanged(config.copy(visionRelayId = it)) },
+                label = { Text("视觉连接 ID（可选）") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = config.visionModel,
+                onValueChange = { onConfigChanged(config.copy(visionModel = it)) },
+                label = { Text("视觉模型") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = config.visionCustomBaseUrl,
+                onValueChange = { onConfigChanged(config.copy(visionCustomBaseUrl = it)) },
+                label = { Text("自定义视觉 Base URL（可选）") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = config.visionCustomApiKey,
+                onValueChange = { onConfigChanged(config.copy(visionCustomApiKey = it)) },
+                label = { Text("自定义视觉 API Key（可选）") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+            )
+
+            HorizontalDivider()
+            Text("图片生成", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "输入栏的“更多”中打开图片生成后，使用 OpenAI Images-compatible /v1/images/generations。结果会保存在会话，可重试或保存到系统相册。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = config.imageGenerationProviderId,
+                onValueChange = { onConfigChanged(config.copy(imageGenerationProviderId = it)) },
+                label = { Text("生图供应商 ID") },
+                supportingText = { Text("当前：${providerLabel(config.imageGenerationProviderId)}") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = config.imageGenerationRelayId,
+                onValueChange = { onConfigChanged(config.copy(imageGenerationRelayId = it)) },
+                label = { Text("生图连接 ID（可选）") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = config.imageGenerationModel,
+                onValueChange = { onConfigChanged(config.copy(imageGenerationModel = it)) },
+                label = { Text("生图模型") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = config.imageGenerationCustomBaseUrl,
+                onValueChange = { onConfigChanged(config.copy(imageGenerationCustomBaseUrl = it)) },
+                label = { Text("自定义生图 Base URL（可选）") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = config.imageGenerationCustomApiKey,
+                onValueChange = { onConfigChanged(config.copy(imageGenerationCustomApiKey = it)) },
+                label = { Text("自定义生图 API Key（可选）") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+            )
+            OutlinedTextField(
+                value = config.imageGenerationSize,
+                onValueChange = { onConfigChanged(config.copy(imageGenerationSize = it)) },
+                label = { Text("尺寸") },
+                supportingText = { Text("gpt-image-2 支持 2048 / 4K 尺寸；两边需为 16 的倍数且总像素不超过 8294400") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            Text("质量", style = MaterialTheme.typography.bodyMedium)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("auto" to "自动", "low" to "草稿", "medium" to "标准", "high" to "高质量").forEach { (value, label) ->
+                    FilterChip(
+                        selected = config.imageGenerationQuality == value,
+                        onClick = { onConfigChanged(config.copy(imageGenerationQuality = value)) },
+                        label = { Text(label, fontSize = 12.sp) },
+                    )
+                }
+            }
+            Text("格式", style = MaterialTheme.typography.bodyMedium)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("png" to "PNG", "jpeg" to "JPEG", "webp" to "WebP").forEach { (value, label) ->
+                    FilterChip(
+                        selected = config.imageGenerationFormat == value,
+                        onClick = { onConfigChanged(config.copy(imageGenerationFormat = value)) },
+                        label = { Text(label, fontSize = 12.sp) },
+                    )
+                }
+            }
+            OutlinedTextField(
+                value = config.imageGenerationPartialImages.toString(),
+                onValueChange = { value ->
+                    value.toIntOrNull()?.let { count ->
+                        onConfigChanged(config.copy(imageGenerationPartialImages = count.coerceIn(0, 3)))
+                    }
+                },
+                label = { Text("局部预览数量（0-3，0=仅最终图）") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            )
+            HorizontalDivider()
+            Text("真实 4K 超分", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "使用 Replicate 的 Real-ESRGAN 进行真实 2-4 倍超分。普通拉伸不会被标记为 4K；结果长边不足 3840px 会判定失败。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = config.imageUpscaleBaseUrl,
+                onValueChange = { onConfigChanged(config.copy(imageUpscaleBaseUrl = it)) },
+                label = { Text("超分 Base URL") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = config.imageUpscaleModel,
+                onValueChange = { onConfigChanged(config.copy(imageUpscaleModel = it)) },
+                label = { Text("超分模型") },
+                supportingText = { Text("默认 nightmareai/real-esrgan") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = config.imageUpscaleApiKey,
+                onValueChange = { onConfigChanged(config.copy(imageUpscaleApiKey = it)) },
+                label = { Text("Replicate API Token") },
+                supportingText = { Text("仅保存在 Android Keystore，不进入普通备份或聊天记录") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+            )
+            OutlinedTextField(
+                value = config.imageUpscaleScale.toString(),
+                onValueChange = { value ->
+                    value.toIntOrNull()?.let { scale ->
+                        onConfigChanged(config.copy(imageUpscaleScale = scale.coerceIn(2, 4)))
+                    }
+                },
+                label = { Text("超分倍率（2-4）") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            )
+        }
+    }
+}
+
+@Composable
 private fun NewRelayConfigurationDialog(
     provider: ModelProvider,
     kind: RelayKind,
+    initialWireFormat: ProviderWireFormat,
     onDismiss: () -> Unit,
     onSave: (RelayConfig) -> Unit
 ) {
+    val uriHandler = LocalUriHandler.current
+    val preset = remember(provider.id) { ProviderPresetCatalog.get(provider.id) }
     var name by remember { mutableStateOf("") }
     var apiKey by remember { mutableStateOf("") }
     var baseUrl by remember { mutableStateOf("") }
     var model by remember { mutableStateOf(provider.defaultModel) }
     var contextWindowTokens by remember { mutableStateOf("") }
+    val startingWireFormat = if (kind == RelayKind.OFFICIAL) {
+        preset?.defaultWireFormat ?: initialWireFormat
+    } else {
+        initialWireFormat
+    }
+    var apiFormat by remember(provider.id, kind, startingWireFormat) {
+        mutableStateOf(
+            if (provider.id == "claude" && startingWireFormat == ProviderWireFormat.CHAT_COMPLETIONS) {
+                ProviderWireFormat.ANTHROPIC_MESSAGES
+            } else startingWireFormat
+        )
+    }
+    var showAdvancedFormat by remember { mutableStateOf(false) }
     MurongDialog(onDismissRequest = onDismiss) {
         Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
             Column(
@@ -1509,12 +2280,55 @@ private fun NewRelayConfigurationDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(if (kind == RelayKind.OFFICIAL) "新增官方 ${provider.name}" else "新增 ${provider.name} 配置", style = MaterialTheme.typography.titleLarge)
+                if (kind == RelayKind.OFFICIAL && preset != null) {
+                    Text(
+                        "${preset.protocol.displayName} · ${apiFormat.displayName}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedButton(
+                            onClick = { runCatching { uriHandler.openUri(preset.websiteUrl) } },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("官方文档", fontSize = 12.sp) }
+                        OutlinedButton(
+                            onClick = { runCatching { uriHandler.openUri(preset.apiKeyUrl) } },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("获取 API Key", fontSize = 12.sp) }
+                    }
+                }
                 if (kind == RelayKind.CUSTOM) {
                     OutlinedTextField(name, { name = it }, label = { Text("配置名称（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     OutlinedTextField(baseUrl, { baseUrl = it }, label = { Text("Base URL") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                 }
                 OutlinedTextField(apiKey, { apiKey = it }, label = { Text("API Key") }, modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation())
                 OutlinedTextField(model, { model = it }, label = { Text("模型") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                TextButton(
+                    onClick = { showAdvancedFormat = !showAdvancedFormat },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(if (showAdvancedFormat) "收起高级选项" else "展开高级选项") }
+                AnimatedVisibility(showAdvancedFormat) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("上游格式", style = MaterialTheme.typography.labelMedium)
+                        ProviderWireFormat.values().forEach { format ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().clickable { apiFormat = format },
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                RadioButton(selected = apiFormat == format, onClick = { apiFormat = format })
+                                Text(format.displayName, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        Text(
+                            "Responses 适用于原生 Responses 端点；中转站按其文档选择 Chat Completions 或 Anthropic Messages。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
                 OutlinedTextField(
                     value = contextWindowTokens,
                     onValueChange = { value ->
@@ -1540,6 +2354,7 @@ private fun NewRelayConfigurationDialog(
                                     baseUrl = if (kind == RelayKind.OFFICIAL) "" else baseUrl.trim(),
                                     apiKey = apiKey,
                                     model = model.trim().ifBlank { provider.defaultModel },
+                                    apiFormat = apiFormat,
                                     contextWindowTokens = contextWindowTokens.toIntOrNull()
                                         ?.coerceIn(4_096, 2_000_000),
                                     kind = kind
@@ -1562,6 +2377,7 @@ private fun RelayConfigurationDialog(
     onConfigChanged: (ProviderConfig) -> Unit
 ) {
     var showApiKey by remember { mutableStateOf(false) }
+    var showWireFormatOptions by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     var modelCatalogState by remember(provider.id, config.getActiveRelayId(provider.id)) {
         mutableStateOf(
@@ -1590,6 +2406,37 @@ private fun RelayConfigurationDialog(
                         Text("完整连接、模型、推理、预算和执行 Profile 设置", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     TextButton(onClick = onDismiss) { Text("完成") }
+                }
+                TextButton(
+                    onClick = { showWireFormatOptions = !showWireFormatOptions },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        if (showWireFormatOptions) "收起高级选项" else
+                            "高级选项 · ${config.getActiveRelay(provider.id)?.apiFormat?.displayName ?: ProviderWireFormat.CHAT_COMPLETIONS.displayName}"
+                    )
+                }
+                AnimatedVisibility(showWireFormatOptions) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("上游格式", style = MaterialTheme.typography.labelMedium)
+                        ProviderWireFormat.values().forEach { format ->
+                            val selected = config.getActiveRelay(provider.id)?.apiFormat == format
+                            Row(
+                                modifier = Modifier.fillMaxWidth().clickable {
+                                    onConfigChanged(config.updateActiveRelay(provider.id) { it.copy(apiFormat = format) })
+                                },
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                RadioButton(
+                                    selected = selected,
+                                    onClick = {
+                                        onConfigChanged(config.updateActiveRelay(provider.id) { it.copy(apiFormat = format) })
+                                    },
+                                )
+                                Text(format.displayName, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
                 }
                 LegacyProviderSettingsSection(
                     providers = listOf(provider),
@@ -1752,16 +2599,12 @@ private fun LegacyProviderSettingsSection(
                         )
                         val effectivePromptPricePer1M = config.getPromptPricePer1M(provider.id)
                         val effectiveCompletionPricePer1M = config.getCompletionPricePer1M(provider.id)
-                        val balanceUsd = when (provider.id) {
-                            "deepseek" -> config.deepseekBalanceUsd
-                            "openai-compatible" -> config.openaiBalanceUsd
-                            "claude" -> config.claudeBalanceUsd
-                            else -> 0.0
-                        }
+                        val balanceUsd = config.getBalanceAmount(provider.id)
                         val balanceApiPath = config.getBalanceApiPath(provider.id)
                         val balanceCurrency = config.getBalanceCurrency(provider.id)
                         val priceCurrency = config.getPriceCurrency(provider.id)
                         val balanceSyncedAt = config.getBalanceSyncedAt(provider.id)
+                        val balanceSource = config.getBalanceSource(provider.id)
                         val balanceSyncState = balanceSyncStates[provider.id] ?: BalanceSyncUiState()
                         val modelCatalogState = providerModelCatalogs[provider.id] ?: ProviderModelCatalogUiState(
                             providerId = provider.id,
@@ -2377,10 +3220,14 @@ private fun LegacyProviderSettingsSection(
                                                 value = balanceApiPath,
                                                 onValueChange = { path ->
                                                     onConfigChanged(
-                                                        when (provider.id) {
-                                                            "openai-compatible" -> config.copy(openaiBalanceApiPath = path)
-                                                            "claude" -> config.copy(claudeBalanceApiPath = path)
-                                                            else -> config
+                                                        config.updateActiveRelay(provider.id) {
+                                                            it.copy(balanceApiPath = path)
+                                                        }.let { updated ->
+                                                            when (provider.id) {
+                                                                "openai-compatible" -> updated.copy(openaiBalanceApiPath = path)
+                                                                "claude" -> updated.copy(claudeBalanceApiPath = path)
+                                                                else -> updated
+                                                            }
                                                         }
                                                     )
                                                 },
@@ -2413,6 +3260,7 @@ private fun LegacyProviderSettingsSection(
                                                 balanceUsd = balanceUsd,
                                                 currency = balanceCurrency,
                                                 syncedAt = balanceSyncedAt,
+                                                source = balanceSource,
                                                 syncState = balanceSyncState,
                                                 onRefresh = { onRefreshProviderBalance(provider.id) }
                                             )
@@ -2428,12 +3276,11 @@ private fun LegacyProviderSettingsSection(
                                                 },
                                                 onCommit = { parsed ->
                                                     onConfigChanged(
-                                                        when (provider.id) {
-                                                            "deepseek" -> config.copy(deepseekBalanceUsd = parsed)
-                                                            "openai-compatible" -> config.copy(openaiBalanceUsd = parsed)
-                                                            "claude" -> config.copy(claudeBalanceUsd = parsed)
-                                                            else -> config
-                                                        }
+                                                        config.withLocalBalanceEstimate(
+                                                            providerId = provider.id,
+                                                            amount = parsed,
+                                                            currency = balanceCurrency,
+                                                        )
                                                     )
                                                 }
                                             )
@@ -2800,6 +3647,7 @@ private fun BalanceSyncCard(
     balanceUsd: Double,
     currency: String,
     syncedAt: Long?,
+    source: BalanceDataSource,
     syncState: BalanceSyncUiState,
     onRefresh: () -> Unit
 ) {
@@ -2819,12 +3667,21 @@ private fun BalanceSyncCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "真实余额同步",
+                        text = when (source) {
+                            BalanceDataSource.OFFICIAL_API -> "官方余额"
+                            BalanceDataSource.CUSTOM_ENDPOINT -> "自定义接口余额"
+                            BalanceDataSource.LOCAL_ESTIMATE -> "本地预算估算"
+                            BalanceDataSource.UNKNOWN -> "余额待同步"
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "当前余额 ${formatBalance(balanceUsd, currency)}",
+                        text = if (source == BalanceDataSource.UNKNOWN) {
+                            "当前余额未知"
+                        } else {
+                            "当前余额 ${formatBalance(balanceUsd, currency)}"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -2861,6 +3718,13 @@ private fun BalanceSyncCard(
 
 private fun formatBalance(balance: Double, currency: String): String {
     return formatCurrencyAmount(balance, currency)
+}
+
+private fun formatBalanceSource(source: BalanceDataSource): String = when (source) {
+    BalanceDataSource.OFFICIAL_API -> "官方 API · 已同步"
+    BalanceDataSource.CUSTOM_ENDPOINT -> "自定义余额接口 · 已同步"
+    BalanceDataSource.LOCAL_ESTIMATE -> "本地预算估算"
+    BalanceDataSource.UNKNOWN -> "未知，尚未同步或设置预算"
 }
 
 private fun formatTimestamp(timestamp: Long): String {

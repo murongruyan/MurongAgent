@@ -42,6 +42,9 @@ import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.Pause
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.Undo
 import androidx.compose.material3.Icon
 import androidx.compose.material3.*
@@ -96,6 +99,8 @@ import com.murong.agent.core.loop.SubagentTimelineEntryUi
 import com.murong.agent.core.loop.AutoRouteAction
 import com.murong.agent.core.loop.AutoRouteDecisionUi
 import com.murong.agent.core.loop.GoalStatusUi
+import com.murong.agent.core.loop.WorkflowPlanUi
+import com.murong.agent.core.loop.WorkflowPlanStatusUi
 import com.murong.agent.core.loop.AskAnswerUi
 import com.murong.agent.core.loop.ArchivedMemoryCandidateMutationResult
 import com.murong.agent.core.loop.ArchivedMemoryCandidateScope
@@ -109,6 +114,7 @@ import com.murong.agent.core.loop.FinalReadinessReceipt
 import com.murong.agent.core.loop.ContextCompressionUi
 import com.murong.agent.core.loop.ContextCompressionPreviewUi
 import com.murong.agent.core.loop.MessageImageAttachmentUi
+import com.murong.agent.core.loop.ImageGenerationUi
 import com.murong.agent.core.loop.PendingImageAttachmentUi
 import com.murong.agent.core.loop.ProjectKnowledgeSnapshotUi
 import com.murong.agent.core.loop.BackgroundActivityFocusKind
@@ -136,6 +142,8 @@ import com.murong.agent.core.config.ToolApprovalMode
 import com.murong.agent.core.config.WorkflowExecutionMode
 import com.murong.agent.core.config.approvalModeDescription
 import com.murong.agent.core.config.approvalModeLabel
+import com.murong.agent.core.codex.CodexAccountPoolSnapshot
+import com.murong.agent.core.codex.CodexManagedAccount
 import com.murong.agent.core.codex.CodexRateLimitWindow
 import com.murong.agent.core.voice.VoicePlaybackState
 import com.murong.agent.core.voice.VoiceRecognitionProvider
@@ -204,6 +212,7 @@ private const val CHAT_SHOW_JUMP_ENTRY_MIN_ROUNDS = 4
 private const val CHAT_JUMP_TITLE_MAX_LENGTH = 28
 internal const val AUTO_PROFILE_SELECTION_KEY = "__auto_profile_selection__"
 private const val CODEX_DEFAULT_SPEED_SELECTION_KEY = "__codex_default_speed__"
+internal const val CODEX_ACCOUNT_CONFIGURATION_PREFIX = "__codex_account__:"
 
 private data class ChatQuestionRoundUi(
     val order: Int,
@@ -289,6 +298,7 @@ internal fun ChatScreen(
     activeProviderModelCatalog: ProviderModelCatalogUiState? = null,
     codexUsage: CodexUsageUiState = CodexUsageUiState(),
     codexModelCatalog: CodexModelCatalogUiState = CodexModelCatalogUiState(),
+    codexAccountPool: CodexAccountPoolSnapshot = CodexAccountPoolSnapshot(),
     globalApprovalMode: ToolApprovalMode = executionProfileConfig.approvalMode,
     projectKnowledgePaths: List<String> = emptyList(),
     externalShareDraft: ExternalShareDraft? = null,
@@ -315,6 +325,9 @@ internal fun ChatScreen(
     onPauseVoicePlayback: () -> Unit = {},
     onResumeVoicePlayback: () -> Unit = {},
     onSend: (String, List<FileMentionUi>, List<PendingImageAttachmentUi>, List<GlobalSkill>) -> Unit,
+    onGenerateImage: (String) -> Unit = {},
+    onRetryImageGeneration: (Long) -> Unit = {},
+    onSaveGeneratedImage: (Long) -> Unit = {},
     onSetSessionGoal: (String) -> Unit = {},
     onClearSessionGoal: () -> Unit = {},
     onPauseSessionGoal: () -> Unit = {},
@@ -333,6 +346,7 @@ internal fun ChatScreen(
     onRefreshActiveProviderModels: () -> Unit = {},
     onRefreshCodexUsage: () -> Unit = {},
     onRefreshCodexModelCatalog: () -> Unit = {},
+    onActivateCodexAccount: (String) -> Unit = {},
     onUpdateProjectToolPreferences: (ProjectToolPreferences?) -> Unit = {},
     onShouldAutoPlan: (String, List<FileMentionUi>) -> Boolean = { _, _ -> false },
     onUndoMessageKeepCode: (Long) -> Boolean = { false },
@@ -405,6 +419,7 @@ internal fun ChatScreen(
     var inputHasFocus by remember(state.sessionId) { mutableStateOf(false) }
     val planModeEnabled = projectToolPreferences?.planModeEnabled ?: false
     var goalModeEnabled by remember(state.sessionId) { mutableStateOf(false) }
+    var imageGenerationMode by remember(state.sessionId) { mutableStateOf(false) }
     var showSubagentHint by remember(state.sessionId) { mutableStateOf(true) }
     var showWorkflowPreferenceHint by remember(state.sessionId) { mutableStateOf(true) }
     var showCompressionHint by remember(state.sessionId) { mutableStateOf(true) }
@@ -507,13 +522,15 @@ internal fun ChatScreen(
     }
     val usesCodexChatGpt = globalConfig.usesCodexChatGptBackend()
     val activeProvider = remember(executionProfileConfig.activeProviderId) {
-        ProviderRegistry.getActiveProvider(executionProfileConfig.activeProviderId)
+        ProviderRegistry.getActiveProvider(executionProfileConfig.getActiveRuntimeProviderId())
     }
     val activeRelay = executionProfileConfig.getActiveRelay(executionProfileConfig.activeProviderId)
     val builtinLocalReady = activeBuiltinLocalModel != null && BuiltinVisionRuntime.isReady()
     val builtinLocalModelLabel = activeBuiltinLocalModel?.displayName ?: "尚未安装本地模型"
+    val activeCodexAccount = codexAccountPool.accounts.firstOrNull { it.active }
     val currentConfigurationLabel = if (usesCodexChatGpt) {
-        "官方 ChatGPT / Codex"
+        activeCodexAccount?.displayName()?.let { "ChatGPT · $it" }
+            ?: "官方 ChatGPT / Codex"
     } else if (activeProvider.id == BuiltinLocalProvider.ID) {
         "本机离线 · $builtinLocalModelLabel"
     } else {
@@ -522,18 +539,29 @@ internal fun ChatScreen(
     }
     val configurationChoiceItems = remember(
         globalConfig,
+        codexAccountPool,
+        state.isProcessing,
         builtinLocalReady,
         builtinLocalModelLabel,
         installedBuiltinLocalModels
     ) {
         buildList {
-            add(
-                MurongChoiceDialogItem(
-                    key = "__codex_chatgpt_backend__",
-                    title = if (usesCodexChatGpt) "✓ ChatGPT / Codex" else "ChatGPT / Codex",
-                    subtitle = "官方登录 · ${globalConfig.codexModel.trim().ifBlank { "默认模型" }}",
-                ),
+            val codexAccounts = buildCodexAccountConfigurationChoices(
+                accountPool = codexAccountPool,
+                usesCodexChatGpt = usesCodexChatGpt,
+                canSwitchAccount = !state.isProcessing,
             )
+            if (codexAccounts.isEmpty()) {
+                add(
+                    MurongChoiceDialogItem(
+                        key = "__codex_chatgpt_backend__",
+                        title = if (usesCodexChatGpt) "✓ ChatGPT / Codex" else "ChatGPT / Codex",
+                        subtitle = "官方登录 · ${globalConfig.codexModel.trim().ifBlank { "默认模型" }}",
+                    ),
+                )
+            } else {
+                addAll(codexAccounts)
+            }
             add(
                 MurongChoiceDialogItem(
                     key = "__builtin_local_provider__",
@@ -912,6 +940,7 @@ internal fun ChatScreen(
     val canSubmitDraft = remember(
         planModeEnabled,
         goalModeEnabled,
+        imageGenerationMode,
         inputText,
         selectedImages.size,
         multimodalEnabled
@@ -1460,6 +1489,8 @@ internal fun ChatScreen(
                                             previewImages = items
                                             previewImageIndex = index
                                         },
+                                        onRetryImageGeneration = onRetryImageGeneration,
+                                        onSaveGeneratedImage = onSaveGeneratedImage,
                                         onOpenSubagent = { run, batch ->
                                             if (run != null) selectedSubagentRun = run
                                             else if (batch != null) selectedSubagentBatch = batch
@@ -1527,6 +1558,8 @@ internal fun ChatScreen(
                                             previewImages = items
                                             previewImageIndex = index
                                         },
+                                        onRetryImageGeneration = onRetryImageGeneration,
+                                        onSaveGeneratedImage = onSaveGeneratedImage,
                                         onClick = {
                                             if (subagentRun != null) {
                                                 selectedSubagentRun = subagentRun
@@ -1690,12 +1723,14 @@ internal fun ChatScreen(
                 text = inputText,
                 planModeEnabled = planModeEnabled,
                 goalModeEnabled = goalModeEnabled,
+                imageGenerationMode = imageGenerationMode,
                 hasSessionGoal = !state.sessionGoal.isNullOrBlank(),
                 sessionGoal = state.sessionGoal,
                 goalStatus = state.goalStatus,
+                workflowPlan = state.canonicalWorkflowPlan ?: state.pendingWorkflowPlan,
                 onPauseGoal = onPauseSessionGoal,
                 onResumeGoal = onResumeSessionGoal,
-                onCompleteGoal = onCompleteSessionGoal,
+                onDeleteGoal = onClearSessionGoal,
                 onEditGoal = {
                     state.sessionGoal?.takeIf { it.isNotBlank() }?.let { sessionGoal ->
                         inputText = sessionGoal
@@ -1735,6 +1770,16 @@ internal fun ChatScreen(
                 configurationChoiceItems = configurationChoiceItems,
                 onSelectConfiguration = { key ->
                     when {
+                        codexAccountIdFromConfigurationKey(key) != null -> {
+                            val accountId = checkNotNull(codexAccountIdFromConfigurationKey(key))
+                            onUpdateGlobalConfig(
+                                globalConfig.copy(
+                                    activeAgentBackend = AgentBackendKind.CODEX_CHATGPT,
+                                ),
+                            )
+                            onActivateCodexAccount(accountId)
+                        }
+
                         key == "__codex_chatgpt_backend__" -> {
                             onUpdateGlobalConfig(
                                 globalConfig.copy(
@@ -1842,6 +1887,14 @@ internal fun ChatScreen(
                 },
                 onGoalModeChange = { enabled ->
                     goalModeEnabled = enabled
+                    if (enabled) imageGenerationMode = false
+                },
+                onImageGenerationModeChange = { enabled ->
+                    imageGenerationMode = enabled
+                    if (enabled) {
+                        goalModeEnabled = false
+                        selectedImages.clear()
+                    }
                 },
                 onOpenApprovalMode = {
                     showApprovalModeDialog = true
@@ -1861,6 +1914,9 @@ internal fun ChatScreen(
                             onSaveInputHistory(inputHistory.toList())
                         }
                         when {
+                            imageGenerationMode -> {
+                                onGenerateImage(sentText)
+                            }
                             planModeEnabled -> {
                                 if (goalModeEnabled && sentText.isNotBlank()) {
                                     onSetSessionGoal(sentText)
@@ -1903,6 +1959,9 @@ internal fun ChatScreen(
                         }
                         if (goalModeEnabled) {
                             goalModeEnabled = false
+                        }
+                        if (imageGenerationMode) {
+                            imageGenerationMode = false
                         }
                         inputText = ""
                         inputHistoryIndex = -1
@@ -2872,7 +2931,7 @@ private data class WorkflowExecutionProfileHintUi(
 private fun buildWorkflowExecutionProfileHint(
     config: ProviderConfig
 ): WorkflowExecutionProfileHintUi {
-    val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
+    val provider = ProviderRegistry.getActiveProvider(config.getActiveRuntimeProviderId())
     val mainSummary = buildMainExecutionProfileHintSummary(config, provider)
     val plannerSummary = buildOverrideExecutionProfileHintSummary(
         provider = provider,
@@ -3858,6 +3917,48 @@ private fun formatCodexSpeedLabel(value: String?): String = when (value?.trim()?
     "fast" -> "快速"
     else -> value.trim()
 }
+
+internal fun codexAccountConfigurationKey(accountId: String): String =
+    CODEX_ACCOUNT_CONFIGURATION_PREFIX + accountId
+
+internal fun codexAccountIdFromConfigurationKey(key: String): String? = key
+    .takeIf { it.startsWith(CODEX_ACCOUNT_CONFIGURATION_PREFIX) }
+    ?.removePrefix(CODEX_ACCOUNT_CONFIGURATION_PREFIX)
+    ?.takeIf { it.isNotBlank() }
+
+internal fun buildCodexAccountConfigurationChoices(
+    accountPool: CodexAccountPoolSnapshot,
+    usesCodexChatGpt: Boolean,
+    canSwitchAccount: Boolean,
+): List<MurongChoiceDialogItem> = accountPool.accounts
+    .filter { it.loggedIn }
+    .map { account ->
+        val selected = usesCodexChatGpt && account.active
+        MurongChoiceDialogItem(
+            key = codexAccountConfigurationKey(account.id),
+            title = if (selected) "✓ ${account.displayName()}" else account.displayName(),
+            subtitle = account.configurationSubtitle(),
+            enabled = account.enabled && canSwitchAccount && !selected,
+        )
+    }
+
+private fun CodexManagedAccount.displayName(): String =
+    email?.trim()?.takeIf { it.isNotBlank() } ?: label.trim().ifBlank { "Codex 账号" }
+
+private fun CodexManagedAccount.configurationSubtitle(): String = buildList {
+    add(label.trim().ifBlank { "ChatGPT / Codex" })
+    planType?.trim()?.takeIf { it.isNotBlank() }?.let(::add)
+    val usedPercent = listOfNotNull(
+        quota.primaryUsedPercent,
+        quota.secondaryUsedPercent,
+    ).maxOrNull()
+    usedPercent?.let { add("剩余 ${(100 - it).coerceIn(0, 100)}%") }
+    when {
+        !enabled -> add("已停用")
+        cooldownUntil > System.currentTimeMillis() -> add("冷却中")
+        lowQuota -> add("低额度")
+    }
+}.joinToString(" · ")
 
 @Composable
 private fun AutoRouteDecisionStatusBar(decision: AutoRouteDecisionUi) {
@@ -4892,6 +4993,68 @@ private fun MessageImageAttachmentGallery(
 }
 
 @Composable
+private fun ImageGenerationCard(
+    generation: ImageGenerationUi,
+    attachments: List<MessageImageAttachmentUi>,
+    onOpenPreview: (List<ImagePreviewItemUi>, Int) -> Unit,
+    onRetry: () -> Unit,
+    onSave: () -> Unit,
+    onUpscale: () -> Unit,
+) {
+    val accent = rememberMurongAccentColor()
+    val statusLabel = when (generation.status) {
+        "running" -> generation.stage.ifBlank { "正在生成图片…" }
+        "completed" -> "图片生成完成"
+        "cancelled" -> "已取消生成"
+        "failed" -> generation.error ?: "图片生成失败"
+        else -> generation.stage.ifBlank { generation.status }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                if (generation.operation == "upscale_4k") "真实 4K 超分" else "图片生成",
+                style = MaterialTheme.typography.labelMedium,
+                color = accent,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(statusLabel, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Text(
+            text = generation.prompt,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (attachments.isNotEmpty()) {
+            MessageImageAttachmentGallery(
+                attachments = attachments,
+                onOpenPreview = onOpenPreview,
+            )
+        }
+        if (generation.status == "failed" || generation.status == "cancelled") {
+            TextButton(onClick = onRetry, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)) {
+                Text("重试")
+            }
+        }
+        if (generation.status == "completed" && attachments.isNotEmpty()) {
+            TextButton(onClick = onSave, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)) {
+                Text("保存到相册")
+            }
+            if (generation.operation != "upscale_4k") {
+                TextButton(onClick = onUpscale, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)) {
+                    Text("真实 4K 超分")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun MessageBubble(
     msg: ChatMessageUi,
     isScreenActive: Boolean = true,
@@ -4906,6 +5069,8 @@ private fun MessageBubble(
     onSpeakAssistantMessage: (Long, String) -> Unit = { _, _ -> },
     onPauseVoicePlayback: () -> Unit = {},
     onResumeVoicePlayback: () -> Unit = {},
+    onRetryImageGeneration: (Long) -> Unit = {},
+    onSaveGeneratedImage: (Long) -> Unit = {},
     onLongPress: () -> Unit = {},
     onApplyPrompt: (String) -> Unit = {},
     onOpenImagePreview: (List<ImagePreviewItemUi>, Int) -> Unit = { _, _ -> },
@@ -5138,6 +5303,7 @@ private fun MessageBubble(
             val nextIsToolExec = nextMessage?.role == "tool_exec"
             val shouldShowAssistantBubble =
                 msg.content.isNotBlank() ||
+                    msg.imageGeneration != null ||
                     (!msg.isStreaming && reasoningContent.isNullOrBlank() && !nextIsToolExec)
             Column(
                 modifier = Modifier
@@ -5182,6 +5348,19 @@ private fun MessageBubble(
                             color = accent
                         )
                         Spacer(modifier = Modifier.height(6.dp))
+                        msg.imageGeneration?.let { generation ->
+                            ImageGenerationCard(
+                                generation = generation,
+                                attachments = msg.imageAttachments,
+                                onOpenPreview = onOpenImagePreview,
+                                onRetry = { onRetryImageGeneration(msg.id) },
+                                onSave = { onSaveGeneratedImage(msg.id) },
+                                onUpscale = { onRetryImageGeneration(msg.id) },
+                            )
+                            if (msg.content.isNotBlank()) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
+                        }
                         if (msg.content.isNotBlank()) {
                             if (multimodalAnalysis != null) {
                                 MultimodalAnalysisCard(
@@ -5214,7 +5393,7 @@ private fun MessageBubble(
                                     fontSize = 14.sp
                                 )
                             }
-                        } else if (!msg.isStreaming && reasoningContent.isNullOrBlank()) {
+                        } else if (!msg.isStreaming && reasoningContent.isNullOrBlank() && msg.imageGeneration == null) {
                             Text(
                                 text = "(空回复)",
                                 color = mutedTextColor,
@@ -5988,6 +6167,7 @@ private fun buildComposerMoreActions(
     allowStructuredActions: Boolean,
     planModeEnabled: Boolean,
     goalModeEnabled: Boolean,
+    imageGenerationMode: Boolean,
     hasSessionGoal: Boolean,
     hasPendingImages: Boolean,
     hasRemoteTaskRepository: Boolean,
@@ -6000,7 +6180,8 @@ private fun buildComposerMoreActions(
     onOpenApprovalMode: () -> Unit,
     onUpdateWorkspaceMode: (WorkspaceMode) -> Unit,
     onPlanModeChange: (Boolean) -> Unit,
-    onGoalModeChange: (Boolean) -> Unit
+    onGoalModeChange: (Boolean) -> Unit,
+    onImageGenerationModeChange: (Boolean) -> Unit
 ): List<ComposerMoreAction> {
     val actions = mutableListOf<ComposerMoreAction>()
     if (canUseMultimodal) {
@@ -6104,6 +6285,15 @@ private fun buildComposerMoreActions(
             enabled = actionsEnabled && allowStructuredActions
         ),
         onClick = { onGoalModeChange(!goalModeEnabled) }
+    )
+    actions += ComposerMoreAction(
+        item = MurongChoiceDialogItem(
+            key = "image_generation",
+            title = if (imageGenerationMode) "图片生成: 开" else "图片生成",
+            subtitle = "使用已配置的生图模型生成图片",
+            enabled = actionsEnabled && !planModeEnabled && !goalModeEnabled && hasPendingImages.not()
+        ),
+        onClick = { onImageGenerationModeChange(!imageGenerationMode) }
     )
     if (hasPendingImages && (planModeEnabled || goalModeEnabled)) {
         actions += ComposerMoreAction(
@@ -6300,17 +6490,276 @@ private fun SkillPickerDialog(
 }
 
 @Composable
+private fun WorkflowPlanProgressCapsule(
+    plan: WorkflowPlanUi,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val steps = plan.steps.filter { it.isNotBlank() }
+    if (steps.isEmpty()) return
+    val currentIndex = plan.currentStepIndex.coerceIn(0, steps.size)
+    val visibleStep = if (currentIndex >= steps.size) steps.size else currentIndex + 1
+    val accent = rememberMurongAccentColor()
+    val muted = rememberMurongMutedTextColor()
+    val surface = rememberMurongSurfaceColor()
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = surface,
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                if (plan.status == WorkflowPlanStatusUi.BLOCKED) {
+                    MaterialTheme.colorScheme.error.copy(alpha = 0.32f)
+                } else {
+                    MaterialTheme.colorScheme.outlineVariant
+                }
+            ),
+            modifier = Modifier.clickable { onExpandedChange(!expanded) }
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp)
+            ) {
+                when (plan.status) {
+                    WorkflowPlanStatusUi.EXECUTING -> CircularProgressIndicator(
+                        modifier = Modifier.size(11.dp),
+                        strokeWidth = 1.5.dp,
+                        color = accent,
+                        trackColor = MaterialTheme.colorScheme.outlineVariant
+                    )
+                    WorkflowPlanStatusUi.COMPLETED -> Text(
+                        text = "✓",
+                        color = MaterialTheme.colorScheme.tertiary,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                    WorkflowPlanStatusUi.BLOCKED -> Box(
+                        modifier = Modifier
+                            .size(9.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.error)
+                    )
+                    WorkflowPlanStatusUi.READY -> Icon(
+                        imageVector = Icons.Outlined.RadioButtonUnchecked,
+                        contentDescription = null,
+                        modifier = Modifier.size(11.dp),
+                        tint = muted
+                    )
+                }
+                Text(
+                    text = "第 $visibleStep / ${steps.size} 步",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (plan.status == WorkflowPlanStatusUi.BLOCKED) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+                Icon(
+                    imageVector = if (expanded) Icons.Outlined.KeyboardArrowDown else Icons.Outlined.KeyboardArrowUp,
+                    contentDescription = if (expanded) "收起完整计划" else "展开完整计划",
+                    modifier = Modifier.size(15.dp),
+                    tint = muted
+                )
+            }
+        }
+        if (expanded) {
+            Surface(
+                color = surface,
+                shape = RoundedCornerShape(8.dp),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    MaterialTheme.colorScheme.outlineVariant
+                ),
+                tonalElevation = 2.dp,
+                shadowElevation = 3.dp,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = plan.summary.ifBlank { "任务进度" },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    steps.forEachIndexed { index, step ->
+                        val completed = index < currentIndex || plan.status == WorkflowPlanStatusUi.COMPLETED
+                        val active = index == currentIndex && plan.status == WorkflowPlanStatusUi.EXECUTING
+                        val blocked = index == currentIndex && plan.status == WorkflowPlanStatusUi.BLOCKED
+                        Row(
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier.size(14.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                when {
+                                    completed -> Text(
+                                        text = "✓",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.tertiary
+                                    )
+                                    active -> CircularProgressIndicator(
+                                        modifier = Modifier.size(11.dp),
+                                        strokeWidth = 1.5.dp,
+                                        color = accent,
+                                        trackColor = MaterialTheme.colorScheme.outlineVariant
+                                    )
+                                    blocked -> Box(
+                                        modifier = Modifier
+                                            .size(9.dp)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.error)
+                                    )
+                                    else -> Icon(
+                                        imageVector = Icons.Outlined.RadioButtonUnchecked,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(11.dp),
+                                        tint = MaterialTheme.colorScheme.outline
+                                    )
+                                }
+                            }
+                            Text(
+                                text = step,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = when {
+                                    blocked -> MaterialTheme.colorScheme.error
+                                    active -> MaterialTheme.colorScheme.onSurface
+                                    completed -> muted
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                fontWeight = if (active || blocked) FontWeight.SemiBold else FontWeight.Normal
+                            )
+                        }
+                    }
+                    plan.nextStepHint.takeIf { it.isNotBlank() }?.let { hint ->
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        Text(
+                            text = hint,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = muted
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GoalControlRow(
+    goal: String,
+    status: GoalStatusUi,
+    actionsEnabled: Boolean,
+    onEdit: () -> Unit,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by rememberSaveable(goal) { mutableStateOf(false) }
+    val paused = status == GoalStatusUi.PAUSED
+    val muted = rememberMurongMutedTextColor()
+    Surface(
+        color = Color.Transparent,
+        shape = RoundedCornerShape(8.dp),
+        modifier = modifier
+    ) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                    .padding(start = 4.dp, top = 3.dp, bottom = 3.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (paused) "已暂停的目标" else "进行中的目标",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (paused) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    text = goal,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = muted
+                )
+                IconButton(
+                    onClick = onEdit,
+                    enabled = actionsEnabled,
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(Icons.Outlined.Edit, "编辑目标", Modifier.size(16.dp))
+                }
+                IconButton(
+                    onClick = { if (paused) onResume() else onPause() },
+                    enabled = actionsEnabled,
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(
+                        if (paused) Icons.Outlined.PlayArrow else Icons.Outlined.Pause,
+                        if (paused) "继续目标" else "暂停目标",
+                        Modifier.size(16.dp)
+                    )
+                }
+                IconButton(
+                    onClick = onDelete,
+                    enabled = actionsEnabled,
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(
+                        Icons.Outlined.Delete,
+                        "删除目标",
+                        Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                }
+                IconButton(
+                    onClick = { expanded = !expanded },
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(
+                        if (expanded) Icons.Outlined.KeyboardArrowDown else Icons.Outlined.KeyboardArrowUp,
+                        if (expanded) "收起目标详情" else "展开目标详情",
+                        Modifier.size(16.dp),
+                        tint = muted
+                    )
+                }
+            }
+            if (expanded) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Text(
+                    text = goal,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun InputBar(
     text: String,
     planModeEnabled: Boolean,
     goalModeEnabled: Boolean,
+    imageGenerationMode: Boolean,
     hasSessionGoal: Boolean,
     sessionGoal: String?,
     goalStatus: GoalStatusUi,
     onPauseGoal: () -> Unit = {},
     onResumeGoal: () -> Unit = {},
-    onCompleteGoal: () -> Unit = {},
+    onDeleteGoal: () -> Unit = {},
     onEditGoal: () -> Unit = {},
+    workflowPlan: WorkflowPlanUi? = null,
     onTextChange: (String) -> Unit,
     onInputFocusChanged: (Boolean) -> Unit,
     currentApprovalModeLabel: String,
@@ -6325,6 +6774,7 @@ private fun InputBar(
     onSelectModel: (String) -> Unit,
     onPlanModeChange: (Boolean) -> Unit,
     onGoalModeChange: (Boolean) -> Unit,
+    onImageGenerationModeChange: (Boolean) -> Unit,
     onOpenApprovalMode: () -> Unit,
     onSend: () -> Unit,
     onPreviousInput: () -> Unit,
@@ -6384,6 +6834,7 @@ private fun InputBar(
     var codexUsagePopupOffset by remember { mutableStateOf(IntOffset.Zero) }
     var textFieldFocused by remember { mutableStateOf(false) }
     var voiceGestureWantsCancel by remember { mutableStateOf(false) }
+    var workflowPlanExpanded by rememberSaveable { mutableStateOf(false) }
     val actionsEnabled = enabled
     val sendGuidance = isSending && canSend
     val stopCurrentRun = isSending && !sendGuidance
@@ -6413,6 +6864,7 @@ private fun InputBar(
             allowStructuredActions = allowStructuredActions,
             planModeEnabled = planModeEnabled,
             goalModeEnabled = goalModeEnabled,
+            imageGenerationMode = imageGenerationMode,
             hasSessionGoal = hasSessionGoal,
             hasPendingImages = hasPendingImages,
             hasRemoteTaskRepository = hasRemoteTaskRepository,
@@ -6425,7 +6877,8 @@ private fun InputBar(
             onOpenApprovalMode = onOpenApprovalMode,
             onUpdateWorkspaceMode = onUpdateWorkspaceMode,
             onPlanModeChange = onPlanModeChange,
-            onGoalModeChange = onGoalModeChange
+            onGoalModeChange = onGoalModeChange,
+            onImageGenerationModeChange = onImageGenerationModeChange
         )
     }
     val compactMoreActions = remember(moreActions) {
@@ -6797,29 +7250,29 @@ private fun InputBar(
                         modifier = Modifier.padding(start = 4.dp)
                     )
                 }
+                if (workflowPlan != null && workflowPlan.status != WorkflowPlanStatusUi.READY) {
+                    WorkflowPlanProgressCapsule(
+                        plan = workflowPlan,
+                        expanded = workflowPlanExpanded,
+                        onExpandedChange = { workflowPlanExpanded = it },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.Start),
                     verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically)
                 ) {
                     if (hasSessionGoal && !sessionGoal.isNullOrBlank()) {
-                        val goalLabel = sessionGoal.trim()
-                        MurongTagButton(
-                            text = "🎯 ${goalLabel.take(16)}${if (goalLabel.length > 16) "…" else ""} · " +
-                                if (goalStatus == GoalStatusUi.PAUSED) "已暂停" else "进行中",
-                            onClick = { if (actionsEnabled) onEditGoal() }
-                        )
-                        MurongTagButton(
-                            text = if (goalStatus == GoalStatusUi.PAUSED) "继续" else "暂停",
-                            onClick = {
-                                if (actionsEnabled) {
-                                    if (goalStatus == GoalStatusUi.PAUSED) onResumeGoal() else onPauseGoal()
-                                }
-                            }
-                        )
-                        MurongTagButton(
-                            text = "✓ 完成",
-                            onClick = { if (actionsEnabled) onCompleteGoal() }
+                        GoalControlRow(
+                            goal = sessionGoal,
+                            status = goalStatus,
+                            actionsEnabled = actionsEnabled,
+                            onEdit = onEditGoal,
+                            onPause = onPauseGoal,
+                            onResume = onResumeGoal,
+                            onDelete = onDeleteGoal,
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
                     if (aiConfigurationRootItems.isNotEmpty()) {
@@ -7808,6 +8261,8 @@ private fun ChatProcessGroupCard(
     onLongPress: (ChatMessageUi) -> Unit,
     onApplyPrompt: (String) -> Unit,
     onOpenImagePreview: (List<ImagePreviewItemUi>, Int) -> Unit,
+    onRetryImageGeneration: (Long) -> Unit,
+    onSaveGeneratedImage: (Long) -> Unit,
     onOpenSubagent: (SubagentRunUi?, SubagentBatchUi?) -> Unit
 ) {
     val chromeColor = rememberMurongChromeColor()
@@ -7883,6 +8338,8 @@ private fun ChatProcessGroupCard(
                             onLongPress = { onLongPress(sourceMessage) },
                             onApplyPrompt = onApplyPrompt,
                             onOpenImagePreview = onOpenImagePreview,
+                            onRetryImageGeneration = onRetryImageGeneration,
+                            onSaveGeneratedImage = onSaveGeneratedImage,
                             onClick = { onOpenSubagent(subagentRun, subagentBatch) }
                         )
                     }

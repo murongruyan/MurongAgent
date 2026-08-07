@@ -63,6 +63,18 @@ func (app *DesktopAgentApp) handleExternalLaunch(args []string, focusWindow bool
 		runtime.WindowUnminimise(app.ctx)
 		runtime.WindowShow(app.ctx)
 	}
+	if link, linkErr := providerImportLinkFromArgs(args); linkErr != nil {
+		app.emit("provider-import:error", map[string]any{"message": linkErr.Error()})
+		return
+	} else if link != "" {
+		preview, err := app.queueProviderImport(link)
+		if err != nil {
+			app.emit("provider-import:error", map[string]any{"message": err.Error()})
+			return
+		}
+		app.emit("provider-import:preview", preview)
+		return
+	}
 	launch, err := parseExternalWorkflowLaunch(args)
 	if err == nil && launch != nil {
 		err = app.runExternalWorkflow(launch.WorkflowID)

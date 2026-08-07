@@ -64,7 +64,21 @@ data class PersistedMessage(
     val reasoning: String? = null,
     val subagentRunId: String? = null,
     val subagentBatchId: String? = null,
+    val imageGeneration: PersistedImageGeneration? = null,
     val timestamp: Long = System.currentTimeMillis()
+)
+
+@Serializable
+data class PersistedImageGeneration(
+    val prompt: String,
+    val providerId: String,
+    val model: String,
+    val status: String,
+    val stage: String = "",
+    val error: String? = null,
+    val operation: String = "generate",
+    val sourceMessageId: Long? = null,
+    val createdAt: Long = System.currentTimeMillis(),
 )
 
 @Serializable
@@ -839,6 +853,19 @@ class ConversationStore internal constructor(
                 reasoning = msg.reasoning,
                 subagentRunId = msg.subagentRunId,
                 subagentBatchId = msg.subagentBatchId,
+                imageGeneration = msg.imageGeneration?.let { generation ->
+                    PersistedImageGeneration(
+                        prompt = generation.prompt,
+                        providerId = generation.providerId,
+                        model = generation.model,
+                        status = generation.status,
+                        stage = generation.stage,
+                        error = generation.error,
+                        operation = generation.operation,
+                        sourceMessageId = generation.sourceMessageId,
+                        createdAt = generation.createdAt,
+                    )
+                },
                 timestamp = msg.timestamp
             )
         }
@@ -868,6 +895,19 @@ class ConversationStore internal constructor(
                 isStreaming = false,
                 subagentRunId = msg.subagentRunId,
                 subagentBatchId = msg.subagentBatchId,
+                imageGeneration = msg.imageGeneration?.let { generation ->
+                    ImageGenerationUi(
+                        prompt = generation.prompt,
+                        providerId = generation.providerId,
+                        model = generation.model,
+                        status = generation.status,
+                        stage = generation.stage,
+                        error = generation.error,
+                        operation = generation.operation,
+                        sourceMessageId = generation.sourceMessageId,
+                        createdAt = generation.createdAt,
+                    )
+                },
                 timestamp = msg.timestamp
             )
         }

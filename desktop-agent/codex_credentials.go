@@ -21,6 +21,9 @@ func ensurePrivateCodexHome(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return fmt.Errorf("无法创建 Murong 私有 Codex Home：%w", err)
 	}
+	if err := ensureCodexFileAuthStorage(path); err != nil {
+		return err
+	}
 	target := filepath.Join(path, "auth.json")
 	if _, err := os.Stat(target); err == nil {
 		return nil
@@ -49,6 +52,46 @@ func ensurePrivateCodexHome(path string) error {
 		return nil
 	}
 	return writeBytesAtomic(target, data)
+}
+
+// The official Codex app-server defaults to a platform keyring. Murong keeps
+// each CODEX_HOME private and protects inactive auth files itself, so the
+// app-server must use its durable file store on every desktop platform.
+func ensureCodexFileAuthStorage(codexHome string) error {
+	codexHome = strings.TrimSpace(codexHome)
+	if codexHome == "" {
+		return errors.New("Murong 私有 Codex Home 路径为空")
+	}
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		return fmt.Errorf("无法创建 Murong 私有 Codex Home：%w", err)
+	}
+	configPath := filepath.Join(codexHome, "config.toml")
+	current, err := os.ReadFile(configPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("无法读取 Codex 配置：%w", err)
+	}
+	updated := normalizeCodexAuthStorageConfig(string(current))
+	if updated == string(current) {
+		return nil
+	}
+	return writeBytesAtomic(configPath, []byte(updated))
+}
+
+func normalizeCodexAuthStorageConfig(current string) string {
+	const setting = `cli_auth_credentials_store = "file"`
+	lines := strings.Split(current, "\n")
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "cli_auth_credentials_store") && strings.Contains(trimmed, "=") {
+			lines[index] = setting
+			return strings.Join(lines, "\n")
+		}
+	}
+	result := strings.TrimRight(current, "\r\n")
+	if result != "" {
+		result += "\n\n"
+	}
+	return result + "# Murong Agent uses file auth storage.\n" + setting + "\n"
 }
 
 func readCodexAuthJSON(codexHome string) ([]byte, error) {

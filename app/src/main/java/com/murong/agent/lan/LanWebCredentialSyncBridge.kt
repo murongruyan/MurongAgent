@@ -7,6 +7,10 @@ import com.murong.agent.core.automation.SavedWorkflowNode
 import com.murong.agent.core.automation.SavedWorkflowTemplate
 import com.murong.agent.core.automation.validate
 import com.murong.agent.core.codex.CodexAppServerClient
+import com.murong.agent.core.codex.AndroidCodexAccountManager
+import com.murong.agent.core.codex.CodexAccountPoolSettings
+import com.murong.agent.core.codex.CodexAccountPoolTransfer
+import com.murong.agent.core.codex.CodexAccountTransfer
 import com.murong.agent.core.config.AgentBackendKind
 import com.murong.agent.core.config.ConfigRepository
 import com.murong.agent.core.config.GlobalMemory
@@ -18,11 +22,16 @@ import com.murong.agent.core.config.ResponseVerbosity
 import com.murong.agent.core.config.SkillRunAs
 import com.murong.agent.core.config.ToolApprovalMode
 import com.murong.agent.core.config.ToolPermissionCategory
+import com.murong.agent.core.provider.ProviderPresetCatalog
+import com.murong.agent.core.provider.ProviderWireFormat
 import com.murong.agent.core.mcp.McpConfigSource
 import com.murong.agent.core.mcp.McpRegistry
 import com.murong.agent.core.mcp.McpServerConfig
 import com.murong.agent.core.mcp.McpTransportType
 import com.murong.agent.core.loop.ChatSessionManager
+import com.murong.agent.core.github.AndroidGitHubAccountManager
+import com.murong.agent.core.github.GitHubAccountPoolTransfer
+import com.murong.agent.core.github.GitHubAccountTransfer
 import com.murong.agent.core.loop.PortableConversationBackupRecord
 import com.murong.agent.core.loop.PortableConversationBackupStore
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -31,6 +40,7 @@ import java.io.FileOutputStream
 import java.net.URI
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.roundToInt
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
@@ -42,6 +52,8 @@ class LanWebCredentialSyncBridge @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val configRepository: ConfigRepository,
     private val codexAppServer: CodexAppServerClient,
+    private val codexAccountManager: AndroidCodexAccountManager,
+    private val githubAccountManager: AndroidGitHubAccountManager,
     private val mcpRegistry: McpRegistry,
     private val chatSessionManager: ChatSessionManager? = null,
 ) {
@@ -52,7 +64,21 @@ class LanWebCredentialSyncBridge @Inject constructor(
     suspend fun exportBundle(options: LanWebDeviceSyncOptions): LanWebCredentialSyncBundle {
         val config = configRepository.getConfig()
         val providers = if (options.includeProviderCredentials) exportProviders(config) else emptyList()
-        val auth = if (options.includeCodexLogin) readValidatedCodexAuth() else null
+        val codexPool = if (options.includeCodexLogin) codexAccountManager.exportAccountPool() else null
+        val auth = codexPool?.accounts?.firstOrNull { it.id == codexPool.activeAccountId }?.authJson
+        val githubPool = if (options.includeGitHubCredentials) {
+            githubAccountManager.migrateLegacyAccount(
+                token = config.githubToken,
+                login = config.githubViewerLogin,
+                name = config.githubViewerName,
+                avatarUrl = config.githubViewerAvatarUrl,
+                apiBaseUrl = config.getGitHubApiBaseUrl(),
+            )
+            githubAccountManager.exportAccountPool()
+        } else {
+            null
+        }
+        val activeGitHub = githubPool?.accounts?.firstOrNull { it.id == githubPool.activeAccountId }
         val sessionPage = exportSessionPage(options)
         return LanWebCredentialSyncBundle(
             sourcePlatform = "android",
@@ -66,16 +92,54 @@ class LanWebCredentialSyncBridge @Inject constructor(
                 .takeUnless { config.activeProviderId == "murong-local" },
             providers = providers,
             codexAuthJson = auth,
+            codexAccounts = codexPool?.accounts.orEmpty().map { account ->
+                LanWebSyncedCodexAccount(
+                    id = account.id,
+                    label = account.label,
+                    email = account.email,
+                    planType = account.planType,
+                    enabled = account.enabled,
+                    authJson = account.authJson,
+                    lastUsedAt = account.lastUsedAt,
+                )
+            },
+            activeCodexAccountId = codexPool?.activeAccountId.orEmpty(),
+            codexAccountSettings = codexPool?.settings?.let { settings ->
+                LanWebSyncedCodexAccountSettings(
+                    autoSwitch = settings.autoSwitch,
+                    reservePercent = settings.reservePercent.toDouble(),
+                    cooldownMinutes = settings.cooldownMinutes,
+                )
+            },
             github = if (options.includeGitHubCredentials) {
                 LanWebSyncedGitHubCredential(
-                    apiBaseUrl = config.getGitHubApiBaseUrl(),
-                    token = config.githubToken.takeIf { it.isNotBlank() },
-                    viewerLogin = config.githubViewerLogin,
+                    apiBaseUrl = activeGitHub?.apiBaseUrl ?: config.getGitHubApiBaseUrl(),
+                    token = activeGitHub?.token,
+                    viewerLogin = activeGitHub?.login.orEmpty(),
                 )
             } else {
                 null
             },
+            githubAccounts = githubPool?.accounts.orEmpty().map { account ->
+                LanWebSyncedGitHubAccount(
+                    id = account.id,
+                    label = account.label,
+                    login = account.login,
+                    name = account.name,
+                    avatarUrl = account.avatarUrl,
+                    apiBaseUrl = account.apiBaseUrl,
+                    token = account.token,
+                    lastUsedAt = account.lastUsedAt,
+                )
+            },
+            activeGitHubAccountId = githubPool?.activeAccountId.orEmpty(),
             agentSettings = if (options.includeAgentSettings) exportAgentSettings(config) else null,
+            mediaSettings = if (options.includeAgentSettings) exportMediaSettings(config) else null,
+            mediaCredentials = if (options.includeAgentSettings && options.includeProviderCredentials) {
+                exportMediaCredentials(config)
+            } else {
+                null
+            },
             knowledge = if (options.includeKnowledge) exportKnowledge(config) else null,
             mcpServers = if (options.includeMcp) exportMcpServers(options.includeMcpCredentials) else emptyList(),
             mcpCredentialsIncluded = options.includeMcp && options.includeMcpCredentials,
@@ -119,6 +183,7 @@ class LanWebCredentialSyncBridge @Inject constructor(
                 viewerLogin = ""
             ),
             agentSettings = exportAgentSettings(config),
+            mediaSettings = exportMediaSettings(config),
             knowledge = exportKnowledge(config),
             mcpServers = exportMcpServers(includeCredentials = false),
             mcpCredentialsIncluded = false,
@@ -141,10 +206,13 @@ class LanWebCredentialSyncBridge @Inject constructor(
     fun validatePortableBackupBundle(bundle: LanWebCredentialSyncBundle) {
         require(bundle.generatedAt > 0L) { "跨端备份状态时间无效" }
         require(bundle.codexAuthJson == null) { "跨端备份不得包含 Codex 登录" }
+        require(bundle.codexAccounts.isEmpty()) { "跨端备份不得包含 Codex 账号池" }
         require(bundle.providers.all { it.apiKey == null }) { "跨端备份不得包含 API Key" }
+        require(bundle.mediaCredentials == null) { "跨端备份不得包含看图或生图 Key" }
         require(bundle.github?.token == null && bundle.github?.viewerLogin.orEmpty().isBlank()) {
             "跨端备份不得包含 GitHub 登录状态"
         }
+        require(bundle.githubAccounts.isEmpty()) { "跨端备份不得包含 GitHub 账号池" }
         require(!bundle.mcpCredentialsIncluded) { "跨端备份不得声明 MCP 凭据" }
         require(bundle.mcpServers.all { it.environment.isEmpty() && it.headers.isEmpty() }) {
             "跨端备份不得包含 MCP 环境变量或请求头"
@@ -157,10 +225,16 @@ class LanWebCredentialSyncBridge @Inject constructor(
         val previousConfig = configRepository.getConfig()
         val previousMcp = mcpRegistry.loadConfigs()
         val previousWorkflows = workflowScheduler.list()
+        val previousCodexPool = bundle.codexAccounts.takeIf { it.isNotEmpty() }?.let { codexAccountManager.exportAccountPool() }
+        val previousGitHubPool = bundle.githubAccounts.takeIf { it.isNotEmpty() }?.let { githubAccountManager.exportAccountPool() }
         val introducedRelayIds = mutableMapOf<String, MutableSet<String>>()
         var importedProviders = 0
         var importedApiKeys = 0
         var importedGitHubToken = false
+        var importedCodexAccounts = 0
+        var importedGitHubAccounts = 0
+        var importedCodex = false
+        var accountEmail: String? = null
         var importedSettings = false
         var importedRules = 0
         var importedMemories = 0
@@ -172,6 +246,8 @@ class LanWebCredentialSyncBridge @Inject constructor(
         var configChanged = false
         var mcpChanged = false
         var workflowsChanged = false
+        var codexPoolChanged = false
+        var githubPoolChanged = false
         try {
             var updated = previousConfig
             if (bundle.providers.isNotEmpty()) {
@@ -206,6 +282,7 @@ class LanWebCredentialSyncBridge @Inject constructor(
                             balanceApiPath = previous?.balanceApiPath.orEmpty(),
                             contextWindowTokens = profile.contextWindowTokens ?: previous?.contextWindowTokens,
                             kind = previous?.kind ?: com.murong.agent.core.config.RelayKind.CUSTOM,
+                            apiFormat = providerWireFormatFromSync(profile.apiMode, providerId, previous?.apiFormat),
                         )
                         if (index >= 0) merged[index] = relay else merged += relay
                         importedProviders++
@@ -250,7 +327,41 @@ class LanWebCredentialSyncBridge @Inject constructor(
                 importedSettings = true
                 configChanged = true
             }
-            bundle.github?.let { github ->
+            bundle.mediaSettings?.let { settings ->
+                updated = updated.copy(
+                    visionRoutingEnabled = settings.visionRoutingEnabled,
+                    visionProviderId = settings.visionProviderId.trim(),
+                    visionRelayId = settings.visionProfileId.trim(),
+                    visionModel = settings.visionModel.trim(),
+                    visionCustomBaseUrl = settings.visionCustomBaseUrl.trim(),
+                    imageGenerationProviderId = settings.imageGenerationProviderId.trim(),
+                    imageGenerationRelayId = settings.imageGenerationProfileId.trim(),
+                    imageGenerationModel = settings.imageGenerationModel.trim(),
+                    imageGenerationCustomBaseUrl = settings.imageGenerationCustomBaseUrl.trim(),
+                    imageGenerationSize = settings.imageGenerationSize.trim(),
+                    imageGenerationQuality = settings.imageGenerationQuality.trim(),
+                    imageGenerationFormat = settings.imageGenerationFormat.trim(),
+                    imageGenerationCompression = settings.imageGenerationCompression,
+                    imageGenerationPartialImages = settings.imageGenerationPartialImages,
+                    imageUpscaleBaseUrl = settings.imageUpscaleBaseUrl.trim(),
+                    imageUpscaleModel = settings.imageUpscaleModel.trim(),
+                    imageUpscaleScale = settings.imageUpscaleScale,
+                )
+                importedSettings = true
+                configChanged = true
+            }
+            bundle.mediaCredentials?.let { credentials ->
+                updated = updated.copy(
+                    visionCustomApiKey = credentials.visionCustomApiKey?.trim()?.takeIf { it.isNotEmpty() }
+                        ?: updated.visionCustomApiKey,
+                    imageGenerationCustomApiKey = credentials.imageGenerationCustomApiKey?.trim()?.takeIf { it.isNotEmpty() }
+                        ?: updated.imageGenerationCustomApiKey,
+                    imageUpscaleApiKey = credentials.imageUpscaleApiKey?.trim()?.takeIf { it.isNotEmpty() }
+                        ?: updated.imageUpscaleApiKey,
+                )
+                configChanged = true
+            }
+            bundle.github?.takeIf { bundle.githubAccounts.isEmpty() }?.let { github ->
                 val merged = mergeSyncedGitHubCredential(updated, github)
                 updated = merged.first
                 importedGitHubToken = merged.second
@@ -284,9 +395,7 @@ class LanWebCredentialSyncBridge @Inject constructor(
                 workflowsChanged = true
             }
 
-            var importedCodex = false
-            var accountEmail: String? = null
-            bundle.codexAuthJson?.let { auth ->
+            bundle.codexAuthJson?.takeIf { bundle.codexAccounts.isEmpty() }?.let { auth ->
                 accountEmail = replaceCodexAuthAndVerify(auth)
                 importedCodex = true
             }
@@ -306,6 +415,71 @@ class LanWebCredentialSyncBridge @Inject constructor(
             } else {
                 null
             }
+            if (bundle.codexAccounts.isNotEmpty()) {
+                codexAppServer.stop()
+                importedCodexAccounts = codexAccountManager.importAccountPool(
+                    CodexAccountPoolTransfer(
+                        activeAccountId = bundle.activeCodexAccountId,
+                        settings = bundle.codexAccountSettings?.let { settings ->
+                            CodexAccountPoolSettings(
+                                autoSwitch = settings.autoSwitch,
+                                reservePercent = settings.reservePercent.roundToInt(),
+                                cooldownMinutes = settings.cooldownMinutes,
+                            )
+                        } ?: codexAccountManager.settings(),
+                        accounts = bundle.codexAccounts.map { account ->
+                            CodexAccountTransfer(
+                                id = account.id,
+                                label = account.label,
+                                email = account.email,
+                                planType = account.planType,
+                                enabled = account.enabled,
+                                authJson = account.authJson,
+                                lastUsedAt = account.lastUsedAt,
+                            )
+                        },
+                    ),
+                )
+                codexPoolChanged = true
+                importedCodex = bundle.codexAccounts.any { !it.authJson.isNullOrBlank() }
+                accountEmail = codexAccountManager.state.value.accounts.firstOrNull { it.active }?.email
+            }
+            if (bundle.githubAccounts.isNotEmpty()) {
+                importedGitHubAccounts = githubAccountManager.importAccountPool(
+                    GitHubAccountPoolTransfer(
+                        activeAccountId = bundle.activeGitHubAccountId,
+                        accounts = bundle.githubAccounts.map { account ->
+                            GitHubAccountTransfer(
+                                id = account.id,
+                                label = account.label,
+                                login = account.login,
+                                name = account.name,
+                                avatarUrl = account.avatarUrl,
+                                apiBaseUrl = account.apiBaseUrl,
+                                token = account.token,
+                                lastUsedAt = account.lastUsedAt,
+                            )
+                        },
+                    ),
+                )
+                githubPoolChanged = true
+                val active = githubAccountManager.activeCredentials()
+                if (active != null) {
+                    val current = configRepository.getConfig()
+                    configRepository.saveConfig(
+                        current.copy(
+                            githubToken = active.token,
+                            githubApiBaseUrl = active.apiBaseUrl,
+                            githubBackendSessionToken = active.backendSessionToken,
+                            githubViewerLogin = active.login,
+                            githubViewerName = active.name,
+                            githubViewerAvatarUrl = active.avatarUrl,
+                        ),
+                    )
+                    configChanged = true
+                }
+                importedGitHubToken = bundle.githubAccounts.any { !it.token.isNullOrBlank() }
+            }
             return LanWebCredentialSyncResult(
                 importedSessions = sessionMerge?.importedSessions ?: 0,
                 conflictSessions = sessionMerge?.conflictCopies ?: 0,
@@ -313,7 +487,9 @@ class LanWebCredentialSyncBridge @Inject constructor(
                 importedProviders = importedProviders,
                 importedApiKeys = importedApiKeys,
                 importedCodexLogin = importedCodex,
+                importedCodexAccounts = importedCodexAccounts,
                 importedGitHubToken = importedGitHubToken,
+                importedGitHubAccounts = importedGitHubAccounts,
                 accountEmail = accountEmail,
                 importedSettings = importedSettings,
                 importedRules = importedRules,
@@ -326,6 +502,16 @@ class LanWebCredentialSyncBridge @Inject constructor(
             )
         } catch (error: Throwable) {
             val rollbackErrors = mutableListOf<Throwable>()
+            if (githubPoolChanged && previousGitHubPool != null) {
+                runCatching { githubAccountManager.importAccountPool(previousGitHubPool, replaceExisting = true) }
+                    .exceptionOrNull()?.let(rollbackErrors::add)
+            }
+            if (codexPoolChanged && previousCodexPool != null) {
+                runCatching {
+                    codexAppServer.stop()
+                    codexAccountManager.importAccountPool(previousCodexPool, replaceExisting = true)
+                }.exceptionOrNull()?.let(rollbackErrors::add)
+            }
             if (configChanged) {
                 runCatching { configRepository.saveConfig(previousConfig) }.exceptionOrNull()?.let(rollbackErrors::add)
             }
@@ -352,6 +538,7 @@ class LanWebCredentialSyncBridge @Inject constructor(
                     baseUrl = relay.baseUrl,
                     model = relay.model,
                     reasoningEffort = relay.reasoningEffort,
+                    apiMode = providerWireFormatToSync(providerId, relay.apiFormat),
                     contextWindowTokens = relay.contextWindowTokens,
                     apiKey = relay.apiKey.takeIf { it.isNotBlank() },
                 )
@@ -372,6 +559,37 @@ class LanWebCredentialSyncBridge @Inject constructor(
         subagentDefaultModel = config.subagentDefaultModel,
         subagentDefaultReasoningEffort = config.subagentDefaultReasoningEffort,
     )
+
+    private fun exportMediaSettings(config: ProviderConfig) = LanWebSyncedMediaSettings(
+        visionRoutingEnabled = config.visionRoutingEnabled,
+        visionProviderId = config.visionProviderId,
+        visionProfileId = config.visionRelayId,
+        visionModel = config.visionModel,
+        visionCustomBaseUrl = config.visionCustomBaseUrl,
+        imageGenerationProviderId = config.imageGenerationProviderId,
+        imageGenerationProfileId = config.imageGenerationRelayId,
+        imageGenerationModel = config.imageGenerationModel,
+        imageGenerationCustomBaseUrl = config.imageGenerationCustomBaseUrl,
+        imageGenerationSize = config.imageGenerationSize,
+        imageGenerationQuality = config.imageGenerationQuality,
+        imageGenerationFormat = config.imageGenerationFormat,
+        imageGenerationCompression = config.imageGenerationCompression,
+        imageGenerationPartialImages = config.imageGenerationPartialImages,
+        imageUpscaleBaseUrl = config.imageUpscaleBaseUrl,
+        imageUpscaleModel = config.imageUpscaleModel,
+        imageUpscaleScale = config.imageUpscaleScale,
+    )
+
+    private fun exportMediaCredentials(config: ProviderConfig): LanWebSyncedMediaCredentials? {
+        val visionKey = config.visionCustomApiKey.takeIf { it.isNotBlank() }
+        val imageKey = config.imageGenerationCustomApiKey.takeIf { it.isNotBlank() }
+        val upscaleKey = config.imageUpscaleApiKey.takeIf { it.isNotBlank() }
+        return if (visionKey == null && imageKey == null && upscaleKey == null) null else LanWebSyncedMediaCredentials(
+            visionCustomApiKey = visionKey,
+            imageGenerationCustomApiKey = imageKey,
+            imageUpscaleApiKey = upscaleKey,
+        )
+    }
 
     private fun exportKnowledge(config: ProviderConfig): LanWebSyncedKnowledge {
         val memories = (config.globalMemories + configRepository.listDurableGlobalMemories())
@@ -582,7 +800,7 @@ class LanWebCredentialSyncBridge @Inject constructor(
     }
 
     private fun validateBundle(bundle: LanWebCredentialSyncBundle) {
-        require(bundle.schemaVersion in 1..6) { "设备同步格式版本不受支持" }
+        require(bundle.schemaVersion in 1..8) { "设备同步格式版本不受支持" }
         require(bundle.sourcePlatform in setOf("windows", "darwin", "linux", "desktop", "android")) { "凭据同步来源无效" }
         val now = System.currentTimeMillis()
         require(bundle.generatedAt in (now - 5 * 60_000L)..(now + 60_000L)) { "设备同步时间无效" }
@@ -594,6 +812,7 @@ class LanWebCredentialSyncBridge @Inject constructor(
             }
             require(profile.name.length <= 100 && profile.model.length <= 200) { "模型连接名称或模型过长" }
             require(profile.reasoningEffort in setOf("", "low", "medium", "high", "xhigh", "max", "on", "off")) { "推理强度无效" }
+            require(profile.apiMode in setOf("", "auto", "chat-completions", "responses", "messages", "gemini")) { "上游格式无效" }
             require(profile.apiKey == null || profile.apiKey.length <= MAX_API_KEY_CHARS) { "API Key 过长" }
             profile.contextWindowTokens?.let { require(it in 4_096..2_000_000) { "上下文窗口无效" } }
             validateBaseUrl(profile.baseUrl)
@@ -603,6 +822,34 @@ class LanWebCredentialSyncBridge @Inject constructor(
             validateBaseUrl(github.apiBaseUrl)
             require(github.token == null || github.token.length <= MAX_API_KEY_CHARS) { "GitHub Token 过长" }
             require(github.viewerLogin.length <= 100 && github.viewerLogin.none(Char::isISOControl)) { "GitHub 用户名无效" }
+        }
+        require(bundle.githubAccounts.size <= MAX_ACCOUNT_POOL_SIZE) { "GitHub 账号数量过多" }
+        require(bundle.githubAccounts.map { it.id }.distinct().size == bundle.githubAccounts.size) { "GitHub 账号 ID 重复" }
+        bundle.githubAccounts.forEach { account ->
+            require(SAFE_ACCOUNT_ID.matches(account.id)) { "GitHub 账号 ID 无效" }
+            require(account.label.isNotBlank() && account.label.length <= 80 && account.label.none(Char::isISOControl)) { "GitHub 账号名称无效" }
+            require(account.login.length <= 80 && account.name.length <= 160 && account.avatarUrl.length <= 2_048) { "GitHub 账号资料过长" }
+            require((account.login + account.name + account.avatarUrl).none(Char::isISOControl)) { "GitHub 账号资料无效" }
+            validateBaseUrl(account.apiBaseUrl)
+            require(account.token == null || account.token.length <= MAX_API_KEY_CHARS) { "GitHub 账号 Token 过长" }
+        }
+        if (bundle.githubAccounts.isNotEmpty()) {
+            require(bundle.githubAccounts.any { it.id == bundle.activeGitHubAccountId }) { "当前 GitHub 账号无效" }
+        }
+        require(bundle.codexAccounts.size <= MAX_ACCOUNT_POOL_SIZE) { "Codex 账号数量过多" }
+        require(bundle.codexAccounts.map { it.id }.distinct().size == bundle.codexAccounts.size) { "Codex 账号 ID 重复" }
+        bundle.codexAccounts.forEach { account ->
+            require(SAFE_ACCOUNT_ID.matches(account.id)) { "Codex 账号 ID 无效" }
+            require(account.label.isNotBlank() && account.label.length <= 80 && account.label.none(Char::isISOControl)) { "Codex 账号名称无效" }
+            require(account.email.orEmpty().length <= 320 && account.planType.orEmpty().length <= 80) { "Codex 账号资料过长" }
+            require((account.email.orEmpty() + account.planType.orEmpty()).none(Char::isISOControl)) { "Codex 账号资料无效" }
+            account.authJson?.let(::validateCodexAuth)
+        }
+        if (bundle.codexAccounts.isNotEmpty()) {
+            require(bundle.codexAccounts.any { it.id == bundle.activeCodexAccountId }) { "当前 Codex 账号无效" }
+        }
+        bundle.codexAccountSettings?.let { settings ->
+            require(settings.reservePercent in 1.0..50.0 && settings.cooldownMinutes in 1..1440) { "Codex 账号池设置无效" }
         }
         bundle.agentSettings?.let { settings ->
             approvalModeFromWire(settings.approvalMode)
@@ -614,6 +861,18 @@ class LanWebCredentialSyncBridge @Inject constructor(
             settings.subagentDefaultModel?.let { requireValidExecutionProfileModel(it, "子代理默认模型") }
             settings.plannerReasoningEffort?.let { requireValidExecutionProfileReasoning(it, "规划推理强度") }
             settings.subagentDefaultReasoningEffort?.let { requireValidExecutionProfileReasoning(it, "子代理默认推理强度") }
+        }
+        bundle.mediaSettings?.let(::validateMediaSettings)
+        bundle.mediaCredentials?.let { credentials ->
+            require(credentials.visionCustomApiKey == null || credentials.visionCustomApiKey.length <= MAX_API_KEY_CHARS) {
+                "独立看图 API Key 过长"
+            }
+            require(credentials.imageGenerationCustomApiKey == null || credentials.imageGenerationCustomApiKey.length <= MAX_API_KEY_CHARS) {
+                "图片生成 API Key 过长"
+            }
+            require(credentials.imageUpscaleApiKey == null || credentials.imageUpscaleApiKey.length <= MAX_API_KEY_CHARS) {
+                "4K 超分 API Key 过长"
+            }
         }
         bundle.knowledge?.let { knowledge ->
             require(knowledge.rules.size <= MAX_KNOWLEDGE_ITEMS && knowledge.memories.size <= MAX_KNOWLEDGE_ITEMS && knowledge.skills.size <= MAX_KNOWLEDGE_ITEMS) {
@@ -666,6 +925,35 @@ class LanWebCredentialSyncBridge @Inject constructor(
         }
     }
 
+    private fun validateMediaSettings(settings: LanWebSyncedMediaSettings) {
+        listOf(
+            "独立看图供应商" to settings.visionProviderId,
+            "独立看图连接" to settings.visionProfileId,
+            "独立看图模型" to settings.visionModel,
+            "独立看图 Base URL" to settings.visionCustomBaseUrl,
+            "生图供应商" to settings.imageGenerationProviderId,
+            "生图连接" to settings.imageGenerationProfileId,
+            "生图模型" to settings.imageGenerationModel,
+            "生图 Base URL" to settings.imageGenerationCustomBaseUrl,
+            "4K 超分 Base URL" to settings.imageUpscaleBaseUrl,
+            "4K 超分模型" to settings.imageUpscaleModel,
+        ).forEach { (label, value) ->
+            require(value == value.trim() && value.length <= 500 && value.none(Char::isISOControl)) { "$label 无效或过长" }
+        }
+        settings.visionCustomBaseUrl.takeIf { it.isNotBlank() }?.let(::validateBaseUrl)
+        settings.imageGenerationCustomBaseUrl.takeIf { it.isNotBlank() }?.let(::validateBaseUrl)
+        settings.imageUpscaleBaseUrl.takeIf { it.isNotBlank() }?.let(::validateBaseUrl)
+        require(settings.imageGenerationSize in setOf(
+            "", "auto", "1024x1024", "1024x1536", "1536x1024",
+            "2048x2048", "2048x1152", "3840x2160", "2160x3840",
+        )) { "图片尺寸无效" }
+        require(settings.imageGenerationQuality in setOf("", "auto", "low", "medium", "high")) { "图片质量无效" }
+        require(settings.imageGenerationFormat in setOf("", "png", "jpeg", "webp")) { "图片格式无效" }
+        require(settings.imageGenerationCompression in 0..100) { "图片压缩质量无效" }
+        require(settings.imageGenerationPartialImages in 0..3) { "图片局部预览数量无效" }
+        require(settings.imageUpscaleScale in 2..4) { "4K 超分倍率无效" }
+    }
+
     private fun validKnowledgeText(title: String, content: String): Boolean =
         title.isNotBlank() && title.length <= 500 && content.isNotBlank() && content.length <= MAX_TEXT_CHARS
 
@@ -696,6 +984,8 @@ class LanWebCredentialSyncBridge @Inject constructor(
             writePrivateFileAtomic(target, authJson.toByteArray(Charsets.UTF_8))
             val account = codexAppServer.accountRead(refreshToken = true).account
                 ?: error("同步的 ChatGPT 登录无法通过 Codex 验证")
+            val rates = runCatching { codexAppServer.accountRateLimitsRead() }.getOrNull()
+            codexAccountManager.captureRuntime(account, rates)
             return account.email
         } catch (error: Throwable) {
             runCatching { codexAppServer.stop() }
@@ -723,7 +1013,7 @@ class LanWebCredentialSyncBridge @Inject constructor(
         }
     }
 
-    private fun codexAuthFile(): File = File(context.filesDir, "codex-home/auth.json")
+    private fun codexAuthFile(): File = codexAccountManager.activeAuthFile()
 
     private fun writePrivateFileAtomic(target: File, bytes: ByteArray) {
         require(bytes.size <= MAX_CODEX_AUTH_BYTES)
@@ -771,11 +1061,27 @@ class LanWebCredentialSyncBridge @Inject constructor(
         else -> ""
     }
 
+    private fun providerWireFormatFromSync(
+        apiMode: String,
+        providerId: String,
+        previous: ProviderWireFormat?,
+    ): ProviderWireFormat = when (apiMode.trim().lowercase()) {
+        "responses" -> ProviderWireFormat.RESPONSES
+        "messages" -> ProviderWireFormat.ANTHROPIC_MESSAGES
+        "chat-completions" -> ProviderWireFormat.CHAT_COMPLETIONS
+        else -> previous ?: ProviderPresetCatalog.get(providerId)?.defaultWireFormat
+            ?: ProviderWireFormat.CHAT_COMPLETIONS
+    }
+
+    private fun providerWireFormatToSync(providerId: String, format: ProviderWireFormat): String =
+        if (providerId == "gemini") "gemini" else when (format) {
+            ProviderWireFormat.CHAT_COMPLETIONS -> "chat-completions"
+            ProviderWireFormat.RESPONSES -> "responses"
+            ProviderWireFormat.ANTHROPIC_MESSAGES -> "messages"
+        }
+
     private companion object {
-        val SUPPORTED_PROVIDERS = listOf(
-            "deepseek", "openai-compatible", "claude", "kimi", "glm", "qwen",
-            "minimax", "grok", "mimo", "hy3", "gemini"
-        )
+        val SUPPORTED_PROVIDERS = ProviderPresetCatalog.all().map { it.providerId }
         val PATH_BOUND_WORKFLOW_TEMPLATES = setOf(
             SavedWorkflowTemplate.PROJECT_READ_DIAGNOSTIC,
             SavedWorkflowTemplate.DIRECTORY_CHANGE_SUMMARY,
@@ -788,6 +1094,8 @@ class LanWebCredentialSyncBridge @Inject constructor(
         const val MAX_KNOWLEDGE_ITEMS = 10_000
         const val MAX_MCP_SERVERS = 100
         const val MAX_WORKFLOWS = 500
+        const val MAX_ACCOUNT_POOL_SIZE = 20
+        val SAFE_ACCOUNT_ID = Regex("[A-Za-z0-9_-]{1,96}")
     }
 }
 

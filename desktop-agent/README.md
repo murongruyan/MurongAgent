@@ -28,7 +28,8 @@ Murong Desktop 是可独立工作的跨平台 Agent。手机控制电脑的能�
 ## 主要能力
 
 - 会话持久化、重命名、删除、分叉、消息回退、上下文摘要、真实 Token 用量，以及完整 JSON、跨端 JSON 和 Markdown 导入导出；每个任务独立绑定项目，切回任务会恢复它自己的工作目录。
-- DeepSeek、OpenAI-compatible、OpenAI Responses、Anthropic Messages、内置 Codex，以及不需要 API Key 的 Qwen/Gemma 本地 Provider；支持聊天、代码、图片和 Agent 工具调用。
+- DeepSeek、OpenAI-compatible、OpenAI Responses、Anthropic Messages、内置 Codex，以及不需要 API Key 的 Qwen/Gemma 本地 Provider；支持聊天、代码、图片和 Agent 工具调用。上传图片可由独立视觉模型预先生成可复用摘要；OpenAI Images 兼容生图支持局部预览、取消、重试与下载。
+- `gpt-image-2` 支持原生 `2048x2048`、`2048x1152`、`3840x2160` 和 `2160x3840`；尺寸限制不代表文字和细节绝对正确。非 GPT Image 模型或额外放大可调用 Replicate Real-ESRGAN 做 2–4 倍真实超分，只有长边至少 `3840px` 才会标记为“真实 4K 超分完成”。
 - 四档审批、全局/项目工具权限、规则、记忆、Skills、MCP、保存的工作流、GitHub 工具、版本化备份恢复和跨端设备同步；普通 API 与内置 Codex 都能查询记忆并调用 `run_skill`，不再只有 UI 能选择 Skill。
 - 打开/新建/最近项目；文件读取、搜索、原子编辑、补丁、删除、权限和目录工具；最大工具迭代默认并上限为 999。
 - 当前系统原生 Shell：Windows 可发现 PowerShell 7、Windows PowerShell、CMD 和 WSL；macOS/Linux 可发现登录 Shell、bash、zsh、fish、sh 和可选 PowerShell 7。

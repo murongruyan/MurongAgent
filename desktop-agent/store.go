@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const desktopConfigSchemaVersion = 11
+const desktopConfigSchemaVersion = 13
 
 const (
 	maxProjectSubagentTemplates = 24
@@ -99,30 +99,41 @@ func defaultDesktopConfig() desktopConfig {
 	localProfile := defaultProviderProfile(providerBuiltinLocal)
 	localProfile.ID = "provider_builtin_local"
 	return desktopConfig{
-		SchemaVersion:            desktopConfigSchemaVersion,
-		BaseURL:                  "https://api.openai.com/v1",
-		Model:                    "gpt-5.6-sol",
-		ApprovalMode:             approvalAskAll,
-		MaxToolIterations:        999,
-		SystemPrompt:             defaultDesktopSystemPrompt,
-		ResponseVerbosity:        "BALANCED",
-		Temperature:              0.7,
-		MaxTokens:                8192,
-		EnableMultimodalMessages: true,
-		GuiInferenceMode:         guiInferenceLocalFirst,
-		GuiLocalBaseURL:          "",
-		GuiAllowRemoteSemantic:   false,
-		GlobalRules:              []GlobalRule{},
-		GlobalMemories:           []GlobalMemory{},
-		GlobalSkills:             []GlobalSkill{},
-		ProjectKnowledge:         map[string]KnowledgeLibrary{},
-		ActiveProviderProfileID:  profile.ID,
-		ProviderProfiles:         []ProviderProfile{profile, localProfile},
-		EnabledBuiltinTools:      append([]string{}, defaultEnabledBuiltinTools...),
-		EnabledFileOperations:    append([]string{}, defaultEnabledFileOperations...),
-		ProjectToolPreferences:   map[string]ToolPreferences{},
-		RecentProjects:           []RecentProjectRecord{},
-		MCPServers:               []MCPServerConfig{},
+		SchemaVersion:                    desktopConfigSchemaVersion,
+		BaseURL:                          "https://api.openai.com/v1",
+		Model:                            "gpt-5.6-sol",
+		ApprovalMode:                     approvalAskAll,
+		MaxToolIterations:                999,
+		SystemPrompt:                     defaultDesktopSystemPrompt,
+		ResponseVerbosity:                "BALANCED",
+		Temperature:                      0.7,
+		MaxTokens:                        8192,
+		EnableMultimodalMessages:         true,
+		GuiInferenceMode:                 guiInferenceLocalFirst,
+		GuiLocalBaseURL:                  "",
+		GuiAllowRemoteSemantic:           false,
+		VisionRoutingEnabled:             false,
+		ImageGenerationProviderProfileID: profile.ID,
+		ImageGenerationModel:             "gpt-image-2",
+		ImageGenerationSize:              "1024x1024",
+		ImageGenerationQuality:           "auto",
+		ImageGenerationFormat:            "png",
+		ImageGenerationCompression:       90,
+		ImageGenerationPartialImages:     2,
+		ImageUpscaleBaseURL:              "https://api.replicate.com/v1",
+		ImageUpscaleModel:                "nightmareai/real-esrgan",
+		ImageUpscaleScale:                4,
+		GlobalRules:                      []GlobalRule{},
+		GlobalMemories:                   []GlobalMemory{},
+		GlobalSkills:                     []GlobalSkill{},
+		ProjectKnowledge:                 map[string]KnowledgeLibrary{},
+		ActiveProviderProfileID:          profile.ID,
+		ProviderProfiles:                 []ProviderProfile{profile, localProfile},
+		EnabledBuiltinTools:              append([]string{}, defaultEnabledBuiltinTools...),
+		EnabledFileOperations:            append([]string{}, defaultEnabledFileOperations...),
+		ProjectToolPreferences:           map[string]ToolPreferences{},
+		RecentProjects:                   []RecentProjectRecord{},
+		MCPServers:                       []MCPServerConfig{},
 	}
 }
 
@@ -222,6 +233,41 @@ func normalizeDesktopConfig(config desktopConfig) desktopConfig {
 	if !config.GuiAllowRemoteScreenshots {
 		config.GuiAllowRemoteFullScreen = false
 	}
+	config.VisionProviderProfileID = strings.TrimSpace(config.VisionProviderProfileID)
+	config.VisionModel = strings.TrimSpace(config.VisionModel)
+	config.VisionCustomBaseURL = strings.TrimRight(strings.TrimSpace(config.VisionCustomBaseURL), "/")
+	config.ImageGenerationProviderProfileID = strings.TrimSpace(config.ImageGenerationProviderProfileID)
+	config.ImageGenerationModel = strings.TrimSpace(config.ImageGenerationModel)
+	if config.ImageGenerationModel == "" {
+		config.ImageGenerationModel = "gpt-image-2"
+	}
+	config.ImageGenerationCustomBaseURL = strings.TrimRight(strings.TrimSpace(config.ImageGenerationCustomBaseURL), "/")
+	if config.ImageGenerationSize == "" {
+		config.ImageGenerationSize = "1024x1024"
+	}
+	if config.ImageGenerationQuality == "" {
+		config.ImageGenerationQuality = "auto"
+	}
+	if config.ImageGenerationFormat == "" {
+		config.ImageGenerationFormat = "png"
+	}
+	if config.ImageGenerationCompression < 0 || config.ImageGenerationCompression > 100 {
+		config.ImageGenerationCompression = 90
+	}
+	if config.ImageGenerationPartialImages < 0 || config.ImageGenerationPartialImages > 3 {
+		config.ImageGenerationPartialImages = 2
+	}
+	config.ImageUpscaleBaseURL = strings.TrimRight(strings.TrimSpace(config.ImageUpscaleBaseURL), "/")
+	if config.ImageUpscaleBaseURL == "" {
+		config.ImageUpscaleBaseURL = "https://api.replicate.com/v1"
+	}
+	config.ImageUpscaleModel = strings.Trim(strings.TrimSpace(config.ImageUpscaleModel), "/")
+	if config.ImageUpscaleModel == "" {
+		config.ImageUpscaleModel = "nightmareai/real-esrgan"
+	}
+	if config.ImageUpscaleScale < 2 || config.ImageUpscaleScale > 4 {
+		config.ImageUpscaleScale = 4
+	}
 	if math.IsNaN(config.Temperature) || math.IsInf(config.Temperature, 0) || config.Temperature < 0 || config.Temperature > 2 {
 		config.Temperature = 0.7
 	}
@@ -274,6 +320,13 @@ func isLegacyDefaultBuiltinTools(values []string) bool {
 }
 
 func defaultProviderProfile(providerID string) ProviderProfile {
+	if preset, ok := desktopProviderPresets[providerID]; ok {
+		return ProviderProfile{
+			ID: newID("provider"), ProviderID: providerID, Name: preset.Name,
+			BaseURL: preset.BaseURL, Model: preset.Model, ReasoningEffort: preset.ReasoningEffort,
+			APIMode: preset.APIMode,
+		}
+	}
 	switch providerID {
 	case providerDeepSeek:
 		return ProviderProfile{ID: newID("provider"), ProviderID: providerDeepSeek, Name: "DeepSeek", BaseURL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash", ReasoningEffort: "high", APIMode: "chat-completions"}
@@ -326,10 +379,7 @@ func normalizeProviderProfiles(values []ProviderProfile, legacyBaseURL, legacyMo
 			continue
 		}
 		seen[value.ID] = true
-		switch value.ProviderID {
-		case providerDeepSeek, providerOpenAI, providerClaude, providerKimi, providerGLM, providerQwen,
-			providerMiniMax, providerGrok, providerMiMo, providerHy3, providerGemini, providerCodex, providerBuiltinLocal:
-		default:
+		if !isKnownDesktopProviderID(value.ProviderID) && value.ProviderID != providerCodex && value.ProviderID != providerBuiltinLocal {
 			value.ProviderID = providerOpenAI
 		}
 		if value.ProviderID == providerBuiltinLocal {
@@ -372,18 +422,14 @@ func normalizeProviderProfiles(values []ProviderProfile, legacyBaseURL, legacyMo
 			}
 			value.ContextWindowTokens = 4096
 		case providerClaude:
-			value.APIMode = "messages"
-		case providerDeepSeek:
-			value.APIMode = "chat-completions"
+			if value.APIMode != "messages" && value.APIMode != "chat-completions" && value.APIMode != "responses" {
+				value.APIMode = "messages"
+			}
 		case providerGemini:
 			value.APIMode = "gemini"
-		case providerKimi, providerGLM, providerQwen, providerMiniMax, providerHy3:
-			value.APIMode = "chat-completions"
-		case providerGrok, providerMiMo:
-			value.APIMode = "responses"
 		default:
 			switch value.APIMode {
-			case "auto", "chat-completions", "responses":
+			case "auto", "chat-completions", "responses", "messages":
 			default:
 				value.APIMode = "auto"
 			}
@@ -563,35 +609,53 @@ func publicConfig(config desktopConfig) PublicDesktopConfig {
 		})
 	}
 	return PublicDesktopConfig{
-		ProjectPath:               config.ProjectPath,
-		BaseURL:                   config.BaseURL,
-		Model:                     config.Model,
-		HasAPIKey:                 config.ProtectedAPIKey != "",
-		ApprovalMode:              config.ApprovalMode,
-		Allowlist:                 append([]string(nil), config.Allowlist...),
-		MaxToolIterations:         config.MaxToolIterations,
-		SystemPrompt:              config.SystemPrompt,
-		ResponseVerbosity:         config.ResponseVerbosity,
-		Temperature:               config.Temperature,
-		MaxTokens:                 config.MaxTokens,
-		EnableMultimodalMessages:  config.EnableMultimodalMessages,
-		GuiInferenceMode:          config.GuiInferenceMode,
-		GuiLocalBaseURL:           config.GuiLocalBaseURL,
-		GuiLocalModel:             config.GuiLocalModel,
-		GuiAllowRemoteSemantic:    config.GuiAllowRemoteSemantic,
-		GuiAllowRemoteScreenshots: config.GuiAllowRemoteScreenshots,
-		GuiAllowRemoteFullScreen:  config.GuiAllowRemoteFullScreen,
-		PlannerProfileEnabled:     config.PlannerProfileEnabled,
-		PlannerModel:              config.PlannerModel,
-		PlannerReasoningEffort:    config.PlannerReasoningEffort,
-		SubagentProfileEnabled:    config.SubagentProfileEnabled,
-		SubagentModel:             config.SubagentModel,
-		SubagentReasoningEffort:   config.SubagentReasoningEffort,
-		ActiveProviderProfileID:   config.ActiveProviderProfileID,
-		ProviderProfiles:          profiles,
-		EnabledBuiltinTools:       append([]string{}, config.EnabledBuiltinTools...),
-		EnabledFileOperations:     append([]string{}, config.EnabledFileOperations...),
-		RecentProjects:            publicRecentProjects(config.RecentProjects),
+		ProjectPath:                      config.ProjectPath,
+		BaseURL:                          config.BaseURL,
+		Model:                            config.Model,
+		HasAPIKey:                        config.ProtectedAPIKey != "",
+		ApprovalMode:                     config.ApprovalMode,
+		Allowlist:                        append([]string(nil), config.Allowlist...),
+		MaxToolIterations:                config.MaxToolIterations,
+		SystemPrompt:                     config.SystemPrompt,
+		ResponseVerbosity:                config.ResponseVerbosity,
+		Temperature:                      config.Temperature,
+		MaxTokens:                        config.MaxTokens,
+		EnableMultimodalMessages:         config.EnableMultimodalMessages,
+		GuiInferenceMode:                 config.GuiInferenceMode,
+		GuiLocalBaseURL:                  config.GuiLocalBaseURL,
+		GuiLocalModel:                    config.GuiLocalModel,
+		GuiAllowRemoteSemantic:           config.GuiAllowRemoteSemantic,
+		GuiAllowRemoteScreenshots:        config.GuiAllowRemoteScreenshots,
+		GuiAllowRemoteFullScreen:         config.GuiAllowRemoteFullScreen,
+		VisionRoutingEnabled:             config.VisionRoutingEnabled,
+		VisionProviderProfileID:          config.VisionProviderProfileID,
+		VisionModel:                      config.VisionModel,
+		VisionCustomBaseURL:              config.VisionCustomBaseURL,
+		VisionHasAPIKey:                  config.ProtectedVisionAPIKey != "",
+		ImageGenerationProviderProfileID: config.ImageGenerationProviderProfileID,
+		ImageGenerationModel:             config.ImageGenerationModel,
+		ImageGenerationCustomBaseURL:     config.ImageGenerationCustomBaseURL,
+		ImageGenerationHasAPIKey:         config.ProtectedImageGenerationAPIKey != "",
+		ImageGenerationSize:              config.ImageGenerationSize,
+		ImageGenerationQuality:           config.ImageGenerationQuality,
+		ImageGenerationFormat:            config.ImageGenerationFormat,
+		ImageGenerationCompression:       config.ImageGenerationCompression,
+		ImageGenerationPartialImages:     config.ImageGenerationPartialImages,
+		ImageUpscaleBaseURL:              config.ImageUpscaleBaseURL,
+		ImageUpscaleModel:                config.ImageUpscaleModel,
+		ImageUpscaleHasAPIKey:            config.ProtectedImageUpscaleAPIKey != "",
+		ImageUpscaleScale:                config.ImageUpscaleScale,
+		PlannerProfileEnabled:            config.PlannerProfileEnabled,
+		PlannerModel:                     config.PlannerModel,
+		PlannerReasoningEffort:           config.PlannerReasoningEffort,
+		SubagentProfileEnabled:           config.SubagentProfileEnabled,
+		SubagentModel:                    config.SubagentModel,
+		SubagentReasoningEffort:          config.SubagentReasoningEffort,
+		ActiveProviderProfileID:          config.ActiveProviderProfileID,
+		ProviderProfiles:                 profiles,
+		EnabledBuiltinTools:              append([]string{}, config.EnabledBuiltinTools...),
+		EnabledFileOperations:            append([]string{}, config.EnabledFileOperations...),
+		RecentProjects:                   publicRecentProjects(config.RecentProjects),
 	}
 }
 
@@ -644,6 +708,78 @@ func (store *desktopStore) saveSettings(request SaveSettingsRequest) (PublicDesk
 	if request.GuiAllowRemoteFullScreen != nil {
 		updated.GuiAllowRemoteFullScreen = *request.GuiAllowRemoteFullScreen
 	}
+	if request.VisionRoutingEnabled != nil {
+		updated.VisionRoutingEnabled = *request.VisionRoutingEnabled
+	}
+	if request.VisionProviderProfileID != nil {
+		updated.VisionProviderProfileID = *request.VisionProviderProfileID
+	}
+	if request.VisionModel != nil {
+		updated.VisionModel = *request.VisionModel
+	}
+	if request.VisionCustomBaseURL != nil {
+		updated.VisionCustomBaseURL = *request.VisionCustomBaseURL
+	}
+	if request.ClearVisionAPIKey {
+		updated.ProtectedVisionAPIKey = ""
+	} else if key := strings.TrimSpace(request.VisionAPIKey); key != "" {
+		protected, err := protectSecret([]byte(key))
+		if err != nil {
+			return PublicDesktopConfig{}, err
+		}
+		updated.ProtectedVisionAPIKey = protected
+	}
+	if request.ImageGenerationProviderProfileID != nil {
+		updated.ImageGenerationProviderProfileID = *request.ImageGenerationProviderProfileID
+	}
+	if request.ImageGenerationModel != nil {
+		updated.ImageGenerationModel = *request.ImageGenerationModel
+	}
+	if request.ImageGenerationCustomBaseURL != nil {
+		updated.ImageGenerationCustomBaseURL = *request.ImageGenerationCustomBaseURL
+	}
+	if request.ClearImageGenerationAPIKey {
+		updated.ProtectedImageGenerationAPIKey = ""
+	} else if key := strings.TrimSpace(request.ImageGenerationAPIKey); key != "" {
+		protected, err := protectSecret([]byte(key))
+		if err != nil {
+			return PublicDesktopConfig{}, err
+		}
+		updated.ProtectedImageGenerationAPIKey = protected
+	}
+	if request.ImageGenerationSize != nil {
+		updated.ImageGenerationSize = *request.ImageGenerationSize
+	}
+	if request.ImageGenerationQuality != nil {
+		updated.ImageGenerationQuality = *request.ImageGenerationQuality
+	}
+	if request.ImageGenerationFormat != nil {
+		updated.ImageGenerationFormat = *request.ImageGenerationFormat
+	}
+	if request.ImageGenerationCompression != nil {
+		updated.ImageGenerationCompression = *request.ImageGenerationCompression
+	}
+	if request.ImageGenerationPartialImages != nil {
+		updated.ImageGenerationPartialImages = *request.ImageGenerationPartialImages
+	}
+	if request.ImageUpscaleBaseURL != nil {
+		updated.ImageUpscaleBaseURL = *request.ImageUpscaleBaseURL
+	}
+	if request.ImageUpscaleModel != nil {
+		updated.ImageUpscaleModel = *request.ImageUpscaleModel
+	}
+	if request.ClearImageUpscaleAPIKey {
+		updated.ProtectedImageUpscaleAPIKey = ""
+	} else if key := strings.TrimSpace(request.ImageUpscaleAPIKey); key != "" {
+		protected, err := protectSecret([]byte(key))
+		if err != nil {
+			return PublicDesktopConfig{}, err
+		}
+		updated.ProtectedImageUpscaleAPIKey = protected
+	}
+	if request.ImageUpscaleScale != nil {
+		updated.ImageUpscaleScale = *request.ImageUpscaleScale
+	}
 	updated.PlannerProfileEnabled = request.PlannerProfileEnabled
 	updated.PlannerModel = request.PlannerModel
 	updated.PlannerReasoningEffort = request.PlannerReasoningEffort
@@ -688,6 +824,17 @@ func (store *desktopStore) saveSettings(request SaveSettingsRequest) (PublicDesk
 	}
 	if updated.GuiLocalBaseURL != "" && !isLocalModelBaseURL(updated.GuiLocalBaseURL) {
 		return PublicDesktopConfig{}, errors.New("本地 GUI 模型地址必须是 loopback、局域网或 .local 地址")
+	}
+	for label, baseURL := range map[string]string{
+		"独立看图":     updated.VisionCustomBaseURL,
+		"图片生成":     updated.ImageGenerationCustomBaseURL,
+		"真实 4K 超分": updated.ImageUpscaleBaseURL,
+	} {
+		if baseURL != "" {
+			if err := validateBaseURL(baseURL); err != nil {
+				return PublicDesktopConfig{}, fmt.Errorf("%s连接：%w", label, err)
+			}
+		}
 	}
 	if updated.ProjectPath != "" {
 		projectPath, err := normalizeExistingProjectPath(updated.ProjectPath)
@@ -1360,6 +1507,10 @@ func (store *desktopStore) setSessionGoalStatus(id string, status string) (*Chat
 }
 
 func (store *desktopStore) completeSessionGoal(id string) (*ChatSession, error) {
+	return store.completeSessionGoalWithResult(id, "")
+}
+
+func (store *desktopStore) completeSessionGoalWithResult(id string, result string) (*ChatSession, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	session := store.sessions[id]
@@ -1375,9 +1526,13 @@ func (store *desktopStore) completeSessionGoal(id string) (*ChatSession, error) 
 	completedGoal := session.Goal
 	session.Goal = ""
 	session.GoalStatus = ""
+	completionMessage := "✅ 目标已完成，已退出目标模式：" + completedGoal
+	if normalizedResult := strings.TrimSpace(result); normalizedResult != "" {
+		completionMessage += "\n\n结果：" + truncateRunes(normalizedResult, 2_000)
+	}
 	session.Messages = append(session.Messages, ChatMessage{
 		ID: newID("message"), Role: "system", CreatedAt: time.Now().UnixMilli(),
-		Content: "✅ 目标已完成，已退出目标模式：" + completedGoal, Kind: "goal",
+		Content: completionMessage, Kind: "goal",
 	})
 	if err := store.saveSessionsLocked(); err != nil {
 		return nil, err
@@ -1432,6 +1587,72 @@ func (store *desktopStore) appendMessage(sessionID string, message ChatMessage) 
 	return cloneSession(session), nil
 }
 
+func (store *desktopStore) updateImageGenerationMessage(sessionID, messageID string, generation ImageGenerationMessage, images []MessageImageAttachment, content string) (*ChatSession, error) {
+	validatedImages, err := store.validateMessageImages(images)
+	if err != nil {
+		return nil, err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	session := store.sessions[strings.TrimSpace(sessionID)]
+	if session == nil {
+		return nil, errors.New("会话不存在")
+	}
+	if err := requireDesktopExecutionAuthority(session); err != nil {
+		return nil, err
+	}
+	for index := range session.Messages {
+		message := &session.Messages[index]
+		if message.ID != strings.TrimSpace(messageID) {
+			continue
+		}
+		if message.Role != "assistant" || message.ImageGeneration == nil {
+			return nil, errors.New("图片生成消息不存在")
+		}
+		message.Content = strings.TrimSpace(content)
+		message.ImageGeneration = cloneImageGeneration(&generation)
+		message.ImageAttachments = cloneImageAttachments(validatedImages)
+		session.UpdatedAt = time.Now().UnixMilli()
+		if err := store.saveSessionsLocked(); err != nil {
+			return nil, err
+		}
+		return cloneSession(session), nil
+	}
+	return nil, errors.New("图片生成消息不存在")
+}
+
+func (store *desktopStore) setMessageImageAnalysis(sessionID, messageID, analysis string) (*ChatSession, error) {
+	analysis = strings.TrimSpace(analysis)
+	if analysis == "" || len([]rune(analysis)) > 20_000 {
+		return nil, errors.New("图片分析结果无效")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	session := store.sessions[strings.TrimSpace(sessionID)]
+	if session == nil {
+		return nil, errors.New("会话不存在")
+	}
+	if err := requireDesktopExecutionAuthority(session); err != nil {
+		return nil, err
+	}
+	for index := range session.Messages {
+		message := &session.Messages[index]
+		if message.ID != strings.TrimSpace(messageID) {
+			continue
+		}
+		if message.Role != "user" || len(message.ImageAttachments) == 0 {
+			return nil, errors.New("图片消息不存在")
+		}
+		message.ImageAnalysis = analysis
+		session.UpdatedAt = time.Now().UnixMilli()
+		if err := store.saveSessionsLocked(); err != nil {
+			return nil, err
+		}
+		return cloneSession(session), nil
+	}
+	return nil, errors.New("图片消息不存在")
+}
+
 func (store *desktopStore) saveSessionsLocked() error {
 	sessions := make([]*ChatSession, 0, len(store.sessions))
 	for _, session := range store.sessions {
@@ -1484,9 +1705,18 @@ func cloneSession(session *ChatSession) *ChatSession {
 	for index := range copy.Messages {
 		copy.Messages[index].Context = cloneComposerContext(copy.Messages[index].Context)
 		copy.Messages[index].ImageAttachments = cloneImageAttachments(copy.Messages[index].ImageAttachments)
+		copy.Messages[index].ImageGeneration = cloneImageGeneration(copy.Messages[index].ImageGeneration)
 		copy.Messages[index].WorkspaceChanges = cloneWorkspaceChanges(copy.Messages[index].WorkspaceChanges)
 		copy.Messages[index].WorkspaceReview = cloneWorkspaceReview(copy.Messages[index].WorkspaceReview)
 	}
+	return &copy
+}
+
+func cloneImageGeneration(value *ImageGenerationMessage) *ImageGenerationMessage {
+	if value == nil {
+		return nil
+	}
+	copy := *value
 	return &copy
 }
 

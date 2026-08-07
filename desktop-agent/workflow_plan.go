@@ -275,7 +275,7 @@ func workflowExecutionPrompt(plan *DesktopWorkflowPlan) string {
 		output.WriteString(fmt.Sprintf("%d. [%s] %s\n", index+1, state, step))
 	}
 	output.WriteString("\n每完成一个步骤后必须调用 complete_step，并用本计划执行期间真实成功的工具收据逐条匹配 evidence。")
-	output.WriteString(" 未签收完所有步骤时不得声称整个计划完成；若确实受阻，明确说明阻塞，不要伪造证据。")
+	output.WriteString(" 未签收完所有步骤时不得声称整个计划完成；若确实受阻，明确说明阻塞，不要伪造证据。全部步骤签收后，若长期目标也已达成，必须立即调用 complete_goal 结束目标模式。")
 	return output.String()
 }
 

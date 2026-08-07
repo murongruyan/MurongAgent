@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	embeddedCodexVersion  = "0.144.6"
+	embeddedCodexVersion  = "0.147.0"
 	embeddedCodexMaxBytes = int64(450 << 20)
 )
 
@@ -31,12 +31,12 @@ type codexPlatformSpec struct {
 }
 
 var codexPlatformSpecs = map[string]codexPlatformSpec{
-	"windows/amd64": {NPMPlatform: "win32-x64", Target: "x86_64-pc-windows-msvc", Executable: "codex.exe", ArchiveSHA256: "E04AFBE9841BE306455D075AD414993A946C94A399E55D7F9EC223F734CD4101"},
-	"windows/arm64": {NPMPlatform: "win32-arm64", Target: "aarch64-pc-windows-msvc", Executable: "codex.exe", ArchiveSHA256: "92774896D0D293DB1C1808E77085B5A068E5AA70825D0D656E29BD4CA276E651"},
-	"darwin/amd64":  {NPMPlatform: "darwin-x64", Target: "x86_64-apple-darwin", Executable: "codex", ArchiveSHA256: "6F1CDAB2DD23BEB5BFDB82A7D4FF5BB8C33F29AF5D1019778B18584EA7C53165"},
-	"darwin/arm64":  {NPMPlatform: "darwin-arm64", Target: "aarch64-apple-darwin", Executable: "codex", ArchiveSHA256: "671D58A58CD2058345B9D9E4A969BB69937E50C7C1CD57C6061ED674DC92F94B"},
-	"linux/amd64":   {NPMPlatform: "linux-x64", Target: "x86_64-unknown-linux-musl", Executable: "codex", ArchiveSHA256: "B6752EB2E8C10E6FCC96AC5C1C8AD8342CDB9A74504FB84686ADDF081A7D2868"},
-	"linux/arm64":   {NPMPlatform: "linux-arm64", Target: "aarch64-unknown-linux-musl", Executable: "codex", ArchiveSHA256: "19F0B01B33F273DF94191670B2E0E5D0F624B0354E765BFDEA5763920B713800"},
+	"windows/amd64": {NPMPlatform: "win32-x64", Target: "x86_64-pc-windows-msvc", Executable: "codex.exe", ArchiveSHA256: "299D8603750CAAFFC24F218789D989F77CF157070BD42451D352F5578A800766"},
+	"windows/arm64": {NPMPlatform: "win32-arm64", Target: "aarch64-pc-windows-msvc", Executable: "codex.exe", ArchiveSHA256: "0B20F97A8A6D55EA3C0DCD16B05CA623639AAE9D520DC9F6AC636903677964C8"},
+	"darwin/amd64":  {NPMPlatform: "darwin-x64", Target: "x86_64-apple-darwin", Executable: "codex", ArchiveSHA256: "43CD79DECDD0C110DAA90A0FD34E73523C7A10FB0E4D5D9BF1437D9298BE08B6"},
+	"darwin/arm64":  {NPMPlatform: "darwin-arm64", Target: "aarch64-apple-darwin", Executable: "codex", ArchiveSHA256: "493DE2D788C6FF01DE222307C767231C1E6C802D5DD808523550FAD6D972F4D3"},
+	"linux/amd64":   {NPMPlatform: "linux-x64", Target: "x86_64-unknown-linux-musl", Executable: "codex", ArchiveSHA256: "C969740CF8297E4C31905CD551EFEB2C99AF5080C12C236BDF825598B250139A"},
+	"linux/arm64":   {NPMPlatform: "linux-arm64", Target: "aarch64-unknown-linux-musl", Executable: "codex", ArchiveSHA256: "4D09BF000597768DFA070B0E7C612F0FC258AC7FAB364E570104EA625F918546"},
 }
 
 var embeddedCodexExtractMu sync.Mutex

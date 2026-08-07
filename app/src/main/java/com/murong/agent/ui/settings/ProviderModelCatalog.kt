@@ -3,6 +3,7 @@ package com.murong.agent.ui.settings
 import com.murong.agent.core.config.ProviderConfig
 import com.murong.agent.core.config.isLocalModelBaseUrl
 import com.murong.agent.core.provider.ModelProvider
+import com.murong.agent.core.provider.ProviderPresetCatalog
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -43,18 +44,7 @@ private val PROVIDER_MODEL_CATALOG_HTTP = OkHttpClient.Builder()
     .build()
 
 internal fun builtinProviderModels(providerId: String): List<String> = when (providerId) {
-    "deepseek" -> listOf("deepseek-v4-flash", "deepseek-v4-pro")
-    "openai-compatible" -> listOf("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5")
-    "claude" -> listOf("claude-fable-5", "claude-opus-4-8")
-    "kimi" -> listOf("kimi-k3")
-    "glm" -> listOf("glm-5.2")
-    "qwen" -> listOf("qwen3.8-max-preview")
-    "minimax" -> listOf("MiniMax-M3")
-    "grok" -> listOf("grok-4.5")
-    "mimo" -> listOf("mimo-v2.5", "mimo-v2.5-pro")
-    "hy3" -> listOf("hy3-preview")
-    "gemini" -> listOf("gemini-3.6-flash")
-    else -> emptyList()
+    else -> ProviderPresetCatalog.get(providerId)?.recommendedModels.orEmpty()
 }
 
 internal fun mergeProviderModelCandidates(
@@ -156,7 +146,11 @@ internal fun fetchProviderModelCatalog(
 
             else -> {
                 apiKey.takeIf { it.isNotBlank() }?.let {
-                    requestBuilder.addHeader("Authorization", "Bearer $it")
+                    if (endpoint.contains(".openai.azure.com", ignoreCase = true)) {
+                        requestBuilder.addHeader("api-key", it)
+                    } else {
+                        requestBuilder.addHeader("Authorization", "Bearer $it")
+                    }
                 }
             }
         }

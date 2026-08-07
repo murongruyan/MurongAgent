@@ -24,11 +24,13 @@ import (
 )
 
 const (
-	maxChatImagesPerMessage = 8
-	maxChatImageSourceBytes = 20 * 1024 * 1024
-	maxChatImageStoredBytes = 4 * 1024 * 1024
-	maxChatImageDimension   = 2048
-	targetChatImageBytes    = 500_000
+	maxChatImagesPerMessage     = 8
+	maxChatImageSourceBytes     = 20 * 1024 * 1024
+	maxChatImageStoredBytes     = 4 * 1024 * 1024
+	maxChatImageDimension       = 2048
+	targetChatImageBytes        = 500_000
+	maxHighResolutionImageBytes = 64 * 1024 * 1024
+	maxHighResolutionDimension  = 16_384
 )
 
 var chatImageIDPattern = regexp.MustCompile(`^image-[0-9a-f]{24}$`)
@@ -190,6 +192,102 @@ func importChatImage(mediaRoot, sourcePath string) (SelectedChatImage, error) {
 	return SelectedChatImage{Attachment: attachment, PreviewDataURL: dataURL(outputMime, output)}, nil
 }
 
+func importGeneratedChatImage(mediaRoot string, data []byte, ordinal int) (MessageImageAttachment, error) {
+	if len(data) == 0 || len(data) > maxChatImageSourceBytes {
+		return MessageImageAttachment{}, errors.New("图片生成结果为空或超过 20 MiB")
+	}
+	decoded, format, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return MessageImageAttachment{}, errors.New("图片生成服务未返回有效图片")
+	}
+	bounds := decoded.Bounds()
+	if bounds.Dx() < 1 || bounds.Dy() < 1 || bounds.Dx() > 32_768 || bounds.Dy() > 32_768 {
+		return MessageImageAttachment{}, errors.New("图片生成结果尺寸无效或过大")
+	}
+	mimeType, extension := "image/jpeg", "jpg"
+	output := data
+	if format == "png" && len(data) <= maxChatImageStoredBytes && bounds.Dx() <= maxChatImageDimension && bounds.Dy() <= maxChatImageDimension {
+		mimeType, extension = "image/png", "png"
+	} else if format == "jpeg" && len(data) <= maxChatImageStoredBytes && bounds.Dx() <= maxChatImageDimension && bounds.Dy() <= maxChatImageDimension {
+		output = data
+	} else {
+		decoded = resizeChatImage(decoded, maxChatImageDimension)
+		output, err = encodeChatImage(decoded, "image/jpeg")
+		if err != nil {
+			return MessageImageAttachment{}, err
+		}
+		bounds = decoded.Bounds()
+	}
+	if len(output) == 0 || len(output) > maxChatImageStoredBytes {
+		return MessageImageAttachment{}, errors.New("处理后的图片生成结果超过 4 MiB")
+	}
+	if err := os.MkdirAll(mediaRoot, 0o700); err != nil {
+		return MessageImageAttachment{}, err
+	}
+	id := newID("image")
+	target, err := safeChatImagePath(mediaRoot, id+"."+extension)
+	if err != nil {
+		return MessageImageAttachment{}, err
+	}
+	if err := writeChatImageAtomic(target, output); err != nil {
+		return MessageImageAttachment{}, err
+	}
+	fileName := "generated-image"
+	if ordinal > 1 {
+		fileName += fmt.Sprintf("-%d", ordinal)
+	}
+	return MessageImageAttachment{
+		ID: id, FileName: fileName + "." + extension, MimeType: mimeType, CacheFile: id + "." + extension,
+		Width: bounds.Dx(), Height: bounds.Dy(), SizeBytes: int64(len(output)),
+	}, nil
+}
+
+func importUpscaledChatImage(mediaRoot string, data []byte) (MessageImageAttachment, error) {
+	if len(data) == 0 || len(data) > maxHighResolutionImageBytes {
+		return MessageImageAttachment{}, errors.New("4K 超分结果为空或超过 64 MiB")
+	}
+	decoded, format, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return MessageImageAttachment{}, errors.New("4K 超分服务未返回有效图片")
+	}
+	bounds := decoded.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	if width < 1 || height < 1 || width > maxHighResolutionDimension || height > maxHighResolutionDimension {
+		return MessageImageAttachment{}, errors.New("4K 超分结果尺寸无效或过大")
+	}
+	if width < 3840 && height < 3840 {
+		return MessageImageAttachment{}, fmt.Errorf("超分结果未达到 4K：%d×%d", width, height)
+	}
+	mimeType, extension, output := "image/png", "png", data
+	if format == "jpeg" {
+		mimeType, extension = "image/jpeg", "jpg"
+	} else if format != "png" {
+		output, err = encodeChatImage(decoded, "image/png")
+		if err != nil {
+			return MessageImageAttachment{}, err
+		}
+	}
+	if len(output) > maxHighResolutionImageBytes {
+		return MessageImageAttachment{}, errors.New("编码后的 4K 超分结果超过 64 MiB")
+	}
+	if err := os.MkdirAll(mediaRoot, 0o700); err != nil {
+		return MessageImageAttachment{}, err
+	}
+	id := newID("image")
+	cacheFile := id + "." + extension
+	target, err := safeChatImagePath(mediaRoot, cacheFile)
+	if err != nil {
+		return MessageImageAttachment{}, err
+	}
+	if err := writeChatImageAtomic(target, output); err != nil {
+		return MessageImageAttachment{}, err
+	}
+	return MessageImageAttachment{
+		ID: id, FileName: "upscaled-4k." + extension, MimeType: mimeType, CacheFile: cacheFile,
+		Width: width, Height: height, SizeBytes: int64(len(output)), HighResolution: true,
+	}, nil
+}
+
 func resizeChatImage(source image.Image, maximum int) image.Image {
 	bounds := source.Bounds()
 	width, height := bounds.Dx(), bounds.Dy()
@@ -312,8 +410,15 @@ func validateChatImageAttachmentMetadata(attachment MessageImageAttachment) erro
 	} else if attachment.MimeType != "image/jpeg" {
 		return errors.New("图片附件 MIME 类型无效")
 	}
-	if attachment.CacheFile != attachment.ID+extension || attachment.Width < 1 || attachment.Height < 1 || attachment.Width > maxChatImageDimension || attachment.Height > maxChatImageDimension || attachment.SizeBytes < 1 || attachment.SizeBytes > maxChatImageStoredBytes {
+	maxDimension, maxBytes := maxChatImageDimension, int64(maxChatImageStoredBytes)
+	if attachment.HighResolution {
+		maxDimension, maxBytes = maxHighResolutionDimension, int64(maxHighResolutionImageBytes)
+	}
+	if attachment.CacheFile != attachment.ID+extension || attachment.Width < 1 || attachment.Height < 1 || attachment.Width > maxDimension || attachment.Height > maxDimension || attachment.SizeBytes < 1 || attachment.SizeBytes > maxBytes {
 		return errors.New("图片附件元数据无效")
+	}
+	if attachment.HighResolution && attachment.Width < 3840 && attachment.Height < 3840 {
+		return errors.New("高分辨率图片未达到 4K")
 	}
 	return nil
 }

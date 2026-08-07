@@ -6,6 +6,8 @@ import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 import com.murong.agent.core.provider.BuiltinLocalProvider
+import com.murong.agent.core.provider.ProviderWireFormat
+import com.murong.agent.core.provider.ProviderPresetCatalog
 import com.murong.agent.core.tool.BuiltinVisionRuntime
 
 internal const val MIN_CUSTOM_CONTEXT_WINDOW_TOKENS = 4_096
@@ -110,6 +112,14 @@ data class ProjectToolPreferences(
 @Serializable
 enum class RelayKind { OFFICIAL, CUSTOM }
 
+@Serializable
+enum class BalanceDataSource {
+    UNKNOWN,
+    OFFICIAL_API,
+    CUSTOM_ENDPOINT,
+    LOCAL_ESTIMATE,
+}
+
 /**
  * Selects the owner of the agent loop.
  *
@@ -136,14 +146,25 @@ data class RelayConfig(
     val balanceAmount: Double = 0.0,
     val balanceCurrency: String = "USD",
     val balanceSyncedAt: Long? = null,
+    val balanceSource: BalanceDataSource = BalanceDataSource.UNKNOWN,
     val balanceApiPath: String = "",
     val contextWindowTokens: Int? = null,
-    val kind: RelayKind = RelayKind.CUSTOM
+    val kind: RelayKind = RelayKind.CUSTOM,
+    val apiFormat: ProviderWireFormat = ProviderWireFormat.CHAT_COMPLETIONS,
 ) {
     fun displayName(fallbackIndex: Int): String {
         return name.trim().ifBlank { "自定义 ${fallbackIndex + 1}" }
     }
 }
+
+data class AuxiliaryModelRoute(
+    val providerId: String,
+    val relayId: String,
+    val baseUrl: String,
+    val apiKey: String,
+    val model: String,
+    val wireFormat: ProviderWireFormat,
+)
 
 @Serializable
 data class ProviderConfig(
@@ -262,7 +283,36 @@ data class ProviderConfig(
     val webSearchSearxngBaseUrl: String = "",
     val webSearchBingApiKey: String = "",
     val temperature: Double = 0.7,
-    val maxTokens: Int = 8192
+    val maxTokens: Int = 8192,
+    /**
+     * Optional image-understanding route for text-only chat models. When a
+     * saved provider/profile is selected, its protected credentials are reused
+     * and no second API key is stored. Custom credentials remain encrypted by
+     * ConfigRepository just like normal provider credentials.
+     */
+    val visionRoutingEnabled: Boolean = false,
+    val visionProviderId: String = "",
+    val visionRelayId: String = "",
+    val visionModel: String = "",
+    val visionCustomBaseUrl: String = "",
+    val visionCustomApiKey: String = "",
+    /** Independent OpenAI-compatible image generation route and defaults. */
+    val imageGenerationProviderId: String = "openai-compatible",
+    val imageGenerationRelayId: String = "",
+    val imageGenerationModel: String = "gpt-image-2",
+    val imageGenerationCustomBaseUrl: String = "",
+    val imageGenerationCustomApiKey: String = "",
+    val imageGenerationSize: String = "1024x1024",
+    val imageGenerationQuality: String = "auto",
+    val imageGenerationFormat: String = "png",
+    val imageGenerationCompression: Int = 90,
+    val imageGenerationPartialImages: Int = 2,
+    /** Replicate-hosted Real-ESRGAN route for actual 4x image super-resolution. */
+    val imageUpscaleProviderId: String = "replicate",
+    val imageUpscaleBaseUrl: String = "https://api.replicate.com/v1",
+    val imageUpscaleModel: String = "nightmareai/real-esrgan",
+    val imageUpscaleApiKey: String = "",
+    val imageUpscaleScale: Int = 4,
 ) {
     data class ApprovalDecisionExplanation(
         val requiresApproval: Boolean,
@@ -311,7 +361,33 @@ data class ProviderConfig(
             else -> null
         }
     )
-    fun getActiveBaseUrl(): String? = getBaseUrl(activeProviderId)
+    fun getActiveWireFormat(): ProviderWireFormat =
+        getActiveRelay()?.apiFormat ?: ProviderWireFormat.CHAT_COMPLETIONS
+
+    /**
+     * Resolves the configured format into the endpoint consumed by the
+     * provider transport. The editable Base URL remains untouched for model
+     * discovery and balance queries.
+     */
+    fun getActiveBaseUrl(): String? {
+        val base = getBaseUrl(activeProviderId) ?: return null
+        return when (getActiveWireFormat()) {
+            ProviderWireFormat.RESPONSES -> {
+                if (base.trimEnd('/').endsWith("/responses", ignoreCase = true)) base
+                else base.trimEnd('/') + "/responses"
+            }
+            ProviderWireFormat.CHAT_COMPLETIONS -> {
+                base.trimEnd('/').removeSuffix("/chat/completions").removeSuffix("/responses")
+            }
+            ProviderWireFormat.ANTHROPIC_MESSAGES -> base
+        }
+    }
+
+    /** Anthropic relays can use the same saved connection shape as OpenAI relays. */
+    fun getActiveRuntimeProviderId(): String = when (getActiveWireFormat()) {
+        ProviderWireFormat.ANTHROPIC_MESSAGES -> "claude"
+        else -> if (activeProviderId == "claude") "openai-compatible" else activeProviderId
+    }
     fun getResolvedModel(providerId: String): String = getActiveRelay(providerId)?.model?.takeIf { it.isNotBlank() } ?: when (providerId) {
         "deepseek" -> deepseekModel
         "openai-compatible" -> openaiModel
@@ -584,6 +660,76 @@ data class ProviderConfig(
     }
     fun isStreamingResponsesEnabled(): Boolean = enableStreamingResponses
     fun isMultimodalEnabled(): Boolean = enableMultimodalMessages
+
+    fun resolveVisionRoute(): AuxiliaryModelRoute? {
+        if (!visionRoutingEnabled) return null
+        return resolveAuxiliaryModelRoute(
+            selectedProviderId = visionProviderId,
+            selectedRelayId = visionRelayId,
+            selectedModel = visionModel,
+            customBaseUrl = visionCustomBaseUrl,
+            customApiKey = visionCustomApiKey,
+        )
+    }
+
+    fun resolveImageGenerationRoute(): AuxiliaryModelRoute? = resolveAuxiliaryModelRoute(
+        selectedProviderId = imageGenerationProviderId,
+        selectedRelayId = imageGenerationRelayId,
+        selectedModel = imageGenerationModel,
+        customBaseUrl = imageGenerationCustomBaseUrl,
+        customApiKey = imageGenerationCustomApiKey,
+    )
+
+    private fun resolveAuxiliaryModelRoute(
+        selectedProviderId: String,
+        selectedRelayId: String,
+        selectedModel: String,
+        customBaseUrl: String,
+        customApiKey: String,
+    ): AuxiliaryModelRoute? {
+        val customBase = customBaseUrl.trim()
+        if (customBase.isNotBlank()) {
+            return AuxiliaryModelRoute(
+                providerId = "custom",
+                relayId = "",
+                baseUrl = customBase,
+                apiKey = customApiKey,
+                model = selectedModel.trim(),
+                wireFormat = ProviderWireFormat.CHAT_COMPLETIONS,
+            )
+        }
+        val providerId = selectedProviderId.trim().ifBlank { return null }
+        if (providerId == BuiltinLocalProvider.ID) {
+            val localModel = selectedModel.trim().ifBlank { getResolvedModel(providerId) }
+            return AuxiliaryModelRoute(
+                providerId = providerId,
+                relayId = "",
+                baseUrl = "",
+                apiKey = "",
+                model = localModel,
+                wireFormat = ProviderWireFormat.CHAT_COMPLETIONS,
+            )
+        }
+        val relays = getRelayConfigs(providerId)
+        val relay = relays.firstOrNull { it.id == selectedRelayId }
+            ?: relays.firstOrNull { it.id == getActiveRelayId(providerId) }
+            ?: relays.firstOrNull()
+            ?: return null
+        val preset = ProviderPresetCatalog.get(providerId)
+        val baseUrl = relay.baseUrl.trim().ifBlank { preset?.defaultBaseUrl.orEmpty() }
+        val model = selectedModel.trim().ifBlank {
+            relay.model.trim().ifBlank { preset?.defaultModel.orEmpty() }
+        }
+        if (baseUrl.isBlank() || model.isBlank()) return null
+        return AuxiliaryModelRoute(
+            providerId = providerId,
+            relayId = relay.id,
+            baseUrl = baseUrl,
+            apiKey = relay.apiKey,
+            model = model,
+            wireFormat = relay.apiFormat,
+        )
+    }
     fun isModelAutoSelectionEnabled(providerId: String = activeProviderId): Boolean {
         if (providerId == BuiltinLocalProvider.ID) return false
         getActiveRelay(providerId)?.let { return it.autoModelSelection }
@@ -741,6 +887,26 @@ data class ProviderConfig(
         "deepseek" -> deepseekBalanceSyncedAt; "openai-compatible" -> openaiBalanceSyncedAt
         "claude" -> claudeBalanceSyncedAt; else -> null
     }
+    fun getBalanceSource(providerId: String = activeProviderId): BalanceDataSource {
+        val relay = getActiveRelay(providerId)
+        if (relay?.balanceSource != null && relay.balanceSource != BalanceDataSource.UNKNOWN) {
+            return relay.balanceSource
+        }
+        if (getBalanceSyncedAt(providerId) != null) {
+            return if (providerId == "deepseek" && relay?.kind != RelayKind.CUSTOM) {
+                BalanceDataSource.OFFICIAL_API
+            } else {
+                BalanceDataSource.CUSTOM_ENDPOINT
+            }
+        }
+        return if (getBalanceAmount(providerId) != 0.0) {
+            BalanceDataSource.LOCAL_ESTIMATE
+        } else {
+            BalanceDataSource.UNKNOWN
+        }
+    }
+    fun hasKnownBalance(providerId: String = activeProviderId): Boolean =
+        getBalanceSource(providerId) != BalanceDataSource.UNKNOWN
     fun getBalanceApiPath(providerId: String = activeProviderId): String = getActiveRelay(providerId)?.balanceApiPath ?: when (providerId) {
         "deepseek" -> ""; "openai-compatible" -> openaiBalanceApiPath; "claude" -> claudeBalanceApiPath; else -> ""
     }
@@ -819,13 +985,48 @@ data class ProviderConfig(
             else -> this
         }
     }
-    fun withBalanceInfo(providerId: String, balanceUsd: Double, balanceCurrency: String, syncedAt: Long): ProviderConfig {
+    fun withBalanceInfo(
+        providerId: String,
+        balanceUsd: Double,
+        balanceCurrency: String,
+        syncedAt: Long,
+        source: BalanceDataSource = BalanceDataSource.CUSTOM_ENDPOINT,
+    ): ProviderConfig {
         val normalizedCurrency = balanceCurrency.ifBlank { getBalanceCurrency(providerId) }.uppercase()
+        val updatedRelay = updateActiveRelay(providerId) { relay ->
+            relay.copy(
+                balanceAmount = balanceUsd,
+                balanceCurrency = normalizedCurrency,
+                balanceSyncedAt = syncedAt,
+                balanceSource = source,
+            )
+        }
         return when (providerId) {
-            "deepseek" -> copy(deepseekBalanceUsd = balanceUsd, deepseekBalanceCurrency = normalizedCurrency, deepseekBalanceSyncedAt = syncedAt)
-            "openai-compatible" -> copy(openaiBalanceUsd = balanceUsd, openaiBalanceCurrency = normalizedCurrency, openaiBalanceSyncedAt = syncedAt)
-            "claude" -> copy(claudeBalanceUsd = balanceUsd, claudeBalanceCurrency = normalizedCurrency, claudeBalanceSyncedAt = syncedAt)
-            else -> this
+            "deepseek" -> updatedRelay.copy(deepseekBalanceUsd = balanceUsd, deepseekBalanceCurrency = normalizedCurrency, deepseekBalanceSyncedAt = syncedAt)
+            "openai-compatible" -> updatedRelay.copy(openaiBalanceUsd = balanceUsd, openaiBalanceCurrency = normalizedCurrency, openaiBalanceSyncedAt = syncedAt)
+            "claude" -> updatedRelay.copy(claudeBalanceUsd = balanceUsd, claudeBalanceCurrency = normalizedCurrency, claudeBalanceSyncedAt = syncedAt)
+            else -> updatedRelay
+        }
+    }
+    fun withLocalBalanceEstimate(
+        providerId: String,
+        amount: Double,
+        currency: String = getBalanceCurrency(providerId),
+    ): ProviderConfig {
+        val normalizedCurrency = currency.ifBlank { getBalanceCurrency(providerId) }.uppercase()
+        val updatedRelay = updateActiveRelay(providerId) { relay ->
+            relay.copy(
+                balanceAmount = amount,
+                balanceCurrency = normalizedCurrency,
+                balanceSyncedAt = null,
+                balanceSource = BalanceDataSource.LOCAL_ESTIMATE,
+            )
+        }
+        return when (providerId) {
+            "deepseek" -> updatedRelay.copy(deepseekBalanceUsd = amount, deepseekBalanceCurrency = normalizedCurrency)
+            "openai-compatible" -> updatedRelay.copy(openaiBalanceUsd = amount, openaiBalanceCurrency = normalizedCurrency)
+            "claude" -> updatedRelay.copy(claudeBalanceUsd = amount, claudeBalanceCurrency = normalizedCurrency)
+            else -> updatedRelay
         }
     }
     fun estimateCostAmount(promptTokens: Int, completionTokens: Int, providerId: String = activeProviderId): Double {

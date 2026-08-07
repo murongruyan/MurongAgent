@@ -165,6 +165,14 @@ MurongAgent can then:
 - run tool-assisted agent workflows
 - combine local project context with GitHub repository context
 
+## Image Understanding and Generation
+
+In `Settings -> Vision and Image Generation`, you can select an independent vision model for image understanding. When independent routing is enabled, that model produces a reusable Chinese observation summary first, so the main model does not receive the same historical image repeatedly.
+
+Image generation uses the OpenAI Images-compatible `POST /v1/images/generations` endpoint, with partial previews, cancellation, retry, and image saving. `gpt-image-2` supports native `2048x2048`, `2048x1152`, `3840x2160`, and `2160x3840` sizes. The official constraints are a maximum edge of 3840px, dimensions divisible by 16, no more than 8,294,400 total pixels, and a maximum 3:1 aspect ratio. Native 4K guarantees the output dimensions, not perfect text, detail, or composition. Non-GPT Image models or additional enlargement can use Replicate `nightmareai/real-esrgan` for a real 2–4x upscale; only output whose long edge reaches at least `3840px` is labeled “real 4K upscale complete”, with progress, cancellation, retry, and download support.
+
+Custom vision, image-generation, and real 4K upscaling API keys are stored in Android Keystore or Windows DPAPI. Normal backups, exports, conversation history, and logs exclude them; device sync requires explicit confirmation for both settings and provider credentials.
+
 ## GitHub integration
 
 MurongAgent also supports GitHub-linked workflows.

@@ -39,6 +39,10 @@ func (app *DesktopAgentApp) SendMessage(request SendMessageRequest) error {
 		return err
 	}
 	app.mu.Lock()
+	if _, imageGenerating := app.imageRuns[request.SessionID]; imageGenerating {
+		app.mu.Unlock()
+		return errors.New("当前会话正在生成图片，完成或取消后才能继续发送")
+	}
 	if app.restartRuns == nil {
 		app.restartRuns = map[string]bool{}
 	}
@@ -163,7 +167,7 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 		if session.GoalStatus == "paused" {
 			systemPrompt += "\n目标状态：PAUSED。暂时不要继续朝这个目标推进，直到用户恢复它。"
 		} else {
-			systemPrompt += "\n目标状态：ACTIVE。后续回复必须围绕它推进，除非用户更新或清除。"
+			systemPrompt += "\n目标状态：ACTIVE。持续推进目标，不得只给一段阶段性结论就停止。目标真实达成并完成必要验证后，立即调用 complete_goal；调用成功后不要再继续操作。"
 		}
 		systemPrompt += "\n\n如需切换目标或计划状态，可以在回复开头单独一行输出控制标记："
 		systemPrompt += "\n[goal:start] <新目标>"
@@ -172,7 +176,7 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 		systemPrompt += "\n[goal:resume]"
 		systemPrompt += "\n[goal:complete]"
 		systemPrompt += "\n[plan:start]"
-		systemPrompt += "\n只在用户明确要求切换时才输出标记，否则正常回复、不要输出任何标记。"
+		systemPrompt += "\n目标的开始、更新、暂停、恢复和计划切换只在用户明确要求时输出标记；[goal:complete] 可在目标已经真实达成时由你主动输出。优先调用 complete_goal 完成目标。"
 	}
 	if planPrompt := workflowExecutionPrompt(session.WorkflowPlan); planPrompt != "" {
 		systemPrompt += "\n\n" + planPrompt
@@ -190,13 +194,35 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 			content := materializeUserMessage(config, message)
 			var images []modelImageAttachment
 			if message.Role == "user" && len(message.ImageAttachments) > 0 {
-				images, err = app.store.modelImages(message.ImageAttachments)
-				if err != nil {
-					app.failRun(sessionID, fmt.Errorf("无法读取会话图片：%w", err))
-					return
-				}
-				if strings.TrimSpace(content) == "" {
-					content = "请分析这些图片，并提取与当前任务相关的关键信息。"
+				if config.VisionRoutingEnabled {
+					analysis := strings.TrimSpace(message.ImageAnalysis)
+					if analysis == "" {
+						app.emit("agent:status", map[string]any{"sessionId": sessionID, "state": "running", "text": "正在用独立看图模型识别图片"})
+						analysis, err = app.analyzeImagesWithAuxiliaryVision(ctx, config, message.ImageAttachments, content)
+						if err != nil {
+							app.failRun(sessionID, err)
+							return
+						}
+						updated, saveErr := app.store.setMessageImageAnalysis(sessionID, message.ID, analysis)
+						if saveErr != nil {
+							app.failRun(sessionID, saveErr)
+							return
+						}
+						app.emitSessionsChanged(updated)
+					}
+					if strings.TrimSpace(content) == "" {
+						content = "请根据以下图片理解摘要处理请求。"
+					}
+					content += "\n\n[独立看图摘要]\n" + analysis
+				} else {
+					images, err = app.store.modelImages(message.ImageAttachments)
+					if err != nil {
+						app.failRun(sessionID, fmt.Errorf("无法读取会话图片：%w", err))
+						return
+					}
+					if strings.TrimSpace(content) == "" {
+						content = "请分析这些图片，并提取与当前任务相关的关键信息。"
+					}
 				}
 			}
 			messages = append(messages, modelMessage{Role: message.Role, Content: content, ReasoningContent: message.Reasoning, Images: images})
@@ -288,6 +314,16 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 			app.applyGoalControlMarkers(sessionID, goalMarkers)
 		}
 		if len(result.ToolCalls) == 0 {
+			latest := app.store.getSession(sessionID)
+			goalStillActive := latest != nil && strings.TrimSpace(latest.Goal) != "" && latest.GoalStatus != "paused"
+			goalTerminated := goalMarkers != nil && (goalMarkers.Complete || goalMarkers.Pause)
+			if goalStillActive && !goalTerminated {
+				messages = append(messages, modelMessage{
+					Role:    "system",
+					Content: "目标模式仍在进行。你还没有调用 complete_goal，也没有输出 [goal:complete]。不要结束本轮；请继续使用必要工具推进和验证。只有目标真实达成时才调用 complete_goal；若确实需要用户决定，请使用 ask_user。",
+				})
+				continue
+			}
 			settled, settleErr := app.store.settleWorkflowPlan(sessionID, "")
 			if settleErr != nil {
 				app.failRun(sessionID, settleErr)
@@ -302,6 +338,7 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 			return
 		}
 
+		goalCompleted := false
 		for _, call := range result.ToolCalls {
 			app.emit("agent:tool", map[string]any{
 				"sessionId": sessionID, "toolCallId": call.ID, "toolName": call.Function.Name, "state": "running", "text": "正在执行",
@@ -327,6 +364,14 @@ func (app *DesktopAgentApp) runAgent(ctx context.Context, sessionID string) {
 			app.emit("agent:tool", map[string]any{
 				"sessionId": sessionID, "toolCallId": call.ID, "toolName": call.Function.Name, "state": state, "text": truncateRunes(output, 240),
 			})
+			if call.Function.Name == completeGoalToolName && toolErr == nil {
+				goalCompleted = true
+				break
+			}
+		}
+		if goalCompleted {
+			app.emit("agent:status", map[string]any{"sessionId": sessionID, "state": "idle", "text": "目标已完成"})
+			return
 		}
 	}
 	app.failRun(sessionID, fmt.Errorf("达到最大工具迭代次数 %d；可在设置中调整，最大 999", config.MaxToolIterations))
@@ -610,6 +655,7 @@ func (app *DesktopAgentApp) toolDefinitions(config desktopConfig) []any {
 		}, []string{"goal"}))
 	}
 	tools = append(tools, completeStepToolDefinition())
+	tools = append(tools, completeGoalToolDefinition())
 	tools = append(tools, app.knowledgeToolDefinitions()...)
 	if isBuiltinToolEnabled(config, "mcp") && app.mcp != nil {
 		for _, tool := range app.mcp.ToolDefinitions() {
@@ -891,6 +937,8 @@ func (app *DesktopAgentApp) executeTool(
 		return app.executeSubagentJobsTool(ctx, sessionID, config, call, raw)
 	case completeStepToolName:
 		return app.executeCompleteStep(ctx, sessionID, call)
+	case completeGoalToolName:
+		return app.executeCompleteGoal(ctx, sessionID, call)
 	case "run_skill":
 		return app.executeRunSkill(ctx, sessionID, config, workspace, call)
 	case "github_repository", "github_read_file", "github_list_branches", "github_list_issues",

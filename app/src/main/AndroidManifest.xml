@@ -111,6 +111,36 @@
         </activity>
 
         <activity
+            android:name="com.murong.agent.ui.providerimport.ProviderImportActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.Murong"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:scheme="murongagent"
+                    android:host="provider"
+                    android:path="/import" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:scheme="ccswitch"
+                    android:host="v1"
+                    android:path="/import" />
+            </intent-filter>
+        </activity>
+
+        <activity
             android:name="com.murong.agent.ui.assistant.AssistantIsolatedDisplayActivity"
             android:excludeFromRecents="true"
             android:exported="false"

@@ -23,17 +23,27 @@ import com.murong.agent.core.config.RelayConfig
 import com.murong.agent.core.config.ProviderBalanceService
 import com.murong.agent.core.loop.ChatSessionManager
 import com.murong.agent.core.codex.CodexAppServerClient
+import com.murong.agent.core.codex.AndroidCodexAccountManager
+import com.murong.agent.core.codex.CodexAccountReadResult
+import com.murong.agent.core.codex.CodexAccountPoolSettings
+import com.murong.agent.core.codex.CodexAccountPoolSnapshot
 import com.murong.agent.core.codex.CodexConnectionPhase
 import com.murong.agent.core.codex.CodexLoginStatus
-import com.murong.agent.core.doctor.SensitiveDataSanitizer
+import com.murong.agent.core.codex.CodexUserMessageSanitizer
+import com.murong.agent.core.codex.readCodexAccountWithRetry
+import com.murong.agent.core.github.AndroidGitHubAccountManager
+import com.murong.agent.core.github.GitHubAccountCredentials
+import com.murong.agent.core.github.GitHubAccountPoolSnapshot
 import com.murong.agent.core.loop.SessionSummary
 import com.murong.agent.core.mcp.McpRegistry
 import com.murong.agent.core.mcp.McpServerConfig
 import com.murong.agent.core.mcp.McpServerStatus
 import com.murong.agent.core.provider.ProviderRegistry
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -48,6 +58,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
@@ -64,6 +75,7 @@ data class GitHubAuthUiState(
     val authorizationUrl: String? = null,
     val callbackUri: String? = null,
     val pendingState: String? = null,
+    val accountPool: GitHubAccountPoolSnapshot = GitHubAccountPoolSnapshot(),
     val message: String? = null,
     val error: String? = null
 )
@@ -78,6 +90,8 @@ data class CodexChatGptUiState(
     val verificationUrl: String? = null,
     val userCode: String? = null,
     val loginId: String? = null,
+    val accountPool: CodexAccountPoolSnapshot = CodexAccountPoolSnapshot(),
+    val sessionPinned: Boolean = false,
     val message: String? = null,
     val error: String? = null
 )
@@ -144,6 +158,8 @@ class SettingsViewModel @Inject constructor(
     private val mcpRegistry: McpRegistry,
     private val chatSessionManager: ChatSessionManager,
     private val codexAppServer: CodexAppServerClient,
+    private val codexAccountManager: AndroidCodexAccountManager,
+    private val githubAccountManager: AndroidGitHubAccountManager,
     private val backupManager: MurongBackupManager
 ) : ViewModel() {
     private companion object {
@@ -206,13 +222,17 @@ class SettingsViewModel @Inject constructor(
     val providerModelCatalogs: StateFlow<Map<String, ProviderModelCatalogUiState>> =
         _providerModelCatalogs.asStateFlow()
 
-    private val _gitHubAuthState = MutableStateFlow(GitHubAuthUiState())
+    private val _gitHubAuthState = MutableStateFlow(
+        GitHubAuthUiState(accountPool = githubAccountManager.state.value),
+    )
     val gitHubAuthState: StateFlow<GitHubAuthUiState> = _gitHubAuthState.asStateFlow()
     private var lastHandledGitHubCallback: String? = null
 
     private val _codexChatGptState = MutableStateFlow(CodexChatGptUiState())
     val codexChatGptState: StateFlow<CodexChatGptUiState> = _codexChatGptState.asStateFlow()
     private var lastCompletedCodexLoginId: String? = null
+    private var codexLoginConfirmationId: String? = null
+    private var codexLoginConfirmationJob: Job? = null
 
     private val _appUpdateState = MutableStateFlow(AppUpdateUiState())
     val appUpdateState: StateFlow<AppUpdateUiState> = _appUpdateState.asStateFlow()
@@ -226,8 +246,24 @@ class SettingsViewModel @Inject constructor(
         _sessions.value = chatSessionManager.listSessions()
         checkRoot()
         refreshDurableGlobalMemories()
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             configRepository.configFlow.collect { currentConfig ->
+                if (currentConfig.githubToken.isNotBlank()) {
+                    runCatching {
+                        githubAccountManager.migrateLegacyAccount(
+                            token = currentConfig.githubToken,
+                            backendSessionToken = currentConfig.githubBackendSessionToken,
+                            login = currentConfig.githubViewerLogin,
+                            name = currentConfig.githubViewerName,
+                            avatarUrl = currentConfig.githubViewerAvatarUrl,
+                            apiBaseUrl = currentConfig.getGitHubApiBaseUrl(),
+                        )
+                    }.onFailure { error ->
+                        _gitHubAuthState.value = _gitHubAuthState.value.copy(
+                            error = "迁移 GitHub 账号失败：${error.message ?: "未知错误"}",
+                        )
+                    }
+                }
                 _providerModelCatalogs.value = ProviderRegistry.getAllProviders().associate { provider ->
                     val existing = _providerModelCatalogs.value[provider.id]
                     provider.id to (existing ?: ProviderModelCatalogUiState(providerId = provider.id)).copy(
@@ -260,6 +296,39 @@ class SettingsViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            githubAccountManager.state.collect { pool ->
+                val active = pool.accounts.firstOrNull { it.active }
+                _gitHubAuthState.value = _gitHubAuthState.value.copy(
+                    accountPool = pool,
+                    viewerLogin = active?.login?.ifBlank { null }
+                        ?: _gitHubAuthState.value.viewerLogin,
+                    viewerName = active?.name?.ifBlank { null }
+                        ?: _gitHubAuthState.value.viewerName,
+                )
+            }
+        }
+        viewModelScope.launch {
+            codexAccountManager.state.collect { pool ->
+                _codexChatGptState.value = _codexChatGptState.value.copy(
+                    accountPool = pool,
+                    sessionPinned = codexAccountManager.isSessionPinned(
+                        chatSessionManager.state.value.sessionId,
+                    ),
+                )
+            }
+        }
+        viewModelScope.launch {
+            var lastSessionId: String? = null
+            chatSessionManager.state.collect { session ->
+                if (session.sessionId != lastSessionId) {
+                    lastSessionId = session.sessionId
+                    _codexChatGptState.value = _codexChatGptState.value.copy(
+                        sessionPinned = codexAccountManager.isSessionPinned(session.sessionId),
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
             codexAppServer.state.collect { runtime ->
                 val login = runtime.login
                 _codexChatGptState.value = _codexChatGptState.value.copy(
@@ -279,6 +348,15 @@ class SettingsViewModel @Inject constructor(
                     },
                     error = login.error?.let(::sanitizeCodexMessage)
                 )
+                when (login.status) {
+                    CodexLoginStatus.WAITING_FOR_DEVICE_AUTHORIZATION -> {
+                        keepCheckingCodexLogin(login.loginId)
+                    }
+                    CodexLoginStatus.SUCCEEDED,
+                    CodexLoginStatus.CANCEL_REQUESTED,
+                    CodexLoginStatus.FAILED,
+                    CodexLoginStatus.IDLE -> stopCheckingCodexLogin()
+                }
                 val completedLoginId = login.loginId
                 if (
                     login.status == CodexLoginStatus.SUCCEEDED &&
@@ -286,7 +364,7 @@ class SettingsViewModel @Inject constructor(
                     completedLoginId != lastCompletedCodexLoginId
                 ) {
                     lastCompletedCodexLoginId = completedLoginId
-                    refreshCodexChatGptStatus()
+                    refreshCodexChatGptStatus(forceRefreshToken = true)
                 }
             }
         }
@@ -298,8 +376,9 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun refreshCodexChatGptStatus() {
+    fun refreshCodexChatGptStatus(forceRefreshToken: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
+            val confirmingLogin = forceRefreshToken || !_codexChatGptState.value.loginId.isNullOrBlank()
             _codexChatGptState.value = _codexChatGptState.value.copy(
                 isLoading = true,
                 error = null,
@@ -307,8 +386,9 @@ class SettingsViewModel @Inject constructor(
             )
             runCatching {
                 codexAppServer.start()
-                codexAppServer.accountRead()
-            }.onSuccess { account ->
+                val account = readCodexAccountWithRetry(confirmingLogin) { refreshToken ->
+                    codexAppServer.accountRead(refreshToken = refreshToken)
+                }
                 val isChatGptAccount = account.account?.type.equals("chatgpt", ignoreCase = true)
                 if (isChatGptAccount) {
                     // A successful official login must also make the chat surface
@@ -322,18 +402,45 @@ class SettingsViewModel @Inject constructor(
                     }
                     // Fetch the server-owned quota snapshot now. Failures here do
                     // not invalidate a successful login; ChatViewModel can retry.
-                    runCatching { codexAppServer.accountRateLimitsRead() }
+                    val rates = runCatching { codexAppServer.accountRateLimitsRead() }.getOrNull()
+                    CodexAccountRefreshResult(
+                        account = account,
+                        isChatGptAccount = true,
+                        authCaptured = captureCodexRuntimeWithRetry(confirmingLogin) {
+                            codexAccountManager.captureRuntime(account.account, rates)
+                        },
+                    )
+                } else {
+                    CodexAccountRefreshResult(
+                        account = account,
+                        isChatGptAccount = false,
+                        authCaptured = captureCodexRuntimeWithRetry(confirmingLogin) {
+                            codexAccountManager.captureRuntime(account.account, null)
+                        },
+                    )
                 }
+            }.onSuccess { refreshed ->
+                val account = refreshed.account
+                val durableLogin = codexAccountManager.state.value.accounts
+                    .firstOrNull { it.active }
+                    ?.loggedIn == true
                 _codexChatGptState.value = _codexChatGptState.value.copy(
                     isLoading = false,
                     isLoggedIn = account.account != null,
                     accountEmail = account.account?.email,
                     planType = account.account?.planType,
                     requiresOpenaiAuth = account.requiresOpenaiAuth,
-                    message = if (isChatGptAccount) {
+                    verificationUrl = if (account.account != null) null else _codexChatGptState.value.verificationUrl,
+                    userCode = if (account.account != null) null else _codexChatGptState.value.userCode,
+                    loginId = if (account.account != null) null else _codexChatGptState.value.loginId,
+                    message = if (refreshed.isChatGptAccount && refreshed.authCaptured) {
                         "已连接 ChatGPT / Codex，聊天已切换到官方后端。"
+                    } else if (refreshed.isChatGptAccount) {
+                        "ChatGPT 已连接，但官方登录凭据尚未写入安全存储；请暂时不要切号或重启，并稍后刷新状态。"
                     } else if (account.account != null) {
                         "已连接 Codex 账户。"
+                    } else if (durableLogin) {
+                        "已保存 Codex 账号，但官方服务暂时未确认登录状态；请稍后重试。"
                     } else {
                         "尚未登录 ChatGPT。"
                     },
@@ -349,10 +456,62 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    private fun keepCheckingCodexLogin(loginId: String?) {
+        val attemptId = loginId?.takeIf { it.isNotBlank() } ?: return
+        if (codexLoginConfirmationId == attemptId && codexLoginConfirmationJob?.isActive == true) return
+        stopCheckingCodexLogin()
+        codexLoginConfirmationId = attemptId
+        codexLoginConfirmationJob = viewModelScope.launch(Dispatchers.IO) {
+            repeat(300) { index ->
+                delay(if (index == 0) 1_000L else 2_000L)
+                if (_codexChatGptState.value.loginId != attemptId) return@launch
+                val account = runCatching {
+                    codexAppServer.accountRead(refreshToken = false)
+                }.getOrNull()
+                if (account?.account != null) {
+                    refreshCodexChatGptStatus(forceRefreshToken = true)
+                    return@launch
+                }
+            }
+        }
+    }
+
+    private fun stopCheckingCodexLogin() {
+        codexLoginConfirmationJob?.cancel()
+        codexLoginConfirmationJob = null
+        codexLoginConfirmationId = null
+    }
+
+    private suspend fun captureCodexRuntimeWithRetry(
+        confirmingLogin: Boolean,
+        capture: () -> Boolean,
+    ): Boolean {
+        val delays = if (confirmingLogin) {
+            listOf(0L, 250L, 750L, 1_500L, 3_000L, 5_000L)
+        } else {
+            listOf(0L)
+        }
+        delays.forEach { waitMillis ->
+            if (waitMillis > 0L) delay(waitMillis)
+            if (capture()) return true
+        }
+        return false
+    }
+
+    private data class CodexAccountRefreshResult(
+        val account: CodexAccountReadResult,
+        val isChatGptAccount: Boolean,
+        val authCaptured: Boolean,
+    )
+
     fun startCodexChatGptLogin() {
         viewModelScope.launch(Dispatchers.IO) {
+            val previousLoginId = _codexChatGptState.value.loginId
             _codexChatGptState.value = _codexChatGptState.value.copy(
                 isLoading = true,
+                verificationUrl = null,
+                userCode = null,
+                loginId = null,
                 error = null,
                 message = "正在获取 ChatGPT 设备码…"
             )
@@ -360,9 +519,10 @@ class SettingsViewModel @Inject constructor(
                 // A failed or abandoned device-code exchange can leave the server
                 // polling the old login id. A fresh process gives every retry a
                 // clean request and, crucially, a fresh browser-open attempt.
-                if (_codexChatGptState.value.loginId.isNullOrBlank()) {
+                if (previousLoginId.isNullOrBlank()) {
                     codexAppServer.start()
                 } else {
+                    runCatching { codexAppServer.cancelLogin(previousLoginId) }
                     codexAppServer.restart()
                 }
                 codexAppServer.startDeviceCodeLogin()
@@ -378,10 +538,127 @@ class SettingsViewModel @Inject constructor(
             }.onFailure { error ->
                 _codexChatGptState.value = _codexChatGptState.value.copy(
                     isLoading = false,
+                    verificationUrl = null,
+                    userCode = null,
+                    loginId = null,
                     error = "无法发起 ChatGPT 登录：${sanitizeCodexMessage(error.message)}"
                 )
             }
         }
+    }
+
+    fun addCodexChatGptAccount() {
+        if (chatSessionManager.state.value.isProcessing) {
+            _codexChatGptState.value = _codexChatGptState.value.copy(
+                error = "当前任务仍在执行，完成后才能切换或添加账号。",
+            )
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _codexChatGptState.value = _codexChatGptState.value.copy(isLoading = true, error = null)
+            runCatching {
+                codexAppServer.stop()
+                val account = codexAccountManager.createAccount()
+                codexAccountManager.activateAccount(account.id)
+                codexAppServer.start()
+                codexAppServer.startDeviceCodeLogin()
+            }.onSuccess { deviceCode ->
+                _codexChatGptState.value = _codexChatGptState.value.copy(
+                    isLoading = false,
+                    verificationUrl = deviceCode.verificationUrl,
+                    userCode = deviceCode.userCode,
+                    loginId = deviceCode.loginId,
+                    message = "已创建独立账号槽位，请在浏览器完成授权。",
+                    error = null,
+                )
+            }.onFailure { error ->
+                _codexChatGptState.value = _codexChatGptState.value.copy(
+                    isLoading = false,
+                    error = "添加账号失败：${sanitizeCodexMessage(error.message)}",
+                )
+            }
+        }
+    }
+
+    fun activateCodexChatGptAccount(accountId: String) {
+        if (chatSessionManager.state.value.isProcessing) {
+            _codexChatGptState.value = _codexChatGptState.value.copy(
+                error = "当前任务仍在执行；为保护上下文，任务完成前不会切号。",
+            )
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _codexChatGptState.value = _codexChatGptState.value.copy(isLoading = true, error = null)
+            runCatching {
+                codexAppServer.stop()
+                codexAccountManager.activateAccount(accountId)
+                codexAppServer.start()
+                val account = codexAppServer.accountRead()
+                val rates = if (account.account != null) {
+                    runCatching { codexAppServer.accountRateLimitsRead() }.getOrNull()
+                } else null
+                codexAccountManager.captureRuntime(account.account, rates)
+                account
+            }.onSuccess { account ->
+                _codexChatGptState.value = _codexChatGptState.value.copy(
+                    isLoading = false,
+                    isLoggedIn = account.account != null,
+                    accountEmail = account.account?.email,
+                    planType = account.account?.planType,
+                    message = "已切换 Codex 账号。",
+                    error = null,
+                )
+            }.onFailure { error ->
+                _codexChatGptState.value = _codexChatGptState.value.copy(
+                    isLoading = false,
+                    error = "切换账号失败：${sanitizeCodexMessage(error.message)}",
+                )
+            }
+        }
+    }
+
+    fun removeCodexChatGptAccount(accountId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { codexAccountManager.removeAccount(accountId) }
+                .onFailure { error ->
+                    _codexChatGptState.value = _codexChatGptState.value.copy(
+                        error = "删除账号失败：${sanitizeCodexMessage(error.message)}",
+                    )
+                }
+        }
+    }
+
+    fun setCodexChatGptAccountEnabled(accountId: String, enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { codexAccountManager.setAccountEnabled(accountId, enabled) }
+                .onFailure { error ->
+                    _codexChatGptState.value = _codexChatGptState.value.copy(
+                        error = "账号状态更新失败：${sanitizeCodexMessage(error.message)}",
+                    )
+                }
+        }
+    }
+
+    fun updateCodexAccountPoolSettings(autoSwitch: Boolean, reservePercent: Int, cooldownMinutes: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                codexAccountManager.updateSettings(
+                    CodexAccountPoolSettings(autoSwitch, reservePercent, cooldownMinutes),
+                )
+            }.onSuccess {
+                _codexChatGptState.value = _codexChatGptState.value.copy(message = "无感切号策略已保存。", error = null)
+            }.onFailure { error ->
+                _codexChatGptState.value = _codexChatGptState.value.copy(
+                    error = sanitizeCodexMessage(error.message),
+                )
+            }
+        }
+    }
+
+    fun setCurrentSessionCodexAccountPinned(pinned: Boolean) {
+        val sessionId = chatSessionManager.state.value.sessionId
+        codexAccountManager.setSessionPinned(sessionId, pinned)
+        _codexChatGptState.value = _codexChatGptState.value.copy(sessionPinned = pinned)
     }
 
     fun cancelCodexChatGptLogin() {
@@ -389,8 +666,13 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { codexAppServer.cancelLogin(loginId) }
                 .onSuccess {
-                    _codexChatGptState.value = CodexChatGptUiState(
+                    _codexChatGptState.value = _codexChatGptState.value.copy(
+                        isLoading = false,
+                        verificationUrl = null,
+                        userCode = null,
+                        loginId = null,
                         message = "已取消本次 ChatGPT 登录。",
+                        error = null,
                     )
                 }
                 .onFailure { error ->
@@ -406,7 +688,19 @@ class SettingsViewModel @Inject constructor(
             _codexChatGptState.value = _codexChatGptState.value.copy(isLoading = true, error = null)
             runCatching { codexAppServer.logout() }
                 .onSuccess {
-                    _codexChatGptState.value = CodexChatGptUiState(message = "已退出 ChatGPT / Codex。")
+                    codexAccountManager.clearActiveLogin()
+                    _codexChatGptState.value = _codexChatGptState.value.copy(
+                        isLoading = false,
+                        isLoggedIn = false,
+                        accountEmail = null,
+                        planType = null,
+                        verificationUrl = null,
+                        userCode = null,
+                        loginId = null,
+                        accountPool = codexAccountManager.state.value,
+                        message = "已退出 ChatGPT / Codex。",
+                        error = null,
+                    )
                 }
                 .onFailure { error ->
                     _codexChatGptState.value = _codexChatGptState.value.copy(
@@ -417,12 +711,7 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    private fun sanitizeCodexMessage(value: String?): String = SensitiveDataSanitizer
-        .sanitizeText(value.orEmpty())
-        .replace(Regex("\\s+"), " ")
-        .trim()
-        .take(500)
-        .ifBlank { "未知错误" }
+    private fun sanitizeCodexMessage(value: String?): String = CodexUserMessageSanitizer.sanitize(value)
 
     fun updateConfig(newConfig: ProviderConfig) {
         viewModelScope.launch {
@@ -790,13 +1079,18 @@ class SettingsViewModel @Inject constructor(
                             providerId = snapshot.providerId,
                             balanceUsd = snapshot.balance,
                             balanceCurrency = snapshot.currency,
-                            syncedAt = snapshot.syncedAt
+                            syncedAt = snapshot.syncedAt,
+                            source = snapshot.source,
                         )
                     )
                     _balanceSyncStates.value = _balanceSyncStates.value + (
                         providerId to BalanceSyncUiState(
                             isSyncing = false,
-                            message = "余额已同步"
+                            message = when (snapshot.source) {
+                                com.murong.agent.core.config.BalanceDataSource.OFFICIAL_API -> "官方余额已同步"
+                                com.murong.agent.core.config.BalanceDataSource.CUSTOM_ENDPOINT -> "接口余额已同步"
+                                else -> "余额已同步"
+                            }
                         )
                     )
                 }
@@ -820,10 +1114,20 @@ class SettingsViewModel @Inject constructor(
 
     fun refreshGitHubAuthStatus() {
         viewModelScope.launch(Dispatchers.IO) {
-            val currentConfig = configRepository.getConfig()
+            var currentConfig = configRepository.getConfig()
             if (!currentConfig.isGitHubSignedIn()) {
-                _gitHubAuthState.value = GitHubAuthUiState(
-                    error = "当前还没有登录 GitHub。"
+                githubAccountManager.activeCredentials()?.let { credentials ->
+                    currentConfig = saveActiveGitHubCredentials(currentConfig, credentials)
+                }
+            }
+            if (!currentConfig.isGitHubSignedIn()) {
+                _gitHubAuthState.value = _gitHubAuthState.value.copy(
+                    isLoading = false,
+                    viewerLogin = null,
+                    viewerName = null,
+                    accountPool = githubAccountManager.state.value,
+                    message = null,
+                    error = "当前账号还没有登录 GitHub。",
                 )
                 return@launch
             }
@@ -835,21 +1139,33 @@ class SettingsViewModel @Inject constructor(
                 configRepository.saveConfig(
                     currentConfig.copy(
                         githubViewerLogin = resolvedLogin,
-                        githubViewerName = resolvedName
+                        githubViewerName = resolvedName,
+                        githubViewerAvatarUrl = viewerResult.avatarUrl.orEmpty(),
                     )
                 )
-                _gitHubAuthState.value = GitHubAuthUiState(
+                githubAccountManager.updateActiveIdentity(
+                    login = resolvedLogin,
+                    name = resolvedName,
+                    avatarUrl = viewerResult.avatarUrl.orEmpty(),
+                )
+                _gitHubAuthState.value = _gitHubAuthState.value.copy(
                     isLoading = false,
                     viewerLogin = viewerResult.viewerLogin,
                     viewerName = viewerResult.viewerName,
+                    authorizationUrl = null,
+                    accountPool = githubAccountManager.state.value,
                     message = "GitHub 已连接",
                     error = null
                 )
             } else {
-                _gitHubAuthState.value = GitHubAuthUiState(
+                githubAccountManager.markActiveCheckFailure(viewerResult.error ?: "GitHub 登录状态校验失败")
+                _gitHubAuthState.value = _gitHubAuthState.value.copy(
                     isLoading = false,
                     viewerLogin = currentConfig.githubViewerLogin.ifBlank { null },
                     viewerName = currentConfig.githubViewerName.ifBlank { null },
+                    authorizationUrl = null,
+                    accountPool = githubAccountManager.state.value,
+                    message = null,
                     error = viewerResult.error ?: "GitHub 登录状态校验失败"
                 )
             }
@@ -859,39 +1175,120 @@ class SettingsViewModel @Inject constructor(
     fun clearGitHubToken() {
         viewModelScope.launch(Dispatchers.IO) {
             val current = configRepository.getConfig()
-            if (current.githubBackendSessionToken.isNotBlank()) {
+            val activeCredentials = githubAccountManager.activeCredentials()
+            val backendSessionToken = activeCredentials?.backendSessionToken
+                ?.takeIf { it.isNotBlank() }
+                ?: current.githubBackendSessionToken
+            if (backendSessionToken.isNotBlank()) {
                 notifyBackendLogout(
                     apiUrl = current.getMurongBackendAuthApiUrl(),
-                    sessionToken = current.githubBackendSessionToken
+                    sessionToken = backendSessionToken,
                 )
             }
+            githubAccountManager.logoutAccount()
             configRepository.saveConfig(
-                current.copy(
-                    githubBackendSessionToken = "",
-                    githubToken = "",
-                    githubViewerLogin = "",
-                    githubViewerName = "",
-                    githubViewerAvatarUrl = ""
-                )
+                current.withoutActiveGitHubCredentials()
             )
-            _gitHubAuthState.value = GitHubAuthUiState(message = "已退出 GitHub 登录")
+            _gitHubAuthState.value = _gitHubAuthState.value.copy(
+                isLoading = false,
+                viewerLogin = null,
+                viewerName = null,
+                authorizationUrl = null,
+                callbackUri = null,
+                pendingState = null,
+                accountPool = githubAccountManager.state.value,
+                message = "已退出当前 GitHub 账号，其他账号未受影响。",
+                error = null,
+            )
         }
     }
 
     fun startGitHubOAuthLogin() {
         viewModelScope.launch(Dispatchers.IO) {
             val currentConfig = configRepository.getConfig()
-            _gitHubAuthState.value = GitHubAuthUiState(
+            val clientState = UUID.randomUUID().toString()
+            _gitHubAuthState.value = _gitHubAuthState.value.copy(
                 isLoading = true,
                 authorizationUrl = Uri.parse(currentConfig.getMurongBackendAuthApiUrl())
                     .buildUpon()
                     .appendQueryParameter("action", "start")
                     .appendQueryParameter("client_redirect_uri", currentConfig.getMurongGitHubRedirectUri())
+                    .appendQueryParameter("client_state", clientState)
                     .build()
                     .toString(),
                 callbackUri = currentConfig.getMurongGitHubRedirectUri(),
-                message = "正在打开 GitHub 授权页，授权完成后会自动回到应用。"
+                pendingState = clientState,
+                accountPool = githubAccountManager.state.value,
+                message = "正在打开 GitHub 授权页，授权完成后会自动添加账号。",
+                error = null,
             )
+        }
+    }
+
+    fun activateGitHubAccount(accountId: String) {
+        if (chatSessionManager.state.value.isProcessing) {
+            _gitHubAuthState.value = _gitHubAuthState.value.copy(
+                error = "当前任务仍在执行，任务完成后才能切换 GitHub 账号。",
+            )
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _gitHubAuthState.value = _gitHubAuthState.value.copy(
+                isLoading = true,
+                message = "正在切换 GitHub 账号...",
+                error = null,
+            )
+            runCatching {
+                val credentials = githubAccountManager.activateAccount(accountId)
+                saveActiveGitHubCredentials(configRepository.getConfig(), credentials)
+                credentials
+            }.onSuccess { credentials ->
+                _gitHubAuthState.value = _gitHubAuthState.value.copy(
+                    isLoading = false,
+                    viewerLogin = credentials.login.ifBlank { null },
+                    viewerName = credentials.name.ifBlank { null },
+                    accountPool = githubAccountManager.state.value,
+                    message = "已切换到 ${credentials.login.takeIf { it.isNotBlank() }?.let { "@$it" } ?: "所选 GitHub 账号"}。",
+                    error = null,
+                )
+            }.onFailure { error ->
+                _gitHubAuthState.value = _gitHubAuthState.value.copy(
+                    isLoading = false,
+                    accountPool = githubAccountManager.state.value,
+                    message = null,
+                    error = error.message ?: "切换 GitHub 账号失败",
+                )
+            }
+        }
+    }
+
+    fun removeGitHubAccount(accountId: String) {
+        if (accountId == githubAccountManager.state.value.activeAccountId) {
+            _gitHubAuthState.value = _gitHubAuthState.value.copy(error = "请先切换账号，再删除当前账号。")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                githubAccountManager.credentialsFor(accountId)?.backendSessionToken
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { sessionToken ->
+                        notifyBackendLogout(
+                            apiUrl = configRepository.getConfig().getMurongBackendAuthApiUrl(),
+                            sessionToken = sessionToken,
+                        )
+                    }
+                githubAccountManager.removeAccount(accountId)
+            }.onSuccess {
+                _gitHubAuthState.value = _gitHubAuthState.value.copy(
+                    accountPool = githubAccountManager.state.value,
+                    message = "已删除所选 GitHub 账号，其他账号未受影响。",
+                    error = null,
+                )
+            }.onFailure { error ->
+                _gitHubAuthState.value = _gitHubAuthState.value.copy(
+                    error = error.message ?: "删除 GitHub 账号失败",
+                )
+            }
         }
     }
 
@@ -903,15 +1300,28 @@ class SettingsViewModel @Inject constructor(
             val currentConfig = configRepository.getConfig()
             val callbackUri = runCatching { Uri.parse(trimmedUri) }.getOrNull()
             if (callbackUri == null) {
-                _gitHubAuthState.value = GitHubAuthUiState(
-                    error = "GitHub 回调地址无效。"
+                _gitHubAuthState.value = _gitHubAuthState.value.copy(
+                    isLoading = false,
+                    error = "GitHub 回调地址无效。",
+                )
+                return@launch
+            }
+            val returnedState = callbackUri.getQueryParameter("client_state")
+                ?: callbackUri.getQueryParameter("state")
+            val pendingState = _gitHubAuthState.value.pendingState
+            if (!returnedState.isNullOrBlank() && !pendingState.isNullOrBlank() && returnedState != pendingState) {
+                _gitHubAuthState.value = _gitHubAuthState.value.copy(
+                    isLoading = false,
+                    callbackUri = trimmedUri,
+                    error = "GitHub 登录校验失败，请重新发起授权。",
                 )
                 return@launch
             }
             val errorCode = callbackUri.getQueryParameter("error")
             val errorDescription = callbackUri.getQueryParameter("error_description")
             if (!errorCode.isNullOrBlank()) {
-                _gitHubAuthState.value = GitHubAuthUiState(
+                _gitHubAuthState.value = _gitHubAuthState.value.copy(
+                    isLoading = false,
                     callbackUri = trimmedUri,
                     error = errorDescription ?: errorCode
                 )
@@ -919,15 +1329,17 @@ class SettingsViewModel @Inject constructor(
             }
             val exchangeCode = callbackUri.getQueryParameter("exchange_code").orEmpty()
             if (exchangeCode.isBlank()) {
-                _gitHubAuthState.value = GitHubAuthUiState(
+                _gitHubAuthState.value = _gitHubAuthState.value.copy(
+                    isLoading = false,
                     callbackUri = trimmedUri,
                     error = "GitHub 回调里没有拿到登录票据。"
                 )
                 return@launch
             }
-            _gitHubAuthState.value = GitHubAuthUiState(
+            _gitHubAuthState.value = _gitHubAuthState.value.copy(
                 isLoading = true,
                 callbackUri = trimmedUri,
+                authorizationUrl = null,
                 message = "正在完成 GitHub 登录..."
             )
             val tokenResult = exchangeMurongLoginCode(
@@ -935,26 +1347,45 @@ class SettingsViewModel @Inject constructor(
                 exchangeCode = exchangeCode
             )
             if (tokenResult.success && !tokenResult.accessToken.isNullOrBlank()) {
-                configRepository.saveConfig(
-                    currentConfig.copy(
-                        githubBackendSessionToken = tokenResult.sessionToken.orEmpty(),
-                        githubToken = tokenResult.accessToken,
-                        githubViewerLogin = tokenResult.viewerLogin.orEmpty(),
-                        githubViewerName = tokenResult.viewerName.orEmpty()
-                    )
+                val viewerResult = if (tokenResult.viewerLogin.isNullOrBlank()) {
+                    fetchGitHubViewer(currentConfig.getGitHubApiBaseUrl(), tokenResult.accessToken)
+                } else null
+                val resolvedLogin = tokenResult.viewerLogin?.takeIf { it.isNotBlank() }
+                    ?: viewerResult?.viewerLogin.orEmpty()
+                val resolvedName = tokenResult.viewerName?.takeIf { it.isNotBlank() }
+                    ?: viewerResult?.viewerName.orEmpty()
+                val resolvedAvatar = tokenResult.avatarUrl?.takeIf { it.isNotBlank() }
+                    ?: viewerResult?.avatarUrl.orEmpty()
+                val account = githubAccountManager.saveAuthenticatedAccount(
+                    token = tokenResult.accessToken,
+                    backendSessionToken = tokenResult.sessionToken.orEmpty(),
+                    login = resolvedLogin,
+                    name = resolvedName,
+                    avatarUrl = resolvedAvatar,
+                    apiBaseUrl = currentConfig.getGitHubApiBaseUrl(),
                 )
-                _gitHubAuthState.value = GitHubAuthUiState(
+                saveActiveGitHubCredentials(
+                    currentConfig,
+                    githubAccountManager.activeCredentials()
+                        ?: error("GitHub 账号保存后无法读取"),
+                )
+                _gitHubAuthState.value = _gitHubAuthState.value.copy(
                     isLoading = false,
-                    viewerLogin = tokenResult.viewerLogin,
-                    viewerName = tokenResult.viewerName,
+                    viewerLogin = resolvedLogin.ifBlank { null },
+                    viewerName = resolvedName.ifBlank { null },
+                    authorizationUrl = null,
                     callbackUri = trimmedUri,
-                    message = "GitHub 登录成功",
+                    pendingState = null,
+                    accountPool = githubAccountManager.state.value,
+                    message = "GitHub 账号 ${account.login.takeIf { it.isNotBlank() }?.let { "@$it" } ?: account.label} 已添加。",
                     error = null
                 )
             } else {
-                _gitHubAuthState.value = GitHubAuthUiState(
+                _gitHubAuthState.value = _gitHubAuthState.value.copy(
                     isLoading = false,
+                    authorizationUrl = null,
                     callbackUri = trimmedUri,
+                    pendingState = null,
                     error = tokenResult.error ?: "GitHub 登录失败"
                 )
             }
@@ -1196,6 +1627,30 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    private suspend fun saveActiveGitHubCredentials(
+        current: ProviderConfig,
+        credentials: GitHubAccountCredentials,
+    ): ProviderConfig {
+        val updated = current.copy(
+            githubToken = credentials.token,
+            githubBackendSessionToken = credentials.backendSessionToken,
+            githubViewerLogin = credentials.login,
+            githubViewerName = credentials.name,
+            githubViewerAvatarUrl = credentials.avatarUrl,
+            githubApiBaseUrl = credentials.apiBaseUrl,
+        )
+        configRepository.saveConfig(updated)
+        return updated
+    }
+
+    private fun ProviderConfig.withoutActiveGitHubCredentials(): ProviderConfig = copy(
+        githubBackendSessionToken = "",
+        githubToken = "",
+        githubViewerLogin = "",
+        githubViewerName = "",
+        githubViewerAvatarUrl = "",
+    )
+
     private fun fetchGitHubViewer(apiBaseUrl: String, token: String): GitHubViewerResult {
         val request = Request.Builder()
             .url(apiBaseUrl.trimEnd('/') + "/user")
@@ -1213,6 +1668,7 @@ class SettingsViewModel @Inject constructor(
                         success = false,
                         viewerLogin = null,
                         viewerName = null,
+                        avatarUrl = null,
                         error = parseApiJsonMessage(body) ?: "GitHub 账号校验失败，HTTP ${response.code}"
                     )
                 }
@@ -1221,11 +1677,12 @@ class SettingsViewModel @Inject constructor(
                     success = true,
                     viewerLogin = obj["login"]?.jsonPrimitive?.contentOrNull,
                     viewerName = obj["name"]?.jsonPrimitive?.contentOrNull,
+                    avatarUrl = obj["avatar_url"]?.jsonPrimitive?.contentOrNull,
                     error = null
                 )
             }
         }.getOrElse { error ->
-            GitHubViewerResult(false, null, null, error.message ?: "GitHub 账号校验失败")
+            GitHubViewerResult(false, null, null, null, error.message ?: "GitHub 账号校验失败")
         }
     }
 
@@ -1278,6 +1735,7 @@ class SettingsViewModel @Inject constructor(
                     sessionToken = obj["session_token"]?.jsonPrimitive?.contentOrNull,
                     viewerLogin = obj["github_login"]?.jsonPrimitive?.contentOrNull,
                     viewerName = obj["github_name"]?.jsonPrimitive?.contentOrNull,
+                    avatarUrl = obj["github_avatar_url"]?.jsonPrimitive?.contentOrNull,
                     error = null
                 )
             }
@@ -1400,6 +1858,7 @@ private data class GitHubViewerResult(
     val success: Boolean,
     val viewerLogin: String?,
     val viewerName: String?,
+    val avatarUrl: String?,
     val error: String?
 )
 
@@ -1409,6 +1868,7 @@ private data class GitHubOAuthTokenResult(
     val sessionToken: String? = null,
     val viewerLogin: String? = null,
     val viewerName: String? = null,
+    val avatarUrl: String? = null,
     val error: String?
 )
 

@@ -24,4 +24,20 @@ class SettingsDirectorySearchTest {
     fun `unrelated setting does not match local runtime entry`() {
         assertFalse(matchesSettingsQuery("声纹", *localRuntimeFields))
     }
+
+    @Test
+    fun `codex account settings are discoverable by their actual control names`() {
+        val fields = arrayOf(
+            SettingsFocus.MODELS.title,
+            SettingsFocus.MODELS.summary,
+            SettingsFocus.MODELS.searchTerms,
+        )
+
+        listOf("ChatGPT", "codex", "登录", "账号", "账户", "额度", "切号", "provider").forEach { query ->
+            assertTrue(
+                matchesSettingsQuery(query, *fields),
+                "Expected model and connection settings to match $query",
+            )
+        }
+    }
 }

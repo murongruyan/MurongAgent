@@ -278,6 +278,9 @@ internal object CodexProxyTargetPolicy {
         "auth.openai.com",
         "chatgpt.com",
         "api.openai.com",
+        // Official Codex startup sync reads its curated plugin catalog here.
+        // Keep this exact-host only; arbitrary GitHub destinations stay blocked.
+        "api.github.com",
     )
 
     fun parseAuthority(authority: String): CodexProxyTarget {

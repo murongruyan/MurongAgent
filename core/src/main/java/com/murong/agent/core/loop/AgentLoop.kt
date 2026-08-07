@@ -95,6 +95,7 @@ class AgentLoop(
         requestApproval: suspend (ToolApprovalRequest) -> Boolean = { true },
         toolExecutionGuard: (suspend (toolName: String, args: String) -> String?)? = null,
         finalReadinessGuard: (() -> FinalReadinessReceipt?)? = null,
+        goalContinuationGuard: ((assistantContent: String?) -> String?)? = null,
         enforceFinalReadinessWithoutCurrentToolRuns: Boolean = false,
         initialResponsesContinuation: ResponsesContinuation? = null,
         onResponsesContinuationChanged: (ResponsesContinuation?) -> Unit = {}
@@ -286,6 +287,12 @@ class AgentLoop(
                     }
                 }
 
+                goalContinuationGuard?.invoke(response.content)?.trim()?.takeIf { it.isNotBlank() }?.let { reminder ->
+                    currentMessages.add(ChatMessage(role = "system", content = reminder))
+                    state = AgentState.THINKING
+                    continue
+                }
+
                 // 如果 response 有内容但流式事件没发出（例如非流式回包），现在补发
                 val respContent = response.content
                 if (!respContent.isNullOrBlank() && !streamedContentReceived) {
@@ -447,6 +454,12 @@ class AgentLoop(
                         name = postToolContext.toolName
                     )
                 )
+
+                if (postToolContext.isSuccess && tool?.terminatesTurnOnSuccess == true) {
+                    onEvent(AgentEvent.Done)
+                    state = AgentState.IDLE
+                    return
+                }
 
                 if (shouldStopAfterHighRiskRemoteWriteFailure(postToolContext.toolName, postToolContext.result)) {
                     if (!hasRetriedAfterHighRiskRemoteWriteFailure) {

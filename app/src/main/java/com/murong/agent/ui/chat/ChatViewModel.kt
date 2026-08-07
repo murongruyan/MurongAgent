@@ -226,6 +226,39 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    fun generateImage(prompt: String) {
+        launchSendingOperation {
+            withContext(Dispatchers.IO) {
+                sessionManager.generateImage(prompt)
+            }
+            refreshSessions()
+        }
+    }
+
+    fun retryImageGeneration(messageId: Long) {
+        launchSendingOperation {
+            withContext(Dispatchers.IO) {
+                sessionManager.retryImageGeneration(messageId)
+            }
+            refreshSessions()
+        }
+    }
+
+    fun upscaleGeneratedImage4K(messageId: Long) {
+        launchSendingOperation {
+            withContext(Dispatchers.IO) {
+                sessionManager.upscaleGeneratedImage4K(messageId)
+            }
+            refreshSessions()
+        }
+    }
+
+    fun saveGeneratedImage(messageId: Long) {
+        sessionManager.saveGeneratedImageToGallery(messageId)
+            .onSuccess { uri -> _toastMessages.tryEmit("图片已保存到相册") }
+            .onFailure { error -> _toastMessages.tryEmit(error.message ?: "保存图片失败") }
+    }
+
     fun autoRouteMessage(text: String, mentionedFiles: List<FileMentionUi> = emptyList()) {
         launchSendingOperation {
             val toastMessage = withContext(Dispatchers.IO) {

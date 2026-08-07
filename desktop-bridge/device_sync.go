@@ -56,6 +56,33 @@ type SyncedGitHubCredential struct {
 	ViewerLogin string  `json:"viewerLogin,omitempty"`
 }
 
+type SyncedGitHubAccount struct {
+	ID         string  `json:"id"`
+	Label      string  `json:"label"`
+	Login      string  `json:"login,omitempty"`
+	Name       string  `json:"name,omitempty"`
+	AvatarURL  string  `json:"avatarUrl,omitempty"`
+	APIBaseURL string  `json:"apiBaseUrl"`
+	Token      *string `json:"token,omitempty"`
+	LastUsedAt int64   `json:"lastUsedAt,omitempty"`
+}
+
+type SyncedCodexAccountSettings struct {
+	AutoSwitch      bool    `json:"autoSwitch"`
+	ReservePercent  float64 `json:"reservePercent"`
+	CooldownMinutes int     `json:"cooldownMinutes"`
+}
+
+type SyncedCodexAccount struct {
+	ID         string  `json:"id"`
+	Label      string  `json:"label"`
+	Email      string  `json:"email,omitempty"`
+	PlanType   string  `json:"planType,omitempty"`
+	Enabled    bool    `json:"enabled"`
+	AuthJSON   *string `json:"authJson,omitempty"`
+	LastUsedAt int64   `json:"lastUsedAt,omitempty"`
+}
+
 type SyncedProviderCredential struct {
 	ProfileID           string  `json:"profileId"`
 	ProviderID          string  `json:"providerId"`
@@ -81,6 +108,37 @@ type SyncedAgentSettings struct {
 	SubagentProfileEnabled   *bool    `json:"subagentDefaultProfileEnabled,omitempty"`
 	SubagentModel            *string  `json:"subagentDefaultModel,omitempty"`
 	SubagentReasoningEffort  *string  `json:"subagentDefaultReasoningEffort,omitempty"`
+}
+
+// SyncedMediaSettings deliberately carries routing only. Secret overrides are
+// transferred separately, and only through an explicitly credential-inclusive
+// device-sync operation.
+type SyncedMediaSettings struct {
+	VisionRoutingEnabled         bool   `json:"visionRoutingEnabled"`
+	VisionProviderID             string `json:"visionProviderId,omitempty"`
+	VisionProfileID              string `json:"visionProfileId,omitempty"`
+	VisionModel                  string `json:"visionModel,omitempty"`
+	VisionCustomBaseURL          string `json:"visionCustomBaseUrl,omitempty"`
+	ImageGenerationProviderID    string `json:"imageGenerationProviderId,omitempty"`
+	ImageGenerationProfileID     string `json:"imageGenerationProfileId,omitempty"`
+	ImageGenerationModel         string `json:"imageGenerationModel,omitempty"`
+	ImageGenerationCustomBaseURL string `json:"imageGenerationCustomBaseUrl,omitempty"`
+	ImageGenerationSize          string `json:"imageGenerationSize,omitempty"`
+	ImageGenerationQuality       string `json:"imageGenerationQuality,omitempty"`
+	ImageGenerationFormat        string `json:"imageGenerationFormat,omitempty"`
+	ImageGenerationCompression   int    `json:"imageGenerationCompression,omitempty"`
+	ImageGenerationPartialImages int    `json:"imageGenerationPartialImages,omitempty"`
+	ImageUpscaleBaseURL          string `json:"imageUpscaleBaseUrl,omitempty"`
+	ImageUpscaleModel            string `json:"imageUpscaleModel,omitempty"`
+	ImageUpscaleScale            int    `json:"imageUpscaleScale,omitempty"`
+}
+
+// SyncedMediaCredentials are always inside the existing authenticated and
+// encrypted device-sync envelope. They are absent from portable backups.
+type SyncedMediaCredentials struct {
+	VisionCustomAPIKey          *string `json:"visionCustomApiKey,omitempty"`
+	ImageGenerationCustomAPIKey *string `json:"imageGenerationCustomApiKey,omitempty"`
+	ImageUpscaleAPIKey          *string `json:"imageUpscaleApiKey,omitempty"`
 }
 
 type SyncedRule struct {
@@ -150,40 +208,49 @@ type SyncedSavedWorkflow struct {
 }
 
 type CredentialSyncBundle struct {
-	SchemaVersion          int                        `json:"schemaVersion"`
-	SourcePlatform         string                     `json:"sourcePlatform"`
-	GeneratedAt            int64                      `json:"generatedAt"`
-	ActiveProviderID       *string                    `json:"activeProviderId,omitempty"`
-	ActiveProfileID        *string                    `json:"activeProfileId,omitempty"`
-	Providers              []SyncedProviderCredential `json:"providers"`
-	CodexAuthJSON          *string                    `json:"codexAuthJson,omitempty"`
-	GitHub                 *SyncedGitHubCredential    `json:"github,omitempty"`
-	AgentSettings          *SyncedAgentSettings       `json:"agentSettings,omitempty"`
-	Knowledge              *SyncedKnowledge           `json:"knowledge,omitempty"`
-	MCPServers             []SyncedMCPServer          `json:"mcpServers,omitempty"`
-	MCPCredentialsIncluded bool                       `json:"mcpCredentialsIncluded"`
-	SavedWorkflows         []SyncedSavedWorkflow      `json:"savedWorkflows,omitempty"`
-	Sessions               []SyncedSession            `json:"sessions,omitempty"`
-	SessionNextCursor      *int                       `json:"sessionNextCursor,omitempty"`
+	SchemaVersion          int                         `json:"schemaVersion"`
+	SourcePlatform         string                      `json:"sourcePlatform"`
+	GeneratedAt            int64                       `json:"generatedAt"`
+	ActiveProviderID       *string                     `json:"activeProviderId,omitempty"`
+	ActiveProfileID        *string                     `json:"activeProfileId,omitempty"`
+	Providers              []SyncedProviderCredential  `json:"providers"`
+	CodexAuthJSON          *string                     `json:"codexAuthJson,omitempty"`
+	CodexAccounts          []SyncedCodexAccount        `json:"codexAccounts,omitempty"`
+	ActiveCodexAccountID   string                      `json:"activeCodexAccountId,omitempty"`
+	CodexAccountSettings   *SyncedCodexAccountSettings `json:"codexAccountSettings,omitempty"`
+	GitHub                 *SyncedGitHubCredential     `json:"github,omitempty"`
+	GitHubAccounts         []SyncedGitHubAccount       `json:"githubAccounts,omitempty"`
+	ActiveGitHubAccountID  string                      `json:"activeGitHubAccountId,omitempty"`
+	AgentSettings          *SyncedAgentSettings        `json:"agentSettings,omitempty"`
+	MediaSettings          *SyncedMediaSettings        `json:"mediaSettings,omitempty"`
+	MediaCredentials       *SyncedMediaCredentials     `json:"mediaCredentials,omitempty"`
+	Knowledge              *SyncedKnowledge            `json:"knowledge,omitempty"`
+	MCPServers             []SyncedMCPServer           `json:"mcpServers,omitempty"`
+	MCPCredentialsIncluded bool                        `json:"mcpCredentialsIncluded"`
+	SavedWorkflows         []SyncedSavedWorkflow       `json:"savedWorkflows,omitempty"`
+	Sessions               []SyncedSession             `json:"sessions,omitempty"`
+	SessionNextCursor      *int                        `json:"sessionNextCursor,omitempty"`
 }
 
 type CredentialSyncResult struct {
-	ImportedSessions    int     `json:"importedSessions"`
-	ConflictSessions    int     `json:"conflictSessions"`
-	SkippedSessions     int     `json:"skippedSessions"`
-	ImportedProviders   int     `json:"importedProviders"`
-	ImportedAPIKeys     int     `json:"importedApiKeys"`
-	ImportedCodexLogin  bool    `json:"importedCodexLogin"`
-	ImportedGitHubToken bool    `json:"importedGitHubToken"`
-	AccountEmail        *string `json:"accountEmail,omitempty"`
-	ImportedSettings    bool    `json:"importedSettings"`
-	ImportedRules       int     `json:"importedRules"`
-	ImportedMemories    int     `json:"importedMemories"`
-	ImportedSkills      int     `json:"importedSkills"`
-	ImportedMCPServers  int     `json:"importedMcpServers"`
-	ImportedWorkflows   int     `json:"importedWorkflows"`
-	DisabledMCPServers  int     `json:"disabledMcpServers"`
-	SkippedWorkflows    int     `json:"skippedWorkflows"`
+	ImportedSessions       int     `json:"importedSessions"`
+	ConflictSessions       int     `json:"conflictSessions"`
+	SkippedSessions        int     `json:"skippedSessions"`
+	ImportedProviders      int     `json:"importedProviders"`
+	ImportedAPIKeys        int     `json:"importedApiKeys"`
+	ImportedCodexLogin     bool    `json:"importedCodexLogin"`
+	ImportedCodexAccounts  int     `json:"importedCodexAccounts"`
+	ImportedGitHubToken    bool    `json:"importedGitHubToken"`
+	ImportedGitHubAccounts int     `json:"importedGitHubAccounts"`
+	AccountEmail           *string `json:"accountEmail,omitempty"`
+	ImportedSettings       bool    `json:"importedSettings"`
+	ImportedRules          int     `json:"importedRules"`
+	ImportedMemories       int     `json:"importedMemories"`
+	ImportedSkills         int     `json:"importedSkills"`
+	ImportedMCPServers     int     `json:"importedMcpServers"`
+	ImportedWorkflows      int     `json:"importedWorkflows"`
+	DisabledMCPServers     int     `json:"disabledMcpServers"`
+	SkippedWorkflows       int     `json:"skippedWorkflows"`
 }
 
 type deviceSyncEnvelope struct {
@@ -343,7 +410,9 @@ func mergeCredentialSyncResult(target *CredentialSyncResult, page CredentialSync
 	target.ImportedProviders += page.ImportedProviders
 	target.ImportedAPIKeys += page.ImportedAPIKeys
 	target.ImportedCodexLogin = target.ImportedCodexLogin || page.ImportedCodexLogin
+	target.ImportedCodexAccounts += page.ImportedCodexAccounts
 	target.ImportedGitHubToken = target.ImportedGitHubToken || page.ImportedGitHubToken
+	target.ImportedGitHubAccounts += page.ImportedGitHubAccounts
 	if target.AccountEmail == nil && page.AccountEmail != nil {
 		target.AccountEmail = page.AccountEmail
 	}

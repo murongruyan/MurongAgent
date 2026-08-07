@@ -81,3 +81,14 @@
 -keep class com.murong.agent.core.tool.BuiltinVisionNative { *; }
 -keep class com.murong.agent.core.tool.BuiltinVisionTokenListener { *; }
 -keep class com.google.ai.edge.litertlm.** { *; }
+
+# RootAgentDisplayMain is launched externally by /system/bin/app_process. There is no
+# ordinary JVM call edge for R8 to discover, so release builds must retain main(String[]).
+-keep class com.murong.agent.shizuku.RootAgentDisplayMain {
+    public static void main(java.lang.String[]);
+}
+
+# RootAgentDisplayMain reaches HiddenApiBypass by Class.forName()/getDeclaredMethod()
+# from the app_process VM. Keep the whole small bridge: addHiddenApiExemptions returns boolean,
+# and the library's static initialization also depends on its private reflected fields.
+-keep class org.lsposed.hiddenapibypass.HiddenApiBypass { *; }

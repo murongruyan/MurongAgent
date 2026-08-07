@@ -9,6 +9,8 @@ import dagger.hilt.components.SingletonComponent
 import com.murong.agent.core.config.ConfigRepository
 import com.murong.agent.core.config.ProviderBalanceService
 import com.murong.agent.core.codex.CodexAppServerClient
+import com.murong.agent.core.codex.AndroidCodexAccountManager
+import com.murong.agent.core.github.AndroidGitHubAccountManager
 import com.murong.agent.core.loop.ChatSessionManager
 import com.murong.agent.core.mcp.McpRegistry
 import com.murong.agent.backup.MurongBackupManager
@@ -47,9 +49,22 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideCodexAppServerClient(
+    fun provideAndroidCodexAccountManager(
         @ApplicationContext context: Context
-    ): CodexAppServerClient = CodexAppServerClient(context)
+    ): AndroidCodexAccountManager = AndroidCodexAccountManager(context)
+
+    @Provides
+    @Singleton
+    fun provideAndroidGitHubAccountManager(
+        @ApplicationContext context: Context
+    ): AndroidGitHubAccountManager = AndroidGitHubAccountManager(context)
+
+    @Provides
+    @Singleton
+    fun provideCodexAppServerClient(
+        @ApplicationContext context: Context,
+        accountManager: AndroidCodexAccountManager,
+    ): CodexAppServerClient = CodexAppServerClient(context, accountHomeProvider = accountManager)
 
     @Provides
     @Singleton
@@ -58,12 +73,14 @@ object AppModule {
         configRepository: ConfigRepository,
         mcpRegistry: McpRegistry,
         codexAppServerClient: CodexAppServerClient,
+        codexAccountManager: AndroidCodexAccountManager,
         computerWorkspaceBridge: LanWebComputerWorkspaceBridge
     ): ChatSessionManager = ChatSessionManager(
         context = context,
         configRepository = configRepository,
         mcpRegistry = mcpRegistry,
         codexAppServer = codexAppServerClient,
+        codexAccountManager = codexAccountManager,
         computerWorkspaceGateway = computerWorkspaceBridge
     )
 }

@@ -265,6 +265,36 @@ data class LanWebSyncedGitHubCredential(
 )
 
 @Serializable
+data class LanWebSyncedGitHubAccount(
+    val id: String,
+    val label: String,
+    val login: String = "",
+    val name: String = "",
+    val avatarUrl: String = "",
+    val apiBaseUrl: String = "https://api.github.com",
+    val token: String? = null,
+    val lastUsedAt: Long = 0L,
+)
+
+@Serializable
+data class LanWebSyncedCodexAccountSettings(
+    val autoSwitch: Boolean = true,
+    val reservePercent: Double = 10.0,
+    val cooldownMinutes: Int = 15,
+)
+
+@Serializable
+data class LanWebSyncedCodexAccount(
+    val id: String,
+    val label: String,
+    val email: String? = null,
+    val planType: String? = null,
+    val enabled: Boolean = true,
+    val authJson: String? = null,
+    val lastUsedAt: Long = 0L,
+)
+
+@Serializable
 data class LanWebSyncedProviderCredential(
     val profileId: String,
     val providerId: String,
@@ -291,6 +321,36 @@ data class LanWebSyncedAgentSettings(
     val subagentDefaultProfileEnabled: Boolean? = null,
     val subagentDefaultModel: String? = null,
     val subagentDefaultReasoningEffort: String? = null,
+)
+
+/** Routing only. Custom Keys are intentionally kept out of this portable value. */
+@Serializable
+data class LanWebSyncedMediaSettings(
+    val visionRoutingEnabled: Boolean = false,
+    val visionProviderId: String = "",
+    val visionProfileId: String = "",
+    val visionModel: String = "",
+    val visionCustomBaseUrl: String = "",
+    val imageGenerationProviderId: String = "",
+    val imageGenerationProfileId: String = "",
+    val imageGenerationModel: String = "",
+    val imageGenerationCustomBaseUrl: String = "",
+    val imageGenerationSize: String = "",
+    val imageGenerationQuality: String = "",
+    val imageGenerationFormat: String = "",
+    val imageGenerationCompression: Int = 90,
+    val imageGenerationPartialImages: Int = 2,
+    val imageUpscaleBaseUrl: String = "",
+    val imageUpscaleModel: String = "",
+    val imageUpscaleScale: Int = 4,
+)
+
+/** Present only in an explicitly credential-inclusive, encrypted device sync. */
+@Serializable
+data class LanWebSyncedMediaCredentials(
+    val visionCustomApiKey: String? = null,
+    val imageGenerationCustomApiKey: String? = null,
+    val imageUpscaleApiKey: String? = null,
 )
 
 @Serializable
@@ -368,15 +428,22 @@ data class LanWebSyncedSavedWorkflow(
 
 @Serializable
 data class LanWebCredentialSyncBundle(
-    val schemaVersion: Int = 6,
+    val schemaVersion: Int = 8,
     val sourcePlatform: String,
     val generatedAt: Long,
     val activeProviderId: String? = null,
     val activeProfileId: String? = null,
     val providers: List<LanWebSyncedProviderCredential> = emptyList(),
     val codexAuthJson: String? = null,
+    val codexAccounts: List<LanWebSyncedCodexAccount> = emptyList(),
+    val activeCodexAccountId: String = "",
+    val codexAccountSettings: LanWebSyncedCodexAccountSettings? = null,
     val github: LanWebSyncedGitHubCredential? = null,
+    val githubAccounts: List<LanWebSyncedGitHubAccount> = emptyList(),
+    val activeGitHubAccountId: String = "",
     val agentSettings: LanWebSyncedAgentSettings? = null,
+    val mediaSettings: LanWebSyncedMediaSettings? = null,
+    val mediaCredentials: LanWebSyncedMediaCredentials? = null,
     val knowledge: LanWebSyncedKnowledge? = null,
     val mcpServers: List<LanWebSyncedMcpServer> = emptyList(),
     val mcpCredentialsIncluded: Boolean = false,
@@ -393,7 +460,9 @@ data class LanWebCredentialSyncResult(
     val importedProviders: Int = 0,
     val importedApiKeys: Int = 0,
     val importedCodexLogin: Boolean = false,
+    val importedCodexAccounts: Int = 0,
     val importedGitHubToken: Boolean = false,
+    val importedGitHubAccounts: Int = 0,
     val accountEmail: String? = null,
     val importedSettings: Boolean = false,
     val importedRules: Int = 0,

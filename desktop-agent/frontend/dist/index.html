@@ -152,7 +152,8 @@
           <div id="voice-partial" class="voice-partial hidden" aria-live="polite"></div>
           <div class="composer-footer">
             <div class="composer-tool-row">
-              <button id="composer-add" class="composer-tool icon-only" type="button" title="添加上下文">＋</button>
+                <button id="composer-add" class="composer-tool icon-only" type="button" title="添加上下文">＋</button>
+                <button id="composer-image-generate" class="composer-tool icon-only" type="button" title="图片生成" aria-pressed="false">✦</button>
               <span id="composer-hint">Enter 发送 · Shift+Enter 换行</span>
             </div>
             <div class="composer-right-controls">
@@ -163,21 +164,26 @@
                   <small id="composer-context-meter-detail">尚无上下文用量</small>
                 </span>
               </div>
-              <label class="composer-runtime-control composer-model-control" title="选择本轮使用的模型连接">
-                <span>模型</span>
-                <select id="composer-model-select" aria-label="模型连接"></select>
-              </label>
-              <label class="composer-runtime-control composer-reasoning-control" title="选择当前模型连接的推理强度">
-                <span>推理</span>
-                <select id="composer-reasoning-select" aria-label="推理强度">
-                  <option value="">默认</option>
-                  <option value="low">低</option>
-                  <option value="medium">中</option>
-                  <option value="high">高</option>
-                  <option value="xhigh">超高</option>
-                  <option value="max">最大</option>
-                </select>
-              </label>
+              <div id="composer-ai-config" class="composer-ai-config">
+                <button id="composer-ai-config-trigger" class="composer-ai-config-trigger" type="button" aria-haspopup="menu" aria-expanded="false" title="模型与运行参数">
+                  <span class="composer-ai-config-kind">模型</span>
+                  <span class="composer-ai-config-copy">
+                    <strong id="composer-ai-config-summary">未配置</strong>
+                    <small id="composer-ai-config-reasoning">推理：默认</small>
+                  </span>
+                  <span class="composer-ai-config-chevron" aria-hidden="true">⌃</span>
+                </button>
+                <section id="composer-ai-config-menu" class="composer-ai-config-menu hidden" role="menu" aria-label="模型与运行参数">
+                  <header class="composer-ai-config-heading">
+                    <button id="composer-ai-config-back" class="icon-button hidden" type="button" title="返回上一级" aria-label="返回上一级">←</button>
+                    <span>
+                      <strong id="composer-ai-config-title">模型与运行参数</strong>
+                      <small id="composer-ai-config-detail">先选类别，再修改具体选项</small>
+                    </span>
+                  </header>
+                  <div id="composer-ai-config-list" class="composer-ai-config-list"></div>
+                </section>
+              </div>
               <button id="composer-mic" class="composer-mic-button" type="button" title="语音输入：点击开始，再点结束并转文字">🎤</button>
               <button id="send-message" class="send-button" title="发送">➤</button>
             </div>
@@ -283,6 +289,13 @@
           <div class="card-heading">
             <div><h3>GitHub 连接</h3><p>Token 与工作流定义分离，并由当前系统的本机凭据保护机制加密；工作流只保存 owner/repository。</p></div>
             <span id="github-connection-state" class="profile-state">未配置</span>
+          </div>
+          <div class="github-account-pool">
+            <div class="github-account-pool-heading">
+              <div><strong>账号池</strong><span id="github-account-summary">0 个账号</span></div>
+              <button id="add-github-account" class="secondary" type="button">＋ 添加账号</button>
+            </div>
+            <div id="github-account-list" class="github-account-list" aria-live="polite"></div>
           </div>
           <div class="github-form-grid">
             <label>GitHub API 地址
@@ -413,9 +426,23 @@
             <div class="codex-provider-toolbar">
               <button id="refresh-codex-status" class="secondary" type="button">检查登录与模型</button>
               <button id="start-codex-login" class="secondary" type="button">登录 ChatGPT</button>
+			  <button id="add-codex-account" class="secondary" type="button">添加账号</button>
             </div>
             <div id="codex-provider-status" class="profile-state">尚未检查 Codex 运行状态</div>
             <div id="codex-login-code" class="codex-login-code hidden"></div>
+			<div class="codex-account-pool">
+			  <div class="codex-account-pool-heading">
+				<div><strong>Codex 账号池</strong><span>每个账号使用独立 CODEX_HOME；只在两轮之间安全切换。</span></div>
+				<label class="check-row"><input id="codex-auto-switch" type="checkbox" checked> 额度不足时无感切号</label>
+			  </div>
+			  <div id="codex-account-list" class="codex-account-list"></div>
+			  <div class="codex-pool-settings">
+				<label>保留剩余额度（%）<input id="codex-reserve-percent" type="number" min="1" max="50" value="10"></label>
+				<label>失败冷却（分钟）<input id="codex-cooldown-minutes" type="number" min="1" max="1440" value="15"></label>
+				<button id="save-codex-pool-settings" class="secondary" type="button">保存切号策略</button>
+			  </div>
+			  <label class="check-row codex-session-pin"><input id="pin-session-codex-account" type="checkbox"> 当前会话固定使用已激活账号</label>
+			</div>
             <datalist id="codex-model-options"></datalist>
             <p class="field-note">登录只保存在 Murong 私有 Codex Home。普通备份不会包含登录状态；仅在你明确确认“设备同步”时，登录令牌才会通过端到端加密通道传给另一台 Murong，并由接收端联网验证。</p>
 			<details class="codex-advanced">
@@ -425,9 +452,63 @@
 			  </label>
 			</details>
           </div>
-        </section>
+          <div class="provider-import-integration">
+            <div class="provider-import-copy">
+              <strong>供应商导入与余额</strong>
+              <span id="provider-import-protocol-state">正在检查 CC Switch 协议接管状态…</span>
+            </div>
+            <label class="check-row provider-import-protocol-toggle">
+              <input id="ccswitch-protocol-compatibility" type="checkbox">
+              接收网站发给 CC Switch 的导入链接
+            </label>
+            <div class="provider-usage-inline">
+              <span id="provider-usage-summary">当前连接未启用自动余额查询</span>
+              <button id="refresh-provider-usage" class="secondary" type="button">刷新余额</button>
+            </div>
+          </div>
+            </section>
 
-        <section class="settings-card wide voice-card" data-settings-section="voice">
+            <section class="settings-card wide media-model-card" data-settings-section="model">
+              <div class="card-heading">
+                <div><h3>看图与图片生成</h3><p>看图可使用独立模型；图片生成只发送到 OpenAI Images-compatible 连接。</p></div>
+              </div>
+              <div class="media-model-grid">
+                <section class="media-model-section">
+                  <div class="media-model-heading"><strong>独立看图模型</strong><label class="check-row"><input id="vision-routing-enabled" type="checkbox"> 优先交给此模型识别</label></div>
+                  <label>复用连接<select id="vision-provider-profile"></select></label>
+                  <label>模型<input id="vision-model" maxlength="200" placeholder="留空则继承所选连接"></label>
+                  <label>自定义 Base URL<input id="vision-custom-base-url" maxlength="500" placeholder="可选，覆盖所选连接"></label>
+                  <label>自定义 API Key <span id="vision-api-key-state" class="inline-state"></span><input id="vision-api-key" type="password" autocomplete="off" placeholder="留空则复用所选连接"></label>
+                  <label class="check-row"><input id="clear-vision-api-key" type="checkbox"> 清除独立看图 Key</label>
+                </section>
+                <section class="media-model-section">
+                  <div class="media-model-heading"><strong>图片生成</strong><span>OpenAI Images-compatible</span></div>
+                  <label>复用连接<select id="image-generation-provider-profile"></select></label>
+                  <label>模型<input id="image-generation-model" maxlength="200" placeholder="gpt-image-2"></label>
+                  <label>自定义 Base URL<input id="image-generation-custom-base-url" maxlength="500" placeholder="可选，覆盖所选连接"></label>
+                  <label>自定义 API Key <span id="image-generation-api-key-state" class="inline-state"></span><input id="image-generation-api-key" type="password" autocomplete="off" placeholder="留空则复用所选连接"></label>
+                  <label class="check-row"><input id="clear-image-generation-api-key" type="checkbox"> 清除独立生图 Key</label>
+                  <div class="media-generation-options">
+                    <label>尺寸<select id="image-generation-size"><option value="auto">自动</option><option value="1024x1024">1024 × 1024</option><option value="1024x1536">1024 × 1536</option><option value="1536x1024">1536 × 1024</option><option value="2048x2048">2048 × 2048</option><option value="2048x1152">2048 × 1152</option><option value="3840x2160">3840 × 2160（原生 4K）</option><option value="2160x3840">2160 × 3840（原生 4K）</option></select></label>
+                    <label>质量<select id="image-generation-quality"><option value="auto">自动</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label>
+                    <label>格式<select id="image-generation-format"><option value="png">PNG</option><option value="jpeg">JPEG</option><option value="webp">WebP</option></select></label>
+                    <label>压缩<input id="image-generation-compression" type="number" min="0" max="100" value="90"></label>
+                    <label>局部预览<select id="image-generation-partial-images"><option value="0">仅最终图</option><option value="1">1 张</option><option value="2">2 张</option><option value="3">3 张</option></select></label>
+                  </div>
+                </section>
+                <section class="media-model-section">
+                  <div class="media-model-heading"><strong>真实 4K 超分</strong><span>Replicate · Real-ESRGAN</span></div>
+                  <p class="field-note">生成结果长边至少达到 3840px 才会标记为完成，普通拉伸不会显示成 4K。</p>
+                  <label>Base URL<input id="image-upscale-base-url" maxlength="500" placeholder="https://api.replicate.com/v1"></label>
+                  <label>模型<input id="image-upscale-model" maxlength="200" placeholder="nightmareai/real-esrgan"></label>
+                  <label>Replicate Token <span id="image-upscale-api-key-state" class="inline-state"></span><input id="image-upscale-api-key" type="password" autocomplete="off" placeholder="仅保存在当前系统用户的安全存储"></label>
+                  <label class="check-row"><input id="clear-image-upscale-api-key" type="checkbox"> 清除 4K 超分 Token</label>
+                  <label>倍率<select id="image-upscale-scale"><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option></select></label>
+                </section>
+              </div>
+            </section>
+
+            <section class="settings-card wide voice-card" data-settings-section="voice">
           <div class="card-heading">
             <div><h3>朗读与语音输入</h3><p>完全离线的中文朗读和麦克风听写，复用与安卓端相同的 Sherpa 模型；不依赖系统语音引擎，不上传任何音频。</p></div>
             <div class="voice-card-actions">
@@ -999,6 +1080,35 @@
     </section>
   </div>
 
+  <div id="provider-import-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="provider-import-title">
+    <section class="provider-import-panel">
+      <header class="modal-heading">
+        <div><p class="eyebrow">PROVIDER IMPORT</p><h2 id="provider-import-title">确认导入模型连接</h2></div>
+        <button id="close-provider-import" class="icon-button" type="button" title="取消导入">×</button>
+      </header>
+      <dl class="provider-import-preview">
+        <div><dt>目标应用</dt><dd id="provider-import-app"></dd></div>
+        <div><dt>连接名称</dt><dd id="provider-import-name"></dd></div>
+        <div class="wide"><dt>API 端点</dt><dd id="provider-import-endpoints"></dd></div>
+        <div><dt>模型</dt><dd id="provider-import-model"></dd></div>
+        <div><dt>API Key</dt><dd id="provider-import-key"></dd></div>
+      </dl>
+      <p id="provider-import-notes" class="provider-import-notes hidden"></p>
+      <details id="provider-import-script-details" class="provider-import-script-details hidden">
+        <summary>查看网站提供的用量 JavaScript</summary>
+        <pre id="provider-import-script"></pre>
+      </details>
+      <p id="provider-import-security" class="provider-import-security"></p>
+      <label class="check-row"><input id="provider-import-activate" type="checkbox"> 导入后设为当前模型连接</label>
+      <label class="check-row"><input id="provider-import-enable-usage" type="checkbox"> 启用受限余额自动查询</label>
+      <span id="provider-import-status" class="profile-state"></span>
+      <div class="modal-actions">
+        <button id="cancel-provider-import" class="secondary" type="button">取消</button>
+        <button id="confirm-provider-import" class="primary" type="button">确认导入</button>
+      </div>
+    </section>
+  </div>
+
   <div id="project-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="project-modal-title">
     <section class="project-modal-panel">
       <header class="modal-heading">
@@ -1176,6 +1286,16 @@
       <p id="workflow-confirm-detail">此操作会写入文件。</p>
       <small>确认只对本次运行有效，后台调度不会取得写入权限。</small>
       <div class="modal-actions"><button id="cancel-workflow-run" class="secondary" type="button">取消</button><button id="confirm-workflow-run" class="primary" type="button">确认并运行</button></div>
+    </section>
+  </div>
+
+  <div id="github-account-remove-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="github-account-remove-title">
+    <section class="github-account-confirm-panel">
+      <div class="github-account-confirm-icon">GH</div>
+      <h2 id="github-account-remove-title">移除 GitHub 账号</h2>
+      <p id="github-account-remove-detail">该账号保存在本机的访问令牌也会一并删除。</p>
+      <small>其他 GitHub 账号和保存的工作流不会被删除。</small>
+      <div class="modal-actions"><button id="cancel-github-account-remove" class="secondary" type="button">取消</button><button id="confirm-github-account-remove" class="primary danger" type="button">移除账号</button></div>
     </section>
   </div>
 

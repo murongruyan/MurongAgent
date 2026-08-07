@@ -28,7 +28,7 @@ func TestApprovalModes(t *testing.T) {
 func TestDesktopAgentExposesExpectedTools(t *testing.T) {
 	app := &DesktopAgentApp{terminals: []TerminalBackend{{ID: terminalCMD, Label: "CMD"}}}
 	tools := app.toolDefinitions(defaultDesktopConfig())
-	expectedToolCount := 43
+	expectedToolCount := 44
 	if guiPlatformSupported() {
 		expectedToolCount++
 	}
@@ -39,6 +39,7 @@ func TestDesktopAgentExposesExpectedTools(t *testing.T) {
 		"session_history_search": true,
 		"ask_user":               true,
 		"complete_step":          true,
+		"complete_goal":          true,
 		"list_files":             true, "read_file": true, "write_file": true, "create_directory": true, "run_terminal": true,
 		"file_exists": true, "delete_path": true, "chmod_path": true,
 		"code_search": true, "workspace_diff": true, "code_edit": true, "web_search": true, "web_fetch": true,

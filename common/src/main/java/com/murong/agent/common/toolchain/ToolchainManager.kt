@@ -304,6 +304,24 @@ object ToolchainManager {
         )?.takeIf { it.isFile && it.canExecute() }?.absolutePath
     }
 
+    /** Explains why an installed terminal extension cannot be trusted as a toolchain host. */
+    fun terminalExtensionCompatibilityIssue(context: Context? = appContext): String? {
+        val safeContext = context?.applicationContext ?: appContext
+            ?: return "主应用尚未初始化，无法检查终端扩展。"
+        val packageManager = safeContext.packageManager
+        if (!isPackageInstalled(packageManager, EXTENSION_PACKAGE_NAME)) {
+            return "未安装终端扩展，请先安装与主应用配套的正式版终端扩展。"
+        }
+        if (packageManager.checkSignatures(
+                safeContext.packageName,
+                EXTENSION_PACKAGE_NAME,
+            ) != PackageManager.SIGNATURE_MATCH
+        ) {
+            return "终端扩展与主应用签名不一致，已拒绝加载。请安装同一发行包中的正式版终端扩展，不要混用 Debug 与 Release 版本。"
+        }
+        return null
+    }
+
     fun hasRelocatablePackageManager(context: Context? = appContext): Boolean {
         val installed = ensureInstalled(context)
         return installed.available &&

@@ -88,9 +88,24 @@ func buildDesktopBackupPayloads(store *desktopStore, workflows *savedWorkflowSto
 			GuiInferenceMode: storeSnapshot.Config.GuiInferenceMode,
 			GuiLocalBaseURL:  storeSnapshot.Config.GuiLocalBaseURL, GuiLocalModel: storeSnapshot.Config.GuiLocalModel,
 			GuiAllowRemoteSemantic: &guiAllowRemoteSemantic, GuiAllowRemoteScreenshots: &guiAllowRemoteScreenshots,
-			GuiAllowRemoteFullScreen: &guiAllowRemoteFullScreen,
-			PlannerProfileEnabled:    storeSnapshot.Config.PlannerProfileEnabled,
-			PlannerModel:             storeSnapshot.Config.PlannerModel, PlannerReasoningEffort: storeSnapshot.Config.PlannerReasoningEffort,
+			GuiAllowRemoteFullScreen:         &guiAllowRemoteFullScreen,
+			VisionRoutingEnabled:             storeSnapshot.Config.VisionRoutingEnabled,
+			VisionProviderProfileID:          storeSnapshot.Config.VisionProviderProfileID,
+			VisionModel:                      storeSnapshot.Config.VisionModel,
+			VisionCustomBaseURL:              storeSnapshot.Config.VisionCustomBaseURL,
+			ImageGenerationProviderProfileID: storeSnapshot.Config.ImageGenerationProviderProfileID,
+			ImageGenerationModel:             storeSnapshot.Config.ImageGenerationModel,
+			ImageGenerationCustomBaseURL:     storeSnapshot.Config.ImageGenerationCustomBaseURL,
+			ImageGenerationSize:              storeSnapshot.Config.ImageGenerationSize,
+			ImageGenerationQuality:           storeSnapshot.Config.ImageGenerationQuality,
+			ImageGenerationFormat:            storeSnapshot.Config.ImageGenerationFormat,
+			ImageGenerationCompression:       storeSnapshot.Config.ImageGenerationCompression,
+			ImageGenerationPartialImages:     storeSnapshot.Config.ImageGenerationPartialImages,
+			ImageUpscaleBaseURL:              storeSnapshot.Config.ImageUpscaleBaseURL,
+			ImageUpscaleModel:                storeSnapshot.Config.ImageUpscaleModel,
+			ImageUpscaleScale:                storeSnapshot.Config.ImageUpscaleScale,
+			PlannerProfileEnabled:            storeSnapshot.Config.PlannerProfileEnabled,
+			PlannerModel:                     storeSnapshot.Config.PlannerModel, PlannerReasoningEffort: storeSnapshot.Config.PlannerReasoningEffort,
 			SubagentProfileEnabled: storeSnapshot.Config.SubagentProfileEnabled,
 			SubagentModel:          storeSnapshot.Config.SubagentModel, SubagentReasoningEffort: storeSnapshot.Config.SubagentReasoningEffort,
 			ProviderProfiles: providerProfiles, EnabledBuiltinTools: append([]string{}, storeSnapshot.Config.EnabledBuiltinTools...),
@@ -269,7 +284,7 @@ func validateDesktopPortableState(state desktopPortableBackupState) error {
 		}
 		seenProviders[profile.ID] = true
 		activeFound = activeFound || profile.ID == provider.ActiveProviderProfileID
-		if profile.ProviderID != providerOpenAI && profile.ProviderID != providerDeepSeek && profile.ProviderID != providerClaude && profile.ProviderID != providerCodex && profile.ProviderID != providerBuiltinLocal {
+		if !isKnownDesktopProviderID(profile.ProviderID) && profile.ProviderID != providerCodex && profile.ProviderID != providerBuiltinLocal {
 			return fmt.Errorf("备份模型连接 %q 的供应商无效", profile.Name)
 		}
 		if strings.TrimSpace(profile.Name) == "" || len([]rune(profile.Name)) > 80 || (profile.ProviderID != providerCodex && strings.TrimSpace(profile.Model) == "") {
@@ -292,6 +307,23 @@ func validateDesktopPortableState(state desktopPortableBackupState) error {
 	}
 	if len(provider.RecentProjects) > 100 || len(provider.ProjectToolPreferences) > 1000 {
 		return errors.New("备份项目设置数量超过上限")
+	}
+	for label, value := range map[string]string{
+		"独立看图模型":        provider.VisionModel,
+		"独立看图 Base URL": provider.VisionCustomBaseURL,
+		"图片生成模型":        provider.ImageGenerationModel,
+		"图片生成 Base URL": provider.ImageGenerationCustomBaseURL,
+	} {
+		if len([]rune(value)) > 500 {
+			return fmt.Errorf("备份%s过长", label)
+		}
+	}
+	for label, value := range map[string]string{"独立看图": provider.VisionCustomBaseURL, "图片生成": provider.ImageGenerationCustomBaseURL} {
+		if strings.TrimSpace(value) != "" {
+			if err := validateBaseURL(value); err != nil {
+				return fmt.Errorf("备份%s连接：%w", label, err)
+			}
+		}
 	}
 	for projectKey, preferences := range provider.ProjectToolPreferences {
 		if strings.TrimSpace(projectKey) == "" {
@@ -423,7 +455,7 @@ func validateDesktopSessions(sessions []*ChatSession) error {
 			if message.Role != "user" && message.Role != "assistant" && message.Role != "tool" {
 				return fmt.Errorf("备份会话 %s 包含未知消息角色", session.ID)
 			}
-			if len(message.Content) > 4*1024*1024 || len(message.Reasoning) > 4*1024*1024 ||
+			if len(message.Content) > 4*1024*1024 || len(message.Reasoning) > 4*1024*1024 || len(message.ImageAnalysis) > 80*1024 ||
 				len(message.Context) > maxComposerContextItems || normalizeComposerMode(message.Mode) != message.Mode {
 				return fmt.Errorf("备份会话 %s 包含过大或无效消息", session.ID)
 			}
@@ -519,27 +551,42 @@ func buildRestoredDesktopStoreSnapshot(current desktopStoreBackupSnapshot, porta
 		SchemaVersion: desktopConfigSchemaVersion, ProjectPath: strings.TrimSpace(provider.ProjectPath),
 		ApprovalMode: provider.ApprovalMode, Allowlist: append([]string{}, provider.Allowlist...),
 		MaxToolIterations: provider.MaxToolIterations, SystemPrompt: provider.SystemPrompt,
-		ResponseVerbosity:         provider.ResponseVerbosity,
-		Temperature:               temperature,
-		MaxTokens:                 maxTokens,
-		EnableMultimodalMessages:  enableMultimodal,
-		GuiInferenceMode:          normalizeGUIInferenceMode(provider.GuiInferenceMode),
-		GuiLocalBaseURL:           guiLocalBaseURL,
-		GuiLocalModel:             provider.GuiLocalModel,
-		GuiAllowRemoteSemantic:    guiAllowRemoteSemantic,
-		GuiAllowRemoteScreenshots: guiAllowRemoteScreenshots,
-		GuiAllowRemoteFullScreen:  guiAllowRemoteFullScreen,
-		PlannerProfileEnabled:     provider.PlannerProfileEnabled,
-		PlannerModel:              provider.PlannerModel,
-		PlannerReasoningEffort:    provider.PlannerReasoningEffort,
-		SubagentProfileEnabled:    provider.SubagentProfileEnabled,
-		SubagentModel:             provider.SubagentModel,
-		SubagentReasoningEffort:   provider.SubagentReasoningEffort,
-		GlobalRules:               append([]GlobalRule{}, portable.Knowledge.GlobalRules...),
-		GlobalMemories:            append([]GlobalMemory{}, portable.Knowledge.GlobalMemories...),
-		GlobalSkills:              cloneSkills(portable.Knowledge.GlobalSkills),
-		ProjectKnowledge:          cloneProjectKnowledge(portable.Knowledge.ProjectKnowledge),
-		ActiveProviderProfileID:   provider.ActiveProviderProfileID, ProviderProfiles: profiles,
+		ResponseVerbosity:                provider.ResponseVerbosity,
+		Temperature:                      temperature,
+		MaxTokens:                        maxTokens,
+		EnableMultimodalMessages:         enableMultimodal,
+		GuiInferenceMode:                 normalizeGUIInferenceMode(provider.GuiInferenceMode),
+		GuiLocalBaseURL:                  guiLocalBaseURL,
+		GuiLocalModel:                    provider.GuiLocalModel,
+		GuiAllowRemoteSemantic:           guiAllowRemoteSemantic,
+		GuiAllowRemoteScreenshots:        guiAllowRemoteScreenshots,
+		GuiAllowRemoteFullScreen:         guiAllowRemoteFullScreen,
+		VisionRoutingEnabled:             provider.VisionRoutingEnabled,
+		VisionProviderProfileID:          provider.VisionProviderProfileID,
+		VisionModel:                      provider.VisionModel,
+		VisionCustomBaseURL:              provider.VisionCustomBaseURL,
+		ImageGenerationProviderProfileID: provider.ImageGenerationProviderProfileID,
+		ImageGenerationModel:             provider.ImageGenerationModel,
+		ImageGenerationCustomBaseURL:     provider.ImageGenerationCustomBaseURL,
+		ImageGenerationSize:              provider.ImageGenerationSize,
+		ImageGenerationQuality:           provider.ImageGenerationQuality,
+		ImageGenerationFormat:            provider.ImageGenerationFormat,
+		ImageGenerationCompression:       provider.ImageGenerationCompression,
+		ImageGenerationPartialImages:     provider.ImageGenerationPartialImages,
+		ImageUpscaleBaseURL:              provider.ImageUpscaleBaseURL,
+		ImageUpscaleModel:                provider.ImageUpscaleModel,
+		ImageUpscaleScale:                provider.ImageUpscaleScale,
+		PlannerProfileEnabled:            provider.PlannerProfileEnabled,
+		PlannerModel:                     provider.PlannerModel,
+		PlannerReasoningEffort:           provider.PlannerReasoningEffort,
+		SubagentProfileEnabled:           provider.SubagentProfileEnabled,
+		SubagentModel:                    provider.SubagentModel,
+		SubagentReasoningEffort:          provider.SubagentReasoningEffort,
+		GlobalRules:                      append([]GlobalRule{}, portable.Knowledge.GlobalRules...),
+		GlobalMemories:                   append([]GlobalMemory{}, portable.Knowledge.GlobalMemories...),
+		GlobalSkills:                     cloneSkills(portable.Knowledge.GlobalSkills),
+		ProjectKnowledge:                 cloneProjectKnowledge(portable.Knowledge.ProjectKnowledge),
+		ActiveProviderProfileID:          provider.ActiveProviderProfileID, ProviderProfiles: profiles,
 		EnabledBuiltinTools:    append([]string{}, provider.EnabledBuiltinTools...),
 		EnabledFileOperations:  append([]string{}, provider.EnabledFileOperations...),
 		ProjectToolPreferences: cloneProjectToolPreferences(provider.ProjectToolPreferences),
@@ -599,14 +646,15 @@ func buildRestoredWorkflowSnapshot(current savedWorkflowStoreBackupSnapshot, por
 			}
 		}
 	}
-	return savedWorkflowStoreBackupSnapshot{Document: savedWorkflowDocument{
-		SchemaVersion: savedWorkflowSchemaVersion,
-		GitHub: savedGitHubConfig{
-			APIBaseURL:     normalizeGitHubAPIBaseURL(portable.GitHubAPIBaseURL),
-			ProtectedToken: current.Document.GitHub.ProtectedToken,
-		},
-		Workflows: workflows,
-	}}
+	document := cloneSavedWorkflowDocument(current.Document)
+	reconcileGitHubAccounts(&document)
+	document.SchemaVersion = savedWorkflowSchemaVersion
+	document.Workflows = workflows
+	if index := activeGitHubAccountIndex(document); index >= 0 {
+		document.GitHubAccounts[index].APIBaseURL = normalizeGitHubAPIBaseURL(portable.GitHubAPIBaseURL)
+		document.GitHub = legacyGitHubConfig(document.GitHubAccounts[index])
+	}
+	return savedWorkflowStoreBackupSnapshot{Document: document}
 }
 
 func (store *desktopStore) backupSnapshot() desktopStoreBackupSnapshot {
@@ -657,6 +705,7 @@ func (store *desktopStore) restoreBackupSnapshot(snapshot desktopStoreBackupSnap
 func (store *savedWorkflowStore) backupSnapshot() savedWorkflowStoreBackupSnapshot {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	reconcileGitHubAccounts(&store.document)
 	return savedWorkflowStoreBackupSnapshot{Document: cloneSavedWorkflowDocument(store.document)}
 }
 
@@ -665,6 +714,7 @@ func (store *savedWorkflowStore) restoreBackupSnapshot(snapshot savedWorkflowSto
 	defer store.mu.Unlock()
 	document := cloneSavedWorkflowDocument(snapshot.Document)
 	document.SchemaVersion = savedWorkflowSchemaVersion
+	reconcileGitHubAccounts(&document)
 	if err := writeJSONAtomic(store.path, document); err != nil {
 		return err
 	}
@@ -674,6 +724,7 @@ func (store *savedWorkflowStore) restoreBackupSnapshot(snapshot savedWorkflowSto
 
 func cloneSavedWorkflowDocument(document savedWorkflowDocument) savedWorkflowDocument {
 	copy := document
+	copy.GitHubAccounts = append([]savedGitHubAccount(nil), document.GitHubAccounts...)
 	copy.Workflows = cloneSavedWorkflows(document.Workflows)
 	return copy
 }

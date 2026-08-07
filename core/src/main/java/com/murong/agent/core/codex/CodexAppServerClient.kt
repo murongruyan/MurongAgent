@@ -75,10 +75,12 @@ class CodexAppServerClient internal constructor(
         clientVersion: String = "unknown",
         capabilities: CodexInitializeCapabilities? = DEFAULT_CAPABILITIES,
         requestTimeoutMillis: Long = DEFAULT_REQUEST_TIMEOUT_MILLIS,
+        accountHomeProvider: CodexAccountHomeProvider? = null,
     ) : this(
         transportFactory = AndroidCodexAppServerTransportFactory(
             context = context.applicationContext ?: context,
             workingDirectory = workingDirectory,
+            accountHomeProvider = accountHomeProvider,
         ),
         clientInfo = CodexClientInfo(
             name = "murong_agent",
@@ -585,7 +587,7 @@ class CodexAppServerClient internal constructor(
     }
 
     companion object {
-        const val DEFAULT_REQUEST_TIMEOUT_MILLIS = 30_000L
+        const val DEFAULT_REQUEST_TIMEOUT_MILLIS = 90_000L
         const val MAX_MODEL_LIST_PAGES = 10
         val DEFAULT_RESTART_DELAYS_MILLIS = listOf(250L, 1_000L, 3_000L)
         val DEFAULT_CLIENT_INFO = CodexClientInfo(

@@ -1087,7 +1087,7 @@ class GuiAutomationTool(
             ) {
                 "当前视觉 API 连接没有可用凭据；Codex 订阅不能代替用户自定义视觉 API"
             }
-            val provider = ProviderRegistry.getActiveProvider(apiConfig.activeProviderId)
+            val provider = ProviderRegistry.getActiveProvider(apiConfig.getActiveRuntimeProviderId())
             val response = provider.chat(
                 request = visionRequest(prompt, screenshot, apiConfig.getActiveModel()),
                 apiKey = apiConfig.getActiveApiKey(),

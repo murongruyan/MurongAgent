@@ -49,7 +49,7 @@ on:
         required: false
         default: ""
       extension_toolchain_version:
-        description: "扩展内置工具链内容版本；修改后强制刷新工具（例如 termux-curated-v7-codex-app-server-0.144.5）"
+        description: "扩展内置工具链内容版本；修改后强制刷新工具（例如 termux-curated-v8-codex-app-server-0.147.0）"
         type: string
         required: false
         default: ""
@@ -67,7 +67,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   GO_VERSION: "1.25.0"
   WAILS_VERSION: "2.13.0"
-  CODEX_VERSION: "0.144.6"
+  CODEX_VERSION: "0.147.0"
   JAVA_VERSION: "26"
   LITERT_JAVA_VERSION: "21"
   GRADLE_VERSION: "9.6.1"
@@ -423,9 +423,9 @@ jobs:
           elf_type, elf_machine = struct.unpack_from("<HH", header, 16)
           if header[4] != 2 or header[5] != 1 or elf_type not in (2, 3) or elf_machine != 183:
               raise SystemExit("Packaged codex-app-server is not little-endian AArch64 ELF64")
-          if metadata.get("tag") != "rust-v0.144.5":
+          if metadata.get("tag") != "rust-v0.147.0":
               raise SystemExit(f"Unexpected Codex tag: {metadata.get('tag')}")
-          expected_sha = "d2230513fcbe363e6230a4cb53917fafd68c2d2bad953035d99059eb18c07117"
+          expected_sha = "0bb78fa190cdcbc689dc34d34358b054a5c7e81a6d899d97065ea139aeb3ba9c"
           if metadata.get("archiveSha256") != expected_sha:
               raise SystemExit(f"Unexpected Codex archive SHA-256: {metadata.get('archiveSha256')}")
           if "Apache License" not in license_text or "Version 2.0" not in license_text:
@@ -484,42 +484,42 @@ jobs:
             goos: windows
             goarch: amd64
             codex_platform: win32-x64
-            codex_sha256: E04AFBE9841BE306455D075AD414993A946C94A399E55D7F9EC223F734CD4101
+            codex_sha256: 299D8603750CAAFFC24F218789D989F77CF157070BD42451D352F5578A800766
             build_tags: ""
           - label: Windows ARM64
             runner: windows-11-arm
             goos: windows
             goarch: arm64
             codex_platform: win32-arm64
-            codex_sha256: 92774896D0D293DB1C1808E77085B5A068E5AA70825D0D656E29BD4CA276E651
+            codex_sha256: 0B20F97A8A6D55EA3C0DCD16B05CA623639AAE9D520DC9F6AC636903677964C8
             build_tags: ""
           - label: macOS Intel
             runner: macos-15-intel
             goos: darwin
             goarch: amd64
             codex_platform: darwin-x64
-            codex_sha256: 6F1CDAB2DD23BEB5BFDB82A7D4FF5BB8C33F29AF5D1019778B18584EA7C53165
+            codex_sha256: 43CD79DECDD0C110DAA90A0FD34E73523C7A10FB0E4D5D9BF1437D9298BE08B6
             build_tags: ""
           - label: macOS Apple Silicon
             runner: macos-15
             goos: darwin
             goarch: arm64
             codex_platform: darwin-arm64
-            codex_sha256: 671D58A58CD2058345B9D9E4A969BB69937E50C7C1CD57C6061ED674DC92F94B
+            codex_sha256: 493DE2D788C6FF01DE222307C767231C1E6C802D5DD808523550FAD6D972F4D3
             build_tags: ""
           - label: Linux x64
             runner: ubuntu-24.04
             goos: linux
             goarch: amd64
             codex_platform: linux-x64
-            codex_sha256: B6752EB2E8C10E6FCC96AC5C1C8AD8342CDB9A74504FB84686ADDF081A7D2868
+            codex_sha256: C969740CF8297E4C31905CD551EFEB2C99AF5080C12C236BDF825598B250139A
             build_tags: webkit2_41
           - label: Linux ARM64
             runner: ubuntu-24.04-arm
             goos: linux
             goarch: arm64
             codex_platform: linux-arm64
-            codex_sha256: 19F0B01B33F273DF94191670B2E0E5D0F624B0354E765BFDEA5763920B713800
+            codex_sha256: 4D09BF000597768DFA070B0E7C612F0FC258AC7FAB364E570104EA625F918546
             build_tags: webkit2_41
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
@@ -792,12 +792,12 @@ jobs:
             murong-desktop-agent-linux-arm64.tar.gz
           )
           runtime_expected=(
-            murong-runtime-codex-windows-amd64-0.144.6.tgz
-            murong-runtime-codex-windows-arm64-0.144.6.tgz
-            murong-runtime-codex-darwin-amd64-0.144.6.tgz
-            murong-runtime-codex-darwin-arm64-0.144.6.tgz
-            murong-runtime-codex-linux-amd64-0.144.6.tgz
-            murong-runtime-codex-linux-arm64-0.144.6.tgz
+            murong-runtime-codex-windows-amd64-0.147.0.tgz
+            murong-runtime-codex-windows-arm64-0.147.0.tgz
+            murong-runtime-codex-darwin-amd64-0.147.0.tgz
+            murong-runtime-codex-darwin-arm64-0.147.0.tgz
+            murong-runtime-codex-linux-amd64-0.147.0.tgz
+            murong-runtime-codex-linux-arm64-0.147.0.tgz
             murong-runtime-mnn-windows-amd64-builtin-vlm-2026-07-v1.tgz
             murong-runtime-mnn-windows-arm64-builtin-vlm-2026-07-v1.tgz
             murong-runtime-llama-windows-amd64-builtin-vlm-2026-07-v1.tgz

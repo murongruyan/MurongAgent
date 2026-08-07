@@ -16,13 +16,16 @@ class CodexProxyTargetPolicyTest {
     }
 
     @Test
-    fun allowsOnlyOpenAiAndChatGptHttpsTargets() {
+    fun allowsOnlyRequiredOfficialHttpsTargets() {
         assertTrue(CodexProxyTargetPolicy.isAllowed("auth.openai.com", 443))
         assertTrue(CodexProxyTargetPolicy.isAllowed("api.openai.com", 443))
         assertTrue(CodexProxyTargetPolicy.isAllowed("chatgpt.com", 443))
         assertTrue(CodexProxyTargetPolicy.isAllowed("edge.chatgpt.com", 443))
+        assertTrue(CodexProxyTargetPolicy.isAllowed("api.github.com", 443))
 
         assertFalse(CodexProxyTargetPolicy.isAllowed("openai.com.attacker.test", 443))
+        assertFalse(CodexProxyTargetPolicy.isAllowed("github.com", 443))
+        assertFalse(CodexProxyTargetPolicy.isAllowed("raw.githubusercontent.com", 443))
         assertFalse(CodexProxyTargetPolicy.isAllowed("example.com", 443))
         assertFalse(CodexProxyTargetPolicy.isAllowed("auth.openai.com", 80))
     }

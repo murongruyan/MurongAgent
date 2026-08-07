@@ -34,14 +34,42 @@ import androidx.compose.ui.unit.dp
 import com.murong.agent.ui.MurongPrimaryPageSurface
 
 /** The compact settings landing page. Detail pages deliberately own the dense controls. */
-enum class SettingsFocus(val title: String, val summary: String) {
+enum class SettingsFocus(
+    val title: String,
+    val summary: String,
+    val searchTerms: String = "",
+) {
     ALL("全部设置", "查看全部可配置项"),
-    MODELS("模型与连接", "API、模型、账号、用量与生成参数"),
-    AGENT("对话与 Agent", "系统提示词、搜索、规则和长期记忆"),
-    DEVICE("设备与权限", "标准、无障碍、Shizuku、Root 与系统能力"),
-    VOICE("语音助手", "声纹、唤醒、识别、离线模型、朗读与默认助手"),
-    AUTOMATION("扩展与 Skills", "Skills、扩展能力与高级连接设置"),
-    DATA("数据与同步", "GitHub、备份恢复与远程网页")
+    MODELS(
+        "模型与连接",
+        "API、模型、账号、用量与生成参数",
+        "ChatGPT Codex 登录 账户 额度 配额 余额 切号 Provider 中继 温度 Top P Max Tokens",
+    ),
+    AGENT(
+        "对话与 Agent",
+        "系统提示词、搜索、规则和长期记忆",
+        "联网搜索 Web Search 提示词 Prompt 记忆 上下文",
+    ),
+    DEVICE(
+        "设备与权限",
+        "标准、无障碍、Shizuku、Root 与系统能力",
+        "权限 自动开启 无障碍服务 超级用户",
+    ),
+    VOICE(
+        "语音助手",
+        "声纹、唤醒、识别、离线模型、朗读与默认助手",
+        "麦克风 语音输入 TTS ASR 唤醒词",
+    ),
+    AUTOMATION(
+        "扩展与 Skills",
+        "Skills、扩展能力与高级连接设置",
+        "MCP 插件 工作流 自动化",
+    ),
+    DATA(
+        "数据与同步",
+        "GitHub、备份恢复与远程网页",
+        "导入 导出 局域网 网页端 同步",
+    )
 }
 
 @Composable
@@ -87,7 +115,7 @@ internal fun SettingsDirectoryPage(
         SettingsDirectoryNavigationItem(
             title = "本地模型与推理",
             summary = "模型安装、CPU 核心与线程、GPU 后端、LiteRT、MNN 和性能模式",
-            onClick = onOpenPhoneTools
+            onClick = { onOpenFocus(SettingsFocus.MODELS) }
         ),
         SettingsDirectoryNavigationItem(
             title = "内置工具",
@@ -242,7 +270,7 @@ private fun List<SettingsDirectoryNavigationItem>.matchingNavigation(
     filter { item -> matchesSettingsQuery(query, item.title, item.summary) }
 
 private fun List<SettingsFocus>.matchingFocus(query: String): List<SettingsFocus> =
-    filter { item -> matchesSettingsQuery(query, item.title, item.summary) }
+    filter { item -> matchesSettingsQuery(query, item.title, item.summary, item.searchTerms) }
 
 internal fun matchesSettingsQuery(query: String, vararg fields: String): Boolean {
     val normalized = query.trim().lowercase()

@@ -28,8 +28,11 @@ type DesktopAgentApp struct {
 	vision                     *builtinVisionManager
 	visionRuntime              *desktopVisionRuntime
 	voiceEngine                *DesktopVoiceEngine
+	providerImports            *providerImportCoordinator
+	providerUsage              *desktopProviderUsageManager
 	mu                         sync.Mutex
 	runs                       map[string]context.CancelFunc
+	imageRuns                  map[string]context.CancelFunc
 	restartRuns                map[string]bool
 	runWorkspaceReviews        map[string]runWorkspaceReviewCheckpoint
 	activeSubagentJobs         map[string]activeSubagentJob
@@ -93,6 +96,7 @@ func newDesktopAgentApp() (*DesktopAgentApp, error) {
 		workspace:                  newWorkspaceChangeTracker(),
 		audit:                      auditStore,
 		runs:                       map[string]context.CancelFunc{},
+		imageRuns:                  map[string]context.CancelFunc{},
 		restartRuns:                map[string]bool{},
 		runWorkspaceReviews:        map[string]runWorkspaceReviewCheckpoint{},
 		activeSubagentJobs:         map[string]activeSubagentJob{},
@@ -102,6 +106,17 @@ func newDesktopAgentApp() (*DesktopAgentApp, error) {
 		pendingAsks:                map[string]AskRequest{},
 		remoteConnectionRequestIDs: map[string]bool{},
 	}
+	usageManager, err := newDesktopProviderUsageManager(
+		filepath.Join(filepath.Dir(store.configPath), "desktop-provider-usage.json"),
+		store,
+	)
+	if err != nil {
+		backupManager.Close()
+		_ = auditStore.Close()
+		return nil, err
+	}
+	app.providerUsage = usageManager
+	app.providerImports = newProviderImportCoordinator()
 	app.workbenchTerminals = newWorkbenchTerminalManager(app.emit)
 	app.codex = newCodexAppServer(codexRuntimeRootFromStore(store))
 	app.visionRuntime = newDesktopVisionRuntime(filepath.Dir(store.configPath))
@@ -197,6 +212,9 @@ func (app *DesktopAgentApp) startup(ctx context.Context) {
 	}
 	app.workflows.Start(ctx)
 	app.backups.Start(ctx)
+	app.providerUsage.Start(ctx, func(state ProviderUsageState) {
+		app.emit("provider-usage:changed", state)
+	})
 	app.mu.Lock()
 	initialLaunchArgs := append([]string(nil), app.initialLaunchArgs...)
 	app.initialLaunchArgs = nil
@@ -411,6 +429,45 @@ func (app *DesktopAgentApp) StartCodexDeviceLogin(request CodexRuntimeRequest) (
 	return status, nil
 }
 
+func (app *DesktopAgentApp) GetCodexAccountPool() CodexAccountPoolState {
+	return app.codex.AccountPoolState()
+}
+
+func (app *DesktopAgentApp) CreateCodexAccount(request CodexAccountRuntimeRequest) (CodexRuntimeStatus, error) {
+	parent := app.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	return app.codex.CreateAccount(parent, request.ExecutablePath, request.Label)
+}
+
+func (app *DesktopAgentApp) ActivateCodexAccount(request CodexAccountRuntimeRequest) (CodexRuntimeStatus, error) {
+	parent := app.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	return app.codex.ActivateAccount(parent, request.ExecutablePath, request.AccountID)
+}
+
+func (app *DesktopAgentApp) UpdateCodexAccount(request CodexAccountMutationRequest) (CodexRuntimeStatus, error) {
+	return app.codex.UpdateAccount(request)
+}
+
+func (app *DesktopAgentApp) UpdateCodexAccountPoolSettings(request CodexAccountPoolSettingsRequest) (CodexRuntimeStatus, error) {
+	return app.codex.UpdateAccountPoolSettings(request)
+}
+
+func (app *DesktopAgentApp) RemoveCodexAccount(request CodexAccountRuntimeRequest) (CodexRuntimeStatus, error) {
+	return app.codex.RemoveAccount(request.AccountID)
+}
+
+func (app *DesktopAgentApp) SetSessionCodexAccountPinned(request CodexSessionAccountPinRequest) (*ChatSession, error) {
+	if err := app.store.setCodexAccountBinding(request.SessionID, app.codex.AccountPoolState().ActiveAccountID, &request.Pinned); err != nil {
+		return nil, err
+	}
+	return app.store.getSession(request.SessionID), nil
+}
+
 func (app *DesktopAgentApp) GetBackupStatus() DesktopBackupStatus {
 	return app.backups.Status()
 }
@@ -505,12 +562,75 @@ func (app *DesktopAgentApp) GetSavedWorkflowState() SavedWorkflowState {
 	return app.workflows.State()
 }
 
+func (app *DesktopAgentApp) ensureGitHubAccountMutationAllowed() error {
+	app.mu.Lock()
+	busy := len(app.runs) > 0 || len(app.activeSubagentJobs) > 0
+	app.mu.Unlock()
+	if busy || app.workflows.Busy() {
+		return errors.New("当前仍有 Agent 或保存工作流在运行，请结束后再切换 GitHub 账号")
+	}
+	return nil
+}
+
+func (app *DesktopAgentApp) refreshRemoteGitHubToken() {
+	if app.remote == nil || app.workflows == nil || app.workflows.store == nil {
+		return
+	}
+	github, err := app.workflows.store.runtimeGitHub()
+	if err != nil {
+		app.remote.SetGitHubToken("")
+		return
+	}
+	app.remote.SetGitHubToken(github.Token)
+}
+
 func (app *DesktopAgentApp) SaveGitHubConfig(request SaveGitHubConfigRequest) (SavedWorkflowState, error) {
-	return app.workflows.SaveGitHubConfig(request)
+	state, err := app.workflows.SaveGitHubConfig(request)
+	if err == nil {
+		app.refreshRemoteGitHubToken()
+	}
+	return state, err
 }
 
 func (app *DesktopAgentApp) TestGitHubConnection() (SavedWorkflowState, error) {
-	return app.workflows.TestGitHubConnection()
+	state, err := app.workflows.TestGitHubConnection()
+	if err == nil {
+		app.refreshRemoteGitHubToken()
+	}
+	return state, err
+}
+
+func (app *DesktopAgentApp) CreateGitHubAccount(request GitHubAccountRequest) (SavedWorkflowState, error) {
+	if err := app.ensureGitHubAccountMutationAllowed(); err != nil {
+		return app.workflows.State(), err
+	}
+	state, err := app.workflows.CreateGitHubAccount(request.Label)
+	if err == nil {
+		app.refreshRemoteGitHubToken()
+	}
+	return state, err
+}
+
+func (app *DesktopAgentApp) ActivateGitHubAccount(request GitHubAccountRequest) (SavedWorkflowState, error) {
+	if err := app.ensureGitHubAccountMutationAllowed(); err != nil {
+		return app.workflows.State(), err
+	}
+	state, err := app.workflows.ActivateGitHubAccount(request.AccountID)
+	if err == nil {
+		app.refreshRemoteGitHubToken()
+	}
+	return state, err
+}
+
+func (app *DesktopAgentApp) RemoveGitHubAccount(request GitHubAccountRequest) (SavedWorkflowState, error) {
+	if err := app.ensureGitHubAccountMutationAllowed(); err != nil {
+		return app.workflows.State(), err
+	}
+	state, err := app.workflows.RemoveGitHubAccount(request.AccountID)
+	if err == nil {
+		app.refreshRemoteGitHubToken()
+	}
+	return state, err
 }
 
 func (app *DesktopAgentApp) SaveSavedWorkflow(request SaveSavedWorkflowRequest) (SavedWorkflowState, error) {
@@ -790,10 +910,15 @@ func (app *DesktopAgentApp) ResolveApproval(decision ApprovalDecision) bool {
 func (app *DesktopAgentApp) CancelRun(sessionID string) bool {
 	app.mu.Lock()
 	cancel := app.runs[sessionID]
+	imageCancel := app.imageRuns[sessionID]
 	delete(app.restartRuns, sessionID)
 	app.mu.Unlock()
 	if cancel != nil {
 		cancel()
+		return true
+	}
+	if imageCancel != nil {
+		imageCancel()
 		return true
 	}
 	return false

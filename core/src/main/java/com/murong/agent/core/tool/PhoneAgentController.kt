@@ -131,7 +131,7 @@ internal class PhoneAgentController(
             )
         }
         var connection = PhoneAgentConnection(
-            providerId = modelConfig.activeProviderId,
+            providerId = modelConfig.getActiveRuntimeProviderId(),
             baseUrl = modelConfig.getActiveBaseUrl(),
             apiKey = modelConfig.getActiveApiKey().trim(),
             model = modelConfig.getActiveModel().trim(),

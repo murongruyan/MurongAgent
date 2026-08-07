@@ -19,12 +19,13 @@ const state = {
   projectKnowledge: { projectPath: "", projectLabel: "", hasProject: false, library: { rules: [], memories: [], skills: [] } },
   projectTools: { projectPath: "", projectLabel: "", hasProject: false, usesGlobal: true, preferences: null },
   mcp: { servers: [], statuses: [], tools: [] },
-  savedWorkflows: { github: { apiBaseUrl: "https://api.github.com", hasToken: false, viewer: "" }, workflows: [] },
+  savedWorkflows: { github: { apiBaseUrl: "https://api.github.com", hasToken: false, viewer: "" }, githubAccounts: [], activeGitHubAccount: "", workflows: [] },
   backup: { settings: { dailyBackupEnabled: false, maxBackupCount: 7 }, automaticBackupCount: 0, preRestoreSnapshotCount: 0 },
   mcpExpanded: false,
   composerCatalog: { skills: [], subagents: [], mcpTools: [] },
   composerContext: [],
   composerImages: [],
+  imageGenerationMode: false,
   composerPickerMode: "",
   composerProjectEntries: [],
   composerBrowserPath: "",
@@ -39,6 +40,7 @@ const state = {
   approval: null,
   askUser: null,
   pendingWorkflowRunId: "",
+  pendingGitHubAccountRemoval: null,
   pendingBackupRestore: null,
   sessionStats: null,
   sessionCompressionRunning: false,
@@ -50,7 +52,7 @@ const state = {
   workspaceTimelineMode: "live",
   projectAuditQuery: { search: "", source: "all", beforeAt: 0, beforeId: "" },
   selectedProjectAuditId: "",
-  codex: { available: false, builtin: false, running: false, loggedIn: false, requiresAuth: true, models: [], login: {} },
+  codex: { available: false, builtin: false, running: false, loggedIn: false, requiresAuth: true, models: [], login: {}, accountPool: { activeAccountId: "", settings: { autoSwitch: true, reservePercent: 10, cooldownMinutes: 15 }, accounts: [] } },
   selectedWorkspacePath: "",
   view: "chat",
   settingsCategory: "model",
@@ -61,6 +63,7 @@ const state = {
   composerInputHistoryIndex: -1,
   composerInputDraftBeforeHistory: "",
   composerInputHistorySessionId: "",
+  composerAIConfigCategory: "",
   layout: { sidebarWidth: 280, contentPadding: 48 },
   workbench: { open: false, tabs: [], activeId: "", terminalDock: "side", defaultTerminalId: "", width: 620, resizing: null, sequence: 0 },
   statusStats: null,
@@ -74,6 +77,10 @@ const state = {
     error: "",
     deviceRecommendation: "",
   },
+  pendingProviderImport: null,
+  providerImportBusy: false,
+  providerImportProtocol: { supported: false, murongRegistered: false, ccSwitchCompatibilityEnabled: false, ccSwitchCurrentHandlerLabel: "尚未检查" },
+  providerUsage: { items: [] },
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -118,6 +125,7 @@ async function initialise() {
     bindRuntimeEvents();
     const bootstrap = await backend().Bootstrap();
     applyBootstrap(bootstrap);
+    await refreshProviderImportIntegration();
     await refreshBuiltinVisionStatus();
     await restorePendingAsk();
     await refreshComposerCatalog();
@@ -333,10 +341,16 @@ function bindEvents() {
   $("#choose-project-parent").addEventListener("click", chooseProjectParent);
   $("#create-project-form").addEventListener("submit", createProject);
   $("#composer-add").addEventListener("click", () => openComposerPicker("all"));
+  $("#composer-image-generate").addEventListener("click", toggleComposerImageGenerationMode);
   $("#close-composer-picker").addEventListener("click", closeComposerPicker);
   $("#composer-picker-search").addEventListener("input", scheduleComposerPickerRender);
-  $("#composer-model-select").addEventListener("change", activateComposerModel);
-  $("#composer-reasoning-select").addEventListener("change", setComposerReasoningEffort);
+  $("#composer-ai-config-trigger").addEventListener("click", toggleComposerAIConfigMenu);
+  $("#composer-ai-config-back").addEventListener("click", showComposerAIConfigRoot);
+  $("#composer-ai-config-list").addEventListener("click", handleComposerAIConfigAction);
+  document.addEventListener("click", closeComposerAIConfigFromOutside);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeComposerAIConfigMenu();
+  });
   $("#save-settings").addEventListener("click", saveSettings);
   $("#refresh-provider-models").addEventListener("click", refreshProviderModels);
   $("#model-name").addEventListener("input", () => {
@@ -377,6 +391,16 @@ function bindEvents() {
   $("#provider-kind").addEventListener("change", changeProviderKind);
   $("#refresh-codex-status").addEventListener("click", refreshCodexStatus);
   $("#start-codex-login").addEventListener("click", startCodexLogin);
+  $("#add-codex-account").addEventListener("click", createCodexAccount);
+  $("#save-codex-pool-settings").addEventListener("click", saveCodexAccountPoolSettings);
+  $("#pin-session-codex-account").addEventListener("change", pinActiveSessionCodexAccount);
+  $("#codex-account-list").addEventListener("click", handleCodexAccountAction);
+  $("#ccswitch-protocol-compatibility").addEventListener("change", updateCCSwitchProtocolCompatibility);
+  $("#refresh-provider-usage").addEventListener("click", refreshActiveProviderUsage);
+  $("#close-provider-import").addEventListener("click", cancelProviderImport);
+  $("#cancel-provider-import").addEventListener("click", cancelProviderImport);
+  $("#confirm-provider-import").addEventListener("click", confirmProviderImport);
+  $("#codex-account-list").addEventListener("change", handleCodexAccountToggle);
   document.querySelectorAll("[data-tool-scope]").forEach((button) => {
     button.addEventListener("click", () => switchToolPolicyScope(button.dataset.toolScope));
   });
@@ -397,6 +421,11 @@ function bindEvents() {
   $("#connect-mcp-servers").addEventListener("click", connectMCPServers);
   $("#save-github").addEventListener("click", saveGitHubConfig);
   $("#test-github").addEventListener("click", testGitHubConnection);
+  $("#add-github-account").addEventListener("click", createGitHubAccount);
+  $("#github-account-list").addEventListener("click", handleGitHubAccountAction);
+  $("#cancel-github-account-remove").addEventListener("click", closeGitHubAccountRemoval);
+  $("#confirm-github-account-remove").addEventListener("click", confirmGitHubAccountRemoval);
+  $("#github-account-remove-modal").addEventListener("click", (event) => { if (event.target === event.currentTarget) closeGitHubAccountRemoval(); });
   $("#add-saved-workflow").addEventListener("click", () => openWorkflowEditor());
   $("#close-workflow-editor").addEventListener("click", closeWorkflowEditor);
   $("#cancel-workflow-editor").addEventListener("click", closeWorkflowEditor);
@@ -495,6 +524,7 @@ function bindEvents() {
     else if (!$("#workflow-editor-modal").classList.contains("hidden")) closeWorkflowEditor();
     else if (!$("#workflow-confirm-modal").classList.contains("hidden")) closeWorkflowRunConfirmation();
     else if (!$("#backup-restore-modal").classList.contains("hidden")) closeBackupRestore();
+    else if (!$("#provider-import-modal").classList.contains("hidden")) cancelProviderImport();
     else if (!$("#credential-sync-modal").classList.contains("hidden")) closeCredentialSyncConfirmation();
     else if (!$("#workspace-changes-modal").classList.contains("hidden")) closeWorkspaceChanges();
     else if (!$("#session-action-modal").classList.contains("hidden")) closeSessionActionConfirmation();
@@ -585,7 +615,7 @@ function bindRuntimeEvents() {
     refreshComposerCatalog();
   });
   window.runtime.EventsOn("saved-workflows:changed", (snapshot) => {
-    state.savedWorkflows = snapshot || { github: { apiBaseUrl: "https://api.github.com", hasToken: false, viewer: "" }, workflows: [] };
+    state.savedWorkflows = snapshot || { github: { apiBaseUrl: "https://api.github.com", hasToken: false, viewer: "" }, githubAccounts: [], activeGitHubAccount: "", workflows: [] };
     renderAutomation();
   });
   window.runtime.EventsOn("external-workflow:status", (payload) => {
@@ -622,14 +652,11 @@ function bindRuntimeEvents() {
     $("#statusbar-run").textContent = payload.text || payload.state || "就绪";
     if (!payload.sessionId) return;
     state.runningSessions[payload.sessionId] = payload.state === "running";
+    if (payload.state === "generating_image") state.runningSessions[payload.sessionId] = true;
     if (!state.active || payload.sessionId !== state.active.id) return;
-    state.running = payload.state === "running";
+    state.running = payload.state === "running" || payload.state === "generating_image";
     $("#run-status").textContent = payload.text || payload.state;
-    const executionLocked = phoneOwnsActiveSession();
-    $("#composer-model-select").disabled = state.running || executionLocked;
-    const activeProfile = state.config?.providerProfiles?.find((profile) => profile.id === state.config.activeProviderProfileId);
-    $("#composer-reasoning-select").disabled =
-      state.running || executionLocked || !activeProfile || $("#composer-reasoning-select").options.length <= 1;
+		renderComposerModelSelect();
 		updateComposerActionState();
 		renderComposerContext();
     if (payload.state === "error") showToast(payload.text, true);
@@ -856,21 +883,42 @@ async function sendMessage() {
     showToast("这项任务正在手机上继续；请先从手机归还或强制收回", true);
     return;
   }
+  const imageGeneration = state.imageGenerationMode;
   const projectPath = activeProjectPath();
-  if (state.active && state.active.projectPath && !state.sessionProjectAvailable) {
+  if (!imageGeneration && state.active && state.active.projectPath && !state.sessionProjectAvailable) {
     showToast(`当前任务绑定的项目不可用${state.sessionProjectError ? `：${state.sessionProjectError}` : ""}，请重新选择项目`, true);
     openProjectModal();
     return;
   }
   const providerProblem = activeProviderSendProblem();
-  if (!projectPath || providerProblem) {
-    showToast(projectPath ? providerProblem : "请先选择项目", true);
-    openSettingsCategory(projectPath ? "model" : "project");
+  const imageGenerationProblem = imageGeneration ? imageGenerationSendProblem() : "";
+  const sendProblem = imageGenerationProblem || providerProblem;
+  if ((!imageGeneration && !projectPath) || sendProblem) {
+    showToast(sendProblem || "请先选择项目", true);
+    openSettingsCategory(sendProblem ? "model" : "project");
     return;
   }
   try {
     if (!state.active) state.active = await backend().CreateSession();
     const sessionId = state.active.id;
+    if (imageGeneration) {
+      if (state.composerImages.length) throw new Error("图片生成暂不支持把已选图片作为编辑输入，请先移除图片附件");
+      state.autoFollowMessages = true;
+      state.runningSessions[sessionId] = true;
+      state.running = true;
+      updateComposerActionState();
+      renderComposerModelSelect();
+      await backend().GenerateImage({ sessionId, prompt: content });
+      rememberComposerInput(content);
+      input.value = "";
+      resetComposerInputHistoryNavigation("");
+      state.imageGenerationMode = false;
+      closeComposerPicker();
+      renderComposerContext();
+      autoSizeComposer();
+      updateComposerActionState();
+      return;
+    }
     const planMode = Boolean(state.active.planModeEnabled);
     let mode = state.goalModeEnabled && planMode ? "goal_plan" : state.goalModeEnabled ? "goal" : planMode ? "plan" : "";
     let goal = "";
@@ -932,7 +980,7 @@ async function handleComposerAction() {
 function updateComposerActionState() {
   const button = $("#send-message");
   if (!button) return;
-  const hasMessage = Boolean($("#message-input")?.value.trim() || state.composerImages.length);
+  const hasMessage = Boolean($("#message-input")?.value.trim() || (!state.imageGenerationMode && state.composerImages.length));
   const locked = phoneOwnsActiveSession();
   const stopping = state.running && !hasMessage;
   button.dataset.action = stopping ? "stop" : "send";
@@ -1518,109 +1566,254 @@ function renderWorkspaceChangeChip() {
 }
 
 function renderComposerModelSelect() {
-  const select = $("#composer-model-select");
-  const reasoningSelect = $("#composer-reasoning-select");
-  if (!select || !reasoningSelect || !state.config) return;
-  const selected = state.config.activeProviderProfileId || "";
-  select.replaceChildren();
+  const trigger = $("#composer-ai-config-trigger");
+  if (!trigger || !state.config) return;
   const profiles = state.config.providerProfiles || [];
-  if (!profiles.length) {
-    const empty = document.createElement("option");
-    empty.value = "";
-    empty.textContent = "未配置模型";
-    empty.selected = true;
-    select.append(empty);
+  const activeProfile = profiles.find((profile) => profile.id === state.config.activeProviderProfileId) || null;
+  const reasoningOptions = reasoningOptionsForProfile(activeProfile, "默认");
+  const reasoning = reasoningOptions.find((option) => option.value === (activeProfile?.reasoningEffort || "")) || reasoningOptions[0];
+  $("#composer-ai-config-summary").textContent = activeProfile
+    ? `${activeProfile.name || providerLabel(activeProfile.providerId)} · ${providerProfileModelLabel(activeProfile)}`
+    : "未配置模型";
+  $("#composer-ai-config-reasoning").textContent = `推理：${reasoning?.label || "默认"}`;
+  trigger.disabled = state.running || phoneOwnsActiveSession() || profiles.length === 0;
+  trigger.title = activeProfile
+    ? `${activeProfile.name || providerLabel(activeProfile.providerId)} · ${providerProfileModelLabel(activeProfile)} · 推理 ${reasoning?.label || "默认"}`
+    : "请先配置模型连接";
+  renderComposerAIConfigMenu();
+}
+
+function toggleComposerAIConfigMenu() {
+  const menu = $("#composer-ai-config-menu");
+  if (!menu || $("#composer-ai-config-trigger").disabled) return;
+  if (!menu.classList.contains("hidden")) {
+    closeComposerAIConfigMenu();
+    return;
   }
-  profiles.forEach((profile) => {
-    if (profile.providerId === "murong-local") {
-      const installedModels = (state.builtinVision?.models || [])
-        .filter((model) => model.installed && model.available !== false);
-      const hasActiveModel = installedModels.some((model) => model.active);
-      if (installedModels.length) {
-        installedModels.forEach((model, index) => {
-          const option = document.createElement("option");
-          option.value = `${profile.id}::${model.tier}`;
-          option.dataset.providerProfileId = profile.id;
-          option.dataset.visionTier = model.tier;
-          option.textContent = `${profile.name} · ${model.displayName} · 已安装${model.active ? "（当前）" : ""}`;
-          option.selected = profile.id === selected &&
-            (model.active || (!hasActiveModel && index === 0));
-          select.append(option);
+  state.composerAIConfigCategory = "";
+  menu.classList.remove("hidden");
+  $("#composer-ai-config-trigger").setAttribute("aria-expanded", "true");
+  renderComposerAIConfigMenu();
+}
+
+function closeComposerAIConfigMenu() {
+  const menu = $("#composer-ai-config-menu");
+  if (!menu) return;
+  menu.classList.add("hidden");
+  $("#composer-ai-config-trigger")?.setAttribute("aria-expanded", "false");
+  state.composerAIConfigCategory = "";
+}
+
+function closeComposerAIConfigFromOutside(event) {
+  const container = $("#composer-ai-config");
+  if (container && !container.contains(event.target)) closeComposerAIConfigMenu();
+}
+
+function showComposerAIConfigRoot() {
+  state.composerAIConfigCategory = "";
+  renderComposerAIConfigMenu();
+}
+
+function renderComposerAIConfigMenu() {
+  const menu = $("#composer-ai-config-menu");
+  const list = $("#composer-ai-config-list");
+  if (!menu || !list || !state.config) return;
+  const category = state.composerAIConfigCategory || "";
+  const profile = activeProviderProfile();
+  const back = $("#composer-ai-config-back");
+  back.classList.toggle("hidden", !category);
+  list.replaceChildren();
+  if (!category) {
+    $("#composer-ai-config-title").textContent = "模型与运行参数";
+    $("#composer-ai-config-detail").textContent = "先选类别，再修改具体选项";
+    const reasoningOptions = reasoningOptionsForProfile(profile, "默认");
+    const reasoning = reasoningOptions.find((option) => option.value === (profile?.reasoningEffort || "")) || reasoningOptions[0];
+    list.append(
+      createComposerAIConfigRow({ category: "connection", title: "后端与连接", subtitle: composerConnectionLabel(profile) }),
+      createComposerAIConfigRow({ category: "model", title: "模型", subtitle: providerProfileModelLabel(profile), enabled: Boolean(profile) }),
+      createComposerAIConfigRow({
+        category: "reasoning",
+        title: "推理深度",
+        subtitle: reasoningOptions.length > 1 ? reasoning?.label || "默认" : `${reasoning?.label || "默认"} · 暂无可选档位`,
+        enabled: Boolean(profile) && reasoningOptions.length > 1,
+      }),
+    );
+    return;
+  }
+  if (category === "connection") renderComposerConnectionChoices(list);
+  else if (category === "model") renderComposerModelChoices(list, profile);
+  else if (category === "reasoning") renderComposerReasoningChoices(list, profile);
+}
+
+function createComposerAIConfigRow({ category = "", action = "", title, subtitle = "", selected = false, enabled = true, data = {} }) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `composer-ai-config-row${selected ? " selected" : ""}`;
+  button.disabled = !enabled;
+  if (category) button.dataset.aiConfigCategory = category;
+  if (action) button.dataset.aiConfigAction = action;
+  Object.entries(data).forEach(([key, value]) => { button.dataset[key] = String(value || ""); });
+  const copy = document.createElement("span");
+  copy.className = "composer-ai-config-row-copy";
+  const titleElement = document.createElement("strong");
+  titleElement.textContent = `${selected ? "✓ " : ""}${title}`;
+  copy.append(titleElement);
+  if (subtitle) {
+    const subtitleElement = document.createElement("small");
+    subtitleElement.textContent = subtitle;
+    copy.append(subtitleElement);
+  }
+  const suffix = document.createElement("span");
+  suffix.className = "composer-ai-config-row-suffix";
+  suffix.textContent = category ? "›" : "";
+  suffix.setAttribute("aria-hidden", "true");
+  button.append(copy, suffix);
+  return button;
+}
+
+function composerConnectionLabel(profile) {
+  if (!profile) return "未选择";
+  if (profile.providerId !== "codex-chatgpt") return profile.name || providerLabel(profile.providerId);
+  const activeAccount = (state.codex?.accountPool?.accounts || []).find((account) => account.active);
+  const identity = activeAccount?.email || activeAccount?.label || "官方 ChatGPT / Codex";
+  return `ChatGPT · ${identity}`;
+}
+
+function renderComposerConnectionChoices(list) {
+  $("#composer-ai-config-title").textContent = "后端与连接";
+  $("#composer-ai-config-detail").textContent = "选择 ChatGPT 账号或已配置 API 连接";
+  const activeProfileId = state.config?.activeProviderProfileId || "";
+  (state.config?.providerProfiles || []).forEach((profile) => {
+    if (profile.providerId === "codex-chatgpt") {
+      const accounts = (state.codex?.accountPool?.accounts || []).filter((account) => account.loggedIn);
+      if (accounts.length) {
+        accounts.forEach((account) => {
+          const selected = profile.id === activeProfileId && account.active;
+          list.append(createComposerAIConfigRow({
+            action: "connection",
+            title: account.email || account.label || "Codex 账号",
+            subtitle: codexAccountConnectionSubtitle(profile, account),
+            selected,
+            enabled: account.enabled !== false,
+            data: { providerProfileId: profile.id, codexAccountId: account.id },
+          }));
         });
         return;
       }
     }
-    const catalogModels = providerModelsForProfile(profile);
-    if (catalogModels.length > 1) {
-      catalogModels.forEach((model) => {
-        const option = document.createElement("option");
-        option.value = `${profile.id}::model::${model}`;
-        option.dataset.providerProfileId = profile.id;
-        option.dataset.modelId = model;
-        option.textContent = `${profile.name} · ${model}`;
-        option.selected = profile.id === selected && model === profile.model;
-        select.append(option);
-      });
-      return;
-    }
-    const option = document.createElement("option");
-    option.value = profile.id;
-    option.dataset.providerProfileId = profile.id;
-    option.textContent = `${profile.name} · ${providerProfileModelLabel(profile)}`;
-    option.selected = profile.id === selected;
-    select.append(option);
+    list.append(createComposerAIConfigRow({
+      action: "connection",
+      title: profile.name || providerLabel(profile.providerId),
+      subtitle: `${providerLabel(profile.providerId)} · ${providerProfileModelLabel(profile)}`,
+      selected: profile.id === activeProfileId,
+      data: { providerProfileId: profile.id },
+    }));
   });
-  select.disabled = state.running || phoneOwnsActiveSession() || profiles.length === 0;
-  select.title = select.selectedOptions[0]?.textContent || "选择模型连接";
-  const activeProfile = profiles.find((profile) => profile.id === selected) || null;
-  populateReasoningSelect(reasoningSelect, activeProfile, "默认");
-  reasoningSelect.disabled = state.running || phoneOwnsActiveSession() || !activeProfile || reasoningSelect.options.length <= 1;
-  reasoningSelect.title = activeProfile
-    ? `当前推理强度：${reasoningSelect.selectedOptions[0]?.textContent || "默认"}`
-    : "请先配置模型连接";
 }
 
-async function activateComposerModel(event) {
-  const target = event.currentTarget;
-  const selectedOption = target?.selectedOptions?.[0];
-  const id = selectedOption?.dataset.providerProfileId || target?.value || "";
-  const visionTier = selectedOption?.dataset.visionTier || "";
-  const modelId = selectedOption?.dataset.modelId || "";
-  const selectedLabel = selectedOption?.textContent || id;
-  if (!id || state.running || phoneOwnsActiveSession()) return;
-  try {
-    if (visionTier) {
-      await backend().SelectBuiltinVisionModel(visionTier);
-    }
-    state.config = modelId
-      ? await backend().SetProviderModel({ providerProfileId: id, model: modelId })
-      : await backend().ActivateProviderProfile(id);
-    if (visionTier) {
-      await refreshBuiltinVisionStatus();
-    }
-    renderSettings();
-    renderHeaderMeta();
-    showToast(`已切换模型：${selectedLabel}`);
-  } catch (error) {
-    renderComposerModelSelect();
-    showToast(errorText(error), true);
-  }
+function codexAccountConnectionSubtitle(profile, account) {
+  const parts = [profile.name || "ChatGPT / Codex"];
+  if (account.planType) parts.push(account.planType);
+  const windows = (account.rateLimits || []).flatMap((limit) => [limit.primary, limit.secondary]).filter(Boolean);
+  if (windows.length) {
+    const used = Math.max(...windows.map((window) => Math.max(0, Math.min(100, Number(window.usedPercent) || 0))));
+    parts.push(`剩余 ${Math.max(0, 100 - used).toFixed(used % 1 ? 1 : 0)}%`);
+  } else if (account.lowQuota) parts.push("额度偏低");
+  return parts.join(" · ");
 }
 
-async function setComposerReasoningEffort(event) {
-  const target = event.currentTarget;
-  const reasoningEffort = target?.value || "";
-  const selectedLabel = target?.selectedOptions?.[0]?.textContent || "默认";
-  const profileId = state.config?.activeProviderProfileId || "";
-  if (!profileId || state.running || phoneOwnsActiveSession()) return;
-  try {
-    state.config = await backend().SetProviderReasoningEffort({
-      providerProfileId: profileId,
-      reasoningEffort,
+function renderComposerModelChoices(list, profile) {
+  $("#composer-ai-config-title").textContent = "模型";
+  $("#composer-ai-config-detail").textContent = profile?.name || "当前连接";
+  if (!profile) return;
+  if (profile.providerId === "murong-local") {
+    const installed = (state.builtinVision?.models || []).filter((model) => model.installed && model.available !== false);
+    installed.forEach((model) => {
+      const option = createComposerAIConfigRow({
+        action: "model",
+        title: model.displayName,
+        subtitle: model.engine === "litert" ? "LiteRT-LM" : "MNN",
+        selected: Boolean(model.active),
+        data: { providerProfileId: profile.id, visionTier: model.tier },
+      });
+      option.dataset.visionTier = model.tier;
+      list.append(option);
     });
+    if (!installed.length) list.append(createComposerAIConfigRow({ title: "尚未安装本地模型", enabled: false }));
+    return;
+  }
+  const models = providerModelsForProfile(profile);
+  models.forEach((model) => {
+    const info = codexModelInfo(model);
+    list.append(createComposerAIConfigRow({
+      action: "model",
+      title: info?.displayName || model,
+      subtitle: info?.displayName && info.displayName !== model ? model : "",
+      selected: model === profile.model,
+      data: { providerProfileId: profile.id, modelId: model },
+    }));
+  });
+  if (!models.length) list.append(createComposerAIConfigRow({ title: "当前连接没有可选模型", enabled: false }));
+}
+
+function renderComposerReasoningChoices(list, profile) {
+  $("#composer-ai-config-title").textContent = "推理深度";
+  $("#composer-ai-config-detail").textContent = profile?.providerId === "codex-chatgpt"
+    ? "仅显示当前官方模型支持的档位"
+    : profile?.name || "当前连接";
+  reasoningOptionsForProfile(profile, "默认").forEach((option) => list.append(createComposerAIConfigRow({
+    action: "reasoning",
+    title: option.label,
+    selected: option.value === (profile?.reasoningEffort || ""),
+    data: { providerProfileId: profile?.id || "", reasoningEffort: option.value },
+  })));
+}
+
+async function handleComposerAIConfigAction(event) {
+  const categoryButton = event.target.closest("[data-ai-config-category]");
+  if (categoryButton) {
+    state.composerAIConfigCategory = categoryButton.dataset.aiConfigCategory || "";
+    renderComposerAIConfigMenu();
+    return;
+  }
+  const actionButton = event.target.closest("[data-ai-config-action]");
+  const action = actionButton?.dataset.aiConfigAction || "";
+  const selectedLabel = actionButton?.querySelector("strong")?.textContent?.replace(/^✓\s*/, "") || "所选项";
+  if (!actionButton || actionButton.disabled || !action || state.running || phoneOwnsActiveSession()) return;
+  const profileId = actionButton.dataset.providerProfileId || "";
+  try {
+    if (action === "connection") {
+      if (profileId && profileId !== state.config.activeProviderProfileId) {
+        state.config = await backend().ActivateProviderProfile(profileId);
+      }
+      const accountId = actionButton.dataset.codexAccountId || "";
+      const activeAccountId = state.codex?.accountPool?.activeAccountId || "";
+      if (accountId && accountId !== activeAccountId) {
+        const profile = (state.config.providerProfiles || []).find((item) => item.id === profileId);
+        state.codex = await backend().ActivateCodexAccount({ executablePath: profile?.executablePath || "", accountId });
+      }
+      showToast(`已切换连接：${selectedLabel}`);
+    } else if (action === "model") {
+      const visionTier = actionButton.dataset.visionTier || "";
+      const modelId = actionButton.dataset.modelId || "";
+      if (visionTier) {
+        await backend().SelectBuiltinVisionModel(visionTier);
+        await refreshBuiltinVisionStatus();
+      } else if (profileId && modelId) {
+        state.config = await backend().SetProviderModel({ providerProfileId: profileId, model: modelId });
+      }
+      showToast(`已切换模型：${selectedLabel}`);
+    } else if (action === "reasoning") {
+      state.config = await backend().SetProviderReasoningEffort({
+        providerProfileId: profileId,
+        reasoningEffort: actionButton.dataset.reasoningEffort || "",
+      });
+      showToast(`已切换推理深度：${selectedLabel}`);
+    }
+    closeComposerAIConfigMenu();
     renderSettings();
+    renderCodexProviderStatus();
     renderHeaderMeta();
-    showToast(`已切换推理强度：${selectedLabel}`);
   } catch (error) {
     renderComposerModelSelect();
     showToast(errorText(error), true);
@@ -1767,7 +1960,7 @@ function appendMessageElement(message) {
     container.append(article);
     return;
   }
-  const kindClass = message.kind === "error" ? " error" : message.kind === "plan" ? " plan" : message.kind === "subagent_background" ? " subagent-background" : message.role === "tool" ? " tool" : "";
+  const kindClass = message.kind === "error" ? " error" : message.kind === "plan" ? " plan" : message.kind === "subagent_background" ? " subagent-background" : message.kind === "image_generation" ? " image-generation" : message.role === "tool" ? " tool" : "";
   article.className = `message ${message.role}${kindClass}`;
   if (message.id) article.dataset.messageId = message.id;
   const avatar = document.createElement("div");
@@ -1777,7 +1970,8 @@ function appendMessageElement(message) {
   body.className = "message-body";
   {
     body.innerHTML = renderMarkdown(message.content || "");
-    if (message.imageAttachments?.length) appendMessageImages(body, message);
+    if (message.imageGeneration) appendImageGenerationCard(body, message);
+    else if (message.imageAttachments?.length) appendMessageImages(body, message);
     let contextTags = null;
     if (message.role === "user" && (message.context?.length || message.mode)) {
       const tags = document.createElement("div");
@@ -2286,6 +2480,117 @@ function appendMessageImages(body, message) {
       });
   });
   body.prepend(gallery);
+}
+
+function appendImageGenerationCard(body, message) {
+  const generation = message.imageGeneration || {};
+  const isUpscale = generation.operation === "upscale_4k";
+  const card = document.createElement("section");
+  card.className = `image-generation-card ${generation.status || "generating"}`;
+  const header = document.createElement("header");
+  const status = document.createElement("span");
+  status.className = "image-generation-status";
+  status.textContent = isUpscale
+    ? ({ generating: "正在进行真实 4K 超分", completed: "真实 4K 超分完成", failed: "4K 超分失败", cancelled: "已取消 4K 超分" })[generation.status] || "真实 4K 超分"
+    : ({ generating: "正在生成", completed: "已生成", failed: "生成失败", cancelled: "已取消" })[generation.status] || "图片生成";
+  const detail = document.createElement("small");
+  detail.textContent = generation.error || generation.stage || generation.model || "准备中";
+  header.append(status, detail);
+  const prompt = document.createElement("p");
+  prompt.className = "image-generation-prompt";
+  prompt.textContent = generation.prompt || "图片描述";
+  card.append(header, prompt);
+  if (message.imageAttachments?.length) {
+    const gallery = document.createElement("div");
+    gallery.className = "message-image-gallery generated-image-gallery";
+    message.imageAttachments.forEach((attachment) => {
+      const figure = document.createElement("figure");
+      figure.className = "message-image-card loading";
+      const image = document.createElement("img");
+      image.alt = generation.prompt || attachment.fileName || "生成的图片";
+      const caption = document.createElement("figcaption");
+      caption.textContent = attachment.fileName || "生成的图片";
+      figure.append(image, caption);
+      gallery.append(figure);
+      backend().GetChatImageDataURL({ sessionId: state.active?.id || "", messageId: message.id, imageId: attachment.id })
+        .then((url) => { image.src = url; figure.classList.remove("loading"); })
+        .catch(() => { figure.classList.remove("loading"); figure.classList.add("unavailable"); caption.textContent = "图片缓存不可用"; });
+    });
+    card.append(gallery);
+  }
+  const actions = document.createElement("div");
+  actions.className = "image-generation-actions";
+  if (["failed", "cancelled"].includes(generation.status)) {
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = "重试";
+    retry.disabled = state.running || phoneOwnsActiveSession();
+    retry.addEventListener("click", async () => {
+      try {
+        state.runningSessions[state.active.id] = true;
+        state.running = true;
+        updateComposerActionState();
+        if (isUpscale) {
+          await backend().UpscaleImage4K({ sessionId: state.active.id, messageId: generation.sourceMessageId || message.id });
+        } else {
+          await backend().GenerateImage({ sessionId: state.active.id, prompt: generation.prompt || "" });
+        }
+      } catch (error) {
+        state.runningSessions[state.active?.id] = false;
+        refreshRunningState();
+        showToast(errorText(error), true);
+      }
+    });
+    actions.append(retry);
+  }
+  if (generation.status === "generating") {
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "取消";
+    cancel.addEventListener("click", () => backend().CancelImageGeneration(state.active?.id || ""));
+    actions.append(cancel);
+  }
+  if (generation.status === "completed" && message.imageAttachments?.length) {
+    const save = document.createElement("button");
+    save.type = "button";
+    save.textContent = "保存图片";
+    save.addEventListener("click", async () => {
+      const attachment = message.imageAttachments[0];
+      try {
+        const url = await backend().GetChatImageDataURL({ sessionId: state.active?.id || "", messageId: message.id, imageId: attachment.id });
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = attachment.fileName || "murong-generated-image";
+        document.body.append(link);
+        link.click();
+        link.remove();
+      } catch (error) {
+        showToast(errorText(error), true);
+      }
+    });
+    actions.append(save);
+    if (!isUpscale) {
+      const upscale = document.createElement("button");
+      upscale.type = "button";
+      upscale.textContent = "真实 4K 超分";
+      upscale.disabled = state.running || phoneOwnsActiveSession();
+      upscale.addEventListener("click", async () => {
+        try {
+          state.runningSessions[state.active.id] = true;
+          state.running = true;
+          updateComposerActionState();
+          await backend().UpscaleImage4K({ sessionId: state.active.id, messageId: message.id });
+        } catch (error) {
+          state.runningSessions[state.active?.id] = false;
+          refreshRunningState();
+          showToast(errorText(error), true);
+        }
+      });
+      actions.append(upscale);
+    }
+  }
+  if (actions.childElementCount) card.append(actions);
+  body.prepend(card);
 }
 
 function createWorkspaceMessageNote(changes, omitted) {
@@ -3175,6 +3480,12 @@ function appendComposerBrowserNavigation(container, query) {
     parts.pop();
     navigateComposerFolder(parts.join("/"));
   });
+  window.runtime.EventsOn("provider-import:preview", (preview) => openProviderImportPreview(preview));
+  window.runtime.EventsOn("provider-import:error", (payload) => showToast(payload?.message || "供应商导入失败", true));
+  window.runtime.EventsOn("provider-usage:changed", (snapshot) => {
+    state.providerUsage = snapshot || { items: [] };
+    renderProviderImportIntegration();
+  });
   const current = document.createElement("span");
   current.textContent = query
     ? `在 ${state.composerBrowserPath || "项目根目录"} 中搜索`
@@ -3315,6 +3626,9 @@ function renderComposerContext() {
   if (state.active?.planModeEnabled) {
     appendComposerStateChip(container, "计划模式", () => toggleComposerMode("plan"));
   }
+  if (state.imageGenerationMode) {
+    appendComposerStateChip(container, "图片生成", () => toggleComposerImageGenerationMode(false));
+  }
   if (state.goalModeEnabled) {
     appendComposerStateChip(container, state.active?.goal ? "更新目标" : "设置目标", () => {
       state.goalModeEnabled = false;
@@ -3323,40 +3637,7 @@ function renderComposerContext() {
     });
   }
   if (state.active?.goal) {
-    const goalStatusLabel = state.active.goalStatus === "paused" ? "已暂停" : "进行中";
-    appendComposerStateChip(
-      container,
-      `目标 · ${truncateText(state.active.goal, 30)} · ${goalStatusLabel}`,
-      clearActiveSessionGoal,
-      () => {
-        const input = $("#message-input");
-        input.value = state.active.goal || "";
-        state.goalModeEnabled = true;
-        renderComposerContext();
-        input.focus();
-      }
-    );
-    appendComposerActionChip(container, goalStatusLabel === "已暂停" ? "继续" : "暂停", async () => {
-      if (!state.active?.id || phoneOwnsActiveSession()) return;
-      try {
-        state.active = await backend().SetSessionGoalStatus({
-          sessionId: state.active.id,
-          status: state.active.goalStatus === "paused" ? "active" : "paused",
-        });
-        renderActiveSession();
-      } catch (error) {
-        showToast(errorText(error), true);
-      }
-    });
-    appendComposerActionChip(container, "✓ 完成", async () => {
-      if (!state.active?.id || phoneOwnsActiveSession()) return;
-      try {
-        state.active = await backend().CompleteSessionGoal(state.active.id);
-        renderActiveSession();
-      } catch (error) {
-        showToast(errorText(error), true);
-      }
-    });
+    appendGoalControlRow(container);
   }
   state.composerContext.forEach((item) => {
     const chip = document.createElement("div");
@@ -3406,8 +3687,36 @@ function renderComposerContext() {
   else if (planMode) input.placeholder = "描述你要达成的目标，先生成计划…";
   else if (state.goalModeEnabled && state.active?.goal) input.placeholder = "输入新的任务目标，发送后覆盖当前目标…";
   else if (state.goalModeEnabled) input.placeholder = "描述当前目标，后续回复会围绕它推进…";
+  else if (state.imageGenerationMode) input.placeholder = "描述想要生成的图片…";
   else input.placeholder = "让 Murong 处理这个项目…";
+  const imageButton = $("#composer-image-generate");
+  imageButton.classList.toggle("active", state.imageGenerationMode);
+  imageButton.setAttribute("aria-pressed", String(state.imageGenerationMode));
+  imageButton.disabled = state.running || phoneOwnsActiveSession();
   updateComposerActionState();
+}
+
+function toggleComposerImageGenerationMode(force) {
+  const next = typeof force === "boolean" ? force : !state.imageGenerationMode;
+  if (next && state.composerImages.length) {
+    showToast("图片生成暂不支持编辑已选图片，请先移除图片附件", true);
+    return;
+  }
+  state.imageGenerationMode = next;
+  renderComposerContext();
+  $("#message-input").focus();
+}
+
+function imageGenerationSendProblem() {
+  const config = state.config || {};
+  const profileId = config.imageGenerationProviderProfileId || config.activeProviderProfileId;
+  const profile = (config.providerProfiles || []).find((item) => item.id === profileId);
+  if (!profile || profile.providerId !== "openai-compatible") return "请在设置中为图片生成选择 OpenAI-compatible 连接";
+  const endpoint = String(config.imageGenerationCustomBaseUrl || profile.baseUrl || "");
+  if (!config.imageGenerationHasApiKey && !profile.hasApiKey && !endpoint.startsWith("http://127.0.0.1")) {
+    return "图片生成连接尚未配置 API Key";
+  }
+  return "";
 }
 
 function appendWorkflowPlanProgressCapsule(container, plan) {
@@ -3415,19 +3724,45 @@ function appendWorkflowPlanProgressCapsule(container, plan) {
   const current = Math.max(0, Math.min(Number(plan.currentStepIndex) || 0, total));
   const capsule = document.createElement("div");
   capsule.className = `workflow-progress-capsule ${plan.status}`;
+  capsule.tabIndex = 0;
+  capsule.setAttribute("role", "button");
+  capsule.setAttribute("aria-label", "查看完整计划进度");
   const dot = document.createElement("span");
-  dot.className = "workflow-progress-dot";
+  dot.className = `workflow-progress-dot ${plan.status}`;
   const label = document.createElement("span");
-  label.textContent = plan.status === "blocked"
-    ? `计划待继续 · ${current}/${total}`
-    : `计划执行中 · ${Math.min(current + 1, total)}/${total}`;
+  const visibleStep = total === 0 ? 0 : Math.min(current + 1, total);
+  label.textContent = `第 ${visibleStep} / ${total} 步`;
   const hover = document.createElement("div");
   hover.className = "workflow-plan-hover";
   const strong = document.createElement("strong");
-  strong.textContent = plan.summary || "完整计划";
-  const detail = document.createElement("pre");
-  detail.textContent = plan.rawPlan || (plan.steps || []).map((step, index) => `${index + 1}. ${step}`).join("\n");
-  hover.append(strong, detail);
+  strong.textContent = plan.summary || "任务进度";
+  const list = document.createElement("ol");
+  list.className = "workflow-step-list";
+  (plan.steps || []).forEach((step, index) => {
+    const item = document.createElement("li");
+    const stepState = index < current
+      ? "completed"
+      : index === current && plan.status === "blocked"
+        ? "blocked"
+        : index === current
+          ? "active"
+          : "pending";
+    item.className = `workflow-step ${stepState}`;
+    const marker = document.createElement("span");
+    marker.className = "workflow-step-marker";
+    marker.setAttribute("aria-hidden", "true");
+    const text = document.createElement("span");
+    text.textContent = step;
+    item.append(marker, text);
+    list.append(item);
+  });
+  hover.append(strong, list);
+  if (plan.nextStepHint) {
+    const hint = document.createElement("small");
+    hint.className = "workflow-plan-hint";
+    hint.textContent = plan.nextStepHint;
+    hover.append(hint);
+  }
   capsule.append(dot, label, hover);
   if (plan.status === "blocked") {
     const resume = document.createElement("button");
@@ -3437,7 +3772,72 @@ function appendWorkflowPlanProgressCapsule(container, plan) {
     resume.addEventListener("click", executeWorkflowPlan);
     capsule.append(resume);
   }
+  capsule.addEventListener("click", (event) => {
+    if (event.target.closest("button")) return;
+    capsule.classList.toggle("expanded");
+  });
   container.append(capsule);
+}
+
+function appendGoalControlRow(container) {
+  const goal = state.active?.goal?.trim();
+  if (!goal) return;
+  const paused = state.active.goalStatus === "paused";
+  const row = document.createElement("div");
+  row.className = `composer-goal-row ${paused ? "paused" : "active"}`;
+
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "composer-goal-copy";
+  copy.title = "展开目标详情";
+  const eyebrow = document.createElement("span");
+  eyebrow.className = "composer-goal-status";
+  eyebrow.textContent = paused ? "已暂停的目标" : "进行中的目标";
+  const title = document.createElement("strong");
+  title.textContent = goal;
+  copy.append(eyebrow, title);
+
+  const actions = document.createElement("div");
+  actions.className = "composer-goal-actions";
+  const action = (symbol, titleText, handler, danger = false) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `composer-goal-action${danger ? " danger" : ""}`;
+    button.title = titleText;
+    button.setAttribute("aria-label", titleText);
+    button.textContent = symbol;
+    button.disabled = state.running || phoneOwnsActiveSession();
+    button.addEventListener("click", handler);
+    actions.append(button);
+  };
+  action("✎", "编辑目标", () => {
+    const input = $("#message-input");
+    input.value = goal;
+    state.goalModeEnabled = true;
+    renderComposerContext();
+    input.focus();
+  });
+  action(paused ? "▶" : "Ⅱ", paused ? "继续目标" : "暂停目标", async () => {
+    if (!state.active?.id || phoneOwnsActiveSession()) return;
+    try {
+      state.active = await backend().SetSessionGoalStatus({
+        sessionId: state.active.id,
+        status: paused ? "active" : "paused",
+      });
+      renderActiveSession();
+    } catch (error) {
+      showToast(errorText(error), true);
+    }
+  });
+  action("🗑︎", "删除目标", clearActiveSessionGoal, true);
+  action("›", "展开目标详情", () => row.classList.toggle("expanded"));
+
+  const detail = document.createElement("div");
+  detail.className = "composer-goal-detail";
+  detail.textContent = goal;
+  copy.addEventListener("click", () => row.classList.toggle("expanded"));
+  row.append(copy, actions, detail);
+  container.append(row);
 }
 
 function appendComposerStateChip(container, text, onRemove, onLabelClick) {
@@ -3587,6 +3987,27 @@ async function saveSettings() {
       guiAllowRemoteSemanticTree: $("#gui-allow-remote-semantic").checked,
       guiAllowRemoteScreenshots: $("#gui-allow-remote-screenshots").checked,
       guiAllowRemoteFullScreen: $("#gui-allow-remote-fullscreen").checked,
+      visionRoutingEnabled: $("#vision-routing-enabled").checked,
+      visionProviderProfileId: $("#vision-provider-profile").value,
+      visionModel: $("#vision-model").value.trim(),
+      visionCustomBaseUrl: $("#vision-custom-base-url").value.trim(),
+      visionApiKey: $("#vision-api-key").value,
+      clearVisionApiKey: $("#clear-vision-api-key").checked,
+      imageGenerationProviderProfileId: $("#image-generation-provider-profile").value,
+      imageGenerationModel: $("#image-generation-model").value.trim(),
+      imageGenerationCustomBaseUrl: $("#image-generation-custom-base-url").value.trim(),
+      imageGenerationApiKey: $("#image-generation-api-key").value,
+      clearImageGenerationApiKey: $("#clear-image-generation-api-key").checked,
+      imageGenerationSize: $("#image-generation-size").value,
+      imageGenerationQuality: $("#image-generation-quality").value,
+      imageGenerationFormat: $("#image-generation-format").value,
+      imageGenerationCompression: Number($("#image-generation-compression").value),
+      imageGenerationPartialImages: Number($("#image-generation-partial-images").value),
+      imageUpscaleBaseUrl: $("#image-upscale-base-url").value.trim(),
+      imageUpscaleModel: $("#image-upscale-model").value.trim(),
+      imageUpscaleApiKey: $("#image-upscale-api-key").value,
+      clearImageUpscaleApiKey: $("#clear-image-upscale-api-key").checked,
+      imageUpscaleScale: Number($("#image-upscale-scale").value),
       plannerProfileEnabled: $("#planner-profile-enabled").checked,
       plannerModel: $("#planner-model").value.trim(),
       plannerReasoningEffort: $("#planner-reasoning-effort").value,
@@ -3601,6 +4022,12 @@ async function saveSettings() {
     if (!state.projectKnowledge.hasProject && state.knowledgeScope === "project") state.knowledgeScope = "global";
     $("#api-key").value = "";
     $("#clear-api-key").checked = false;
+    $("#vision-api-key").value = "";
+    $("#clear-vision-api-key").checked = false;
+    $("#image-generation-api-key").value = "";
+    $("#clear-image-generation-api-key").checked = false;
+    $("#image-upscale-api-key").value = "";
+    $("#clear-image-upscale-api-key").checked = false;
     status.textContent = "已保存";
     renderSettings();
     renderHeaderMeta();
@@ -3633,6 +4060,7 @@ function renderSettings() {
   defaultTerminal.disabled = !state.terminals.length;
   ensureProviderProfiles();
   renderProviderProfileEditor();
+  renderMediaModelSettings();
   $("#max-iterations").value = state.config.maxToolIterations || 999;
   renderToolPolicyEditor();
   $("#system-prompt").value = state.config.systemPrompt || "";
@@ -3671,6 +4099,42 @@ function renderSettings() {
   renderBackup();
   renderDesktopVersion();
   renderStatusBar();
+}
+
+function renderMediaModelSettings() {
+  const config = state.config || {};
+  const profiles = config.providerProfiles || [];
+  const fillProfiles = (selector, selectedId, onlyOpenAI = false) => {
+    const select = $(selector);
+    const choices = onlyOpenAI ? profiles.filter((profile) => profile.providerId === "openai-compatible") : profiles;
+    select.replaceChildren();
+    choices.forEach((profile) => {
+      const option = document.createElement("option");
+      option.value = profile.id;
+      option.textContent = `${profile.name || providerLabel(profile.providerId)} · ${providerProfileModelLabel(profile)}`;
+      select.append(option);
+    });
+    const fallback = choices.find((profile) => profile.id === config.activeProviderProfileId)?.id || choices[0]?.id || "";
+    select.value = choices.some((profile) => profile.id === selectedId) ? selectedId : fallback;
+  };
+  fillProfiles("#vision-provider-profile", config.visionProviderProfileId || config.activeProviderProfileId);
+  fillProfiles("#image-generation-provider-profile", config.imageGenerationProviderProfileId || config.activeProviderProfileId, true);
+  $("#vision-routing-enabled").checked = Boolean(config.visionRoutingEnabled);
+  $("#vision-model").value = config.visionModel || "";
+  $("#vision-custom-base-url").value = config.visionCustomBaseUrl || "";
+  $("#vision-api-key-state").textContent = config.visionHasApiKey ? "已保存" : "";
+  $("#image-generation-model").value = config.imageGenerationModel || "gpt-image-2";
+  $("#image-generation-custom-base-url").value = config.imageGenerationCustomBaseUrl || "";
+  $("#image-generation-api-key-state").textContent = config.imageGenerationHasApiKey ? "已保存" : "";
+  $("#image-generation-size").value = config.imageGenerationSize || "1024x1024";
+  $("#image-generation-quality").value = config.imageGenerationQuality || "auto";
+  $("#image-generation-format").value = config.imageGenerationFormat || "png";
+  $("#image-generation-compression").value = Number.isInteger(config.imageGenerationCompression) ? config.imageGenerationCompression : 90;
+  $("#image-generation-partial-images").value = String(config.imageGenerationPartialImages || 2);
+  $("#image-upscale-base-url").value = config.imageUpscaleBaseUrl || "https://api.replicate.com/v1";
+  $("#image-upscale-model").value = config.imageUpscaleModel || "nightmareai/real-esrgan";
+  $("#image-upscale-api-key-state").textContent = config.imageUpscaleHasApiKey ? "已保存" : "";
+  $("#image-upscale-scale").value = String(config.imageUpscaleScale || 4);
 }
 
 function renderDesktopVersion() {
@@ -3818,7 +4282,9 @@ function renderBuiltinVisionModels() {
     const size = document.createElement("span");
     size.textContent = model.available === false
       ? (model.unavailableReason || "当前平台不可用")
-      : `约 ${formatFileSize(model.sizeBytes)} · ${model.installed ? "已安装" : "未安装"}`;
+      : model.installed
+        ? `约 ${formatFileSize(model.sizeBytes)} · 已安装${model.active ? "（当前）" : ""}`
+        : `约 ${formatFileSize(model.sizeBytes)} · 未安装`;
     footer.append(size);
 
     if (!model.installed) {
@@ -4408,6 +4874,157 @@ function renderProviderProfileEditor() {
     state.config.providerProfiles.length <= 1 || profile.providerId === "murong-local";
   renderProviderModelCandidates();
   renderCodexProviderStatus();
+  renderProviderImportIntegration();
+}
+
+// Kept as a non-visual compatibility entry point for older remote clients. The
+// current UI intentionally ends goals through the model's complete_goal signal.
+async function completeActiveSessionGoalFromModelSignal() {
+  if (!state.active?.id || phoneOwnsActiveSession()) return;
+  state.active = await backend().CompleteSessionGoal(state.active.id);
+  renderActiveSession();
+}
+
+async function refreshProviderImportIntegration() {
+  try {
+    const [protocol, usage, pending] = await Promise.all([
+      backend().GetProviderImportProtocolState(),
+      backend().GetProviderUsageState(),
+      backend().GetPendingProviderImport(),
+    ]);
+    state.providerImportProtocol = protocol || state.providerImportProtocol;
+    state.providerUsage = usage || { items: [] };
+    renderProviderImportIntegration();
+    if (pending?.requestId) openProviderImportPreview(pending);
+  } catch (error) {
+    $("#provider-import-protocol-state").textContent = `导入集成检查失败：${errorText(error)}`;
+  }
+}
+
+function renderProviderImportIntegration() {
+  const protocol = state.providerImportProtocol || {};
+  const toggle = $("#ccswitch-protocol-compatibility");
+  if (!toggle) return;
+  toggle.checked = Boolean(protocol.ccSwitchCompatibilityEnabled);
+  toggle.disabled = !protocol.supported;
+  const handler = protocol.ccSwitchCurrentHandlerLabel || "尚未注册";
+  $("#provider-import-protocol-state").textContent = protocol.supported
+    ? `Murong 协议${protocol.murongRegistered ? "已注册" : "未注册"} · CC Switch 当前由 ${handler} 处理`
+    : "当前系统不支持在应用内切换 URL 协议处理器";
+
+  const profile = activeProviderProfile();
+  const usage = (state.providerUsage?.items || []).find((item) => item.providerProfileId === profile?.id);
+  const refresh = $("#refresh-provider-usage");
+  refresh.disabled = !usage || Boolean(usage.syncing);
+  if (!usage) {
+    $("#provider-usage-summary").textContent = "当前连接未启用自动余额查询";
+    return;
+  }
+  if (usage.syncing) {
+    $("#provider-usage-summary").textContent = "正在查询当前连接余额…";
+    return;
+  }
+  if (usage.lastError) {
+    $("#provider-usage-summary").textContent = `余额查询失败：${usage.lastError}`;
+    return;
+  }
+  const remaining = Number(usage.remaining);
+  const amount = Number.isFinite(remaining) ? remaining.toLocaleString("zh-CN", { maximumFractionDigits: 4 }) : "待首次同步";
+  const synced = usage.lastSyncedAt ? ` · ${formatTime(usage.lastSyncedAt)}` : "";
+  $("#provider-usage-summary").textContent = `剩余 ${amount}${usage.unit ? ` ${usage.unit}` : ""}${synced}`;
+}
+
+async function updateCCSwitchProtocolCompatibility(event) {
+  const toggle = event.currentTarget;
+  toggle.disabled = true;
+  try {
+    state.providerImportProtocol = await backend().SetCCSwitchProtocolCompatibility(Boolean(toggle.checked));
+    renderProviderImportIntegration();
+    showToast(toggle.checked ? "已由 Murong 接收 CC Switch 导入链接" : "已恢复此前的 CC Switch 协议处理器");
+  } catch (error) {
+    toggle.checked = !toggle.checked;
+    showToast(errorText(error), true);
+  } finally {
+    toggle.disabled = !state.providerImportProtocol?.supported;
+  }
+}
+
+function openProviderImportPreview(preview) {
+  if (!preview?.requestId) return;
+  state.pendingProviderImport = preview;
+  $("#provider-import-app").textContent = preview.appLabel || "未知";
+  $("#provider-import-name").textContent = preview.name || "未命名连接";
+  $("#provider-import-endpoints").textContent = (preview.endpoints || []).join("\n") || "未提供";
+  $("#provider-import-model").textContent = preview.model || "由供应商决定";
+  $("#provider-import-key").textContent = preview.maskedApiKey || "未提供";
+  const notes = $("#provider-import-notes");
+  notes.textContent = preview.notes || "";
+  notes.classList.toggle("hidden", !preview.notes);
+  const scriptDetails = $("#provider-import-script-details");
+  scriptDetails.classList.toggle("hidden", !preview.usageScript);
+  scriptDetails.open = false;
+  $("#provider-import-script").textContent = preview.usageScript || "";
+  $("#provider-import-activate").checked = Boolean(preview.requestedActive);
+  const usageToggle = $("#provider-import-enable-usage");
+  usageToggle.disabled = !preview.usageRule;
+  usageToggle.checked = Boolean(preview.requestedUsageEnabled && preview.usageRule);
+  $("#provider-import-security").textContent = preview.usageRule
+    ? `用量脚本已转换为 ${preview.usageRule.sourceLabel}，只访问 ${preview.usageRule.endpoint}，每 ${preview.usageRule.intervalMinutes} 分钟查询。原 JavaScript 不会执行。`
+    : preview.usageScript
+      ? "网站提供的 JavaScript 无法安全转换，因此不会执行，也不能启用自动查询。"
+      : "本次导入不包含余额自动查询。API Key 仅在确认后交给本机凭据保护存储。";
+  $("#provider-import-status").textContent = "";
+  $("#provider-import-modal").classList.remove("hidden");
+}
+
+async function cancelProviderImport() {
+  const requestId = state.pendingProviderImport?.requestId || "";
+  state.pendingProviderImport = null;
+  $("#provider-import-modal").classList.add("hidden");
+  if (!requestId) return;
+  try {
+    await backend().CancelProviderImport(requestId);
+  } catch (_) {}
+}
+
+async function confirmProviderImport() {
+  const preview = state.pendingProviderImport;
+  if (!preview?.requestId || state.providerImportBusy) return;
+  state.providerImportBusy = true;
+  $("#confirm-provider-import").disabled = true;
+  $("#provider-import-status").textContent = "正在加密保存模型连接…";
+  try {
+    const result = await backend().ConfirmProviderImport({
+      requestId: preview.requestId,
+      activate: $("#provider-import-activate").checked,
+      enableUsage: $("#provider-import-enable-usage").checked,
+    });
+    state.config = result.config || state.config;
+    state.providerUsage = result.usage || state.providerUsage;
+    state.pendingProviderImport = null;
+    $("#provider-import-modal").classList.add("hidden");
+    renderSettings();
+    showToast(`已导入“${preview.name || "模型连接"}”`);
+  } catch (error) {
+    $("#provider-import-status").textContent = errorText(error);
+  } finally {
+    state.providerImportBusy = false;
+    $("#confirm-provider-import").disabled = false;
+  }
+}
+
+async function refreshActiveProviderUsage() {
+  const profile = activeProviderProfile();
+  if (!profile?.id) return;
+  $("#refresh-provider-usage").disabled = true;
+  try {
+    state.providerUsage = await backend().RefreshProviderUsage(profile.id);
+    renderProviderImportIntegration();
+  } catch (error) {
+    showToast(errorText(error), true);
+  } finally {
+    renderProviderImportIntegration();
+  }
 }
 
 function providerModelsForProfile(profile) {
@@ -4419,6 +5036,13 @@ function providerModelsForProfile(profile) {
     : [];
   return [...new Set([profile.model, ...recommendations, ...fetched, ...codexModels]
     .map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+function codexModelInfo(modelId) {
+  const normalized = String(modelId || "").trim();
+  return (state.codex?.models || []).find((model) =>
+    [model.model, model.id].some((value) => String(value || "").trim() === normalized)
+  ) || null;
 }
 
 function builtinProviderModels(providerId) {
@@ -4473,6 +5097,7 @@ function renderProviderModelCandidates() {
   models.forEach((model) => {
     const option = document.createElement("option");
     option.value = model;
+    option.dataset.modelId = model;
     list.append(option);
     const button = document.createElement("button");
     button.type = "button";
@@ -4547,6 +5172,25 @@ function activeBuiltinVisionModel() {
 function populateReasoningSelect(select, profile, defaultLabel) {
   if (!select) return;
   select.replaceChildren();
+  const options = reasoningOptionsForProfile(profile, defaultLabel);
+  options.forEach(({ value, label }) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    select.append(option);
+  });
+  const requested = profile?.reasoningEffort || "";
+  const values = options.map((option) => option.value);
+  if (values.includes(requested)) select.value = requested;
+  else if (profile?.providerId === "murong-local") {
+    const fallback = activeBuiltinVisionModel()?.defaultReasoningMode || values[0] || "";
+    select.value = values.includes(fallback) ? fallback : values[0] || "";
+  } else {
+    select.value = "";
+  }
+}
+
+function reasoningOptionsForProfile(profile, defaultLabel) {
   let options;
   if (profile?.providerId === "murong-local") {
     const model = activeBuiltinVisionModel();
@@ -4557,6 +5201,17 @@ function populateReasoningSelect(select, profile, defaultLabel) {
     if (!options.length) {
       options = [{ value: "", label: model ? "此模型不支持思考" : "请先安装并选择模型" }];
     }
+  } else if (profile?.providerId === "codex-chatgpt") {
+    const modelInfo = codexModelInfo(profile.model) || (state.codex?.models || []).find((model) => model.isDefault);
+    const supported = modelInfo?.supportedReasoningEfforts || [];
+    const defaultEffort = modelInfo?.defaultReasoningEffort || "";
+    const defaultText = defaultEffort
+      ? `${defaultLabel || "默认"}（${reasoningEffortLabel(defaultEffort)}）`
+      : defaultLabel || "默认";
+    options = [
+      { value: "", label: defaultText },
+      ...supported.map((effort) => ({ value: effort, label: reasoningEffortLabel(effort) })),
+    ];
   } else {
     const defaultOption = { value: "", label: defaultLabel || "由供应商决定" };
     switch (profile?.providerId) {
@@ -4589,21 +5244,16 @@ function populateReasoningSelect(select, profile, defaultLabel) {
         ];
     }
   }
-  options.forEach(({ value, label }) => {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = label;
-    select.append(option);
-  });
-  const requested = profile?.reasoningEffort || "";
-  const values = options.map((option) => option.value);
-  if (values.includes(requested)) select.value = requested;
-  else if (profile?.providerId === "murong-local") {
-    const fallback = activeBuiltinVisionModel()?.defaultReasoningMode || values[0] || "";
-    select.value = values.includes(fallback) ? fallback : values[0] || "";
-  } else {
-    select.value = "";
-  }
+  return options.filter((option, index, values) =>
+    values.findIndex((candidate) => candidate.value === option.value) === index
+  );
+}
+
+function reasoningEffortLabel(value) {
+  return {
+    none: "无", minimal: "最小", low: "低", medium: "中", high: "高",
+    xhigh: "超高", max: "最大", on: "开启思考", off: "关闭思考",
+  }[value] || value || "默认";
 }
 
 function providerProfileModelLabel(profile) {
@@ -4696,7 +5346,11 @@ function renderCodexProviderStatus() {
     option.label = model.displayName || model.model || model.id || "";
     if (option.value) list.append(option);
   });
-  if (!codexSelected) return;
+  renderCodexAccountPool();
+  if (!codexSelected) {
+    renderComposerModelSelect();
+    return;
+  }
 	if (!$("#model-name").value.trim()) {
 	  const defaultModel = models.find((model) => model.isDefault) || models[0];
 	  if (defaultModel) {
@@ -4716,6 +5370,7 @@ function renderCodexProviderStatus() {
 	if (rateSummary) text += `\n${rateSummary}`;
 	else if (status.loggedIn && status.rateLimitError) text += `\n额度暂不可用：${status.rateLimitError}`;
   if (status.error && status.available) text += ` · ${status.error}`;
+  if (status.accountSwitchMessage) text += `\n${status.accountSwitchMessage}`;
   const statusElement = $("#codex-provider-status");
   statusElement.textContent = text;
   statusElement.classList.toggle("ready", Boolean(status.loggedIn));
@@ -4726,6 +5381,7 @@ function renderCodexProviderStatus() {
   code.textContent = login.waiting && login.userCode
     ? `设备代码：${login.userCode}\n${login.verificationUrl || "请在已打开的浏览器中继续"}`
     : "";
+  renderComposerModelSelect();
 }
 
 function formatCodexRateLimits(rateLimits) {
@@ -5034,6 +5690,142 @@ function addMCPServer() {
   cards[cards.length - 1]?.querySelector(".mcp-name")?.select();
 }
 
+function renderCodexAccountPool() {
+  const list = $("#codex-account-list");
+  if (!list) return;
+  const pool = state.codex?.accountPool || { activeAccountId: "", settings: {}, accounts: [] };
+  const settings = pool.settings || {};
+  $("#codex-auto-switch").checked = settings.autoSwitch !== false;
+  $("#codex-reserve-percent").value = Number(settings.reservePercent) || 10;
+  $("#codex-cooldown-minutes").value = Number(settings.cooldownMinutes) || 15;
+  const pin = $("#pin-session-codex-account");
+  pin.checked = Boolean(state.active?.codexAccountPinned);
+  pin.disabled = !state.active || state.running;
+  list.replaceChildren();
+  const accounts = Array.isArray(pool.accounts) ? pool.accounts : [];
+  if (!accounts.length) {
+    list.innerHTML = '<div class="codex-account-empty">尚未建立账号资料；点击“添加账号”后完成设备码登录。</div>';
+    return;
+  }
+  accounts.forEach((account) => {
+    const card = document.createElement("article");
+    card.className = `codex-account-card${account.active ? " active" : ""}${account.lowQuota ? " low" : ""}`;
+    card.dataset.accountId = account.id;
+    const quota = formatCodexRateLimits(account.rateLimits || []);
+    const cooling = Number(account.cooldownUntil) > Date.now()
+      ? `冷却至 ${new Date(account.cooldownUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+      : "";
+    const identity = account.email || account.label || "Codex 账号";
+    const detail = [account.planType, quota, cooling, account.error].filter(Boolean).join(" · ");
+    card.innerHTML = `
+      <div class="codex-account-identity">
+        <strong>${escapeHtml(identity)}</strong>
+        <span>${escapeHtml(detail || (account.loggedIn ? "已保存登录" : "等待登录"))}</span>
+      </div>
+      <div class="codex-account-badges">
+        ${account.active ? '<span class="codex-account-badge active">当前</span>' : ""}
+        ${account.lowQuota ? '<span class="codex-account-badge low">额度低</span>' : ""}
+      </div>
+      <label class="codex-account-enabled"><input data-codex-enable type="checkbox" ${account.enabled ? "checked" : ""} ${account.active ? "disabled" : ""}>启用</label>
+      <div class="codex-account-actions">
+        ${account.active ? "" : '<button class="secondary" type="button" data-codex-action="activate">切换</button>'}
+        ${account.active ? "" : '<button class="danger-text" type="button" data-codex-action="remove">删除</button>'}
+      </div>`;
+    list.append(card);
+  });
+}
+
+async function createCodexAccount() {
+  const button = $("#add-codex-account");
+  button.disabled = true;
+  try {
+    const executablePath = activeProviderProfile()?.executablePath || "";
+    state.codex = await backend().CreateCodexAccount({ executablePath, label: "" });
+    renderCodexProviderStatus();
+    state.codex = await backend().StartCodexDeviceLogin({ executablePath });
+    renderCodexProviderStatus();
+    showToast("已创建独立账号槽位，请在浏览器完成 ChatGPT 登录");
+  } catch (error) {
+    showToast(errorText(error), true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function handleCodexAccountAction(event) {
+  const button = event.target.closest("[data-codex-action]");
+  const card = event.target.closest("[data-account-id]");
+  if (!button || !card) return;
+  const accountId = card.dataset.accountId || "";
+  const executablePath = activeProviderProfile()?.executablePath || "";
+  button.disabled = true;
+  try {
+    if (button.dataset.codexAction === "activate") {
+      state.codex = await backend().ActivateCodexAccount({ executablePath, accountId });
+      showToast("已在安全边界切换 Codex 账号");
+    } else if (button.dataset.codexAction === "remove") {
+      if (!window.confirm("删除这个账号资料及其私有 CODEX_HOME？此操作不会影响其他账号。")) return;
+      state.codex = await backend().RemoveCodexAccount({ executablePath, accountId });
+      showToast("账号资料已删除");
+    }
+    renderCodexProviderStatus();
+  } catch (error) {
+    showToast(errorText(error), true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function handleCodexAccountToggle(event) {
+  const input = event.target.closest("[data-codex-enable]");
+  const card = event.target.closest("[data-account-id]");
+  if (!input || !card) return;
+  input.disabled = true;
+  try {
+    state.codex = await backend().UpdateCodexAccount({ accountId: card.dataset.accountId || "", enabled: input.checked });
+    renderCodexProviderStatus();
+  } catch (error) {
+    input.checked = !input.checked;
+    showToast(errorText(error), true);
+  } finally {
+    input.disabled = false;
+  }
+}
+
+async function saveCodexAccountPoolSettings() {
+  const button = $("#save-codex-pool-settings");
+  button.disabled = true;
+  try {
+    state.codex = await backend().UpdateCodexAccountPoolSettings({
+      autoSwitch: $("#codex-auto-switch").checked,
+      reservePercent: Number($("#codex-reserve-percent").value),
+      cooldownMinutes: Number($("#codex-cooldown-minutes").value),
+    });
+    renderCodexProviderStatus();
+    showToast("Codex 无感切号策略已保存");
+  } catch (error) {
+    showToast(errorText(error), true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function pinActiveSessionCodexAccount(event) {
+  if (!state.active) return;
+  const input = event.currentTarget;
+  input.disabled = true;
+  try {
+    state.active = await backend().SetSessionCodexAccountPinned({ sessionId: state.active.id, pinned: input.checked });
+    renderCodexAccountPool();
+    showToast(input.checked ? "当前会话已固定账号，不再自动切号" : "当前会话已恢复账号池自动切换");
+  } catch (error) {
+    input.checked = !input.checked;
+    showToast(errorText(error), true);
+  } finally {
+    input.disabled = false;
+  }
+}
+
 function addNuphusMCPServer() {
   state.mcp ||= { servers: [], statuses: [], tools: [] };
   state.mcp.servers ||= [];
@@ -5163,6 +5955,7 @@ const workflowRunLabels = {
 function renderAutomation() {
   const snapshot = state.savedWorkflows || {};
   const github = snapshot.github || { apiBaseUrl: "https://api.github.com", hasToken: false, viewer: "" };
+  const githubAccounts = snapshot.githubAccounts || [];
   const workflows = snapshot.workflows || [];
   const apiInput = $("#github-api-base");
   const tokenInput = $("#github-token");
@@ -5174,6 +5967,10 @@ function renderAutomation() {
     ? `已连接 · ${github.viewer}`
     : github.hasToken ? "Token 已保存" : "未配置 Token";
   $("#github-connection-state").classList.toggle("ready", Boolean(github.viewer));
+  $("#github-account-summary").textContent = `${githubAccounts.length} 个账号${github.viewer ? ` · 当前 ${github.viewer}` : ""}`;
+  const accountList = $("#github-account-list");
+  accountList.replaceChildren();
+  githubAccounts.forEach((account) => accountList.append(createGitHubAccountCard(account)));
   $("#workflow-count").textContent = workflows.length;
   const enabled = workflows.filter((workflow) => workflow.enabled && workflowBackgroundSafeInUI(workflow)).length;
   const running = workflows.filter((workflow) => ["QUEUED", "RUNNING"].includes(workflow.lastRun?.status)).length;
@@ -5190,6 +5987,86 @@ function renderAutomation() {
     return;
   }
   workflows.forEach((workflow) => list.append(createSavedWorkflowCard(workflow)));
+}
+
+function createGitHubAccountCard(account) {
+  const card = document.createElement("article");
+  card.className = `github-account-card${account.active ? " active" : ""}`;
+  card.dataset.accountId = account.id || "";
+  const identity = account.login ? `@${account.login.replace(/^@/, "")}` : account.label || "未命名账号";
+  const detail = account.hasToken ? account.apiBaseUrl || "https://api.github.com" : "尚未保存访问令牌";
+  card.innerHTML = `
+    <div class="github-account-identity"><strong>${escapeHtml(identity)}</strong><span>${escapeHtml(detail)}</span></div>
+    <div class="github-account-badges">${account.active ? '<span class="github-account-badge active">当前</span>' : ""}<span class="github-account-badge ${account.hasToken ? "ready" : "empty"}">${account.hasToken ? "已登录" : "待登录"}</span></div>
+    <div class="github-account-actions"><button class="secondary github-account-activate" type="button" ${account.active || !account.hasToken ? "disabled" : ""}>切换</button><button class="icon-button danger github-account-remove" type="button" title="移除账号" aria-label="移除 ${escapeHtml(identity)}">×</button></div>`;
+  return card;
+}
+
+async function createGitHubAccount() {
+  const button = $("#add-github-account");
+  button.disabled = true;
+  try {
+    const index = (state.savedWorkflows?.githubAccounts || []).length + 1;
+    state.savedWorkflows = await backend().CreateGitHubAccount({ label: `GitHub 账号 ${index}` });
+    renderAutomation();
+    $("#github-token").focus();
+    showToast("已创建账号，请保存 Token 后验证连接");
+  } catch (error) {
+    showToast(errorText(error), true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function handleGitHubAccountAction(event) {
+  const button = event.target.closest("button");
+  const card = button?.closest("[data-account-id]");
+  const accountId = card?.dataset.accountId || "";
+  if (!button || !accountId) return;
+  if (button.classList.contains("github-account-activate")) {
+    button.disabled = true;
+    try {
+      state.savedWorkflows = await backend().ActivateGitHubAccount({ accountId });
+      renderAutomation();
+      showToast("GitHub 账号已切换");
+    } catch (error) {
+      showToast(errorText(error), true);
+      button.disabled = false;
+    }
+    return;
+  }
+  if (button.classList.contains("github-account-remove")) requestGitHubAccountRemoval(accountId);
+}
+
+function requestGitHubAccountRemoval(accountId) {
+  const account = (state.savedWorkflows?.githubAccounts || []).find((item) => item.id === accountId);
+  if (!account) return;
+  state.pendingGitHubAccountRemoval = account;
+  const identity = account.login ? `@${account.login.replace(/^@/, "")}` : account.label || "该账号";
+  $("#github-account-remove-detail").textContent = `移除“${identity}”后，该账号保存在本机的访问令牌也会一并删除。`;
+  $("#github-account-remove-modal").classList.remove("hidden");
+}
+
+function closeGitHubAccountRemoval() {
+  state.pendingGitHubAccountRemoval = null;
+  $("#github-account-remove-modal").classList.add("hidden");
+}
+
+async function confirmGitHubAccountRemoval() {
+  const accountId = state.pendingGitHubAccountRemoval?.id || "";
+  if (!accountId) return;
+  const button = $("#confirm-github-account-remove");
+  button.disabled = true;
+  try {
+    state.savedWorkflows = await backend().RemoveGitHubAccount({ accountId });
+    closeGitHubAccountRemoval();
+    renderAutomation();
+    showToast("GitHub 账号已移除");
+  } catch (error) {
+    showToast(errorText(error), true);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function createSavedWorkflowCard(workflow) {
@@ -5696,12 +6573,12 @@ function openCredentialSyncConfirmation(direction) {
   }
   if (request.includeCodexLogin) {
     const item = document.createElement("li");
-    item.textContent = "ChatGPT / Codex 登录状态（接收端实际联网验证）";
+    item.textContent = "ChatGPT / Codex 完整账号池（接收端校验后写入本机安全存储）";
     list.append(item);
   }
   if (request.includeGitHubCredentials) {
     const item = document.createElement("li");
-    item.textContent = "GitHub API 地址与访问令牌（接收后进入安全存储）";
+    item.textContent = "GitHub 完整账号池、API 地址与访问令牌（接收后进入安全存储）";
     list.append(item);
   }
   if (request.includeAgentSettings) {
@@ -5762,8 +6639,10 @@ async function performCredentialSync() {
     if (result.skippedSessions) parts.push(`${result.skippedSessions} 个相同聊天已跳过`);
     if (result.importedProviders) parts.push(`${result.importedProviders} 个模型连接`);
     if (result.importedApiKeys) parts.push(`${result.importedApiKeys} 个 API Key`);
-    if (result.importedCodexLogin) parts.push(`Codex 登录${result.accountEmail ? `（${result.accountEmail}）` : ""}`);
-    if (result.importedGitHubToken) parts.push("GitHub Token");
+    if (result.importedCodexAccounts) parts.push(`${result.importedCodexAccounts} 个 Codex 账号${result.accountEmail ? `（当前 ${result.accountEmail}）` : ""}`);
+    else if (result.importedCodexLogin) parts.push(`Codex 登录${result.accountEmail ? `（${result.accountEmail}）` : ""}`);
+    if (result.importedGitHubAccounts) parts.push(`${result.importedGitHubAccounts} 个 GitHub 账号`);
+    else if (result.importedGitHubToken) parts.push("GitHub Token");
     if (result.importedSettings) parts.push("Agent 通用设置");
     if (result.importedRules) parts.push(`${result.importedRules} 条规则`);
     if (result.importedMemories) parts.push(`${result.importedMemories} 条记忆`);

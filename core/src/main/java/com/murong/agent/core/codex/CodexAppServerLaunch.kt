@@ -55,20 +55,28 @@ class CodexAppServerUnavailableException(message: String) : IllegalStateExceptio
 internal class AndroidCodexAppServerTransportFactory(
     context: Context,
     workingDirectory: File?,
+    private val accountHomeProvider: CodexAccountHomeProvider? = null,
 ) : CodexAppServerTransportFactory {
     private val appContext = context.applicationContext
     private val workingDirectory = workingDirectory
 
     override fun create(): CodexAppServerTransport {
+        val dedicatedAppServerPath = ToolchainManager.findCommandPath(
+            DEDICATED_COMMAND,
+            appContext,
+        ) ?: ToolchainManager.findNativeExtensionCommandPath(
+            DEDICATED_COMMAND,
+            appContext,
+        )
+        val codexCliPath = ToolchainManager.findCommandPath(CLI_COMMAND, appContext)
+        if (dedicatedAppServerPath == null && codexCliPath == null) {
+            ToolchainManager.terminalExtensionCompatibilityIssue(appContext)?.let { issue ->
+                throw CodexAppServerUnavailableException(issue)
+            }
+        }
         val command = CodexAppServerCommandResolver.resolve(
-            dedicatedAppServerPath = ToolchainManager.findCommandPath(
-                DEDICATED_COMMAND,
-                appContext,
-            ) ?: ToolchainManager.findNativeExtensionCommandPath(
-                DEDICATED_COMMAND,
-                appContext,
-            ),
-            codexCliPath = ToolchainManager.findCommandPath(CLI_COMMAND, appContext),
+            dedicatedAppServerPath = dedicatedAppServerPath,
+            codexCliPath = codexCliPath,
         )
         // The official dedicated ARM64 app-server release is a static ET_EXEC
         // ELF. It can execute from the extension APK directly, but Android's
@@ -83,10 +91,15 @@ internal class AndroidCodexAppServerTransportFactory(
         } else {
             command.argv
         }
-        val codexHome = File(appContext.filesDir, CODEX_HOME_DIRECTORY)
+        val codexHome = accountHomeProvider?.activeCodexHome()
+            ?: File(appContext.filesDir, CODEX_HOME_DIRECTORY)
         check(codexHome.isDirectory || codexHome.mkdirs()) {
             "Cannot create private Codex home"
         }
+        // Android does not provide the Linux Secret Service used by Codex's
+        // default keyring backend. Explicit file storage keeps device-code
+        // authentication durable across process and device restarts.
+        ensureFileAuthStorage(codexHome)
         val cwd = workingDirectory
             ?.takeIf { it.isDirectory }
             ?: appContext.filesDir
@@ -166,10 +179,41 @@ internal class AndroidCodexAppServerTransportFactory(
         return CodexNetworkProxyEndpoint.fromNumericHost(proxyInfo.host, proxyInfo.port)
     }
 
+    private fun ensureFileAuthStorage(codexHome: File) {
+        val configFile = File(codexHome, CODEX_CONFIG_FILE)
+        val current = if (configFile.isFile) {
+            runCatching { configFile.readText() }.getOrDefault("")
+        } else {
+            ""
+        }
+        val updated = normalizeCodexAuthStorageConfig(current)
+        if (updated == current) return
+        val temporary = File(codexHome, ".${configFile.name}.${System.nanoTime()}.tmp")
+        temporary.writeText(updated)
+        check(temporary.renameTo(configFile) || (configFile.delete() && temporary.renameTo(configFile))) {
+            "Cannot persist Codex auth storage configuration"
+        }
+    }
+
     companion object {
         const val DEDICATED_COMMAND = "codex-app-server"
         const val CLI_COMMAND = "codex"
         const val CODEX_HOME_DIRECTORY = "codex-home"
+        private const val CODEX_CONFIG_FILE = "config.toml"
+    }
+}
+
+/** Ensures the official auth store is durable on Android where keyring is unavailable. */
+internal fun normalizeCodexAuthStorageConfig(current: String): String {
+    val setting = "cli_auth_credentials_store = \"file\""
+    val keyPattern = Regex("(?m)^\\s*cli_auth_credentials_store\\s*=.*$")
+    if (keyPattern.containsMatchIn(current)) return keyPattern.replace(current, setting)
+    return buildString {
+        append(current.trimEnd())
+        if (isNotEmpty()) append("\n\n")
+        append("# Murong Agent uses file auth storage on Android.\n")
+        append(setting)
+        append('\n')
     }
 }
 

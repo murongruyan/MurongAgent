@@ -3,16 +3,19 @@ package com.murong.agent.core.loop
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.content.ContentValues
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.OpenableColumns
+import android.provider.MediaStore
 import android.util.Base64
 import com.murong.agent.common.utils.RootFile
 import com.murong.agent.core.command.CustomCommandLoader
 import com.murong.agent.core.codex.CodexAdditionalContext
 import com.murong.agent.core.codex.CodexAdditionalContextKind
 import com.murong.agent.core.codex.CodexAppServerClient
+import com.murong.agent.core.codex.AndroidCodexAccountManager
 import com.murong.agent.core.codex.CodexApprovalDecision
 import com.murong.agent.core.codex.CodexApprovalKind
 import com.murong.agent.core.codex.CodexApprovalRequest
@@ -54,6 +57,7 @@ import com.murong.agent.core.doctor.PendingCrashStore
 import com.murong.agent.core.doctor.SensitiveDataSanitizer
 import com.murong.agent.core.config.toPersistedRepoScopedProjectConfigMap
 import com.murong.agent.core.config.toSessionProjectConfig
+import com.murong.agent.core.config.isLocalModelBaseUrl
 import com.murong.agent.core.memory.MemoryScope
 import com.murong.agent.core.memory.PersistedMemoryStore
 import com.murong.agent.core.mcp.McpRegistry
@@ -65,6 +69,17 @@ import com.murong.agent.core.provider.ChatMessage
 import com.murong.agent.core.provider.ResponsesContinuation
 import com.murong.agent.core.provider.Usage
 import com.murong.agent.core.provider.ProviderRegistry
+import com.murong.agent.core.provider.AuxiliaryVisionAnalyzer
+import com.murong.agent.core.provider.OpenAIImageGenerationClient
+import com.murong.agent.core.provider.ImageGenerationFormat
+import com.murong.agent.core.provider.ImageGenerationQuality
+import com.murong.agent.core.provider.ImageGenerationSettings
+import com.murong.agent.core.provider.ImageGenerationProgress
+import com.murong.agent.core.provider.ImageGenerationRequest
+import com.murong.agent.core.provider.GeneratedImage
+import com.murong.agent.core.provider.ImageUpscaleRequest
+import com.murong.agent.core.provider.ImageUpscaleProgress
+import com.murong.agent.core.provider.ReplicateImageUpscaler
 import com.murong.agent.core.tool.ApprovalRiskLevel
 import com.murong.agent.core.tool.ToolFileChange
 import com.murong.agent.core.tool.ToolApprovalRequest
@@ -127,7 +142,20 @@ data class ChatMessageUi(
     val isStreaming: Boolean = false,
     val subagentRunId: String? = null,
     val subagentBatchId: String? = null,
+    val imageGeneration: ImageGenerationUi? = null,
     val timestamp: Long = System.currentTimeMillis()
+)
+
+data class ImageGenerationUi(
+    val prompt: String,
+    val providerId: String,
+    val model: String,
+    val status: String,
+    val stage: String = "",
+    val error: String? = null,
+    val operation: String = "generate",
+    val sourceMessageId: Long? = null,
+    val createdAt: Long = System.currentTimeMillis(),
 )
 
 data class MessageImageAttachmentUi(
@@ -2135,6 +2163,7 @@ class ChatSessionManager(
     private val mcpRegistry: McpRegistry? = null,
     private val hookBus: HookBusRunner = HookBusRunner(),
     private val codexAppServer: CodexAppServerClient? = null,
+    private val codexAccountManager: AndroidCodexAccountManager? = null,
     private val computerWorkspaceGateway: ComputerWorkspaceGateway = UnavailableComputerWorkspaceGateway
 ) {
     private companion object {
@@ -2193,6 +2222,12 @@ class ChatSessionManager(
         val turnId: String
     )
 
+    private data class PreparedCodexRuntime(
+        val account: com.murong.agent.core.codex.CodexAccount?,
+        val accountId: String,
+        val switched: Boolean,
+    )
+
     private val _state = MutableStateFlow(SessionState())
     val state: StateFlow<SessionState> = _state.asStateFlow()
     private val _pendingPromptReplayNotices = MutableSharedFlow<String>(extraBufferCapacity = 1)
@@ -2220,6 +2255,9 @@ class ChatSessionManager(
     private val backgroundJobScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sessionPersistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val streamingAggregationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val auxiliaryVisionAnalyzer = AuxiliaryVisionAnalyzer()
+    private val imageGenerationClient = OpenAIImageGenerationClient()
+    private val imageUpscaler = ReplicateImageUpscaler()
     private val maxConcurrentSubagentExecutions = 2
     private val maxConcurrentBackgroundJobs = 2
     private val pendingStreamingLock = Any()
@@ -3584,15 +3622,23 @@ class ChatSessionManager(
         saveCurrentSession()
     }
 
-    fun completeCurrentSessionGoal() {
+    fun completeCurrentSessionGoal(result: String = "") {
         if (_state.value.sessionGoal.isNullOrBlank()) return
         val completedGoal = _state.value.sessionGoal
         _state.value = _state.value.copy(
             sessionGoal = null,
             goalStatus = GoalStatusUi.ACTIVE
         )
+        val normalizedResult = result.trim().take(2_000)
         appendSystemMessage(
-            content = "✅ 目标已完成，已退出目标模式：$completedGoal",
+            content = buildString {
+                append("✅ 目标已完成，已退出目标模式：")
+                append(completedGoal)
+                if (normalizedResult.isNotBlank()) {
+                    append("\n\n结果：")
+                    append(normalizedResult)
+                }
+            },
             source = "goal:complete"
         )
         saveCurrentSession()
@@ -4425,6 +4471,282 @@ class ChatSessionManager(
         forcedExecutionConfig = null,
     )
 
+    suspend fun generateImage(prompt: String) {
+        val normalizedPrompt = prompt.trim()
+        if (normalizedPrompt.isBlank() || _state.value.isProcessing) return
+        val config = resolveEffectiveSessionConfig(configRepository.getConfig())
+        val route = config.resolveImageGenerationRoute()
+        if (route == null || route.model.isBlank()) {
+            appendSystemMessage(
+                content = "⚠️ 尚未配置可用的图片生成连接，请先到设置中的视觉与生图配置。",
+                source = "image_generation:missing_route"
+            )
+            return
+        }
+        if (route.apiKey.isBlank() && !isLocalModelBaseUrl(route.baseUrl)) {
+            appendSystemMessage(
+                content = "⚠️ 图片生成连接缺少 API Key。",
+                source = "image_generation:missing_api_key"
+            )
+            return
+        }
+
+        val userMessage = ChatMessageUi(
+            id = nextId(),
+            role = "user",
+            content = normalizedPrompt,
+        )
+        val assistantId = nextId()
+        val startedAt = System.currentTimeMillis()
+        val assistantMessage = ChatMessageUi(
+            id = assistantId,
+            role = "assistant",
+            content = "正在准备生成图片…",
+            imageGeneration = ImageGenerationUi(
+                prompt = normalizedPrompt,
+                providerId = route.providerId,
+                model = route.model,
+                status = "running",
+                stage = "正在准备生成图片",
+                createdAt = startedAt,
+            ),
+        )
+        appendMessages(userMessage, assistantMessage)
+        _state.value = _state.value.copy(isProcessing = true, error = null)
+        processingCancelledByUser = false
+        lastSessionConfig = config
+
+        val settings = ImageGenerationSettings(
+            model = route.model,
+            size = config.imageGenerationSize,
+            quality = ImageGenerationQuality.entries.firstOrNull {
+                it.apiValue == config.imageGenerationQuality.lowercase()
+            } ?: ImageGenerationQuality.AUTO,
+            format = ImageGenerationFormat.entries.firstOrNull {
+                it.apiValue == config.imageGenerationFormat.lowercase()
+            } ?: ImageGenerationFormat.PNG,
+            compression = config.imageGenerationCompression.coerceIn(0, 100),
+            partialImages = config.imageGenerationPartialImages.coerceIn(0, 3),
+        )
+        var partialAttachment: MessageImageAttachmentUi? = null
+        try {
+            val generated = imageGenerationClient.generate(
+                request = ImageGenerationRequest(normalizedPrompt, settings),
+                apiKey = route.apiKey,
+                baseUrl = route.baseUrl,
+                onProgress = { progress ->
+                    when (progress) {
+                        is ImageGenerationProgress.Stage -> {
+                            updateImageGenerationMessage(
+                                messageId = assistantId,
+                                status = "running",
+                                stage = progress.label,
+                            )
+                        }
+                        is ImageGenerationProgress.PartialImage -> {
+                            val attachment = persistGeneratedImage(
+                                progress.image,
+                                prefix = "partial-${progress.index}",
+                            )
+                            partialAttachment?.localCachePath?.let { old ->
+                                if (old != attachment.localCachePath) runCatching { File(old).delete() }
+                            }
+                            partialAttachment = attachment
+                            updateImageGenerationMessage(
+                                messageId = assistantId,
+                                status = "running",
+                                stage = "正在生成局部预览 ${progress.index}",
+                                attachment = attachment,
+                            )
+                        }
+                    }
+                },
+            )
+            val finalAttachment = persistGeneratedImage(generated, prefix = "generated")
+            partialAttachment?.localCachePath?.let { old ->
+                if (old != finalAttachment.localCachePath) runCatching { File(old).delete() }
+            }
+            updateImageGenerationMessage(
+                messageId = assistantId,
+                status = "completed",
+                stage = "图片生成完成",
+                attachment = finalAttachment,
+                revisedPrompt = generated.revisedPrompt,
+            )
+            if (_state.value.sessionTitle == "新对话") {
+                _state.value = _state.value.copy(
+                    sessionTitle = conversationStore.generateTitle(_state.value.messages)
+                )
+            }
+        } catch (error: CancellationException) {
+            updateImageGenerationMessage(
+                messageId = assistantId,
+                status = "cancelled",
+                stage = "已取消生成",
+                error = null,
+                attachment = partialAttachment,
+            )
+            throw error
+        } catch (error: Throwable) {
+            val message = SensitiveDataSanitizer.sanitizeText(error.message.orEmpty())
+                .replace(Regex("\\s+"), " ")
+                .trim()
+                .take(300)
+                .ifBlank { "图片生成失败" }
+            updateImageGenerationMessage(
+                messageId = assistantId,
+                status = "failed",
+                stage = "图片生成失败",
+                error = message,
+                attachment = partialAttachment,
+            )
+            recordError(message)
+        } finally {
+            _state.value = _state.value.copy(isProcessing = false)
+            saveCurrentSession(config)
+        }
+    }
+
+    suspend fun retryImageGeneration(messageId: Long) {
+        val generation = _state.value.messages.firstOrNull { it.id == messageId }?.imageGeneration
+        if (generation?.operation == "upscale_4k") {
+            upscaleGeneratedImage4K(generation.sourceMessageId ?: messageId)
+            return
+        }
+        if (generation?.status == "completed") {
+            upscaleGeneratedImage4K(messageId)
+            return
+        }
+        val prompt = generation?.prompt?.trim().orEmpty()
+        if (prompt.isBlank()) {
+            appendSystemMessage(
+                content = "⚠️ 找不到这条图片生成请求的提示词。",
+                source = "image_generation:retry_missing_prompt"
+            )
+            return
+        }
+        generateImage(prompt)
+    }
+
+    suspend fun upscaleGeneratedImage4K(messageId: Long) {
+        if (_state.value.isProcessing) return
+        val source = _state.value.messages.firstOrNull { it.id == messageId }
+        val sourceGeneration = source?.imageGeneration
+        val attachment = source?.imageAttachments?.lastOrNull()
+        if (sourceGeneration == null || sourceGeneration.status != "completed" || attachment == null) {
+            appendSystemMessage("⚠️ 只有已完成且有图片缓存的生成结果才能进行 4K 超分。", "image_upscale:missing_source")
+            return
+        }
+        val config = resolveEffectiveSessionConfig(configRepository.getConfig())
+        if (config.imageUpscaleApiKey.isBlank()) {
+            appendSystemMessage("⚠️ 尚未配置真实 4K 超分 API Key，请在设置中填写 Replicate Token。", "image_upscale:missing_api_key")
+            return
+        }
+        val input = runCatching { File(attachment.localCachePath).readBytes() }.getOrElse {
+            appendSystemMessage("⚠️ 原图缓存已不存在，无法进行 4K 超分。", "image_upscale:missing_file")
+            return
+        }
+        val assistantId = nextId()
+        val startedAt = System.currentTimeMillis()
+        appendMessages(
+            ChatMessageUi(
+                id = assistantId,
+                role = "assistant",
+                content = "正在准备真实 4K 超分…",
+                imageGeneration = ImageGenerationUi(
+                    prompt = sourceGeneration.prompt,
+                    providerId = config.imageUpscaleProviderId,
+                    model = config.imageUpscaleModel,
+                    status = "running",
+                    stage = "正在准备真实 4K 超分",
+                    operation = "upscale_4k",
+                    sourceMessageId = messageId,
+                    createdAt = startedAt,
+                ),
+            ),
+        )
+        _state.value = _state.value.copy(isProcessing = true, error = null)
+        processingCancelledByUser = false
+        lastSessionConfig = config
+        try {
+            val result = imageUpscaler.upscale(
+                request = ImageUpscaleRequest(
+                    image = input,
+                    mimeType = attachment.mimeType,
+                    model = config.imageUpscaleModel,
+                    scale = config.imageUpscaleScale,
+                ),
+                apiKey = config.imageUpscaleApiKey,
+                baseUrl = config.imageUpscaleBaseUrl,
+                onProgress = { progress ->
+                    when (progress) {
+                        is ImageUpscaleProgress.Stage -> updateImageGenerationMessage(
+                            messageId = assistantId,
+                            status = "running",
+                            stage = progress.label,
+                        )
+                    }
+                },
+            )
+            val output = persistGeneratedImage(
+                GeneratedImage(result.bytes, result.mimeType, result.extension),
+                prefix = "upscaled-4k",
+            )
+            updateImageGenerationMessage(
+                messageId = assistantId,
+                status = "completed",
+                stage = "真实 4K 超分完成：${result.width}×${result.height}",
+                attachment = output,
+            )
+        } catch (error: CancellationException) {
+            updateImageGenerationMessage(assistantId, "cancelled", "已取消 4K 超分")
+            throw error
+        } catch (error: Throwable) {
+            val message = SensitiveDataSanitizer.sanitizeText(error.message.orEmpty())
+                .replace(Regex("\\s+"), " ").trim().take(300).ifBlank { "4K 超分失败" }
+            updateImageGenerationMessage(assistantId, "failed", "真实 4K 超分失败", error = message)
+            recordError(message)
+        } finally {
+            _state.value = _state.value.copy(isProcessing = false)
+            saveCurrentSession(config)
+        }
+    }
+
+    fun saveGeneratedImageToGallery(messageId: Long): Result<String> = runCatching {
+        val attachment = _state.value.messages
+            .firstOrNull { it.id == messageId }
+            ?.imageAttachments
+            ?.lastOrNull()
+            ?: error("没有可保存的生成图片")
+        val source = File(attachment.localCachePath)
+        require(source.isFile) { "生成图片缓存已不存在" }
+        val displayName = attachment.fileName.ifBlank { source.name }
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
+            put(MediaStore.Images.Media.MIME_TYPE, attachment.mimeType)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/MurongAgent")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+        }
+        val resolver = context.contentResolver
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            ?: error("无法创建系统图片记录")
+        try {
+            resolver.openOutputStream(uri)?.use { output -> source.inputStream().use { it.copyTo(output) } }
+                ?: error("无法写入系统相册")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                resolver.update(uri, ContentValues().apply {
+                    put(MediaStore.Images.Media.IS_PENDING, 0)
+                }, null, null)
+            }
+        } catch (error: Throwable) {
+            resolver.delete(uri, null, null)
+            throw error
+        }
+        uri.toString()
+    }
+
     suspend fun sendMessageWithExecutionConfig(
         text: String,
         pendingImages: List<PendingImageAttachmentUi> = emptyList(),
@@ -4530,7 +4852,7 @@ class ChatSessionManager(
             return null
         }
 
-        val provider = ProviderRegistry.getActiveProvider(plannerConfig.activeProviderId)
+        val provider = ProviderRegistry.getActiveProvider(plannerConfig.getActiveRuntimeProviderId())
         val stateBeforePlanning = _state.value
         val history = buildHistory()
         val compressionContext = buildCompressionContext()
@@ -4667,7 +4989,7 @@ class ChatSessionManager(
             return
         }
 
-        val provider = ProviderRegistry.getActiveProvider(plannerConfig.activeProviderId)
+        val provider = ProviderRegistry.getActiveProvider(plannerConfig.getActiveRuntimeProviderId())
         val stateBeforePlanning = _state.value
         val history = buildHistory()
         val compressionContext = buildCompressionContext()
@@ -4832,7 +5154,7 @@ class ChatSessionManager(
             return
         }
 
-        val provider = ProviderRegistry.getActiveProvider(plannerConfig.activeProviderId)
+        val provider = ProviderRegistry.getActiveProvider(plannerConfig.getActiveRuntimeProviderId())
         val stateBeforeClarification = _state.value
         val history = buildHistory()
         val compressionContext = buildCompressionContext()
@@ -4987,7 +5309,7 @@ class ChatSessionManager(
             return
         }
 
-        val provider = ProviderRegistry.getActiveProvider(plannerConfig.activeProviderId)
+        val provider = ProviderRegistry.getActiveProvider(plannerConfig.getActiveRuntimeProviderId())
         val history = buildHistory()
         val compressionContext = buildCompressionContext()
         val followUpDecision = try {
@@ -5174,7 +5496,7 @@ class ChatSessionManager(
             return
         }
 
-        val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
+        val provider = ProviderRegistry.getActiveProvider(config.getActiveRuntimeProviderId())
 
         // 创建 ToolRegistry（包含 MCP 工具）
         val toolRegistry = createToolRegistry(
@@ -5284,9 +5606,30 @@ class ChatSessionManager(
                 ""
             }
         }
+        val visionDescription = if (importedImages.isNotEmpty()) {
+            val visionRoute = config.resolveVisionRoute()
+            if (visionRoute != null) {
+                runCatching {
+                    auxiliaryVisionAnalyzer.analyze(
+                        route = visionRoute,
+                        images = importedImages.mapNotNull(::buildChatImageAttachment),
+                        userPrompt = resolvedBaseModelInput,
+                    )
+                }.getOrElse { error ->
+                    appendSystemMessage(
+                        content = "⚠️ 独立看图模型调用失败：${error.message.orEmpty().take(240)}",
+                        source = "send_message:vision_route_failed"
+                    )
+                    return
+                }
+            } else null
+        } else null
         val resolvedModelInput = listOfNotNull(
             turnScopedUserContext,
-            resolvedBaseModelInput.takeIf { it.isNotBlank() }
+            resolvedBaseModelInput.takeIf { it.isNotBlank() },
+            visionDescription?.let {
+                "独立看图模型观察结果（仅供参考，请结合当前任务核验）：\n$it"
+            }
         ).joinToString("\n\n")
 
         val userMsg = ChatMessageUi(
@@ -5316,7 +5659,7 @@ class ChatSessionManager(
             val userModelMessage = ChatMessage(
                 role = "user",
                 content = resolvedModelInput.ifBlank { null },
-                images = if (config.isMultimodalEnabled()) {
+                images = if (config.isMultimodalEnabled() && visionDescription == null) {
                     importedImages.mapNotNull(::buildChatImageAttachment)
                 } else {
                     emptyList()
@@ -5420,6 +5763,24 @@ class ChatSessionManager(
                         state = _state.value,
                         executionGoal = executionGoal
                     )
+                },
+                goalContinuationGuard = if (
+                    !readOnlyPlanMode &&
+                    !_state.value.sessionGoal.isNullOrBlank() &&
+                    _state.value.goalStatus == GoalStatusUi.ACTIVE
+                ) {
+                    { assistantContent ->
+                        val markers = parseGoalControlMarkers(assistantContent.orEmpty())
+                        if (markers?.complete == true || markers?.pause == true) {
+                            null
+                        } else {
+                            "目标模式仍在进行。你还没有调用 complete_goal，也没有输出 [goal:complete]。" +
+                                "不要结束本轮；请继续使用必要工具推进和验证。只有目标真实达成时才调用 complete_goal；" +
+                                "若确实需要用户决定，请使用 ask_user。"
+                        }
+                    }
+                } else {
+                    null
                 },
                 enforceFinalReadinessWithoutCurrentToolRuns = shouldEnforcePersistentFinalReadiness,
                 initialResponsesContinuation = responsesContinuation,
@@ -5548,14 +5909,20 @@ class ChatSessionManager(
         var approvalJob: Job? = null
         var completedTurn: CodexTurn? = null
         try {
-            appServer.start()
-            val account = appServer.accountRead()
-            if (account.account == null) {
+            val preparedRuntime = prepareCodexRuntimeForTurn(appServer)
+            if (preparedRuntime.account == null) {
                 appendSystemMessage(
                     content = "🔐 ChatGPT 尚未登录。请到「设置 → Codex / ChatGPT」完成设备码登录后再发送任务。",
                     source = "codex:chatgpt_not_signed_in"
                 )
                 return
+            }
+
+            val codexStateBeforeSend = if (preparedRuntime.switched) {
+                _state.value = _state.value.copy(codexThreadId = null)
+                stateBeforeSend.copy(codexThreadId = null)
+            } else {
+                stateBeforeSend
             }
 
             val importedImages = if (config.isMultimodalEnabled()) {
@@ -5577,8 +5944,8 @@ class ChatSessionManager(
                 return
             }
 
-            val threadOptions = buildCodexThreadOptions(config, stateBeforeSend)
-            val thread = stateBeforeSend.codexThreadId
+            val threadOptions = buildCodexThreadOptions(config, codexStateBeforeSend)
+            val thread = codexStateBeforeSend.codexThreadId
                 ?.let { threadId -> runCatching { appServer.threadResume(threadId, threadOptions) }.getOrNull() }
                 ?: appServer.threadStart(threadOptions)
             val threadId = thread.id?.takeIf { it.isNotBlank() }
@@ -5730,6 +6097,13 @@ class ChatSessionManager(
             completedTurn = turnCompletion.await()
             finalizeStreaming()
 
+            _state.value.messages.lastOrNull { message -> message.role == "assistant" }?.let { assistantMessage ->
+                handleGoalControlMarkersIfNeeded(
+                    assistantMessageId = assistantMessage.id,
+                    mentionedFiles = mentionedFiles
+                )
+            }
+
             completedTurn.error?.message?.takeIf { it.isNotBlank() }?.let { error ->
                 _state.value = _state.value.copy(error = "❌ ${sanitizeCodexDiagnostic(error)}")
             }
@@ -5763,23 +6137,140 @@ class ChatSessionManager(
         }
     }
 
+    private suspend fun prepareCodexRuntimeForTurn(
+        appServer: CodexAppServerClient,
+    ): PreparedCodexRuntime {
+        val accountManager = codexAccountManager
+        if (accountManager == null) {
+            appServer.start()
+            return PreparedCodexRuntime(
+                account = appServer.accountRead().account,
+                accountId = "",
+                switched = false,
+            )
+        }
+
+        val sessionId = currentSessionId
+        val originalAccountId = accountManager.activeAccountId()
+        var selectedAccountId = originalAccountId
+        var switched = false
+        val pinned = accountManager.isSessionPinned(sessionId)
+        val preferred = accountManager.preferredAccountForSession(sessionId)
+        if (!preferred.isNullOrBlank() && preferred != selectedAccountId) {
+            val candidate = accountManager.bestAccount(
+                preferredId = preferred,
+                allowLowQuota = pinned,
+            )
+            if (candidate == preferred) {
+                appServer.stop()
+                accountManager.activateAccount(candidate)
+                selectedAccountId = candidate
+                switched = true
+            } else if (pinned) {
+                error("当前会话固定的 Codex 账号不可用或处于冷却中")
+            }
+        }
+
+        suspend fun readActiveRuntime(): Pair<com.murong.agent.core.codex.CodexAccount?, com.murong.agent.core.codex.CodexRateLimitsSnapshot?> {
+            appServer.start()
+            val account = appServer.accountRead().account
+            val rates = if (account != null) runCatching { appServer.accountRateLimitsRead() }.getOrNull() else null
+            accountManager.captureRuntime(account, rates)
+            return account to rates
+        }
+
+        var runtime = readActiveRuntime()
+        accountManager.bindSession(sessionId, selectedAccountId)
+        val settings = accountManager.settings()
+        if (pinned || !settings.autoSwitch || runtime.first == null || !accountManager.isLowQuota(selectedAccountId)) {
+            return PreparedCodexRuntime(runtime.first, selectedAccountId, switched)
+        }
+
+        val tried = linkedSetOf(selectedAccountId)
+        repeat(accountManager.state.value.accounts.size - 1) {
+            val candidate = accountManager.bestAccount(excluded = tried) ?: return@repeat
+            tried += candidate
+            val candidateRuntime = runCatching {
+                appServer.stop()
+                accountManager.activateAccount(candidate)
+                selectedAccountId = candidate
+                readActiveRuntime()
+            }.getOrElse { failure ->
+                accountManager.markFailure(candidate, failure.message ?: failure.javaClass.simpleName)
+                return@repeat
+            }
+            if (candidateRuntime.first == null) {
+                accountManager.markFailure(candidate, "备用账号未登录")
+                return@repeat
+            }
+            if (accountManager.isLowQuota(candidate)) {
+                accountManager.markFailure(candidate, "账号额度已达到保留阈值")
+                return@repeat
+            }
+            runtime = candidateRuntime
+            switched = true
+            accountManager.bindSession(sessionId, candidate)
+            val label = accountManager.state.value.accounts
+                .firstOrNull { it.id == candidate }
+                ?.let { it.email ?: it.label }
+                ?: "备用账号"
+            accountManager.recordSwitchMessage("当前账号额度不足，已无感切换到 $label")
+            return PreparedCodexRuntime(runtime.first, candidate, switched)
+        }
+
+        if (accountManager.activeAccountId() != originalAccountId) {
+            runCatching {
+                appServer.stop()
+                accountManager.activateAccount(originalAccountId)
+                selectedAccountId = originalAccountId
+                runtime = readActiveRuntime()
+            }
+        }
+        accountManager.recordSwitchMessage("所有备用账号均不可用或额度不足，已保留当前账号")
+        return PreparedCodexRuntime(runtime.first, selectedAccountId, switched)
+    }
+
     private fun addCodexLocalImage(path: String): CodexUserInput = CodexUserInput.LocalImage(path)
 
     private fun buildCodexThreadOptions(
         config: ProviderConfig,
         state: SessionState
-    ): CodexThreadOptions = CodexThreadOptions(
-        model = config.codexModel.trim().takeIf { it.isNotBlank() },
-        cwd = buildCodexWorkingDirectory(state),
-        // Codex asks the app for each approval; Murong then applies the user's
-        // existing approval posture before returning that answer to app-server.
-        approvalPolicy = "on-request",
-        approvalsReviewer = "user",
-        // Android/PRoot cannot depend on the desktop bwrap sandbox. Requests
-        // remain gated by the application approval UI above.
-        sandbox = "danger-full-access",
-        baseInstructions = config.systemPrompt.trim().takeIf { it.isNotBlank() }
-    )
+    ): CodexThreadOptions {
+        val instructions = buildString {
+            config.systemPrompt.trim().takeIf { it.isNotBlank() }?.let(::appendLine)
+            state.sessionGoal?.trim()?.takeIf { it.isNotBlank() }?.let { goal ->
+                if (isNotEmpty()) appendLine()
+                appendLine("当前会话长期目标：")
+                appendLine(goal)
+                if (state.goalStatus == GoalStatusUi.PAUSED) {
+                    appendLine("目标状态：PAUSED。用户恢复前不要继续推进。")
+                } else {
+                    appendLine("目标状态：ACTIVE。持续推进，不得用阶段性结论提前结束。")
+                    appendLine("目标真实达成并完成必要验证后，在最终回复开头单独输出 [goal:complete]；该标记会立即结束目标模式。若尚未达成，不要结束当前工作。")
+                }
+            }
+            (state.canonicalWorkflowPlan ?: state.pendingWorkflowPlan)
+                ?.takeIf { it.status == WorkflowPlanStatusUi.EXECUTING || it.status == WorkflowPlanStatusUi.BLOCKED }
+                ?.let { plan ->
+                    if (isNotEmpty()) appendLine()
+                    appendLine(buildWorkflowExecutionPrompt(state, plan))
+                    appendLine()
+                    appendLine("全部步骤签收且目标达成后，输出 [goal:complete] 并立即收口。")
+                }
+        }.trim().takeIf { it.isNotBlank() }
+        return CodexThreadOptions(
+            model = config.codexModel.trim().takeIf { it.isNotBlank() },
+            cwd = buildCodexWorkingDirectory(state),
+            // Codex asks the app for each approval; Murong then applies the user's
+            // existing approval posture before returning that answer to app-server.
+            approvalPolicy = "on-request",
+            approvalsReviewer = "user",
+            // Android/PRoot cannot depend on the desktop bwrap sandbox. Requests
+            // remain gated by the application approval UI above.
+            sandbox = "danger-full-access",
+            baseInstructions = instructions
+        )
+    }
 
     private fun buildCodexWorkingDirectory(state: SessionState): String {
         return state.projectPath
@@ -6862,6 +7353,8 @@ class ChatSessionManager(
         if (!hasActiveProcessing) return false
         processingCancelledByUser = true
         BuiltinVisionRuntime.cancelActiveGeneration()
+        imageGenerationClient.cancelActive()
+        imageUpscaler.cancelActive()
         agentLoop = null
         val codexTurn = activeCodexTurn
         if (codexTurn != null) {
@@ -7307,6 +7800,58 @@ class ChatSessionManager(
 
     private fun imageCacheDir(): File {
         return File(context.filesDir, "conversation_media").also { it.mkdirs() }
+    }
+
+    private fun persistGeneratedImage(
+        image: GeneratedImage,
+        prefix: String,
+    ): MessageImageAttachmentUi {
+        val fileName = "$prefix-${System.currentTimeMillis()}-${UUID.randomUUID()}.${image.extension}"
+        val target = File(imageCacheDir(), fileName)
+        target.writeBytes(image.bytes)
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(image.bytes, 0, image.bytes.size, bounds)
+        return MessageImageAttachmentUi(
+            fileName = fileName,
+            mimeType = image.mimeType,
+            localCachePath = target.absolutePath,
+            width = bounds.outWidth.takeIf { it > 0 },
+            height = bounds.outHeight.takeIf { it > 0 },
+            sizeBytes = image.bytes.size.toLong(),
+        )
+    }
+
+    private fun updateImageGenerationMessage(
+        messageId: Long,
+        status: String,
+        stage: String,
+        error: String? = null,
+        attachment: MessageImageAttachmentUi? = null,
+        revisedPrompt: String? = null,
+    ) {
+        updateMessageById(messageId) { message ->
+            val generation = message.imageGeneration ?: return@updateMessageById message
+            val content = buildString {
+                append(stage)
+                revisedPrompt?.trim()?.takeIf(String::isNotBlank)?.let {
+                    append("\n\n优化后的提示词：")
+                    append(it)
+                }
+                error?.takeIf(String::isNotBlank)?.let {
+                    append("\n\n")
+                    append(it)
+                }
+            }
+            message.copy(
+                content = content,
+                imageAttachments = attachment?.let(::listOf) ?: message.imageAttachments,
+                imageGeneration = generation.copy(
+                    status = status,
+                    stage = stage,
+                    error = error,
+                ),
+            )
+        }
     }
 
     private fun importPendingImageAttachments(
@@ -7790,6 +8335,24 @@ class ChatSessionManager(
                 workflowSnapshotProvider = ::buildWorkflowExecutionSnapshot,
                 onWorkflowStepCompleted = ::markWorkflowStepCompleted
             )
+        )
+        registry.register(
+            CompleteGoalTool(
+                currentGoalProvider = { _state.value.sessionGoal },
+                completionBlockReasonProvider = {
+                    val plan = _state.value.canonicalWorkflowPlan
+                        ?: _state.value.pendingWorkflowPlan
+                    plan?.takeUnless { it.status == WorkflowPlanStatusUi.COMPLETED }?.let {
+                        "计划尚未完成，不能结束目标；当前进度 ${it.currentStepIndex}/${it.steps.size}。"
+                    }
+                },
+                onGoalCompleted = { result -> completeCurrentSessionGoal(result) }
+            ),
+            isEnabled = {
+                allowWriteTools &&
+                    !_state.value.sessionGoal.isNullOrBlank() &&
+                    _state.value.goalStatus == GoalStatusUi.ACTIVE
+            }
         )
         if (config.isBuiltinToolEnabled("shell")) {
             registry.register(
@@ -9505,7 +10068,7 @@ class ChatSessionManager(
             )
             return false
         }
-        val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
+        val provider = ProviderRegistry.getActiveProvider(config.getActiveRuntimeProviderId())
         val tool = createSubagentTool(provider, config)
         val args = buildJsonObject {
             put("goal", originalRun.goal)
@@ -9992,12 +10555,14 @@ class ChatSessionManager(
             if (paused) {
                 appendLine("Goal status: PAUSED. Do not continue working toward this goal until the user resumes it.")
             } else {
-                appendLine("Goal status: ACTIVE. Keep replies and execution aligned with this goal unless the user clearly changes or clears it.")
+                appendLine("Goal status: ACTIVE. Continue working until the goal is genuinely achieved; do not stop after a progress-only conclusion.")
+                appendLine("When the goal is achieved and necessary verification is complete, call complete_goal immediately. A successful complete_goal call ends the goal and this turn.")
             }
             appendLine()
             appendLine(
                 "You can change goal/plan state by starting your reply with one control marker on its own line. " +
-                    "Use them only when the user explicitly asks to open, update, pause, resume, complete a goal, or start planning:"
+                    "Use start/update/pause/resume/plan markers only when the user explicitly asks. " +
+                    "You may emit [goal:complete] yourself when the goal is genuinely achieved, though complete_goal is preferred:"
             )
             appendLine("  [goal:start] <new goal text>   — open goal mode with this goal and start working toward it")
             appendLine("  [goal:update] <new goal text>  — replace the current goal")
@@ -10352,6 +10917,7 @@ class ChatSessionManager(
             }
             appendLine("步骤签收要求:")
             appendLine("每当完成一个计划步骤、验证步骤或关键执行步骤时，先调用 complete_step，并引用本轮真实工具证据，再在自然语言里声称这一步已经完成。")
+            appendLine("全部步骤签收且长期目标已经达成后，立即调用 complete_goal；不要再追加无关操作。")
             activeParallelBatchHint?.let { hint ->
                 appendLine()
                 appendLine("并行批次约束:")
@@ -12093,7 +12659,7 @@ class ChatSessionManager(
             .getOrElse { lastSessionConfig }
         if (!config.hasUsableActiveProviderCredentials()) return localSummary
 
-        val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
+        val provider = ProviderRegistry.getActiveProvider(config.getActiveRuntimeProviderId())
         val response = runCatching {
             callProviderWithConfiguredStreaming(
                 provider = provider,

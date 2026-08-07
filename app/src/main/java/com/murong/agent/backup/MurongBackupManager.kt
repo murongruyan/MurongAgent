@@ -9,6 +9,8 @@ import com.murong.agent.core.config.ConfigBackupSnapshot
 import com.murong.agent.core.config.ConfigRepository
 import com.murong.agent.core.config.ProviderConfig
 import com.murong.agent.core.codex.CodexAppServerClient
+import com.murong.agent.core.codex.AndroidCodexAccountManager
+import com.murong.agent.core.github.AndroidGitHubAccountManager
 import com.murong.agent.core.loop.PortableConversationBackupRecord
 import com.murong.agent.core.loop.PortableConversationBackupStore
 import com.murong.agent.lan.LanWebCredentialSyncBridge
@@ -40,10 +42,14 @@ class MurongBackupManager(
     private val appContext = context.applicationContext
     private val preferences = MurongBackupPreferences(appContext)
     private val workflowScheduler = SavedWorkflowScheduler(appContext, reconcileInterruptedRuns = false)
+    private val fallbackCodexAccountManager by lazy { AndroidCodexAccountManager(appContext) }
+    private val fallbackGitHubAccountManager by lazy { AndroidGitHubAccountManager(appContext) }
     private val credentialSyncBridge = credentialSyncBridge ?: LanWebCredentialSyncBridge(
         appContext,
         configRepository,
-        CodexAppServerClient(appContext),
+        CodexAppServerClient(appContext, accountHomeProvider = fallbackCodexAccountManager),
+        fallbackCodexAccountManager,
+        fallbackGitHubAccountManager,
         mcpRegistry
     )
     private val portableConversationStore = PortableConversationBackupStore(appContext)

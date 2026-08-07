@@ -163,7 +163,7 @@ internal fun buildPhoneAgentModelOptions(
     val currentProfile = if (config.usesCodexChatGptBackend()) {
         "ChatGPT / Codex · ${config.codexModel.trim().ifBlank { "账号默认模型" }}"
     } else {
-        val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
+        val provider = ProviderRegistry.getActiveProvider(config.getActiveRuntimeProviderId())
         "${provider.name} · ${provider.formatModelDisplayName(config.getActiveModel())}"
     }
     val currentChatSupportsVision = config.usesCodexChatGptBackend() ||
@@ -228,7 +228,7 @@ internal fun buildAssistantCodeModelOptions(
     val currentProfile = if (config.usesCodexChatGptBackend()) {
         "ChatGPT / Codex · ${config.codexModel.trim().ifBlank { "账号默认模型" }}"
     } else {
-        val provider = ProviderRegistry.getActiveProvider(config.activeProviderId)
+        val provider = ProviderRegistry.getActiveProvider(config.getActiveRuntimeProviderId())
         "${provider.name} · ${provider.formatModelDisplayName(config.getActiveModel())}"
     }
     return buildList {
@@ -895,7 +895,7 @@ private fun GuiAutomationSettingsCard(
         "ChatGPT / Codex · " +
             phoneAgentModelConfig.codexModel.trim().ifBlank { "账号默认模型" }
     } else {
-        val provider = ProviderRegistry.getActiveProvider(phoneAgentModelConfig.activeProviderId)
+        val provider = ProviderRegistry.getActiveProvider(phoneAgentModelConfig.getActiveRuntimeProviderId())
         "${
             provider.name
         } · ${provider.formatModelDisplayName(phoneAgentModelConfig.getActiveModel())}"

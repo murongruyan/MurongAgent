@@ -44,6 +44,9 @@ class ConfigRepository(private val context: Context) {
         private const val SECRET_GITHUB_CLIENT_SECRET = "github_client_secret"
         private const val SECRET_GITHUB_BACKEND_SESSION_TOKEN = "github_backend_session_token"
         private const val SECRET_WEB_SEARCH_BING_API_KEY = "web_search_bing_api_key"
+        private const val SECRET_VISION_CUSTOM_API_KEY = "vision_custom_api_key"
+        private const val SECRET_IMAGE_GENERATION_CUSTOM_API_KEY = "image_generation_custom_api_key"
+        private const val SECRET_IMAGE_UPSCALE_API_KEY = "image_upscale_api_key"
         private val INPUT_HISTORY_KEY = stringPreferencesKey("chat_input_history")
         /** Provider IDs permitted to create entries in the encrypted relay key store. */
         private val SECURE_RELAY_PROVIDER_IDS = setOf(
@@ -314,7 +317,10 @@ class ConfigRepository(private val context: Context) {
             githubToken = secureSecretStore.read(SECRET_GITHUB_TOKEN),
             githubClientSecret = secureSecretStore.read(SECRET_GITHUB_CLIENT_SECRET),
             githubBackendSessionToken = secureSecretStore.read(SECRET_GITHUB_BACKEND_SESSION_TOKEN),
-            webSearchBingApiKey = secureSecretStore.read(SECRET_WEB_SEARCH_BING_API_KEY)
+            webSearchBingApiKey = secureSecretStore.read(SECRET_WEB_SEARCH_BING_API_KEY),
+            visionCustomApiKey = secureSecretStore.read(SECRET_VISION_CUSTOM_API_KEY),
+            imageGenerationCustomApiKey = secureSecretStore.read(SECRET_IMAGE_GENERATION_CUSTOM_API_KEY),
+            imageUpscaleApiKey = secureSecretStore.read(SECRET_IMAGE_UPSCALE_API_KEY),
         )
     }
 
@@ -332,6 +338,9 @@ class ConfigRepository(private val context: Context) {
         secureSecretStore.write(SECRET_GITHUB_CLIENT_SECRET, config.githubClientSecret)
         secureSecretStore.write(SECRET_GITHUB_BACKEND_SESSION_TOKEN, config.githubBackendSessionToken)
         secureSecretStore.write(SECRET_WEB_SEARCH_BING_API_KEY, config.webSearchBingApiKey)
+        secureSecretStore.write(SECRET_VISION_CUSTOM_API_KEY, config.visionCustomApiKey)
+        secureSecretStore.write(SECRET_IMAGE_GENERATION_CUSTOM_API_KEY, config.imageGenerationCustomApiKey)
+        secureSecretStore.write(SECRET_IMAGE_UPSCALE_API_KEY, config.imageUpscaleApiKey)
     }
 
     private data class SensitiveSecrets(
@@ -341,7 +350,10 @@ class ConfigRepository(private val context: Context) {
         val githubToken: String = "",
         val githubClientSecret: String = "",
         val githubBackendSessionToken: String = "",
-        val webSearchBingApiKey: String = ""
+        val webSearchBingApiKey: String = "",
+        val visionCustomApiKey: String = "",
+        val imageGenerationCustomApiKey: String = "",
+        val imageUpscaleApiKey: String = "",
     )
 
     private fun ProviderConfig.withSensitiveSecrets(secrets: SensitiveSecrets): ProviderConfig {
@@ -377,7 +389,10 @@ class ConfigRepository(private val context: Context) {
             githubToken = secrets.githubToken.ifBlank { githubToken },
             githubClientSecret = secrets.githubClientSecret.ifBlank { githubClientSecret },
             githubBackendSessionToken = secrets.githubBackendSessionToken.ifBlank { githubBackendSessionToken },
-            webSearchBingApiKey = secrets.webSearchBingApiKey.ifBlank { webSearchBingApiKey }
+            webSearchBingApiKey = secrets.webSearchBingApiKey.ifBlank { webSearchBingApiKey },
+            visionCustomApiKey = secrets.visionCustomApiKey.ifBlank { visionCustomApiKey },
+            imageGenerationCustomApiKey = secrets.imageGenerationCustomApiKey.ifBlank { imageGenerationCustomApiKey },
+            imageUpscaleApiKey = secrets.imageUpscaleApiKey.ifBlank { imageUpscaleApiKey },
         )
     }
 
@@ -395,7 +410,10 @@ class ConfigRepository(private val context: Context) {
             githubToken = "",
             githubClientSecret = "",
             githubBackendSessionToken = "",
-            webSearchBingApiKey = ""
+            webSearchBingApiKey = "",
+            visionCustomApiKey = "",
+            imageGenerationCustomApiKey = "",
+            imageUpscaleApiKey = "",
         )
     }
 
@@ -420,7 +438,10 @@ class ConfigRepository(private val context: Context) {
             githubToken.isNotBlank() ||
             githubClientSecret.isNotBlank() ||
             githubBackendSessionToken.isNotBlank() ||
-            webSearchBingApiKey.isNotBlank()
+            webSearchBingApiKey.isNotBlank() ||
+            visionCustomApiKey.isNotBlank() ||
+            imageGenerationCustomApiKey.isNotBlank() ||
+            imageUpscaleApiKey.isNotBlank()
     }
 
     private fun ProviderConfig.secureRelayProviderIds(): List<String> = buildList {

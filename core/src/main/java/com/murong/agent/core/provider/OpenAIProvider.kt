@@ -235,7 +235,11 @@ class OpenAIProvider : ModelProvider {
             .url(url)
             .apply {
                 apiKey.trim().takeIf { it.isNotEmpty() }?.let {
-                    addHeader("Authorization", "Bearer $it")
+                    if (url.contains(".openai.azure.com", ignoreCase = true)) {
+                        addHeader("api-key", it)
+                    } else {
+                        addHeader("Authorization", "Bearer $it")
+                    }
                 }
             }
             .apply { if (acceptSse) addHeader("Accept", "text/event-stream") }
