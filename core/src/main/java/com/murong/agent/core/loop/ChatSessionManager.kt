@@ -4462,6 +4462,7 @@ class ChatSessionManager(
         pendingImages: List<PendingImageAttachmentUi> = emptyList(),
         selectedSkills: List<GlobalSkill> = emptyList(),
         onUserMessageAccepted: ((ChatMessageUi) -> Unit)? = null,
+        planRequested: Boolean = false,
     ): String? = sendMessageUsingConfig(
         text = text,
         mentionedFiles = mentionedFiles,
@@ -4469,6 +4470,7 @@ class ChatSessionManager(
         selectedSkills = selectedSkills,
         onUserMessageAccepted = onUserMessageAccepted,
         forcedExecutionConfig = null,
+        planRequested = planRequested,
     )
 
     suspend fun generateImage(prompt: String) {
@@ -4764,6 +4766,7 @@ class ChatSessionManager(
         selectedSkills: List<GlobalSkill> = emptyList(),
         onUserMessageAccepted: ((ChatMessageUi) -> Unit)? = null,
         forcedExecutionConfig: ProviderConfig? = null,
+        planRequested: Boolean = false,
     ): String? {
         val normalizedText = text.trim()
         if ((normalizedText.isBlank() && pendingImages.isEmpty()) || _state.value.isProcessing) return null
@@ -4820,7 +4823,8 @@ class ChatSessionManager(
                     null
                 }
             ).joinToString("\n\n").takeIf { it.isNotBlank() },
-            onUserMessageAccepted = onUserMessageAccepted
+            onUserMessageAccepted = onUserMessageAccepted,
+            planRequested = planRequested
         )
         return mergeToastMessages(autoCompressionToast, executionToast)
     }
@@ -5448,7 +5452,8 @@ class ChatSessionManager(
         extraUserContext: String? = null,
         forceWritableTools: Boolean = false,
         planApprovalAutoApproveWindow: PlanApprovalAutoApproveWindow? = null,
-        onUserMessageAccepted: ((ChatMessageUi) -> Unit)? = null
+        onUserMessageAccepted: ((ChatMessageUi) -> Unit)? = null,
+        planRequested: Boolean = false
     ) {
         val stateBeforeSend = _state.value
         if ((modelInput.isBlank() && pendingImages.isEmpty()) || stateBeforeSend.isProcessing) return
@@ -5457,7 +5462,8 @@ class ChatSessionManager(
         val orchestratorDecision = resolveTurnOrchestratorDecision(
             state = stateBeforeSend,
             requestedExecutionGoal = requestedExecutionGoal,
-            forceWritableTools = forceWritableTools
+            forceWritableTools = forceWritableTools,
+            planModeEnabled = planRequested
         )
         val readOnlyPlanModeDecision = orchestratorDecision.readOnlyPlanModeDecision
         val readOnlyPlanMode = readOnlyPlanModeDecision.enabled
@@ -5474,7 +5480,8 @@ class ChatSessionManager(
                 extraUserContext = extraUserContext,
                 config = config,
                 stateBeforeSend = stateBeforeSend,
-                onUserMessageAccepted = onUserMessageAccepted
+                onUserMessageAccepted = onUserMessageAccepted,
+                planRequested = planRequested
             )
             return
         }
@@ -5826,6 +5833,35 @@ class ChatSessionManager(
                 clarificationInProgress = false,
                 autoRoutingInProgress = false
             )
+            // 计划首轮:模型先只读调查项目,最终输出的计划文本收成内联计划卡片,
+            // 与电脑端一致——先调查、再出计划、等用户确认后才执行。
+            if (planRequested) {
+                val assistantFinalContent = _state.value.messages
+                    .firstOrNull { it.id == assistantMsg.id }
+                    ?.content
+                    ?.trim()
+                    .orEmpty()
+                if (looksLikeWorkflowPlanText(assistantFinalContent)) {
+                    val parsedPlan = parseWorkflowPlan(
+                        goal = executionGoal,
+                        rawPlan = assistantFinalContent,
+                        mentionedFiles = mentionedFiles,
+                        recentSessionHistoryClue = stateBeforeSend.recentSessionHistoryClue
+                    )
+                    recordConversationPromptCheckpoint(
+                        summary = "交互状态: 已生成执行计划",
+                        createdAt = parsedPlan.createdAt
+                    )
+                    completedState = _state.value.copy(
+                        pendingWorkflowPlan = parsedPlan,
+                        canonicalWorkflowPlan = parsedPlan,
+                        workflowPlanningInProgress = false,
+                        pendingClarificationRequest = null,
+                        clarificationInProgress = false,
+                        autoRoutingInProgress = false
+                    )
+                }
+            }
             val finalizedTurnCheckpoint = finalizeTurnCheckpoint(
                 captureState = currentTurnCheckpointCaptureState,
                 checkpoints = completedState.checkpoints,
@@ -5894,7 +5930,8 @@ class ChatSessionManager(
         extraUserContext: String?,
         config: ProviderConfig,
         stateBeforeSend: SessionState,
-        onUserMessageAccepted: ((ChatMessageUi) -> Unit)? = null
+        onUserMessageAccepted: ((ChatMessageUi) -> Unit)? = null,
+        planRequested: Boolean = false
     ) {
         val appServer = codexAppServer
         if (appServer == null) {
@@ -6036,6 +6073,12 @@ class ChatSessionManager(
             val additionalContext = MurongAgentContextProvider
                 .buildContext(config, stateBeforeSend)
                 .toMutableMap()
+            if (planRequested) {
+                additionalContext["murong.planning_mode"] = CodexAdditionalContext(
+                    value = "当前为计划模式：先只读调查项目（读取文件、搜索、理解相关代码），然后输出一份简短、可执行、可验证的分步执行计划。不要修改文件、执行写命令或进行其他写入；本轮最终回复只给计划，格式：SUMMARY: 一句话总结 与 STEPS: 1. … 2. …，执行要等用户确认后才开始。",
+                    kind = CodexAdditionalContextKind.APPLICATION
+                )
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
                 additionalContext["murong.shared_storage_access"] = CodexAdditionalContext(
                     value = "Android 的“全部文件访问”当前未授予。/storage/emulated/0（含 /sdcard）下的普通文件可能会显示为空或不可读；不要声称已经读取其中的 ZIP、IMG、SH 等文件。请提示用户到慕容 Agent 的 设置 → 设备权限 → 文件访问 中授权后重试。",
@@ -6096,6 +6139,31 @@ class ChatSessionManager(
             activeCodexTurn = ActiveCodexTurn(threadId = threadId, turnId = turnId)
             completedTurn = turnCompletion.await()
             finalizeStreaming()
+
+            // 计划首轮(Codex 路径):把本轮最终输出的计划文本收成内联计划卡片。
+            if (planRequested) {
+                val assistantFinalContent = _state.value.messages
+                    .lastOrNull { message -> message.role == "assistant" }
+                    ?.content
+                    ?.trim()
+                    .orEmpty()
+                if (looksLikeWorkflowPlanText(assistantFinalContent)) {
+                    val parsedPlan = parseWorkflowPlan(
+                        goal = userVisibleText,
+                        rawPlan = assistantFinalContent,
+                        mentionedFiles = mentionedFiles,
+                        recentSessionHistoryClue = stateBeforeSend.recentSessionHistoryClue
+                    )
+                    _state.value = _state.value.copy(
+                        pendingWorkflowPlan = parsedPlan,
+                        canonicalWorkflowPlan = parsedPlan
+                    )
+                    recordConversationPromptCheckpoint(
+                        summary = "交互状态: 已生成执行计划",
+                        createdAt = parsedPlan.createdAt
+                    )
+                }
+            }
 
             _state.value.messages.lastOrNull { message -> message.role == "assistant" }?.let { assistantMessage ->
                 handleGoalControlMarkersIfNeeded(

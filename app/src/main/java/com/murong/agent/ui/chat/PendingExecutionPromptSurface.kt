@@ -242,7 +242,6 @@ private fun WorkflowPlanPromptContainer(
                 interactionState = interactionState,
                 onInteractionStateChange = onInteractionStateChange,
                 showDetailedHistory = showDetailedHistory,
-                allowContentScroll = true,
                 isProcessing = isProcessing,
                 onFork = onFork,
                 onExecute = onExecute,
@@ -259,7 +258,6 @@ private fun WorkflowPlanPromptContent(
     interactionState: WorkflowPlanInteractionState? = null,
     onInteractionStateChange: ((WorkflowPlanInteractionState) -> Unit)? = null,
     showDetailedHistory: Boolean,
-    allowContentScroll: Boolean = false,
     isProcessing: Boolean,
     onFork: () -> Unit,
     onExecute: () -> Unit,
@@ -292,15 +290,20 @@ private fun WorkflowPlanPromptContent(
     val surfaceColor = rememberMurongSurfaceColor()
     val mutedTextColor = rememberMurongMutedTextColor()
 
-    val contentModifier = if (allowContentScroll) {
-        Modifier.verticalScroll(rememberScrollState())
-    } else {
-        Modifier
-    }
+    // 内容区(标题~原始计划)高度受限、可滚动;状态摘要与操作按钮固定在
+    // 卡片底部,避免长计划把"执行/取消"等按钮挤出屏幕或无法滚动到达。
+    val contentScrollModifier = Modifier
+        .fillMaxWidth()
+        .heightIn(max = 420.dp)
+        .verticalScroll(rememberScrollState())
     Column(
-        modifier = contentModifier,
+        modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        Column(
+            modifier = contentScrollModifier,
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -370,10 +373,7 @@ private fun WorkflowPlanPromptContent(
         }
         AnimatedVisibility(visible = !sessionPresentation.collapsed) {
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 320.dp)
-                    .verticalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 if (presentation.stageChips.isNotEmpty()) {
@@ -474,6 +474,7 @@ private fun WorkflowPlanPromptContent(
                     }
                 }
             }
+        }
         }
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(

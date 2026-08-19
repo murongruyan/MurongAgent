@@ -191,4 +191,34 @@ class TurnOrchestratorPolicyTest {
         assertFalse(decision.allowWriteTools)
         assertEquals("修复卡顿", decision.activeGoal)
     }
+
+    @Test
+    fun resolveTurnOrchestratorDecision_enablesReadOnlyPlanningForPlanningRequest() {
+        val decision = resolveTurnOrchestratorDecision(
+            state = SessionState(),
+            requestedExecutionGoal = "重构登录模块",
+            forceWritableTools = false,
+            planModeEnabled = true
+        )
+
+        assertEquals(TurnOrchestratorStage.DIRECT_EXECUTION, decision.stage)
+        assertTrue(decision.readOnlyPlanModeDecision.enabled)
+        assertEquals(ReadOnlyPlanModeReason.PLANNING_REQUEST, decision.readOnlyPlanModeDecision.reason)
+        assertFalse(decision.allowWriteTools)
+        assertEquals("重构登录模块", decision.activeGoal)
+    }
+
+    @Test
+    fun resolveTurnOrchestratorDecision_planningRequestIgnoredWhenForceWritable() {
+        val decision = resolveTurnOrchestratorDecision(
+            state = SessionState(),
+            requestedExecutionGoal = "重构登录模块",
+            forceWritableTools = true,
+            planModeEnabled = true
+        )
+
+        assertFalse(decision.readOnlyPlanModeDecision.enabled)
+        assertEquals(ReadOnlyPlanModeReason.NONE, decision.readOnlyPlanModeDecision.reason)
+        assertTrue(decision.allowWriteTools)
+    }
 }

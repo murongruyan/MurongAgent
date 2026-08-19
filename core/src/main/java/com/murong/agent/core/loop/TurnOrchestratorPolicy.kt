@@ -23,12 +23,14 @@ internal data class TurnOrchestratorDecision(
 internal fun resolveTurnOrchestratorDecision(
     state: SessionState,
     requestedExecutionGoal: String? = null,
-    forceWritableTools: Boolean
+    forceWritableTools: Boolean,
+    planModeEnabled: Boolean = false
 ): TurnOrchestratorDecision {
     val normalizedGoal = requestedExecutionGoal?.trim().orEmpty()
     val readOnlyPlanModeDecision = resolveReadOnlyPlanModeDecision(
         state = state,
-        forceWritableTools = forceWritableTools
+        forceWritableTools = forceWritableTools,
+        planModeEnabled = planModeEnabled
     )
     val activePlan = resolveTurnOrchestratorActivePlan(
         state = state,

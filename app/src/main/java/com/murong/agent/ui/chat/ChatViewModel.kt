@@ -211,7 +211,8 @@ class ChatViewModel @Inject constructor(
         text: String,
         mentionedFiles: List<FileMentionUi> = emptyList(),
         pendingImages: List<PendingImageAttachmentUi> = emptyList(),
-        selectedSkills: List<GlobalSkill> = emptyList()
+        selectedSkills: List<GlobalSkill> = emptyList(),
+        planRequested: Boolean = false
     ) {
         if (_isSending.value) {
             stopSending()
@@ -219,7 +220,13 @@ class ChatViewModel @Inject constructor(
         launchSendingOperation {
             sessionManager.clearLastAutoRouteDecision()
             val toastMessage = withContext(Dispatchers.IO) {
-                sessionManager.sendMessage(text, mentionedFiles, pendingImages, selectedSkills)
+                sessionManager.sendMessage(
+                    text,
+                    mentionedFiles,
+                    pendingImages,
+                    selectedSkills,
+                    planRequested = planRequested
+                )
             }
             toastMessage?.let { _toastMessages.tryEmit(it) }
             refreshSessions()

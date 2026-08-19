@@ -324,7 +324,7 @@ internal fun ChatScreen(
     onSpeakAssistantMessage: (Long, String) -> Unit = { _, _ -> },
     onPauseVoicePlayback: () -> Unit = {},
     onResumeVoicePlayback: () -> Unit = {},
-    onSend: (String, List<FileMentionUi>, List<PendingImageAttachmentUi>, List<GlobalSkill>) -> Unit,
+    onSend: (String, List<FileMentionUi>, List<PendingImageAttachmentUi>, List<GlobalSkill>, Boolean) -> Unit,
     onGenerateImage: (String) -> Unit = {},
     onRetryImageGeneration: (Long) -> Unit = {},
     onSaveGeneratedImage: (Long) -> Unit = {},
@@ -358,7 +358,6 @@ internal fun ChatScreen(
     },
     onRollbackCheckpoint: (String, ConversationCheckpointScope) -> Unit = { _, _ -> },
     onForkCheckpointSession: (String) -> Unit = {},
-    onGeneratePlan: (String, List<FileMentionUi>) -> Unit = { _, _ -> },
     onExecutePlan: () -> Unit = {},
     onModifyWorkflowPlan: (String) -> Unit = {},
     onDismissPlan: () -> Unit = {},
@@ -1921,9 +1920,12 @@ internal fun ChatScreen(
                                 if (goalModeEnabled && sentText.isNotBlank()) {
                                     onSetSessionGoal(sentText)
                                 }
-                                onGeneratePlan(
+                                onSend(
                                     if (goalModeEnabled) buildGoalPlanModeInput(sentText) else sentText,
-                                    selectedMentions.toList()
+                                    selectedMentions.toList(),
+                                    emptyList(),
+                                    selectedSkills.toList(),
+                                    true
                                 )
                             }
                             goalModeEnabled -> {
@@ -1932,7 +1934,8 @@ internal fun ChatScreen(
                                     buildGoalModeMessage(sentText),
                                     selectedMentions.toList(),
                                     emptyList(),
-                                    selectedSkills.toList()
+                                    selectedSkills.toList(),
+                                    false
                                 )
                             }
                             else -> {
@@ -1943,16 +1946,24 @@ internal fun ChatScreen(
                                         buildGoalModeMessage(autoGoal),
                                         selectedMentions.toList(),
                                         emptyList(),
-                                        selectedSkills.toList()
+                                        selectedSkills.toList(),
+                                        false
                                     )
                                 } else if (onShouldAutoPlan(sentText, selectedMentions.toList())) {
-                                    onGeneratePlan(sentText, selectedMentions.toList())
+                                    onSend(
+                                        sentText,
+                                        selectedMentions.toList(),
+                                        emptyList(),
+                                        selectedSkills.toList(),
+                                        true
+                                    )
                                 } else {
                                     onSend(
                                         sentText,
                                         selectedMentions.toList(),
                                         selectedImages.toList(),
-                                        selectedSkills.toList()
+                                        selectedSkills.toList(),
+                                        false
                                     )
                                 }
                             }

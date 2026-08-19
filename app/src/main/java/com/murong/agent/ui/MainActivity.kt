@@ -1470,8 +1470,8 @@ internal fun MainScreen(
                                 onSpeakAssistantMessage = chatVm::speakAssistantMessage,
                                 onPauseVoicePlayback = chatVm::pauseVoicePlayback,
                                 onResumeVoicePlayback = chatVm::resumeVoicePlayback,
-                                 onSend = { text, mentions, images, skills ->
-                                     chatVm.sendMessage(text, mentions, images, skills)
+                                 onSend = { text, mentions, images, skills, planRequested ->
+                                     chatVm.sendMessage(text, mentions, images, skills, planRequested)
                                  },
                                  onGenerateImage = { prompt ->
                                      chatVm.generateImage(prompt)
@@ -1568,9 +1568,6 @@ internal fun MainScreen(
                                 },
                                 onCompressContext = {
                                     chatVm.compressCurrentContext()
-                                },
-                                onGeneratePlan = { input, mentions ->
-                                    chatVm.generateWorkflowPlan(input, mentions)
                                 },
                                 onExecutePlan = {
                                     chatVm.executePendingWorkflowPlan()
