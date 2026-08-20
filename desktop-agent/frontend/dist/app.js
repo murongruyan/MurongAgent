@@ -1583,9 +1583,11 @@ function renderComposerModelSelect() {
   renderComposerAIConfigMenu();
 }
 
-function toggleComposerAIConfigMenu() {
+function toggleComposerAIConfigMenu(event) {
   const menu = $("#composer-ai-config-menu");
   if (!menu || $("#composer-ai-config-trigger").disabled) return;
+  // 阻止点击事件继续冒泡到 document 的"外部点击关闭"处理器,以免展开后被误判为外部点击而立刻关闭。
+  event?.stopPropagation?.();
   if (!menu.classList.contains("hidden")) {
     closeComposerAIConfigMenu();
     return;
@@ -1772,6 +1774,9 @@ function renderComposerReasoningChoices(list, profile) {
 async function handleComposerAIConfigAction(event) {
   const categoryButton = event.target.closest("[data-ai-config-category]");
   if (categoryButton) {
+    // 类别导航会重建列表、把被点击节点从 DOM 移除;若不阻止冒泡,doc 级
+    // "外部点击关闭" 会因 contains(target) 返回 false 而误关菜单。
+    event.stopPropagation();
     state.composerAIConfigCategory = categoryButton.dataset.aiConfigCategory || "";
     renderComposerAIConfigMenu();
     return;
@@ -1780,6 +1785,8 @@ async function handleComposerAIConfigAction(event) {
   const action = actionButton?.dataset.aiConfigAction || "";
   const selectedLabel = actionButton?.querySelector("strong")?.textContent?.replace(/^✓\s*/, "") || "所选项";
   if (!actionButton || actionButton.disabled || !action || state.running || phoneOwnsActiveSession()) return;
+  // 具体选项(connection/model/reasoning)命中后同样阻止冒泡到 doc 级外部关闭处理器。
+  event.stopPropagation();
   const profileId = actionButton.dataset.providerProfileId || "";
   try {
     if (action === "connection") {

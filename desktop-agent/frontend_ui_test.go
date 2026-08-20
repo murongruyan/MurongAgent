@@ -16,6 +16,11 @@ func TestHierarchicalModelSelectorCapturesTheActionBeforeAwait(t *testing.T) {
 		"async function handleComposerAIConfigAction(event) {",
 		`const actionButton = event.target.closest("[data-ai-config-action]");`,
 		`const selectedLabel = actionButton?.querySelector("strong")?.textContent`,
+		// 回归守卫:内部点击必须 stopPropagation,否则事件冒泡到 doc 级
+		// "外部点击关闭" 会将 replaceChildren 后已分离的节点误判为外部点击而关闭菜单。
+		`event.stopPropagation();`,
+		`function toggleComposerAIConfigMenu(event) {`,
+		`event?.stopPropagation?.();`,
 	} {
 		if !strings.Contains(js, marker) {
 			t.Fatalf("async model selector regression guard is missing %q", marker)
